@@ -135,6 +135,7 @@ on_failure = "ReplyFailed"
 
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
+timeout_secs = "30"
 
 
 [[action]]

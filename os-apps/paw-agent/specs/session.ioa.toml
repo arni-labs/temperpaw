@@ -1546,6 +1546,6 @@ params = { error_message = "recovery did not complete within 120s" }
 
 [admission]
 max_concurrent_creates = 10
-max_concurrent_actions = { "Configure" = 5 }
+max_concurrent_actions = { "Configure" = 5, "ProviderAuthReady" = 3, "CompactionAuthReady" = 1 }
 queue_depth = 100
 queue_timeout_seconds = 30

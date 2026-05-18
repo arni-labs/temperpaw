@@ -267,7 +267,7 @@ fn build_reply_text(entity_state: &Value, status: &str) -> String {
                 .and_then(|params| entity_field_str(params, &["result", "Result"]))
                 .filter(|value| !value.is_empty())
             {
-                return result.to_string();
+                return sanitize_reply_text(result);
             }
             if let Some(error) = event
                 .get("params")
@@ -276,7 +276,7 @@ fn build_reply_text(entity_state: &Value, status: &str) -> String {
                 })
                 .filter(|value| !value.is_empty())
             {
-                return error.to_string();
+                return sanitize_reply_text(error);
             }
         }
     }
@@ -287,12 +287,12 @@ fn build_reply_text(entity_state: &Value, status: &str) -> String {
         .unwrap_or_else(|| json!({}));
     if let Some(result) = entity_field_str(&fields, &["result", "Result"]).filter(|v| !v.is_empty())
     {
-        return result.to_string();
+        return sanitize_reply_text(result);
     }
     if let Some(error) = entity_field_str(&fields, &["error_message", "ErrorMessage", "error"])
         .filter(|v| !v.is_empty())
     {
-        return error.to_string();
+        return sanitize_reply_text(error);
     }
     match status {
         "Cancelled" => "Agent was cancelled before it could produce a reply.".to_string(),
@@ -301,6 +301,19 @@ fn build_reply_text(entity_state: &Value, status: &str) -> String {
         other if !other.is_empty() => format!("Agent ended with status={other}."),
         _ => "Agent finished without a reply.".to_string(),
     }
+}
+
+fn sanitize_reply_text(raw: &str) -> String {
+    if is_provider_transport_failure(raw) {
+        return "Paw hit a provider transport timeout while calling the model backend. The failure is recorded in Temper state; retry after provider capacity/admission recovers.".to_string();
+    }
+    raw.to_string()
+}
+
+fn is_provider_transport_failure(raw: &str) -> bool {
+    raw.contains("HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses")
+        || raw.contains("OpenAI Codex host HTTP call failed")
+        || raw.contains("host_http_timeout_or_transport_error=true")
 }
 
 fn find_session_by_agent(
@@ -521,6 +534,25 @@ mod tests {
         assert_eq!(
             channel_reply_action_url("http://temper", "ch-legacy", None),
             "http://temper/tdata/Channels('ch-legacy')/Paw.Channel.SendReply?await_integration=true"
+        );
+    }
+
+    #[test]
+    fn build_reply_text_sanitizes_codex_transport_failures() {
+        let state = json!({
+            "events": [{
+                "params": {
+                    "error_message": "HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses"
+                }
+            }]
+        });
+
+        let reply = build_reply_text(&state, "Failed");
+
+        assert!(reply.contains("provider transport timeout"));
+        assert!(
+            !reply.contains("chatgpt.com/backend-api/codex/responses"),
+            "raw provider URLs should not be sent to Discord"
         );
     }
 

@@ -191,6 +191,15 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         let summary_result = if provider == "mock" {
             Ok(build_mock_summary(&conversation_text))
+        } else if compaction_should_use_local_fallback(&provider) {
+            ctx.log(
+                "warn",
+                "context_compactor: using local fallback summary for openai_codex provider",
+            );
+            Ok(build_local_fallback_summary(
+                &conversation_text,
+                "openai_codex compaction uses local fallback",
+            ))
         } else {
             call_compaction_llm(
                 &ctx,
@@ -212,7 +221,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     );
                     return Ok(());
                 }
-                return Err(err);
+                compaction_summary_or_fallback(&conversation_text, Err(err))?
             }
         };
 
@@ -442,6 +451,39 @@ fn build_mock_summary(conversation_text: &str) -> String {
     format!(
         "## Active Goal\nContinue the active task.\n\n## Episodes\n\n### Episode: Prior conversation\n- **Goal:** Earlier conversation context\n- **Worked:** Conversation compacted using mock path\n- **Failed:** None recorded\n- **Discoveries:** No real model configured for compaction\n- **Artifacts:** None\n\n## Current State\n- **Where we are:** Resuming after compaction\n- **Next:** Continue the active task\n- **Open questions:** None\n\n---\nRaw context tail:\n{}",
         truncated
+    )
+}
+
+fn compaction_summary_or_fallback(
+    conversation_text: &str,
+    result: Result<String, String>,
+) -> Result<String, String> {
+    match result {
+        Ok(summary) => Ok(summary),
+        Err(err) if compaction_auth_expired_reason(&err).is_some() => Err(err),
+        Err(err) => Ok(build_local_fallback_summary(conversation_text, &err)),
+    }
+}
+
+fn compaction_should_use_local_fallback(provider: &str) -> bool {
+    provider == "openai_codex"
+}
+
+fn build_local_fallback_summary(conversation_text: &str, error: &str) -> String {
+    let excerpt: String = conversation_text.chars().take(1200).collect();
+    let failure_class = if error.contains("HTTP call failed")
+        || error.contains("host_http_call")
+        || error.contains("deadline")
+        || error.contains("timeout")
+    {
+        "provider transport timeout"
+    } else {
+        "provider compaction error"
+    };
+
+    format!(
+        "## Active Goal\nContinue the active task.\n\n## Episodes\n\n### Episode: Prior conversation\n- **Goal:** Preserve working context after the compaction provider was unavailable.\n- **Worked:** Earlier conversation was compacted using local fallback compaction.\n- **Failed:** Automated LLM compaction hit a {failure_class}.\n- **Discoveries:** Use the raw context excerpt below when resuming.\n- **Artifacts:** None recorded by fallback compaction.\n\n## Current State\n- **Where we are:** Resuming after local fallback compaction.\n- **Next:** Continue the active task from recent context and the excerpt.\n- **Open questions:** None recorded by fallback compaction.\n\n---\nRaw context excerpt:\n{}",
+        excerpt
     )
 }
 
@@ -1070,5 +1112,41 @@ data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"mes
             compaction_auth_expired_reason("regular compaction failure"),
             None
         );
+    }
+
+    #[test]
+    fn compaction_transport_failure_uses_local_fallback_summary() {
+        let summary = compaction_summary_or_fallback(
+            "## user\nplease continue the incident investigation",
+            Err(
+                "HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses"
+                    .to_string(),
+            ),
+        )
+        .expect("transport failures should fall back locally");
+
+        assert!(summary.contains("local fallback compaction"));
+        assert!(summary.contains("please continue the incident investigation"));
+        assert!(
+            !summary.contains("chatgpt.com/backend-api/codex/responses"),
+            "fallback summary must not preserve raw provider URLs"
+        );
+    }
+
+    #[test]
+    fn compaction_auth_expired_still_routes_to_auth_recovery() {
+        let err = compaction_auth_expired_error(r#"{"error":{"code":"token_expired"}}"#);
+
+        assert_eq!(
+            compaction_summary_or_fallback("conversation", Err(err.clone())),
+            Err(err)
+        );
+    }
+
+    #[test]
+    fn openai_codex_compaction_uses_local_fallback_strategy() {
+        assert!(compaction_should_use_local_fallback("openai_codex"));
+        assert!(!compaction_should_use_local_fallback("openai"));
+        assert!(!compaction_should_use_local_fallback("anthropic"));
     }
 }

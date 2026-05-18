@@ -104,6 +104,45 @@ fn session_routes_llm_calls_through_codex_auth_gate() {
 }
 
 #[test]
+fn session_admission_caps_provider_touching_actions() {
+    let spec = fs::read_to_string(repo_root().join("os-apps/paw-agent/specs/session.ioa.toml"))
+        .expect("session.ioa.toml should exist");
+
+    assert!(
+        spec.contains(
+            "max_concurrent_actions = { \"Configure\" = 5, \"ProviderAuthReady\" = 3, \"CompactionAuthReady\" = 1 }"
+        ),
+        "Session admission should cap provider and compaction actions, not just session creation"
+    );
+}
+
+#[test]
+fn channel_send_reply_trigger_is_bounded_and_reports_delivery_failure() {
+    let spec = fs::read_to_string(repo_root().join("os-apps/paw-channels/specs/channel.ioa.toml"))
+        .expect("channel.ioa.toml should exist");
+    let trigger_block = spec
+        .split("[[action.triggers]]")
+        .skip(1)
+        .find(|block| {
+            block
+                .lines()
+                .any(|line| line.trim() == "name = \"send_reply\"")
+        })
+        .expect("Channel.SendReply should define a send_reply trigger");
+
+    for needle in [
+        "module = \"send_reply\"",
+        "on_failure = \"ReplyFailed\"",
+        "timeout_secs = \"30\"",
+    ] {
+        assert!(
+            trigger_block.contains(needle),
+            "send_reply trigger should contain {needle}"
+        );
+    }
+}
+
+#[test]
 fn session_defines_non_codex_provider_auth_fast_path() {
     let spec = fs::read_to_string(repo_root().join("os-apps/paw-agent/specs/session.ioa.toml"))
         .expect("session.ioa.toml should exist");
