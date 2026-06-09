@@ -31,8 +31,11 @@ fn worker_headers_identify_the_daemon_as_an_agent_principal() {
     );
 }
 
-#[test]
-fn event_stream_headers_use_token_without_worker_principal_headers() {
+#[tokio::test]
+async fn event_stream_headers_use_token_without_worker_principal_headers() {
+    let _guard = ENV_LOCK.lock().await;
+    let _kind = EnvOverride::remove("PAW_CODEX_EVENT_STREAM_PRINCIPAL_KIND");
+    let _id = EnvOverride::remove("PAW_CODEX_EVENT_STREAM_PRINCIPAL_ID");
     let config = Config {
         temper_url: "http://127.0.0.1:3497".to_string(),
         tenant: "default".to_string(),
@@ -59,6 +62,48 @@ fn event_stream_headers_use_token_without_worker_principal_headers() {
     assert!(
         !headers.contains_key("x-temper-principal-kind"),
         "current Temper event stream rejects agent principals; WorkerRun actions still use worker identity"
+    );
+}
+
+#[tokio::test]
+async fn event_stream_headers_keep_explicit_principal_override_without_token() {
+    let _guard = ENV_LOCK.lock().await;
+    let _kind = EnvOverride::set(
+        "PAW_CODEX_EVENT_STREAM_PRINCIPAL_KIND",
+        OsString::from("agent"),
+    );
+    let _id = EnvOverride::set(
+        "PAW_CODEX_EVENT_STREAM_PRINCIPAL_ID",
+        OsString::from("stream-agent-1"),
+    );
+    let config = Config {
+        temper_url: "http://127.0.0.1:3497".to_string(),
+        tenant: "default".to_string(),
+        worker_id: "mac-mini-codex-1".to_string(),
+        worker_token: None,
+        workspace_root: PathBuf::from("/tmp/worktrees"),
+        repo_root: PathBuf::from("/tmp/temperpaw"),
+        codex_bin: "codex".to_string(),
+        max_concurrent_runs: 1,
+        enable_execution: false,
+        poll_on_start: true,
+        codex_exec_smoke: false,
+        codex_exec_timeout: Duration::from_secs(30),
+    };
+
+    let headers = event_stream_headers(&config).expect("headers");
+
+    assert_eq!(
+        headers
+            .get("x-temper-principal-kind")
+            .and_then(|value| value.to_str().ok()),
+        Some("agent")
+    );
+    assert_eq!(
+        headers
+            .get("x-temper-principal-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("stream-agent-1")
     );
 }
 

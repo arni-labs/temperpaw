@@ -79,7 +79,7 @@ async fn handle_event_payload(client: &reqwest::Client, config: &Config, data: &
             handle_queued_evaluation_run(client, config, &event.entity_id).await?;
         }
         ("WorkItem", "Queued") => {
-            handle_queued_directed_evolution_work_item(client, config, &event.entity_id).await?;
+            claim_boot_queued_directed_evolution_work_items(client, config).await?;
         }
         _ => {}
     }

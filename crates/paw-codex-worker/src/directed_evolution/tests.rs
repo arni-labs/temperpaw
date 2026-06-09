@@ -92,7 +92,9 @@ mod directed_evolution_tests {
 
         let prompt = directed_evolution_prompt(&work_item);
 
-        assert!(prompt.contains("Query logs, traces, metrics, or monitors"));
+        assert!(prompt.contains("observation_metadata"));
+        assert!(prompt.contains("temper.observation.de.*"));
+        assert!(prompt.contains("de.variant_id"));
         assert!(prompt.contains("provenance_kind=datadog-measured"));
         assert!(prompt.contains("result_count"));
         assert!(prompt.contains("zero_result_meaning"));

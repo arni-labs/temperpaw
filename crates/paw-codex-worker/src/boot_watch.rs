@@ -77,9 +77,47 @@ async fn claim_boot_queued_directed_evolution_work_items(
     config: &Config,
 ) -> Result<()> {
     let ids = query_boot_entity_ids(client, config, "WorkItems", "Queued").await?;
-    for work_item_id in ids {
-        handle_queued_directed_evolution_work_item(client, config, &work_item_id).await?;
+    if ids.is_empty() {
+        return Ok(());
     }
+
+    let concurrency = config.max_concurrent_runs.max(1);
+    info!(
+        queued_work_item_count = ids.len(),
+        max_concurrent_runs = concurrency,
+        "claiming queued Directed Evolution WorkItems"
+    );
+    let results = futures_util::stream::iter(ids.into_iter().map(|work_item_id| {
+        let client = client.clone();
+        let config = config.clone();
+        async move {
+            let result =
+                handle_queued_directed_evolution_work_item(&client, &config, &work_item_id).await;
+            (work_item_id, result)
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut failure_count = 0usize;
+    for (work_item_id, result) in results {
+        if let Err(error) = result {
+            failure_count += 1;
+            warn!(
+                work_item_id = %work_item_id,
+                %error,
+                "Directed Evolution WorkItem pickup failed"
+            );
+        }
+    }
+    if failure_count > 0 {
+        bail!(
+            "{} Directed Evolution WorkItem pickup task(s) failed",
+            failure_count
+        );
+    }
+
     Ok(())
 }
 

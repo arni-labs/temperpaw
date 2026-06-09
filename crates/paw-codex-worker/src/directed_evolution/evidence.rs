@@ -215,6 +215,10 @@ fn directed_evolution_datadog_context(work_item: &DirectedEvolutionWorkItemState
     let env_name = env::var("DD_ENV").unwrap_or_else(|_| "local".to_string());
     let site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let query = format!("service:{service} env:{env_name} @work_item_id:{}", work_item.id);
+    let runtime_observation_query = format!(
+        "service:{service} env:{env_name} \"app usage:\" @observation_metadata:*{}*",
+        work_item.id
+    );
     json!({
         "service": service,
         "env": env_name,
@@ -227,6 +231,11 @@ fn directed_evolution_datadog_context(work_item: &DirectedEvolutionWorkItemState
         "logs_url": format!(
             "https://app.{site}/logs?query={}",
             encode_url_component(&query)
+        ),
+        "runtime_observation_query": runtime_observation_query,
+        "runtime_observation_logs_url": format!(
+            "https://app.{site}/logs?query={}",
+            encode_url_component(&runtime_observation_query)
         ),
     })
 }
