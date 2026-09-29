@@ -16,6 +16,41 @@ const SURVEYOR_TOOLS: &str =
     "temper_get,temper_list,temper_create,temper_action,temper_read,temper_write";
 const WEB_TOOLS: &str = ",temper_web_search,temper_web_fetch";
 
+// Keep native diagnostic fields only; never serialize response headers or the request.
+fn session_create_error(name: &str, status: u16, body: &str) -> String {
+    let prefix = format!("create Session for {name} failed (HTTP {status})");
+    if body.len() > 64 * 1024 {
+        return format!("{prefix}: response detail exceeds 64KiB bound");
+    }
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return prefix;
+    };
+    let mut details = Vec::new();
+    for path in [
+        "/error/code",
+        "/error/message",
+        "/error",
+        "/message",
+        "/denial_reason",
+        "/decision_id",
+        "/pending_decision_id",
+        "/error/decision_id",
+        "/error/pending_decision_id",
+    ] {
+        if let Some(text) = value.pointer(path).and_then(Value::as_str) {
+            let bounded: String = text.chars().filter(|c| !c.is_control()).take(512).collect();
+            if !bounded.is_empty() {
+                details.push(format!("{}={bounded}", path.trim_start_matches('/')));
+            }
+        }
+    }
+    if details.is_empty() {
+        prefix
+    } else {
+        format!("{prefix}: {}", details.join("; "))
+    }
+}
+
 fn tools_enabled(hindcast: bool) -> String {
     if hindcast {
         SURVEYOR_TOOLS.to_string()
@@ -381,9 +416,10 @@ fn spawn_session(
         &json!({ "agent_id": agent_id }).to_string(),
     )?;
     if session_resp.status < 200 || session_resp.status >= 300 {
-        return Err(format!(
-            "create Session for {name} failed (HTTP {})",
-            session_resp.status
+        return Err(session_create_error(
+            name,
+            session_resp.status,
+            &session_resp.body,
         ));
     }
     let session_id = serde_json::from_str::<Value>(&session_resp.body)
@@ -549,6 +585,27 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_denial_retains_bounded_reason_and_decision_not_headers() {
+        let body = serde_json::json!({"error":{"code":"Forbidden","message":"no matching permit","decision_id":"PD-123"},"headers":{"authorization":"secret-not-for-output"},"request":{"token":"secret-not-for-output"}}).to_string();
+        let error = super::session_create_error("surveyor", 403, &body);
+        assert!(error.contains("HTTP 403"));
+        assert!(error.contains("no matching permit"));
+        assert!(error.contains("PD-123"));
+        assert!(!error.contains("secret-not-for-output"));
+        let long = serde_json::json!({"message":"é".repeat(2000)}).to_string();
+        assert!(
+            super::session_create_error("surveyor", 500, &long)
+                .chars()
+                .count()
+                < 600
+        );
+        assert_eq!(
+            super::session_create_error("surveyor", 502, "private non-JSON body"),
+            "create Session for surveyor failed (HTTP 502)"
+        );
+    }
+
     use super::*;
 
     // Prompt-contract tests: the generated prompts must reference the exact
