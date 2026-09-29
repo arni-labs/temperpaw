@@ -703,14 +703,14 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
         .unwrap_or_else(|| panic!("{} missing state_timeout for Seeding", path.display()));
     assert_eq!(
         seeding.get("on_timeout").and_then(|v| v.as_str()),
-        Some("ResumeSeed"),
-        "Seeding timeout must re-spawn the surveyor via ResumeSeed"
+        Some("CheckResearchSession"),
+        "Seeding timeout must inspect the current session before retrying"
     );
 
     let resume = action(&spec, "ResumeSeed", &path);
     assert!(
-        action_from(resume).contains("Seeding"),
-        "ResumeSeed must fire from Seeding"
+        action_from(resume).contains("Seeding") && action_from(resume).contains("Failed"),
+        "Manual ResumeSeed must recover Seeding or Failed"
     );
     assert_eq!(
         resume.get("to").and_then(|v| v.as_str()),
@@ -720,7 +720,10 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
     let trigger = resume
         .get("effect")
         .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|effect| effect.get("type").and_then(|v| v.as_str()) == Some("trigger"))
+        })
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
     assert_eq!(
         trigger,

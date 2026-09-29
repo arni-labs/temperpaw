@@ -178,6 +178,32 @@
         <Parameter Name="seed_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.ForesightModel"/>
       </Action>
+      <Action Name="CheckResearchSession" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
+      <Action Name="ResearchPending" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="expected_research_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
+      <Action Name="ResearchIncomplete" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="expected_research_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="research_session_attempt" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
+      <Action Name="ResearchFailed" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="expected_research_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
       <Action Name="SeedComplete" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.ForesightModel"/>
         <Parameter Name="model_snapshot_file_id" Type="Edm.String" Nullable="true"/>
@@ -391,6 +417,7 @@
         <Property Name="AgentModel" Type="Edm.String"/>
         <Property Name="AgentProvider" Type="Edm.String"/>
         <Property Name="ResearchSessionId" Type="Edm.String"/>
+        <Property Name="ResearchSessionAttempt" Type="Edm.String"/>
         <Property Name="ResearchAttempt" Type="Edm.Int64"/>
         <Property Name="HindcastMode" Type="Edm.String"/>
         <Property Name="SkeletonNodeCount" Type="Edm.String"/>
@@ -643,6 +670,7 @@
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
         <Parameter Name="research_session_id" Type="Edm.String" Nullable="false"/>
         <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="research_session_attempt" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="TemperPaw.Foresight.World"/>
       </Action>
       <Action Name="SeedComplete" IsBound="true">

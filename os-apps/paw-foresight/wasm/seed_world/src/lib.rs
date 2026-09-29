@@ -429,6 +429,15 @@ fn spawn_session(
     Ok(session_id)
 }
 
+fn continuation_prompt(prompt: String, world_id: &str, attempt: u64) -> String {
+    if attempt <= 1 {
+        return prompt;
+    }
+    format!(
+        "This is research recovery attempt {attempt} for the SAME world. A previous researcher stopped without the application's SeedComplete callback. First inspect temper.list(\"EventNodes\", \"world_id eq '{world_id}'\") and try temper.read(\"/skeleton.md\") in the existing workspace. Preserve useful saved findings; do not recreate them or repeat completed searches. If the file is absent, reconstruct the map from saved nodes. Continue genuinely missing research only, then verify saved nodes, write the map and invoke SeedComplete exactly as specified below. Text describing a tool call is not an executed tool call. Check the actual action result before declaring completion. Never infer completion from node count.\n\n{prompt}"
+    )
+}
+
 /// Entry point.
 #[unsafe(no_mangle)]
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
@@ -502,6 +511,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 hindcast,
             )
         };
+        let surveyor_msg = continuation_prompt(surveyor_msg, &world_id, research_attempt);
         let research_session_id = spawn_session(
             &ctx,
             &api,
@@ -524,6 +534,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             "ResearchSessionStarted",
             &json!({
                 "research_session_id": research_session_id,
+                "research_session_attempt": research_attempt.to_string(),
                 "expected_research_attempt": research_attempt,
             }),
         );
@@ -544,6 +555,15 @@ mod tests {
     // entity sets, action names, and parameter names the specs declare.
     // The API silently drops unknown fields — drift here is a silent failure.
 
+    #[test]
+    fn research_recovery_preserves_saved_work_before_requesting_completion() {
+        assert_eq!(continuation_prompt("original".into(), "w", 1), "original");
+        let resumed = continuation_prompt("original".into(), "w", 2);
+        assert!(resumed.contains("world_id eq 'w'"));
+        assert!(resumed.contains("/skeleton.md"));
+        assert!(resumed.contains("do not recreate"));
+        assert!(resumed.contains("SeedComplete"));
+    }
     #[test]
     fn open_research_keeps_uncertain_findings_without_fixed_axes_or_certainty() {
         let prompt = open_research_prompt(

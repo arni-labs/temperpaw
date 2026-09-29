@@ -757,3 +757,12 @@ forbid(principal, action == Action::"Fail", resource is SemanticRun)
 unless { principal == Agent::"service:wasm-runtime" || (principal has agent_type && principal.agent_type == "system") };
 forbid(principal, action == Action::"CheckReasoning", resource is SemanticRun)
 unless { principal has agent_type && principal.agent_type == "system" };
+
+// The app monitor may inspect only the current researcher through existing system reads.
+permit(principal, action == Action::"CheckResearchSession", resource is World)
+when { principal.agent_type == "system" };
+permit(principal == Agent::"service:wasm-runtime",
+ action in [Action::"ResearchPending", Action::"ResearchIncomplete", Action::"ResearchFailed"], resource is World);
+forbid(principal,
+ action in [Action::"ResearchPending", Action::"ResearchIncomplete", Action::"ResearchFailed"], resource is World)
+unless { principal == Agent::"service:wasm-runtime" };

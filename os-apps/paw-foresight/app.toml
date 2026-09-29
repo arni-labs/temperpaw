@@ -137,3 +137,8 @@ startup_loading = "lazy"
 name = "semantic_expand"
 criticality = "app-required"
 startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "seed_session"
+criticality = "app-required"
+startup_loading = "lazy"

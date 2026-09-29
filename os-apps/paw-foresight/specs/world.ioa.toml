@@ -33,8 +33,8 @@ allow_indefinite_states = ["Created", "Active", "Updating"]
 [[state_timeout]]
 state = "Seeding"
 after_seconds = 1200
-on_timeout = "ResumeSeed"
-reset_on = ["SeedComplete", "Fail", "ResumeSeed"]
+on_timeout = "CheckResearchSession"
+reset_on = ["SeedComplete", "Fail", "ResumeSeed", "ResearchSessionStarted", "ResearchPending", "ResearchIncomplete"]
 
 # Self-heal (ADR-007): when every claim is terminal but canonical_path_id is still
 # empty — e.g. the last claim resolved off the Bridging settle path (operator
@@ -126,6 +126,11 @@ initial = ""
 # Current surveyor session, recorded only by seed_world's trusted callback.
 [[state]]
 name = "research_session_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "research_session_attempt"
 type = "string"
 initial = ""
 
@@ -259,8 +264,9 @@ temper_api_url = "{secret:temper_api_url}"
 name = "ResearchSessionStarted"
 kind = "input"
 from = ["Seeding", "Active", "Updating", "RegisteringForecasts", "Archived", "Failed"]
-params = [{ name = "research_session_id", type = "string" }, { name = "expected_research_attempt", type = "counter" }]
+params = [{ name = "research_session_id", type = "string" }, { name = "expected_research_attempt", type = "counter" }, { name = "research_session_attempt", type = "string" }]
 hint = "Record the exact surveyor Session returned by seed_world without changing world progress."
+effect = [{type="schedule",action="CheckResearchSession",delay_seconds=15}]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -293,10 +299,10 @@ type = "same_id"
 [[action]]
 name = "ResumeSeed"
 kind = "input"
-from = ["Seeding"]
+from = ["Seeding", "Failed"]
 to = "Seeding"
 params = []
-hint = "Self-heal: re-spawn the surveyor/bookmaker batch when Seeding did not receive SeedComplete. System principals only."
+hint = "Explicitly continue saved research after an unfinished or failed attempt. Automatic terminal retries are bounded separately; Failed never retries itself. System principals only."
 effect = [{ type = "increment", var = "research_attempt" }, { type = "trigger", name = "seed_world" }]
 
 [[action.triggers]]
@@ -1091,3 +1097,70 @@ from = ["Active"]
 params = []
 guard = "is_true semantic_exploration_requested"
 effect = [{type="spawn",entity_type="SemanticRun",entity_id_source="{uuid}",initial_action="Start",copy_fields=""},{type="set_bool",var="semantic_exploration_requested",value=false}]
+
+# Research terminal replies are not proof of the application's completion callback.
+[[action]]
+name = "CheckResearchSession"
+kind = "input"
+from = ["Seeding"]
+params = []
+[[action.triggers]]
+name = "seed_session"
+kind = "wasm"
+module = "seed_session"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ResearchPending"
+kind = "input"
+from = ["Seeding"]
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+effect = [{type="schedule",action="CheckResearchSession",delay_seconds=15}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+
+[[action]]
+name = "ResearchIncomplete"
+kind = "input"
+from = ["Seeding"]
+to = "Seeding"
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"},{name="research_session_attempt",type="string"}]
+effect = [{type="increment",var="research_attempt"},{type="trigger",name="seed_world"}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+[[action.triggers]]
+name = "seed_world"
+kind = "wasm"
+module = "seed_world"
+on_success = "ResearchSessionStarted"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ResearchFailed"
+kind = "input"
+from = ["Seeding"]
+to = "Failed"
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
