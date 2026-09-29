@@ -204,6 +204,13 @@
         <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="TemperPaw.Foresight.World"/>
       </Action>
+      <Action Name="ResearchMonitorUnavailable" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="expected_research_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
       <Action Name="SeedComplete" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.ForesightModel"/>
         <Parameter Name="model_snapshot_file_id" Type="Edm.String" Nullable="true"/>
@@ -418,6 +425,7 @@
         <Property Name="AgentProvider" Type="Edm.String"/>
         <Property Name="ResearchSessionId" Type="Edm.String"/>
         <Property Name="ResearchSessionAttempt" Type="Edm.String"/>
+        <Property Name="ResearchMonitorUnavailable" Type="Edm.Boolean"/>
         <Property Name="ResearchAttempt" Type="Edm.Int64"/>
         <Property Name="HindcastMode" Type="Edm.String"/>
         <Property Name="SkeletonNodeCount" Type="Edm.String"/>

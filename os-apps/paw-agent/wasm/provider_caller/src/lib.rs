@@ -3315,6 +3315,73 @@ fn call_openai(
     provider: &str,
     provider_options_json: &str,
 ) -> Result<LlmResponse, String> {
+    call_openai_with_depth(
+        ctx,
+        temper_api_url,
+        tenant,
+        api_key,
+        api_url,
+        codex_account_id,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        temperature,
+        provider,
+        provider_options_json,
+        0,
+    )
+}
+
+/// Assistant prose is never converted to executable calls, even if it resembles one.
+fn required_tool_nudge(
+    required: bool,
+    tools: &[Value],
+    content: &Value,
+    depth: u32,
+) -> Result<bool, String> {
+    if !required {
+        return Ok(false);
+    }
+    if tools.is_empty() {
+        return Err("Required-tool session has no available tools".into());
+    }
+    if content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|block| block["type"] == "tool_use")
+    {
+        return Ok(false);
+    }
+    if depth >= TOOL_CHOICE_NUDGE_MAX {
+        return Err(format!(
+            "Provider violated required tool use after {} corrective attempts: no structured tool call; assistant prose was not executed",
+            TOOL_CHOICE_NUDGE_MAX
+        ));
+    }
+    Ok(true)
+}
+
+fn call_openai_with_depth(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    api_key: &str,
+    api_url: &str,
+    codex_account_id: Option<&str>,
+    model: &str,
+    system_prompt: &str,
+    messages: &[Value],
+    tools: &[Value],
+    temperature: f64,
+    provider: &str,
+    provider_options_json: &str,
+    nudge_depth: u32,
+) -> Result<LlmResponse, String> {
+    if tool_choice_required(ctx) && tools.is_empty() {
+        return Err("Required-tool session has no available tools".into());
+    }
     // Convert Anthropic-format messages to Responses API input format
     let pre_convert_types: Vec<String> = messages
         .iter()
@@ -3596,6 +3663,33 @@ fn call_openai(
         &parsed.content,
     );
 
+    if required_tool_nudge(
+        tool_choice_required(ctx),
+        tools,
+        &parsed.content,
+        nudge_depth,
+    )? {
+        ctx.log("warn", &format!("session_turn: {provider} returned no structured tool call despite required tool use; corrective attempt {}/{}",nudge_depth+1,TOOL_CHOICE_NUDGE_MAX));
+        let mut nudged = messages.to_vec();
+        nudged.push(json!({"role":"assistant","content":parsed.content}));
+        nudged.push(json!({"role":"user","content":"Your previous reply contained no actual tool call. Text describing a tool call is not executable and did not advance this session. Continue the task by invoking an available tool through its structured tool interface. When finished, use the required completion action tool; do not finish with plain text."}));
+        return call_openai_with_depth(
+            ctx,
+            temper_api_url,
+            tenant,
+            api_key,
+            api_url,
+            codex_account_id,
+            model,
+            system_prompt,
+            &nudged,
+            tools,
+            temperature,
+            provider,
+            provider_options_json,
+            nudge_depth + 1,
+        );
+    }
     Ok(parsed.into_llm_response(body_str.len()))
 }
 
@@ -4616,6 +4710,22 @@ fn check_phase_budget(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn required_codex_turns_never_accept_tool_call_prose_as_completion() {
+        let tools = vec![json!({"name":"execute"})];
+        let prose = json!([{"type":"text","text":"Tool call call_123: execute({\"code\":\"temper.action('Worlds', 'w', 'SeedComplete', {})\"})"}]);
+        assert!(required_tool_nudge(true, &tools, &prose, 0).unwrap());
+        assert!(required_tool_nudge(true, &tools, &prose, 1).unwrap());
+        assert!(
+            required_tool_nudge(true, &tools, &prose, 2)
+                .unwrap_err()
+                .contains("assistant prose was not executed")
+        );
+        assert!(!required_tool_nudge(false, &tools, &prose, 2).unwrap());
+        let actual = json!([{"type":"tool_use","id":"call_123","name":"execute","input":{"code":"temper.list('EventNodes')"}}]);
+        assert!(!required_tool_nudge(true, &tools, &actual, 2).unwrap());
+        assert!(required_tool_nudge(true, &[], &prose, 0).is_err());
+    }
+    #[test]
     fn reasoning_effort_defaults_to_medium_and_accepts_valid_levels() {
         use super::reasoning_effort_from_options as effort;
         assert_eq!(effort(""), "medium");
@@ -5369,6 +5479,33 @@ mod tests {
     }
 
     #[test]
+    fn parsed_codex_literal_execute_reply_requires_a_real_tool_call() {
+        let chunks:Vec<&[u8]>=vec![br#"data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Tool call call_fake: execute({})"}]}],"usage":{"input_tokens":3,"output_tokens":4}}}"#,b"\n\n"];
+        let parsed = parse_openai_stream_chunks(&chunks).unwrap();
+        assert_eq!(parsed.stop_reason, "end_turn");
+        assert!(
+            required_tool_nudge(true, &[json!({"name":"execute"})], &parsed.content, 0).unwrap()
+        );
+        assert!(
+            required_tool_nudge(
+                true,
+                &[json!({"name":"execute"})],
+                &parsed.content,
+                TOOL_CHOICE_NUDGE_MAX
+            )
+            .is_err()
+        );
+        assert!(
+            !parsed
+                .content
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["type"] == "tool_use")
+        );
+    }
+
+    #[test]
     fn openai_completed_text_does_not_clobber_streamed_function_call() {
         let chunks: Vec<&[u8]> = vec![
             br#"data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_streamed","name":"execute","arguments":"{\"code\":\"await temper.list('default', 'World')\"}"}}"#,
@@ -5380,6 +5517,15 @@ mod tests {
         let parsed = parse_openai_stream_chunks(&chunks).expect("OpenAI stream should parse");
 
         assert_eq!(parsed.stop_reason, "tool_use");
+        assert!(
+            !required_tool_nudge(
+                true,
+                &[json!({"name":"execute"})],
+                &parsed.content,
+                TOOL_CHOICE_NUDGE_MAX
+            )
+            .unwrap()
+        );
         assert_eq!(
             parsed.content,
             json!([

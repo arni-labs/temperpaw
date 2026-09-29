@@ -303,7 +303,7 @@ from = ["Seeding", "Failed"]
 to = "Seeding"
 params = []
 hint = "Explicitly continue saved research after an unfinished or failed attempt. Automatic terminal retries are bounded separately; Failed never retries itself. System principals only."
-effect = [{ type = "increment", var = "research_attempt" }, { type = "trigger", name = "seed_world" }]
+effect = [{type="set_bool",var="research_monitor_unavailable",value=false},{ type = "increment", var = "research_attempt" }, { type = "trigger", name = "seed_world" }]
 
 [[action.triggers]]
 name = "seed_world"
@@ -1103,6 +1103,7 @@ effect = [{type="spawn",entity_type="SemanticRun",entity_id_source="{uuid}",init
 name = "CheckResearchSession"
 kind = "input"
 from = ["Seeding"]
+guard = "is_false research_monitor_unavailable"
 params = []
 [[action.triggers]]
 name = "seed_session"
@@ -1156,6 +1157,27 @@ kind = "input"
 from = ["Seeding"]
 to = "Failed"
 params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+
+# Losing observation is not evidence that the researcher failed.
+[[state]]
+name = "research_monitor_unavailable"
+type = "bool"
+initial = "false"
+
+[[action]]
+name = "ResearchMonitorUnavailable"
+kind = "input"
+from = ["Seeding"]
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+effect = [{type="set_bool",var="research_monitor_unavailable",value=true}]
 [[action.constraints]]
 kind = "param_equals_field"
 param = "expected_research_attempt"

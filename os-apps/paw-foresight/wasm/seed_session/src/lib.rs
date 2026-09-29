@@ -88,7 +88,7 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
         Ok(ctx) => {
             if let Err(error) = check(&ctx) {
                 set_success_result(
-                    "ResearchFailed",
+                    "ResearchMonitorUnavailable",
                     &json!({"expected_research_session_id":field(&ctx.entity_state,"research_session_id"),"expected_research_attempt":ctx.entity_state["counters"]["research_attempt"],"error_message":error}),
                 );
             }
