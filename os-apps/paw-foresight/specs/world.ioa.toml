@@ -1109,6 +1109,7 @@ params = []
 name = "seed_session"
 kind = "wasm"
 module = "seed_session"
+on_failure = "ResearchMonitorInvocationFailed"
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
 
@@ -1186,3 +1187,11 @@ field = "research_attempt"
 kind = "param_equals_field"
 param = "expected_research_session_id"
 field = "research_session_id"
+
+# Host denials/traps precede the guest's fenced callback; they only disable observation.
+[[action]]
+name = "ResearchMonitorInvocationFailed"
+kind = "input"
+from = ["Seeding"]
+params = ["error_message"]
+effect = [{type="set_bool",var="research_monitor_unavailable",value=true}]

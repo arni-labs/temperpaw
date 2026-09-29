@@ -204,6 +204,11 @@
         <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="TemperPaw.Foresight.World"/>
       </Action>
+      <Action Name="ResearchMonitorInvocationFailed" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.Foresight.World"/>
+      </Action>
       <Action Name="ResearchMonitorUnavailable" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.World"/>
         <Parameter Name="expected_research_attempt" Type="Edm.Int64" Nullable="false"/>

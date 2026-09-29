@@ -469,6 +469,7 @@ fn changed_action_metadata_matches_ioa_and_detects_missing_parameters() {
                 "ResearchPending",
                 "ResearchIncomplete",
                 "ResearchFailed",
+                "ResearchMonitorInvocationFailed",
                 "ForecastPrepared",
                 "ForecastRegistrationComplete",
                 "ForecastRegistrationFailed",
@@ -551,6 +552,7 @@ fn changed_action_metadata_matches_ioa_and_detects_missing_parameters() {
         ("World", "ResearchPending", "expected_research_session_id"),
         ("World", "ResearchIncomplete", "research_session_attempt"),
         ("World", "ResearchFailed", "expected_research_attempt"),
+        ("World", "ResearchMonitorInvocationFailed", "error_message"),
         (
             "World",
             "ResearchSessionStarted",
