@@ -84,6 +84,9 @@ fn next_phase(
     if !exhausted.is_empty() {
         program["stop_reason"] = json!(exhausted);
         "compose"
+    } else if request_mixed_decomposition(snapshot, program) {
+        program["stop_reason"] = json!("temporal_decomposition_needed");
+        "explore"
     } else if program["continue_exploring"] == false {
         if program["independent_challenge"]["status"] != "completed" {
             program["independent_challenge"] =
@@ -98,6 +101,24 @@ fn next_phase(
         "explore"
     }
 }
+fn request_mixed_decomposition(snapshot: &Value, program: &mut Value) -> bool {
+    let mut requested = program["temporal_decomposition_requested"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let before = requested.len();
+    for node in snapshot["nodes"].as_array().into_iter().flatten() {
+        let id = core::field(node, "Id");
+        if program["results"][id]["classify_temporal"] == "mixed" && !requested.contains(&json!(id))
+        {
+            requested.push(json!(id));
+        }
+    }
+    let added = requested.len() > before;
+    program["temporal_decomposition_requested"] = json!(requested);
+    added
+}
+
 fn plan_combination_phase(
     snapshot: &Value,
     program: &mut Value,
@@ -123,6 +144,7 @@ fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
 
+    core::skip_nonfuture_tasks(&mut program)?;
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let started = core::field(&ctx.entity_state, "started_at_ms")
         .parse::<u64>()
@@ -198,6 +220,14 @@ mod tests {
         (snapshot, program)
     }
 
+    #[test]
+    fn mixed_temporal_claim_gets_a_decomposition_round_before_saturation() {
+        let snapshot = json!({"nodes":[{"Id":"mixed","kind":"scenario"}]});
+        let mut program = json!({"stage":"exploration","continue_exploring":false,"results":{"mixed":{"classify_temporal":"mixed"}},"independent_challenge":{"status":"completed"}});
+        assert_eq!(next_phase(&snapshot, &mut program, 10, 1000), "explore");
+        assert_eq!(program["stop_reason"], "temporal_decomposition_needed");
+        assert_eq!(next_phase(&snapshot, &mut program, 10, 1000), "compose");
+    }
     #[test]
     fn uncertain_completed_world_keeps_its_probability_and_history_after_refinement() {
         let (snapshot, mut program) = evaluated_world("uncertain");

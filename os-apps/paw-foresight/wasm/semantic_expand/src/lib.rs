@@ -288,10 +288,37 @@ fn expand(
     Ok(())
 }
 
+fn establish_baseline(snapshot: &Value, generated: &Value, old: &Value) -> Result<Value, String> {
+    let mut generated = generated.clone();
+    references::References::new(snapshot)?.resolve_generated(&mut generated);
+    outlook::validate_baseline(&generated["baseline"], snapshot)?;
+    let mut program = old.clone();
+    program["baseline"] = generated["baseline"].clone();
+    program["baseline_status"] = json!("established");
+    program["baseline_correction"] = Value::Null;
+    program["continue_exploring"] = json!(true);
+    Ok(program)
+}
+fn baseline_correction(old: &Value, error: &str) -> Result<Value, String> {
+    let attempt = old["baseline_correction"]["attempt"].as_u64().unwrap_or(0) + 1;
+    if attempt > 2 {
+        return Err(format!(
+            "Baseline rejected after two corrective attempts: {error}"
+        ));
+    }
+    let mut program = old.clone();
+    program["baseline_correction"] = json!({"attempt":attempt,"validation_error":error});
+    Ok(program)
+}
+
 fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
-    let baseline = &generated["baseline"];
+    let baseline = if old["baseline"].is_object() {
+        &old["baseline"]
+    } else {
+        &generated["baseline"]
+    };
     outlook::validate_baseline(baseline, snapshot)?;
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     let by_id: std::collections::BTreeMap<_, _> =
@@ -344,6 +371,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             if by_id
                 .get(reference)
                 .is_none_or(|n| !matches!(core::field(n, "kind"), "scenario" | "revision"))
+                || !core::temporal_allows_forecast(old, reference)
                 || !components.insert(reference)
             {
                 return Err("World components must be distinct existing hypotheses".into());
@@ -429,6 +457,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "evaluations",
         "round",
         "rounds",
+        "baseline_status",
+        "temporal_decomposition_requested",
         "last_error",
         "combination_search",
         "world_audits",
@@ -644,6 +674,9 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
     for key in [
         "results",
         "evaluations",
+        "baseline",
+        "baseline_status",
+        "temporal_decomposition_requested",
         "rounds",
         "http_calls",
         "independent_challenge",
@@ -702,6 +735,9 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         {
             for collection in ["results", "evaluations"] {
                 if let Some(values) = program[collection][core::field(node, "Id")].as_object_mut() {
+                    values.remove("classify_temporal");
+                    values.remove("evaluate_novelty");
+                    values.remove("decision_value");
                     values.remove("classify_gap");
                     values.remove("estimate_likelihood");
                 }
@@ -775,6 +811,23 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         return Ok(());
     }
     let old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    if phase == "seed" {
+        match core::parse(raw).and_then(|generated| establish_baseline(&snapshot, &generated, &old))
+        {
+            Ok(program) => set_success_result(
+                "Expanded",
+                &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+            ),
+            Err(error) => {
+                let program = baseline_correction(&old, &error)?;
+                set_success_result(
+                    "CompositionRejected",
+                    &json!({"program_json":program.to_string()}),
+                );
+            }
+        }
+        return Ok(());
+    }
     let before = snapshot["nodes"].as_array().ok_or("Missing nodes")?.len();
     let composed = if phase == "compose" {
         match core::parse(raw).and_then(|generated| compose(&mut snapshot, &generated, &old)) {
@@ -831,6 +884,37 @@ mod tests {
         let generated = json!({"baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
+    }
+    #[test]
+    fn baseline_precedes_exploration_is_sourced_and_survives_replanning() {
+        let (snapshot, generated, old) = world_fixture();
+        let seeded = establish_baseline(&snapshot, &generated, &old).unwrap();
+        assert_eq!(
+            seeded["baseline"]["observed"][0]["evidence_ids"],
+            json!(["e"])
+        );
+        assert_eq!(seeded["baseline_status"], "established");
+        let replanned = replan(&snapshot, &seeded, &json!({"continue_exploring":true}), 0).unwrap();
+        assert_eq!(replanned["baseline"], seeded["baseline"]);
+        let mut invalid = generated.clone();
+        invalid["baseline"]["observed"][0]["evidence_ids"] = json!(["ref_0002"]);
+        assert!(establish_baseline(&snapshot, &invalid, &old).is_err());
+        let correction = baseline_correction(&old, "Hypothesis cannot source baseline").unwrap();
+        assert!(correction["baseline"].is_null());
+        let correction = baseline_correction(&correction, "Still invalid").unwrap();
+        assert!(baseline_correction(&correction, "Still invalid").is_err());
+        let mut observed = seeded.clone();
+        assert!(compose(&mut snapshot.clone(), &generated, &observed).is_err());
+        for id in ["a", "b", "c"] {
+            observed["results"][id]["classify_temporal"] = json!("future_change");
+        }
+
+        observed["results"]["a"]["classify_temporal"] = json!("already_observed");
+        assert!(compose(&mut snapshot.clone(), &generated, &observed).is_err());
+        observed["results"]["a"]["classify_temporal"] = json!("mixed");
+        assert!(compose(&mut snapshot.clone(), &generated, &observed).is_err());
+        observed["results"]["a"]["classify_temporal"] = json!("uncertain");
+        assert!(compose(&mut snapshot.clone(), &generated, &observed).is_ok());
     }
     #[test]
     #[ignore = "Requires captured final writer output"]
@@ -1135,7 +1219,7 @@ mod tests {
                     .any(|t| t["nodeId"] == "h" && t["function"] == function)
             );
         }
-        assert_eq!(refreshed["results"]["h"]["evaluate_novelty"], "2");
+        assert!(refreshed["results"]["h"]["evaluate_novelty"].is_null());
         assert_eq!(refreshed["evidence_ids"], json!(["e", "new-source"]));
         assert_eq!(old["results"]["h"]["estimate_likelihood"], "0.4");
     }
@@ -1322,11 +1406,11 @@ mod tests {
         expand(&mut s, &g, "seed", &json!({})).unwrap();
         let mut p = replan(&s, &json!({}), &g, 1).unwrap();
         p["evidence_ids"] = json!(["e"]);
-        p["results"] = json!({"e":{"classify_gap":"none","choose_next_operation":"monitor"},"r1-h":{"classify_gap":"evidence","estimate_likelihood":"0.37","evaluate_novelty":"0.8","decision_value":"0.7","choose_next_operation":"connect"}});
+        p["results"] = json!({"e":{"classify_gap":"none","choose_next_operation":"monitor"},"r1-h":{"classify_temporal":"future_change","classify_gap":"evidence","estimate_likelihood":"0.37","evaluate_novelty":"0.8","decision_value":"0.7","choose_next_operation":"connect"}});
         expand(&mut s, &g, "explore", &p).unwrap();
         let next = replan(&s, &p, &g, 1).unwrap();
         assert_eq!(next["round"], 2);
-        assert_eq!(next["tasks"].as_array().unwrap().len(), 4);
+        assert_eq!(next["tasks"].as_array().unwrap().len(), 5);
         assert_eq!(s["nodes"][0], original);
         assert_eq!(next["results"], p["results"]);
     }

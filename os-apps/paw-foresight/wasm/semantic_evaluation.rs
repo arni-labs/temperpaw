@@ -98,6 +98,15 @@ pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
         .iter()
         .find(|n| field(n, "Id") == id)
         .ok_or("Task references absent node")?;
+    if matches!(field(node, "kind"), "scenario" | "revision")
+        && matches!(
+            field(task, "function"),
+            "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+        )
+        && !super::temporal_allows_forecast(program, field(task, "nodeId"))
+    {
+        return Err("Observed or mixed claims require separation before future evaluation".into());
+    }
     let edges = parse(field(node, "edges"))?;
     let mut prerequisites: Vec<Value> = edges.as_array().ok_or("Invalid edges")?.iter().filter(|e| e["kind"] == "requires").map(|edge| {
         let target = edge["to_id"].as_str().unwrap_or("");
@@ -132,6 +141,9 @@ pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
         .map(|n| digest(n))
         .collect();
     let mut question = match task["function"].as_str().ok_or("Missing function")? {
+        "classify_temporal" => {
+            json!({"type":"choice","instructions":"Compare the exact scoped claim against the supplied dated present baseline and source evidence as of world.last_ingest_date. Classify its temporal role before forecasting. Distinguish an existing capability from a future change in scale, access, adoption or consequences. Do not assume a cited prediction has already happened, use remembered later events in a hindcast, or call a conjecture false merely because evidence is absent. This judgment is not verification of source truth. Preserve uncertainty.","criteria":super::temporal_criteria()})
+        }
         "classify_gap" => {
             json!({"type":"choice","instructions":"Identify the most consequential causal gap in this hypothesis using actual supplied evidence. Future events are hypotheses, not false observations. Source URLs alone do not prove contents. A coherent mechanism does not imply a likely outcome.","criteria":super::gap_criteria()})
         }
@@ -198,6 +210,14 @@ pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
         Value::Null
     };
     let mut request = json!({"model":MODEL,"state":{"world":snapshot["world"],"node":digest(node),"prerequisites":prerequisites,"counter_hypotheses":counter_hypotheses,"source_evidence":evidence,"baseline":program["baseline"],"world_audit":audit,"previous_world_judgments":if is_world { super::search::previous_world_judgments(program,node) } else { Value::Null },"comparisons":comparisons,"assessment":program["results"][id],"evaluations":program["evaluations"][id]},"questions":{"result":question}});
+    if task["function"] == "classify_temporal" {
+        request["state"].as_object_mut().unwrap().retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "world" | "node" | "source_evidence" | "baseline"
+            )
+        });
+    }
     compact_evaluation_contexts(&mut request["state"]);
     if request.to_string().len() > 128 * 1024 {
         return Err("Semantic request exceeds 128 KB".into());
@@ -299,6 +319,21 @@ pub fn evaluation_value(request: &Value, response: &Value) -> Result<Value, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn temporal_check_uses_dated_baseline_without_candidate_scores() {
+        let snapshot = json!({"world":{"last_ingest_date":"2026-09-29"},"nodes":[{"Id":"h","kind":"scenario","statement":"A tool is available","edges":"[]"},{"Id":"e","kind":"evidence","statement":"Dated source claim","edges":"[]"}]});
+        let p = json!({"cursor":0,"tasks":[{"nodeId":"h","function":"classify_temporal"}],"baseline":{"as_of":"2026-09-29","observed":[{"claim":"Tool already available","evidence_ids":["e"]}]},"results":{"h":{"estimate_likelihood":"0.99"}},"evaluations":{"h":{"evaluate_novelty":{"score":4}}}});
+        let r = request(&snapshot, &p).unwrap();
+        assert_eq!(r["state"]["baseline"], p["baseline"]);
+        assert_eq!(r["state"]["source_evidence"][0]["Id"], "e");
+        assert!(r["state"].get("assessment").is_none());
+        assert!(r["state"].get("evaluations").is_none());
+        assert!(r["state"].get("comparisons").is_none());
+        assert_eq!(
+            r["questions"]["result"]["criteria"],
+            super::super::temporal_criteria()
+        );
+    }
     #[test]
     fn event_probability_is_not_thresholded_or_choice_confidence() {
         let q = json!({"questions":{"result":{"type":"noul"}}});

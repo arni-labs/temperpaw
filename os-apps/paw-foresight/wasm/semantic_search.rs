@@ -204,6 +204,88 @@ pub fn world_tasks(world: &Value) -> Vec<Value> {
     tasks
 }
 
+/// Immutable hypothetical history for a link, independent of model answers.
+fn branch_state(
+    world: &Value,
+    link: &Value,
+    function: &str,
+    as_of: &Value,
+) -> Result<Value, String> {
+    let links = world["chain"].as_array().ok_or("Missing causal chain")?;
+    let mut incoming = BTreeMap::new();
+    for item in links {
+        if incoming.insert(field(item, "to_id"), item).is_some() {
+            return Err("Use one joint prerequisite set per target event".into());
+        }
+    }
+    fn visit<'a>(
+        id: &'a str,
+        incoming: &BTreeMap<&'a str, &'a Value>,
+        active: &mut BTreeSet<&'a str>,
+        done: &mut BTreeSet<&'a str>,
+        order: &mut Vec<&'a str>,
+    ) -> Result<(), String> {
+        if done.contains(id) {
+            return Ok(());
+        }
+        if !active.insert(id) {
+            return Err("Cyclic hypothetical branch".into());
+        }
+        if let Some(link) = incoming.get(id) {
+            for parent in ids(&link["from_ids"])? {
+                visit(parent, incoming, active, done, order)?;
+            }
+        }
+        active.remove(id);
+        done.insert(id);
+        order.push(id);
+        Ok(())
+    }
+    let target = field(link, "to_id");
+    let direct = ids(&link["from_ids"])?;
+    let mut order = vec![];
+    let mut done = BTreeSet::new();
+    let mut active = BTreeSet::from([target]);
+    for parent in &direct {
+        visit(parent, &incoming, &mut active, &mut done, &mut order)?;
+    }
+    let on = function != "conditional_off";
+    let state_id = |link: &Value| {
+        format!(
+            "{}/branch/{}/conditional_on",
+            field(world, "Id"),
+            field(link, "id")
+        )
+    };
+    let history:Vec<_>=order.iter().filter_map(|id|incoming.get(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(|prior|json!({"state_id":state_id(prior),"link_id":prior["id"],"by":prior["by"],"from_ids":prior["from_ids"],"to_id":prior["to_id"]})).collect();
+    let assignments: Vec<_> = order
+        .iter()
+        .filter(|id| on || !direct.contains(id))
+        .map(|id| {
+            let by = incoming
+                .get(id)
+                .map(|item| field(item, "by"))
+                .unwrap_or_else(|| {
+                    links
+                        .iter()
+                        .filter(|item| {
+                            (done.contains(field(item, "to_id")) || field(item, "to_id") == target)
+                                && item["from_ids"].as_array().is_some_and(|parents| {
+                                    parents.iter().any(|p| p.as_str() == Some(id))
+                                })
+                        })
+                        .map(|item| field(item, "by"))
+                        .min()
+                        .unwrap_or(field(link, "by"))
+                });
+            json!({"node_id":id,"occurs":true,"by":by})
+        })
+        .collect();
+    Ok(
+        json!({"id":format!("{}/branch/{}/{}",field(world,"Id"),field(link,"id"),function),"world_id":world["Id"],"link_id":link["id"],"baseline_ref":"state.baseline","as_of":as_of,"by":link["by"],"target_id":target,"hypothetical":true,"assignments":assignments,"unassigned_parent_ids":if on {vec![]}else{direct.clone()},"condition":{"kind":if on {"all_occurring"}else{"not_all_occurring"},"event_ids":direct},"parent_state_ids":direct.iter().filter_map(|id|incoming.get(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(|prior|state_id(prior)).collect::<Vec<_>>(),"history":history}),
+    )
+}
+
 pub fn audit_world(world: &Value, program: &Value) -> Value {
     let tasks = world_tasks(world);
     let mut checks = vec![];
@@ -236,7 +318,15 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
         } else {
             world["component_ids"].clone()
         };
-        checks.push(json!({"id":format!("{id}/{function}"),"kind":function,"subject_ids":subject_ids,"result":result,"probability":program["evaluations"][id][function]["probability"]}));
+        let branch = world["chain"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|link| link["id"] == task["link_id"])
+            .and_then(|link| {
+                branch_state(world, link, function, &program["baseline"]["as_of"]).ok()
+            });
+        checks.push(json!({"id":format!("{id}/{function}"),"kind":function,"subject_ids":subject_ids,"result":result,"probability":program["evaluations"][id][function]["probability"],"branch_state":branch}));
     }
     let status = if conflict {
         "conflicts_found"
@@ -283,6 +373,7 @@ pub fn plan_combinations(snapshot: &Value, program: &mut Value, remaining: usize
         .filter(|n| {
             matches!(field(n, "kind"), "scenario" | "revision")
                 && !replaced.contains(field(n, "Id"))
+                && super::temporal_allows_forecast(program, field(n, "Id"))
         })
         .map(|n| field(n, "Id"))
         .collect();
@@ -469,19 +560,33 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .collect::<Result<Vec<_>, _>>()?
             );
             state["target_event"] = get(field(link, "to_id"))?;
+            let as_of = program["baseline"]
+                .get("as_of")
+                .unwrap_or(&snapshot["world"]["last_ingest_date"]);
+            let branch = branch_state(world, link, field(task, "function"), as_of)?;
+            state["ancestor_events"] = json!(
+                branch["assignments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| get(field(a, "node_id")))
+                    .collect::<Result<Vec<_>, _>>()?
+            );
+            state["branch_state"] = branch;
+
             // Do not condition on the target or on downstream consequences merely because
-            // they belong to this candidate world. Only assumptions and explicit parents.
+            // they belong to this candidate world. Only the explicit hypothetical ancestor state applies.
             state["world"] = json!({"assumptions":world["assumptions"]});
             if task["function"] == "check_transition" {
                 json!({"type":"choice","instructions":"Does this stated mechanism plausibly connect the explicit prerequisite events to the target, within the interval, under the supplied assumptions? Assess missing steps, reversed cause/effect, constraints and feedback. Do not infer a causal effect from correlation. A plausible hypothesis is not established causation.","criteria":{"plausible":"The supplied mechanism could connect these events within the interval without a specific missing step.","conflict":"A concrete contradiction, reversed dependency or timing impossibility breaks the link.","uncertain":"A necessary intermediate step or mechanism remains materially unspecified."}})
             } else {
                 let on = task["function"] == "conditional_on";
                 state["condition"] = json!(if on {
-                    "ALL explicitly listed prerequisite events occur before the target deadline"
+                    "All hypothetical ancestor assignments in branch_state hold, including every direct prerequisite; none are observations"
                 } else {
-                    "The conjunction of the explicitly listed prerequisite events does NOT occur before the target deadline; at least one fails"
+                    "Earlier hypothetical ancestor assignments in branch_state hold, but NOT ALL direct prerequisites occur by the deadline. Direct parents remain individually unassigned; do not invent which fails"
                 });
-                json!({"type":"noul","instructions":"Estimate P(target event occurs by link.by | state.condition, world assumptions and supplied present evidence). The condition is hypothetical. Do not condition on the target itself or on other future world components. This is a conditional model estimate, not an identified intervention effect. Do not multiply component odds. Account for alternative paths and shared causes.","criteria":{"true":"The target event occurs by the deadline under the stated condition.","false":"The target event does not occur by the deadline under the stated condition."}})
+                json!({"type":"noul","instructions":"Estimate P(target event occurs by link.by | state.condition, world assumptions and supplied present evidence). The condition is hypothetical. Condition only on branch_state.assignments and branch_state.condition; earlier ancestors are inherited hypothetical events, never observations. Do not condition on the target itself, downstream events or unrelated future components. This is a conditional model estimate, not an identified intervention effect. Do not multiply component odds. Account for alternative paths and shared causes.","criteria":{"true":"The target event occurs by the deadline under the stated condition.","false":"The target event does not occur by the deadline under the stated condition."}})
             }
         }
         _ => return Err("Unsupported structural question".into()),
@@ -1015,5 +1120,99 @@ mod refinement_tests {
             false
         );
         assert_eq!(failed["world_refinement"]["w"]["converged"], false);
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+    fn fixture() -> (Value, Value) {
+        let world = json!({"Id":"w","kind":"world","component_ids":["a","b","c","d"],"assumptions":[],"chain":[{"id":"ab","from_ids":["a"],"to_id":"b","by":"2027-02-01","mechanism":"A enables B"},{"id":"bc","from_ids":["b"],"to_id":"c","by":"2027-05-01","mechanism":"B enables C"},{"id":"cd","from_ids":["c"],"to_id":"d","by":"2027-09-01","mechanism":"C enables D"}]});
+        let snapshot = json!({"world":{"last_ingest_date":"2026-09-29"},"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},{"Id":"d","kind":"scenario"},{"Id":"unrelated","kind":"scenario"},world.clone()]});
+        (world, snapshot)
+    }
+    #[test]
+    fn conditional_branches_inherit_ancestors_without_target_or_downstream_conditioning() {
+        let (world, snapshot) = fixture();
+        let program = json!({"baseline":{"as_of":"2026-09-29"}});
+        let original = world.clone();
+        let task = |f: &str| {
+            world_tasks(&world)
+                .into_iter()
+                .find(|t| t["link_id"] == "bc" && t["function"] == f)
+                .unwrap()
+        };
+        let on = request(&snapshot, &program, &task("conditional_on")).unwrap();
+        let off = request(&snapshot, &program, &task("conditional_off")).unwrap();
+        let a = &on["state"]["branch_state"];
+        let b = &off["state"]["branch_state"];
+        assert_eq!(
+            a["assignments"],
+            json!([{"node_id":"a","occurs":true,"by":"2027-02-01"},{"node_id":"b","occurs":true,"by":"2027-02-01"}])
+        );
+        assert_eq!(
+            b["assignments"],
+            json!([{"node_id":"a","occurs":true,"by":"2027-02-01"}])
+        );
+        assert_eq!(b["unassigned_parent_ids"], json!(["b"]));
+        assert_eq!(b["history"], json!([]));
+        assert_eq!(b["parent_state_ids"], json!([]));
+        assert_eq!(
+            b["condition"],
+            json!({"kind":"not_all_occurring","event_ids":["b"]})
+        );
+        assert_eq!(a["as_of"], "2026-09-29");
+        assert_eq!(a["parent_state_ids"], json!(["w/branch/ab/conditional_on"]));
+        assert_eq!(a["history"].as_array().unwrap().len(), 1);
+        for branch in [a, b] {
+            assert!(
+                branch["assignments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|v| !matches!(field(v, "node_id"), "c" | "d" | "unrelated"))
+            );
+        }
+        assert_eq!(world, original);
+        assert_eq!(
+            request(&snapshot, &program, &task("conditional_on")).unwrap(),
+            on
+        );
+        let audit = audit_world(&world, &program);
+        let check = audit["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "w/link/bc/conditional_off")
+            .unwrap();
+        assert_eq!(check["branch_state"], *b);
+    }
+    #[test]
+    fn off_joint_parents_are_unassigned_even_when_one_is_another_parents_ancestor() {
+        let (mut world, _) = fixture();
+        world["chain"][1]["from_ids"] = json!(["a", "b"]);
+        let branch = branch_state(
+            &world,
+            &world["chain"][1],
+            "conditional_off",
+            &json!("2026-09-29"),
+        )
+        .unwrap();
+        assert_eq!(branch["assignments"], json!([]));
+        assert_eq!(branch["condition"]["event_ids"], json!(["a", "b"]));
+        assert_eq!(branch["unassigned_parent_ids"], json!(["a", "b"]));
+        world["chain"][0]["from_ids"] = json!(["c"]);
+        assert!(branch_state(&world, &world["chain"][1], "conditional_on", &Value::Null).is_err());
+    }
+    #[test]
+    fn combinations_exclude_observed_and_mixed_temporal_candidates() {
+        let (_, snapshot) = fixture();
+        let mut p = json!({"results":{"a":{"classify_temporal":"already_observed"},"b":{"classify_temporal":"mixed"},"c":{"classify_temporal":"future_change"},"d":{"classify_temporal":"uncertain"}}});
+        assert!(plan_combinations(&snapshot, &mut p, 30));
+        let ids = p["combination_search"]["candidate_ids"].as_array().unwrap();
+        assert!(!ids.contains(&json!("a")));
+        assert!(!ids.contains(&json!("b")));
+        assert!(ids.contains(&json!("c")));
+        assert!(ids.contains(&json!("d")));
     }
 }

@@ -16,7 +16,10 @@ mod definitions {
     include!("../../semantic_definitions.rs");
 }
 
-const EXPLORATION_PROMPT: &str = r#"Construct genuinely different causal futures as possible answers to the user's question in state.world.description as future event hypotheses for Jev to evaluate. Begin from what is observed at world.last_ingest_date and what the user assumes, then reason about what could become different by world.target_date.
+const BASELINE_PROMPT: &str = r#"Establish the present before constructing futures. Answer the plain user question by mapping the relevant current system: what is observed, how the observed conditions interact, what is merely assumed and what remains unknown. Let dimensions emerge from the question and supplied sources; do not impose a topic checklist. Use only supplied evidence and exact visible evidence IDs. Distinguish source claims from established facts, dates and scope, conflicting accounts, older baselines and current observations. Do not convert missing evidence into absence or certainty. Frozen hindcasts admit no knowledge beyond their vantage. Do not propose or forecast hypotheses yet.
+Return JSON ONLY: {"baseline":{"as_of":"exact world.last_ingest_date","observed":[{"claim":"dated scoped observation, including source limits, <=400 characters","evidence_ids":["1–16 actual supplied evidence node refs"]}],"assumptions":["explicit unverified condition, <=240 characters"],"unknowns":["missing or disputed present information, <=240 characters"]}}. Each list has 0–16 entries. Empty observations are legitimate if sources are insufficient; explain the limitation in unknowns. If baseline_correction is supplied, repair its specific validation error and return the complete JSON."#;
+
+const EXPLORATION_PROMPT: &str = r#"Construct genuinely different causal futures as possible answers to the user's question in state.world.description as future event hypotheses for Jev to evaluate. Use the persisted baseline and classify_temporal assessments. Already_observed candidates are context, not novel futures. For mixed candidates, decompose the observation from the proposed future change into a new revision with a precise scoped change; never merely relabel the same claim. Uncertain candidates remain open questions, not established facts. Begin from what is observed at world.last_ingest_date and what the user assumes, then reason about what could become different by world.target_date.
 
 Existing roles and workflows are not default invariants. Today's way of accomplishing something is one arrangement, not a requirement the future must preserve. Identify the assumptions that make that arrangement necessary. Ask what happens if an assumption changes, what would cause that change, and what people could then do that they cannot do now. Follow the consequences until the hypothesis changes the answer to the user's question. Equally consider why the change might fail or reverse. Neither preserving nor eliminating today's arrangements is a required conclusion.
 
@@ -176,6 +179,7 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
             "decision_value":definitions::decision_value()
         },
         "composition_correction":program["composition_correction"],
+        "baseline_correction":program["baseline_correction"], "temporal_semantics":core::temporal_criteria(),
         "issues":program["issues"], "stop_reason":program["stop_reason"],
         "remaining_calls":program["remaining_calls"], "round":program["round"],
         "combination_search":program["combination_search"], "world_audits":program["world_audits"],
@@ -220,8 +224,7 @@ fn world_writing_input(snapshot: &Value, program: &Value) -> Result<Value, Strin
 }
 
 fn research_enabled(phase: &str, snapshot: &Value) -> bool {
-    matches!(phase, "seed" | "explore")
-        && core::field(&snapshot["world"], "hindcast_mode") == "false"
+    phase == "explore" && core::field(&snapshot["world"], "hindcast_mode") == "false"
 }
 
 fn setup(ctx: &Context) -> Result<(), String> {
@@ -229,7 +232,8 @@ fn setup(ctx: &Context) -> Result<(), String> {
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     let program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let prompt = match phase {
-        "seed" | "explore" => EXPLORATION_PROMPT,
+        "seed" => BASELINE_PROMPT,
+        "explore" => EXPLORATION_PROMPT,
         "compose" => WORLD_COMPOSITION_PROMPT,
         "challenge" => CHALLENGE_PROMPT,
         "synthesize" => SYNTHESIS_PROMPT,
@@ -531,13 +535,14 @@ mod reasoning_tests {
     }
 
     #[test]
-    fn live_seed_and_exploration_can_research_but_hindcast_and_synthesis_cannot() {
+    fn baseline_uses_supplied_sources_and_only_live_exploration_can_research() {
         let live = json!({"world":{"hindcast_mode":"false"}});
         let frozen = json!({"world":{"hindcast_mode":"true"}});
-        for phase in ["seed", "explore"] {
+        for phase in ["explore"] {
             assert!(research_enabled(phase, &live));
             assert!(!research_enabled(phase, &frozen));
         }
+        assert!(!research_enabled("seed", &live));
         assert!(!research_enabled("synthesize", &live));
         assert!(!research_enabled("explore", &json!({})));
     }

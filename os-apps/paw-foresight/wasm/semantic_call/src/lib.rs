@@ -82,6 +82,7 @@ fn call(ctx: &Context) -> Result<(), String> {
     // Rebuild the next batch after recording answers so dependent estimates see audits.
     let mut trace_bytes = trace.to_string().len();
     for _ in 0..8 {
+        core::skip_nonfuture_tasks(&mut p)?;
         let cursor = p["cursor"].as_u64().ok_or("Missing cursor")? as usize;
         if cursor >= p["tasks"].as_array().ok_or("Missing tasks")?.len() {
             break;
@@ -197,7 +198,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["evaluations"][node][function] = evaluation.clone();
             p["cursor"] = json!(cursor + offset + 1);
             let index = trace.as_array().unwrap().len();
-            let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
+            let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
             trace_bytes += entry.to_string().len() + 1;
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
         }

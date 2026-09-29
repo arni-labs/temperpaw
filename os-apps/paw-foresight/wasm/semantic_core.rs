@@ -114,6 +114,7 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         let hypothesis = matches!(field(by_id[&id], "kind"), "scenario" | "revision");
         let functions: &[&str] = if hypothesis {
             &[
+                "classify_temporal",
                 "classify_gap",
                 "estimate_likelihood",
                 "evaluate_novelty",
@@ -142,6 +143,53 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         json!({"schema":"foresight-open-semantic-v2","stage":"exploration","cursor":0,"tasks":tasks,"issues":issues,"results":{},"evaluations":{},"round":0,"rounds":[],"continue_exploring":true,"max_calls":MAX_CALLS,"max_nodes":MAX_NODES,"time_budget_ms":MAX_MS}),
     )
 }
+/// Missing classifications remain readable in historical runs; new plans classify first.
+pub fn temporal_allows_forecast(program: &Value, id: &str) -> bool {
+    match program["results"][id]["classify_temporal"].as_str() {
+        Some("future_change" | "uncertain") => true,
+        Some("already_observed" | "mixed") => false,
+        _ => program["baseline_status"].is_null(),
+    }
+}
+pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
+    if program["stage"] == "worlds" {
+        return Ok(());
+    }
+    let excluded: Vec<String> = program["results"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(id, _)| !temporal_allows_forecast(program, id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in excluded {
+        for collection in ["results", "evaluations"] {
+            if let Some(values) = program[collection][&id].as_object_mut() {
+                for function in ["estimate_likelihood", "evaluate_novelty", "decision_value"] {
+                    values.remove(function);
+                }
+            }
+        }
+    }
+    let mut cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
+    let tasks = program["tasks"].as_array().ok_or("Missing tasks")?;
+    while let Some(task) = tasks.get(cursor) {
+        if matches!(
+            field(task, "function"),
+            "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+        ) && !temporal_allows_forecast(program, field(task, "nodeId"))
+        {
+            cursor += 1;
+        } else {
+            break;
+        }
+    }
+    program["cursor"] = json!(cursor);
+    Ok(())
+}
+pub fn temporal_criteria() -> Value {
+    json!({"already_observed":"The full scoped claim is already observed at the evidence vantage; a future date alone does not make it a new change.","future_change":"The claim specifies a change beyond what the supplied dated baseline establishes.","mixed":"The claim conflates already observed conditions and distinct future changes and needs decomposition.","uncertain":"The supplied evidence cannot establish whether this scoped claim is already observed or a future change."})
+}
 pub fn gap_criteria() -> Value {
     json!({"none":"No specific causal gap identified; this does not establish truth.","timing":"The supplied interval is materially too short.","prerequisite":"A necessary causal prerequisite is missing.","evidence":"The key premise lacks supporting evidence in the supplied input.","uncertain":"Cannot distinguish reliably."})
 }
@@ -160,6 +208,25 @@ mod tests {
         }
     }
     #[test]
+    fn observed_and_mixed_claims_are_classified_before_forecast_and_do_not_keep_stale_odds() {
+        let mut p = plan(&[node("h", "scenario", &[])]).unwrap();
+        assert_eq!(p["tasks"][0]["function"], "classify_temporal");
+        for classification in ["already_observed", "mixed", "future_change", "uncertain"] {
+            p["cursor"] = json!(2);
+            p["results"]["h"] = json!({"classify_temporal":classification,"estimate_likelihood":"0.8","evaluate_novelty":"4"});
+            p["evaluations"]["h"] = json!({"estimate_likelihood":{"probability":0.8}});
+            skip_nonfuture_tasks(&mut p).unwrap();
+            let excluded = matches!(classification, "already_observed" | "mixed");
+            assert_eq!(p["cursor"], json!(if excluded { 5 } else { 2 }));
+            assert_eq!(p["results"]["h"]["estimate_likelihood"].is_null(), excluded);
+            assert_eq!(
+                p["evaluations"]["h"]["estimate_likelihood"].is_null(),
+                excluded
+            );
+            assert_eq!(p["results"]["h"]["classify_temporal"], classification);
+        }
+    }
+    #[test]
     fn prerequisites_are_once_before_dependents() {
         let p = plan(&[
             node("a", "scenario", &["z"]),
@@ -167,9 +234,9 @@ mod tests {
             node("z", "evidence", &[]),
         ])
         .unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 9);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 11);
         assert_eq!(p["tasks"][0]["nodeId"], "z");
-        assert_eq!(p["tasks"][1]["function"], "classify_gap");
+        assert_eq!(p["tasks"][1]["function"], "classify_temporal");
     }
     #[test]
     fn thousands_of_evaluations_are_planned_without_a_cartesian_product() {
@@ -177,7 +244,7 @@ mod tests {
             .map(|i| node(&format!("h{i}"), "scenario", &[]))
             .collect();
         let p = plan(&nodes).unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 4000);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 5000);
         assert_eq!(p["max_calls"], 5000);
     }
     #[test]
@@ -188,7 +255,7 @@ mod tests {
             node("ok", "scenario", &["missing"]),
         ])
         .unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 4);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 5);
         assert!(
             p["issues"]
                 .to_string()
@@ -209,8 +276,8 @@ mod tests {
             ));
         }
         let p = plan(&nodes).unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 400);
-        assert_eq!(p["tasks"][399]["depth"], 99);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 500);
+        assert_eq!(p["tasks"][499]["depth"], 99);
     }
     #[test]
     fn identities_and_memory_budget_are_enforced() {
