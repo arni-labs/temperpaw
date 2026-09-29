@@ -371,10 +371,21 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             if by_id
                 .get(reference)
                 .is_none_or(|n| !matches!(core::field(n, "kind"), "scenario" | "revision"))
-                || !core::temporal_allows_forecast(old, reference)
-                || !components.insert(reference)
             {
-                return Err("World components must be distinct existing hypotheses".into());
+                return Err(format!(
+                    "World component {reference} is not an existing scenario or revision"
+                ));
+            }
+            if !core::temporal_allows_forecast(old, reference) {
+                let classification = old["results"][reference]["classify_temporal"]
+                    .as_str()
+                    .unwrap_or("not evaluated in current evidence context");
+                return Err(format!(
+                    "World component {reference} is temporally ineligible: {classification}. Select only composition_candidates.component_ids; keep this node as context."
+                ));
+            }
+            if !components.insert(reference) {
+                return Err(format!("Duplicate world component {reference}"));
             }
         }
         if components.len() < 3 || components.len() > 12 {
@@ -912,6 +923,28 @@ mod tests {
         (snapshot, generated, program)
     }
     #[test]
+    #[ignore = "Requires captured rejected composition"]
+    fn actual_composition_rejection_identifies_unclassified_component_not_bad_alias() {
+        let raw: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FORESIGHT_COMPOSITION_FIXTURE").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let record = &raw["fields"];
+        let mut snapshot = core::parse(core::field(record, "snapshot_json")).unwrap();
+        let program = core::parse(core::field(record, "program_json")).unwrap();
+        let generated = core::parse(core::field(
+            &program["composition_correction"],
+            "rejected_draft",
+        ))
+        .unwrap();
+        let before = snapshot.clone();
+        let error = compose(&mut snapshot, &generated, &program).unwrap_err();
+        assert!(error.contains("r8-hyp_inbox_triage_01"));
+        assert!(error.contains("not evaluated in current evidence context"));
+        assert_eq!(snapshot, before);
+    }
+    #[test]
     fn malformed_provider_reply_requests_bounded_correction_without_losing_state() {
         let old = json!({"baseline":{"observed":["saved"]},"results":{"h":{"estimate_likelihood":0.4}},"http_calls":57});
         let reply = "Tool call call_X: execute({\"code\":\"temper.web_fetch(url)\"})";
@@ -1385,10 +1418,20 @@ mod tests {
         assert_eq!(snapshot["nodes"][2]["parent"], "existing-hypothesis");
         let plan = core::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
         assert_eq!(plan["issues"], json!([]));
-        assert_eq!(plan["tasks"][5]["nodeId"], "r15-hyp_eu_ai_scope_0147");
+        let deep_order: Vec<_> = plan["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["function"] == "classify_gap")
+            .map(|t| core::field(t, "nodeId"))
+            .collect();
         assert_eq!(
-            plan["tasks"][10]["nodeId"],
-            "r15-hyp_ai_feature_geofencing_0148"
+            deep_order,
+            vec![
+                "existing-hypothesis",
+                "r15-hyp_eu_ai_scope_0147",
+                "r15-hyp_ai_feature_geofencing_0148"
+            ]
         );
     }
 

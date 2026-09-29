@@ -859,7 +859,7 @@ mod tests {
                 .iter()
                 .filter(|t| t["nodeId"] == "h")
                 .count(),
-            4
+            5
         );
     }
 }

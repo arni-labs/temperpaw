@@ -59,7 +59,7 @@ Begin with the present at world.last_ingest_date. Separate supported observation
 
 Return JSON ONLY: {"baseline":{"as_of":"exact world.last_ingest_date","observed":[{"claim":"<=400 characters; present fact with scope and source-date limits","evidence_ids":["actual evidence node refs, not hypotheses"]}],"assumptions":["<=240 characters; user conditions or openly assumed premises"],"unknowns":["<=240 characters; missing current evidence"]},"worlds":[{"id":"unique short ASCII ID, not ref_","title":"<=100 characters; a clear claim people can picture","statement":"<=1000 characters; precise joint future event: ALL defining component changes happen together within the target horizon, with actors and scope","mechanism":"<=1200 characters; why these changes fit together and what could break the chain","component_ids":["3–12 different existing scenario/revision refs defining this world's joint event"],"counter_ids":["0–12 existing hypothesis refs that challenge this world; not its prerequisites"],"facets":[{"id":"unique local facet id <=80 characters","title":"short emergent dimension <=100 characters","description":"what changes and interacts with other facets, <=800 characters","component_ids":["defining component refs"]}],"chain":[{"id":"unique local link id <=80 characters","from_ids":["prerequisite component refs"],"to_id":"consequence component ref","mechanism":"why these conditions change the consequence, <=800 characters","by":"YYYY-MM-DD between baseline and horizon"}],"assumptions":["0–12 explicit assumptions, each <=600 characters"],"scene":"<=600 characters; an imagined everyday moment in this world","narrative":"<=1200 characters; why this world could happen, who gains or struggles, and a serious challenge","what_you_can_do":["0–4 practical steps, each <=240 characters"],"signals":["1–8 observable early signs, each <=240 characters"],"falsifiers":["1–8 things that would undermine this world, each <=240 characters"]}]}.
 
-Choose 2–6 distinct worlds, a compact answer rather than a quota to fill. Use only exact existing ref_ IDs for components and challenges. A component is a defining future change, not merely a source citation. Do not pick unrelated claims to make a story look rich. Do not invent new core events at this stage: they would bypass exploration. Build layered worlds, not lists of jobs or themed suggestions. Give each world 3–12 distinct facets: dimensions relevant to the question that emerge from its actual changes, without a prescribed topic list. Each facet links its defining components. Give 2–24 explicit causal links between components, with a mechanism and date by which the link operates. Links form a connected directed prerequisite graph covering every component; do not create cycles. Each link has a distinct consequence to_id; combine its prerequisite from_ids into that link. Every component also belongs to a facet. Link dates must respect causal ordering. State assumptions separately. Use combination_search and world_audits as recorded model judgments: they are not proof. When prior worlds are challenged, construct revised worlds that address or openly retain the specific conflicts and unknowns. Never claim a check ran unless its actual result is supplied. If exploration is weak or stopped early, say so in the baseline unknowns and the narratives. Each world will receive its OWN fresh Jev evaluation of the whole joint event, including dependencies and counterevidence. Never supply probabilities or combine the component estimates yourself. These worlds may overlap; they are not a complete partition of every possible future."#;
+Choose 2–6 distinct worlds, a compact answer rather than a quota to fill. Use only exact IDs from composition_candidates.component_ids for defining components. Other catalog nodes remain context or challenges; their presence in the catalog does not make them eligible components. composition_candidates.excluded explains observed, mixed or currently unevaluated claims; never bypass these restrictions by renaming a claim. Challenges may use exact existing hypothesis refs. A component is a defining future change, not merely a source citation. Do not pick unrelated claims to make a story look rich. Do not invent new core events at this stage: they would bypass exploration. Build layered worlds, not lists of jobs or themed suggestions. Give each world 3–12 distinct facets: dimensions relevant to the question that emerge from its actual changes, without a prescribed topic list. Each facet links its defining components. Give 2–24 explicit causal links between components, with a mechanism and date by which the link operates. Links form a connected directed prerequisite graph covering every component; do not create cycles. Each link has a distinct consequence to_id; combine its prerequisite from_ids into that link. Every component also belongs to a facet. Link dates must respect causal ordering. State assumptions separately. Use combination_search and world_audits as recorded model judgments: they are not proof. When prior worlds are challenged, construct revised worlds that address or openly retain the specific conflicts and unknowns. Never claim a check ran unless its actual result is supplied. If exploration is weak or stopped early, say so in the baseline unknowns and the narratives. Each world will receive its OWN fresh Jev evaluation of the whole joint event, including dependencies and counterevidence. Never supply probabilities or combine the component estimates yourself. These worlds may overlap; they are not a complete partition of every possible future."#;
 
 const WRITING_STYLE: &str = r#"Write for a curious person outside the industry. Be direct, concrete and easy to picture. No corporate language, news roundups, slogans or unexplained professional shorthand. Say what a person does, buys, stops needing or notices on an ordinary day. A scene is explicitly imagined, not evidence. A title makes a clear claim; it does not name a management theme. Explain why in familiar words, including what could stop it. Do not exaggerate to sound ambitious. Translate any specialist terms into familiar words that fit the question. If a technical name is essential, explain it. Keep short paragraphs and avoid repeating the same point in every field."#;
 
@@ -158,6 +158,25 @@ fn without_operation_recommendations(mut assessments: Value) -> Value {
     assessments
 }
 
+fn composition_candidates(snapshot: &Value, program: &Value) -> Value {
+    let mut eligible = vec![];
+    let mut excluded = vec![];
+    for node in snapshot["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|n| matches!(core::field(n, "kind"), "scenario" | "revision"))
+    {
+        let id = core::field(node, "Id");
+        if core::temporal_allows_forecast(program, id) {
+            eligible.push(id);
+        } else {
+            excluded.push(json!({"nodeId":id,"reason":program["results"][id]["classify_temporal"].as_str().unwrap_or("not evaluated in current evidence context")}));
+        }
+    }
+    json!({"component_ids":eligible,"excluded":excluded})
+}
+
 fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     let evidence: Vec<_> = nodes
@@ -178,6 +197,7 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
             "evaluate_novelty":definitions::evaluate_novelty(),
             "decision_value":definitions::decision_value()
         },
+        "composition_candidates":composition_candidates(snapshot,program),
         "composition_correction":program["composition_correction"],
         "baseline_correction":program["baseline_correction"], "temporal_semantics":core::temporal_criteria(),
         "issues":program["issues"], "stop_reason":program["stop_reason"],
@@ -275,6 +295,25 @@ mod reasoning_tests {
         include!("../../semantic_outlook.rs");
     }
 
+    #[test]
+    fn composer_sees_exact_eligible_aliases_without_losing_excluded_context() {
+        let snapshot = json!({"nodes":[{"Id":"source","kind":"evidence"},{"Id":"future","kind":"scenario"},{"Id":"unchecked","kind":"scenario"},{"Id":"mixed","kind":"revision"},{"Id":"unknown","kind":"scenario"}]});
+        let program = json!({"baseline_status":"established","results":{"future":{"classify_temporal":"future_change"},"mixed":{"classify_temporal":"mixed"},"unknown":{"classify_temporal":"uncertain"}}});
+        let input = reasoning_input(&snapshot, &program).unwrap();
+        assert_eq!(
+            input["composition_candidates"]["component_ids"],
+            json!(["ref_0002", "ref_0005"])
+        );
+        assert_eq!(
+            input["composition_candidates"]["excluded"][0]["nodeId"],
+            "ref_0003"
+        );
+        assert_eq!(
+            input["composition_candidates"]["excluded"][0]["reason"],
+            "not evaluated in current evidence context"
+        );
+        assert_eq!(input["catalog"].as_array().unwrap().len(), 5);
+    }
     #[test]
     fn independent_challenge_ignores_candidate_prose_scores_and_order_but_retains_evidence() {
         let source = json!({"Id":"e","kind":"evidence","statement":"Observed capability","provenance":"observed"});

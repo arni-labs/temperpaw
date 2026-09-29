@@ -141,6 +141,23 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
     for id in by_id.keys().filter(|id| !depths.contains_key(*id)) {
         issues.push(json!({"nodeId":id,"result":"cycle_or_cyclic_prerequisite"}));
     }
+    // Temporal screening depends on dated evidence, not another candidate's scores.
+    // Screen all available branches before revisiting expensive dependent judgments.
+    // New append-only candidates go first; no topic or score ranking is imposed.
+    let positions: BTreeMap<_, _> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (field(n, "Id"), i))
+        .collect();
+    let mut screening: Vec<_> = tasks
+        .iter()
+        .filter(|t| t["function"] == "classify_temporal")
+        .cloned()
+        .collect();
+    tasks.retain(|t| t["function"] != "classify_temporal");
+    screening.sort_by_key(|t| std::cmp::Reverse(positions[field(t, "nodeId")]));
+    screening.extend(tasks);
+    let tasks = screening;
     Ok(
         json!({"schema":"foresight-open-semantic-v2","stage":"exploration","cursor":0,"tasks":tasks,"issues":issues,"results":{},"evaluations":{},"round":0,"rounds":[],"continue_exploring":true,"max_calls":MAX_CALLS,"max_nodes":MAX_NODES,"time_budget_ms":MAX_MS}),
     )
@@ -210,6 +227,33 @@ mod tests {
         }
     }
     #[test]
+    fn late_branch_is_screened_before_earlier_candidates_repeat_deep_checks() {
+        let mut nodes: Vec<_> = (0..20)
+            .map(|i| node(&format!("old-{i:02}"), "scenario", &[]))
+            .collect();
+        nodes.push(node("late-novel-branch", "revision", &["old-00"]));
+        let p = plan(&nodes).unwrap();
+        let tasks = p["tasks"].as_array().unwrap();
+        assert_eq!(tasks[0]["nodeId"], "late-novel-branch");
+        assert!(
+            tasks[..21]
+                .iter()
+                .all(|t| t["function"] == "classify_temporal")
+        );
+        let parent = tasks
+            .iter()
+            .position(|t| t["nodeId"] == "old-00" && t["function"] == "estimate_likelihood")
+            .unwrap();
+        let child = tasks
+            .iter()
+            .position(|t| {
+                t["nodeId"] == "late-novel-branch" && t["function"] == "estimate_likelihood"
+            })
+            .unwrap();
+        assert!(parent < child);
+        assert_eq!(tasks.len(), 105); // Required evaluations remain scheduled.
+    }
+    #[test]
     fn observed_and_mixed_claims_are_classified_before_forecast_and_do_not_keep_stale_odds() {
         let mut p = plan(&[node("h", "scenario", &[])]).unwrap();
         assert_eq!(p["tasks"][0]["function"], "classify_temporal");
@@ -237,7 +281,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(p["tasks"].as_array().unwrap().len(), 11);
-        assert_eq!(p["tasks"][0]["nodeId"], "z");
+        assert_eq!(p["tasks"][2]["nodeId"], "z");
         assert_eq!(p["tasks"][1]["function"], "classify_temporal");
     }
     #[test]
