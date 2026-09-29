@@ -221,6 +221,18 @@ mod tests {
     }
 
     #[test]
+    fn world_evaluation_stops_with_real_time_reserved_for_final_writing() {
+        let snapshot = json!({"nodes":[]});
+        let mut program = json!({"stage":"worlds","active_world_ids":[],"tasks":[],"cursor":0});
+        let cutoff = core::time_limit(&program);
+        assert_eq!(core::MAX_MS - cutoff, 180_000);
+        assert_eq!(
+            next_phase(&snapshot, &mut program, 100, cutoff),
+            "synthesize"
+        );
+        assert_eq!(program["stop_reason"], "time_budget");
+    }
+    #[test]
     fn mixed_temporal_claim_gets_a_decomposition_round_before_saturation() {
         let snapshot = json!({"nodes":[{"Id":"mixed","kind":"scenario"}]});
         let mut program = json!({"stage":"exploration","continue_exploring":false,"results":{"mixed":{"classify_temporal":"mixed"}},"independent_challenge":{"status":"completed"}});
@@ -359,7 +371,10 @@ mod tests {
         }
         let program = json!({"stage":"worlds"});
         assert_eq!(core::call_limit(&program), core::MAX_CALLS);
-        assert_eq!(core::time_limit(&program), core::MAX_MS);
+        assert_eq!(
+            core::time_limit(&program),
+            core::MAX_MS - core::SYNTHESIS_TIME_RESERVE_MS
+        );
     }
     #[test]
     fn provider_failure_composes_qualitative_worlds_without_retrying_provider() {

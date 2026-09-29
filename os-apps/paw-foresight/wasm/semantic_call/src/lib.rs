@@ -168,7 +168,10 @@ fn call(ctx: &Context) -> Result<(), String> {
             }
         };
         p["validation_failures"] = json!(0);
-        if p["stop_reason"] == "validation_retry" {
+        if matches!(
+            p["stop_reason"].as_str(),
+            Some("validation_retry" | "batch_repacking")
+        ) {
             p["stop_reason"] = json!("");
         }
         let answers = core::batch::answers(&batch, &response)?;
@@ -201,6 +204,11 @@ fn call(ctx: &Context) -> Result<(), String> {
             let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
             trace_bytes += entry.to_string().len() + 1;
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
+        }
+        // Structural fan-out may contain16 decisions. Persist each HTTP batch
+        // before another remote request can consume the actor timeout.
+        if core::search::is_structural(&batch.tasks[0]) {
+            break;
         }
     }
     set_success_result(

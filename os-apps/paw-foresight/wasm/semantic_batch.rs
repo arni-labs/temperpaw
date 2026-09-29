@@ -126,6 +126,37 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "Requires saved long-exploration checkpoint"]
+    fn saved_combinations_checkpoint_packs_reduced_batches_without_losing_inputs() {
+        let raw: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FORESIGHT_PACKING_FIXTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let record = &raw["fields"];
+        let snapshot: Value =
+            serde_json::from_str(record["snapshot_json"].as_str().unwrap()).unwrap();
+        let program: Value =
+            serde_json::from_str(record["program_json"].as_str().unwrap()).unwrap();
+        let batch = prepare(&snapshot, &program, 16).unwrap();
+        let single = prepare(&snapshot, &program, 1).unwrap();
+        eprintln!(
+            "reduced batch questions={} bytes={} single_bytes={} common_bytes={}",
+            batch.tasks.len(),
+            batch.request.to_string().len(),
+            single.request.to_string().len(),
+            single.request["state"]["common"].to_string().len()
+        );
+        assert!(batch.tasks.len() < 16);
+        assert_eq!(
+            single.tasks[0],
+            program["tasks"][program["cursor"].as_u64().unwrap() as usize]
+        );
+        assert_eq!(
+            single.individual[0]["state"]["source_evidence"],
+            batch.individual[0]["state"]["source_evidence"]
+        );
+    }
+    #[test]
     fn world_batches_share_immutable_world_and_feedback_without_dropping_case_events() {
         let world = json!({"Id":"w","kind":"world","statement":"A, B and C jointly occur","component_ids":["a","b","c"],"counter_ids":[],"chain":[],"facets":[{"description":"long context ".repeat(1000)}],"assumptions":[],"edges":"[]"});
         let snapshot = json!({"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},world]});

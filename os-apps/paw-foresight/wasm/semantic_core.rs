@@ -5,6 +5,8 @@ pub const MODEL: &str = "jev-1.13.0";
 pub const MAX_CALLS: usize = 5000;
 pub const MAX_NODES: usize = 2048;
 pub const MAX_MS: u64 = 3_600_000;
+// The final writer needs wall-clock time after evaluation, not unused call credits.
+pub const SYNTHESIS_TIME_RESERVE_MS: u64 = 180_000;
 pub const MAX_TRACE_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_ROUNDS: u64 = 64;
 // Questions, not HTTP requests: independent structural questions can share a call.
@@ -22,7 +24,7 @@ pub fn call_limit(program: &Value) -> usize {
 }
 pub fn time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
-        Some("worlds") => MAX_MS,
+        Some("worlds") => MAX_MS - SYNTHESIS_TIME_RESERVE_MS,
         Some("combinations") => MAX_MS - WORLD_TIME_RESERVE_MS + COMBINATION_TIME_BUDGET_MS,
         _ => MAX_MS - WORLD_TIME_RESERVE_MS,
     }
