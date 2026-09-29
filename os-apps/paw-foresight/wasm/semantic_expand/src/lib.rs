@@ -777,19 +777,45 @@ fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, 
     Ok(program)
 }
 
-fn run_inner(ctx: &Context) -> Result<(), String> {
-    let raw = core::field(&ctx.entity_state, "reasoning_result").trim();
-    let phase = core::field(&ctx.entity_state, "phase");
-    let raw = if raw.starts_with("```") {
+fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, String> {
+    let raw = raw.trim();
+    let json_text = if raw.starts_with("```") {
         raw.split_once('\n')
-            .ok_or("Invalid fenced JSON")?
-            .1
-            .rsplit_once("```")
-            .ok_or("Invalid fenced JSON")?
-            .0
+            .and_then(|(_, body)| body.rsplit_once("```").map(|(text, _)| text))
     } else {
-        raw
+        Some(raw)
     };
+    match json_text.and_then(|text| serde_json::from_str::<Value>(text).ok()) {
+        Some(value) if value.is_object() => Ok(Ok(value)),
+        _ => {
+            let attempt = old["response_correction"]["attempt"].as_u64().unwrap_or(0) + 1;
+            if attempt > 2 {
+                return Err("Reasoning returned invalid JSON after two correction attempts; saved evidence and judgments are preserved".into());
+            }
+            let mut program = old.clone();
+            program["response_correction"] = json!({"attempt":attempt,
+                "instruction":"The previous response was not a JSON object and was not applied. Return the complete JSON object required by this phase. Tool-call prose is not an executed tool call or a final result. Use actual tools if research is needed, then return the required JSON. Do not claim new evidence or judgments unless they were obtained."});
+            Ok(Err(program))
+        }
+    }
+}
+
+fn run_inner(ctx: &Context) -> Result<(), String> {
+    let phase = core::field(&ctx.entity_state, "phase");
+    let old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    let generated =
+        match generated_response(core::field(&ctx.entity_state, "reasoning_result"), &old)? {
+            Ok(value) => value,
+            Err(program) => {
+                set_success_result(
+                    "CompositionRejected",
+                    &json!({"program_json":program.to_string()}),
+                );
+                return Ok(());
+            }
+        };
+    let raw_owned = generated.to_string();
+    let raw = raw_owned.as_str();
     let mut snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     if phase == "synthesize" {
         let mut answer = core::parse(raw)?;
@@ -884,6 +910,30 @@ mod tests {
         let generated = json!({"baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
+    }
+    #[test]
+    fn malformed_provider_reply_requests_bounded_correction_without_losing_state() {
+        let old = json!({"baseline":{"observed":["saved"]},"results":{"h":{"estimate_likelihood":0.4}},"http_calls":57});
+        let reply = "Tool call call_X: execute({\"code\":\"temper.web_fetch(url)\"})";
+        let first = generated_response(reply, &old).unwrap().unwrap_err();
+        assert_eq!(first["baseline"], old["baseline"]);
+        assert_eq!(first["results"], old["results"]);
+        assert_eq!(first["http_calls"], 57);
+        assert_eq!(first["response_correction"]["attempt"], 1);
+        let second = generated_response(reply, &first).unwrap().unwrap_err();
+        assert!(
+            generated_response(reply, &second)
+                .unwrap_err()
+                .contains("two correction")
+        );
+        assert_eq!(
+            generated_response("```json\n{\"hypotheses\":[]}\n```", &second)
+                .unwrap()
+                .unwrap(),
+            json!({"hypotheses":[]})
+        );
+        assert!(generated_response("[]", &old).unwrap().is_err());
+        assert!(generated_response("```json", &old).unwrap().is_err());
     }
     #[test]
     fn baseline_precedes_exploration_is_sourced_and_survives_replanning() {

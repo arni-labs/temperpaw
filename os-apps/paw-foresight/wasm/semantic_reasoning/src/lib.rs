@@ -246,7 +246,10 @@ fn setup(ctx: &Context) -> Result<(), String> {
     } else {
         reasoning_input(&snapshot, &program)?
     };
-    let prompt = format!("{WRITING_STYLE}\n\n{prompt}");
+    let prompt = format!(
+        "{WRITING_STYLE}\n\n{prompt}\n\nResponse correction: {}",
+        program["response_correction"]
+    );
     let web_research = research_enabled(phase, &snapshot);
     set_success_result(
         "LaunchReasoning",
