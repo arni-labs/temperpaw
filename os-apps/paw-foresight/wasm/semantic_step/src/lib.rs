@@ -61,9 +61,30 @@ fn next_phase(
             next_questions += core::search::world_tasks(world).len();
             program["world_audits"][core::field(world, "Id")] = audit;
         }
+        let mut revision_allowed = false;
+        if has_conflict {
+            let tasks: Vec<_> = snapshot["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|n| active.contains(&n["Id"]))
+                .flat_map(core::search::world_tasks)
+                .collect();
+            let mut admission = core::search::refinement_admission(snapshot, program, &tasks);
+            let required = admission["required_transitions"]
+                .as_u64()
+                .unwrap_or(u64::MAX)
+                .saturating_add(core::REASONING_TRANSITION_RESERVE);
+            revision_allowed = admission["admitted"] == true
+                && required <= admission["remaining_transitions"].as_u64().unwrap_or(0);
+            admission["required_transitions"] = json!(required);
+            admission["admitted"] = json!(revision_allowed);
+            program["recomposition_admission"] = admission;
+        }
         // Bounded feedback loop, with fresh immutable worlds and fresh audit contexts.
         // Unknowns may remain; never rename a rewrite 'a gap cleared'.
         if has_conflict
+            && revision_allowed
             && exhausted.is_empty()
             && program["world_revision"].as_u64().unwrap_or(1) < 3
             && core::MAX_CALLS.saturating_sub(trace_len) >= next_questions
@@ -373,8 +394,8 @@ mod tests {
     }
 
     fn evaluated_world(label: &str) -> (Value, Value) {
-        let world = json!({"Id":"w","kind":"world","statement":"A, B and C occur together","component_ids":["a","b","c"],"chain":[]});
-        let snapshot = json!({"nodes":[world]});
+        let world = json!({"Id":"w","kind":"world","statement":"A, B and C occur together","component_ids":["a","b","c"],"counter_ids":[],"edges":"[]","chain":[]});
+        let snapshot = json!({"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},world]});
         let tasks = core::search::world_tasks(&world);
         let mut program = json!({"stage":"worlds","world_pass":1,"world_revision":1,"active_world_ids":["w"],"evidence_ids":["source"],"tasks":tasks,"results":{},"evaluations":{}});
         for task in tasks {
@@ -576,7 +597,7 @@ mod tests {
     }
     #[test]
     fn world_conflict_triggers_revision_but_never_an_endless_rewrite() {
-        let s = json!({"nodes":[{"Id":"w","component_ids":["a","b","c"],"chain":[]}]});
+        let s = json!({"nodes":[{"Id":"w","component_ids":["a","b","c"],"counter_ids":[],"edges":"[]","chain":[]}]});
         let mut p = json!({"stage":"worlds","world_revision":1,"active_world_ids":["w"],"results":{"w":{"check_world_consistency":"conflict"}}});
         assert_eq!(next_phase(&s, &mut p, 300, 1000), "compose");
         assert_eq!(p["world_audits"]["w"]["status"], "conflicts_found");

@@ -812,6 +812,35 @@ fn stable_judgments(previous: &Value, current: &Value) -> bool {
         })
     })
 }
+// Size the next pass with its newly captured history and the actual packer.
+// Current judgments are sizing proxies only; no scratch request is sent or saved.
+pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) -> Value {
+    let mut scratch = program.clone();
+    scratch["tasks"] = json!(tasks);
+    scratch["cursor"] = json!(0);
+    scratch["world_pass"] = json!(program["world_pass"].as_u64().unwrap_or(1) + 1);
+    let mut batches = 0u64;
+    let mut cursor = 0usize;
+    while cursor < tasks.len() {
+        scratch["cursor"] = json!(cursor);
+        match super::batch::prepare(snapshot, &scratch, tasks.len() - cursor) {
+            Ok(batch) => {
+                cursor += batch.tasks.len();
+                batches += 1;
+            }
+            Err(error) => return json!({"admitted":false,"planning_error":error}),
+        }
+    }
+    let limit = super::MAX_APP_TRANSITIONS - super::REASONING_TRANSITION_RESERVE;
+    let remaining = limit.saturating_sub(super::transition_count(program));
+    // One SearchPlanned callback, then Evaluate/Recorded for each HTTP attempt.
+    let required = 1 + batches * 2 * 3;
+    json!({"admitted":required <= remaining,"estimated_batches":batches,
+        "remaining_transitions":remaining,"required_transitions":required,
+        "retry_attempts_per_batch":2,"writing_reserve":super::REASONING_TRANSITION_RESERVE,
+        "response_growth_bounded":false,"adaptive_repacking_bounded":false})
+}
+
 /// Record a pass before deciding whether to schedule another. History and trace
 /// are immutable; only current values are cleared for the re-evaluation.
 pub fn refine_worlds(
@@ -886,7 +915,7 @@ pub fn refine_worlds(
         all_complete &= complete;
         tasks.extend(world_tasks);
     }
-    let reason = if !blocked.is_empty() {
+    let mut reason = if !blocked.is_empty() {
         blocked
     } else if !all_complete {
         "incomplete_pass"
@@ -901,6 +930,13 @@ pub fn refine_worlds(
     } else {
         "in_progress"
     };
+    if reason == "in_progress" {
+        let admission = refinement_admission(snapshot, program, &tasks);
+        if admission["admitted"] != true {
+            reason = "transition_budget";
+        }
+        program["refinement_admission"] = admission;
+    }
     for world in &worlds {
         let id = field(world, "Id");
         program["world_refinement"][id]["stop_reason"] = json!(reason);

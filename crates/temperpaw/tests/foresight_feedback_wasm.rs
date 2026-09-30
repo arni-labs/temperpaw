@@ -41,7 +41,7 @@ async fn invoke(engine: &WasmEngine, module: &str, fields: Value) -> Value {
         trigger_action: "Next".into(),
         wasm_module: Some(module.into()),
         trigger_params: json!({}),
-        entity_state: json!({"fields":fields}),
+        entity_state: json!({"counters":{"transition_count":fields["transition_count"].as_u64().unwrap_or(0)},"fields":fields}),
         agent_id: None,
         session_id: None,
         integration_config: BTreeMap::new(),
@@ -236,7 +236,7 @@ async fn call(engine: &WasmEngine, fields: Value, host: Arc<WorldProvider>) -> V
         trigger_action: "Evaluate".into(),
         wasm_module: Some("semantic_call".into()),
         trigger_params: json!({}),
-        entity_state: json!({"fields":fields}),
+        entity_state: json!({"counters":{"transition_count":fields["transition_count"].as_u64().unwrap_or(0)},"fields":fields}),
         agent_id: None,
         session_id: None,
         integration_config: BTreeMap::from([("typesafe_api_key".into(), "fixture-only".into())]),
@@ -247,6 +247,20 @@ async fn call(engine: &WasmEngine, fields: Value, host: Arc<WorldProvider>) -> V
         http_request: None,
     };
     invoke_with_host(engine, "semantic_call", ctx, host, hash).await
+}
+async fn complete_pass(engine: &WasmEngine, mut fields: Value, host: Arc<WorldProvider>) -> Value {
+    for _ in 0..100 {
+        let result = call(engine, fields.clone(), host.clone()).await;
+        assert_eq!(result["callback_action"], "Recorded");
+        apply(&mut fields, &result);
+        let p = program(&fields);
+        if p["cursor"].as_u64().unwrap() as usize >= p["tasks"].as_array().unwrap().len()
+            || p["stop_reason"] == "provider_error"
+        {
+            return result;
+        }
+    }
+    panic!("pass did not complete within fixture bound")
 }
 fn apply(fields: &mut Value, callback: &Value) {
     for (k, v) in callback["callback_params"].as_object().unwrap() {
@@ -262,7 +276,7 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
     let engine = WasmEngine::new().unwrap();
     let host = Arc::new(WorldProvider::default());
     let mut fields = prepared(&engine).await;
-    let first = call(&engine, fields.clone(), host.clone()).await;
+    let first = complete_pass(&engine, fields.clone(), host.clone()).await;
     assert_eq!(first["callback_action"], "Recorded", "{first}");
     apply(&mut fields, &first);
     let first_trace: Value = serde_json::from_str(fields["trace_json"].as_str().unwrap()).unwrap();
@@ -284,7 +298,7 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
         assert_eq!(history[id]["rounds"][0]["probability"], 0.23);
         assert!(p["results"][id]["estimate_likelihood"].is_null());
     }
-    let second = call(&engine, fields.clone(), host.clone()).await;
+    let second = complete_pass(&engine, fields.clone(), host.clone()).await;
     assert_eq!(second["callback_action"], "Recorded", "{second}");
     apply(&mut fields, &second);
     let trace: Value = serde_json::from_str(fields["trace_json"].as_str().unwrap()).unwrap();
@@ -303,7 +317,7 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
         assert!(second_input.contains("previous_world_judgments"));
         assert!(second_input.contains("0.23"));
         assert!(second_input.contains("check_world_consistency"));
-        let feedback = &requests[first_http]["state"]["cases"]["q0"]["previous_world_judgments"];
+        let feedback = &requests[first_http]["state"]["common"]["previous_world_judgments"];
         let legend = feedback["question_legend"].as_array().unwrap();
         let values = feedback["rounds"][0]["judgments"].as_array().unwrap();
         assert_eq!(legend.len(), values.len());
@@ -374,14 +388,14 @@ async fn provider_failure_does_not_claim_convergence_or_discard_prior_pass() {
     let engine = WasmEngine::new().unwrap();
     let host = Arc::new(WorldProvider::default());
     let mut fields = prepared(&engine).await;
-    let first = call(&engine, fields.clone(), host.clone()).await;
+    let first = complete_pass(&engine, fields.clone(), host.clone()).await;
     apply(&mut fields, &first);
     let next = invoke(&engine, "semantic_step", fields.clone()).await;
     assert_eq!(next["callback_action"], "SearchPlanned");
     apply(&mut fields, &next);
     let history = program(&fields)["world_refinement"].clone();
     host.fail.store(true, Ordering::SeqCst);
-    let failed = call(&engine, fields.clone(), host.clone()).await;
+    let failed = complete_pass(&engine, fields.clone(), host.clone()).await;
     assert_eq!(failed["callback_action"], "Recorded");
     apply(&mut fields, &failed);
     assert_eq!(program(&fields)["stop_reason"], "provider_error");
@@ -408,7 +422,7 @@ async fn changing_estimates_stop_at_three_passes_and_expired_budget_spends_no_ht
     host.drift.store(true, Ordering::SeqCst);
     let mut fields = prepared(&engine).await;
     for pass in 1..=3 {
-        let r = call(&engine, fields.clone(), host.clone()).await;
+        let r = complete_pass(&engine, fields.clone(), host.clone()).await;
         assert_eq!(r["callback_action"], "Recorded");
         apply(&mut fields, &r);
         let next = invoke(&engine, "semantic_step", fields.clone()).await;
@@ -451,4 +465,72 @@ async fn changing_estimates_stop_at_three_passes_and_expired_budget_spends_no_ht
     assert_eq!(r["callback_action"], "Recorded");
     assert_eq!(program(&r["callback_params"])["stop_reason"], "call_budget");
     assert_eq!(empty_host.requests.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn optional_refinement_declines_before_erasing_completed_world_odds() {
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    let mut fields = prepared(&engine).await;
+    loop {
+        let p = program(&fields);
+        if p["cursor"].as_u64().unwrap() as usize >= p["tasks"].as_array().unwrap().len() {
+            break;
+        }
+        let result = complete_pass(&engine, fields.clone(), host.clone()).await;
+        assert_eq!(result["callback_action"], "Recorded");
+        apply(&mut fields, &result);
+    }
+    let before = program(&fields);
+    fields["transition_count"] = json!(410);
+    let stopped = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(stopped["callback_action"], "Reason", "{stopped}");
+    assert_eq!(stopped["callback_params"]["phase"], "synthesize");
+    let after: Value =
+        serde_json::from_str(stopped["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(after["results"], before["results"]);
+    assert_eq!(after["evaluations"], before["evaluations"]);
+    assert_eq!(after["world_pass"], before["world_pass"]);
+    assert_eq!(after["refinement_admission"]["admitted"], false);
+    for id in after["active_world_ids"].as_array().unwrap() {
+        let r = &after["world_refinement"][id.as_str().unwrap()];
+        assert_eq!(r["stop_reason"], "transition_budget");
+        assert_eq!(r["rounds"][0]["probability"], 0.23);
+        assert_eq!(r["rounds"][0]["complete"], true);
+    }
+    let mut conflict_fields = fields.clone();
+    let mut conflict_program = before.clone();
+    for id in before["active_world_ids"].as_array().unwrap() {
+        conflict_program["results"][id.as_str().unwrap()]["check_world_consistency"] =
+            json!("conflict");
+    }
+    conflict_program["world_pass"] = json!(3);
+    conflict_program["refinement_admission"] = json!({"admitted":true});
+    conflict_fields["program_json"] = json!(conflict_program.to_string());
+    let conflict = invoke(&engine, "semantic_step", conflict_fields).await;
+    assert_eq!(conflict["callback_action"], "Reason");
+    assert_eq!(conflict["callback_params"]["phase"], "synthesize");
+    let conflict_result: Value = serde_json::from_str(
+        conflict["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    for id in before["active_world_ids"].as_array().unwrap() {
+        assert_eq!(
+            conflict_result["world_audits"][id.as_str().unwrap()]["status"],
+            "conflicts_found"
+        );
+    }
+    fields["transition_count"] = json!(100);
+    let admitted = invoke(&engine, "semantic_step", fields).await;
+    assert_eq!(admitted["callback_action"], "SearchPlanned", "{admitted}");
+    let p: Value = serde_json::from_str(
+        admitted["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(p["refinement_admission"]["admitted"], true);
+    assert_eq!(p["world_pass"], 2);
 }
