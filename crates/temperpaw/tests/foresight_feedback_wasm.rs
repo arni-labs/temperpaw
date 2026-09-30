@@ -206,7 +206,9 @@ async fn prepared(engine: &WasmEngine) -> Value {
         .map(|&i| {
             let mut w = full["nodes"][i].clone();
             w["id"] = w["Id"].clone();
-            w["trajectory_answer"] = json!("The clinic reorganizes access and staffing around patient-controlled scheduling.");
+            w["trajectory_answer"] = json!(
+                "The clinic reorganizes access and staffing around patient-controlled scheduling."
+            );
             for (key, text) in [
                 ("title", "A new clinic morning"),
                 (
@@ -863,7 +865,9 @@ async fn optional_invalid_replacement_falls_back_but_initial_composition_still_f
     let failed = invoke(&engine, "semantic_expand", initial).await;
     assert_eq!(failed["callback_action"], "Fail");
     let mut structurally_invalid = original.clone();
-    structurally_invalid["reasoning_result"] = json!(json!({"shared_question":"How does the overall system change?","worlds":[]}).to_string());
+    structurally_invalid["reasoning_result"] = json!(
+        json!({"shared_question":"How does the overall system change?","worlds":[]}).to_string()
+    );
     for _ in 0..2 {
         let rejected = invoke(&engine, "semantic_expand", structurally_invalid.clone()).await;
         assert_eq!(rejected["callback_action"], "CompositionRejected");

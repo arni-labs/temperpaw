@@ -286,7 +286,9 @@ async fn composition_schedules_new_world_calls_not_component_reuse() {
         .map(|&i| {
             let mut w = full["nodes"][i].clone();
             w["id"] = w["Id"].clone();
-            w["trajectory_answer"] = json!("The clinic reorganizes access and staffing around patient-controlled scheduling.");
+            w["trajectory_answer"] = json!(
+                "The clinic reorganizes access and staffing around patient-controlled scheduling."
+            );
             w["title"] = json!("A new clinic morning");
             w["mechanism"] =
                 json!("Changing both bookings and patient consent changes the staffing model.");
