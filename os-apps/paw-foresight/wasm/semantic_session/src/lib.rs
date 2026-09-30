@@ -64,6 +64,12 @@ fn retry_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 fn check(ctx: &Context) -> Result<(), String> {
+    let started = core::field(&ctx.entity_state, "started_at_ms")
+        .parse::<u64>()
+        .map_err(|_| "Missing run start time")?;
+    if (Context::get_time_millis() as u64).saturating_sub(started) >= core::MAX_MS {
+        return Err("Semantic run time budget exhausted; saved work is preserved.".into());
+    }
     let polls = ctx.entity_state["counters"]["reasoning_phase_polls"]
         .as_u64()
         .unwrap_or(0);

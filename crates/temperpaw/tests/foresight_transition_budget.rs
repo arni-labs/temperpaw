@@ -165,7 +165,7 @@ fn ten_poll_phase_counts_worst_case_success_and_timeout_without_reset() {
             schedule
                 .get("delay_seconds")
                 .and_then(toml::Value::as_integer),
-            Some(30)
+            Some(60)
         );
     }
     let retry = spec["action"]

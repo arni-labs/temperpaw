@@ -84,3 +84,17 @@ and accounting, not creative quality, calibration or causal identification.
 ### Comparable probability judgments
 
 Whole-world and constituent estimates are independent model judgments, so they can violate the conjunction upper bound. New likelihood receipts fingerprint the exact question/horizon, baseline, full source contents and proposition. Only matching current typed receipts are compared; legacy or changed contexts remain unassessed. The engine preserves raw odds and records `joint_exceeds_component` as probability uncertainty, not logical impossibility or calibration. The diagnostic travels through existing refinement history and answer audits. It adds no retry loop and never clamps estimates. At evidence-limit capacity the mandatory evaluation note still carries the warning without deleting another limitation.
+
+
+### Poll spacing across bounded corrections
+
+The observed three composition attempts took 137.469, 112.199 and 109.172 seconds.
+Ten shared 30-second polls exhausted the phase after only 30 seconds of its third
+attempt. CheckReasoning now waits 60 seconds, still sharing ten checks across
+corrections and retries. The 44-transition reservation, 480-action cap, 900-second
+reasoning timeout and original run clock remain unchanged. Polling rejects an
+expired original one-hour deadline, including an already completed child result.
+A measured-duration simulation through the actual monitor WASM needs seven polls
+at the new spacing; the old spacing fails at ten. This trades up to another
+30 seconds of completion-detection latency for less premature abandonment, not
+additional model attempts or a promise that arbitrary corrections will finish.

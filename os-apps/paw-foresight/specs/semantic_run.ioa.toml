@@ -325,7 +325,7 @@ to = "Reasoning"
 params = []
 effect = [{type="increment",var="transition_count"},
  {type="spawn", entity_type="Session", entity_id_source="{uuid}", initial_action="Configure", store_id_in="reasoning_session_id", copy_fields="system_prompt,user_message,model,provider,provider_options_json,provider_latency_profile,tool_choice,temperature,max_turns,tools_enabled,workdir,sandbox_url,sandbox_id,sandbox_provider,sandbox_networking_type,sandbox_allowed_hosts_json,sandbox_allow_mcp_servers,sandbox_allow_package_managers,sandbox_packages_json,temper_api_url,soul_id,agent_id,reply_channel_id,reply_thread_id,reply_channel_entity_id,reply_channel_type,reply_route_source,parent_session_id,session_depth,max_follow_ups,hook_policy,reserve_tokens,keep_recent_tokens,compaction_model,heartbeat_timeout_seconds,project_harness_id,project_id,workspace_id,conversation_file_id,file_manifest_id,session_file_id,session_leaf_id,session_entries_materialized,prepared_context_file_id,prepared_context_inline_json,system_prompt_hash,system_prompt_file_id,session_mode,gen_ai_parent_trace_id,gen_ai_parent_span_id"},
- {type="schedule", action="CheckReasoning", delay_seconds=30}
+ {type="schedule", action="CheckReasoning", delay_seconds=60}
 ]
 
 [[action]]
@@ -351,7 +351,7 @@ kind = "input"
 from = ["Reasoning"]
 to = "Reasoning"
 params = []
-effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=30}]
+effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=60}]
 
 [[action]]
 name = "ReasoningComplete"

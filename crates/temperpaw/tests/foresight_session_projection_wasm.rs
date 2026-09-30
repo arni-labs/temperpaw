@@ -48,7 +48,7 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
         trigger_action: "CheckReasoning".into(),
         wasm_module: Some("semantic_session".into()),
         trigger_params: json!({}),
-        entity_state: json!({"fields":{"reasoning_session_id":"child"}}),
+        entity_state: json!({"fields":{"reasoning_session_id":"child","started_at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string()}}),
         agent_id: None,
         session_id: None,
         integration_config: BTreeMap::from([("temper_api_url".into(), "http://fixture".into())]),
@@ -221,6 +221,29 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
             );
         }
     }
+    // The actual artifact must refuse even a completed child after the original deadline.
+    let mut expired = ctx.clone();
+    expired.entity_state["fields"]["started_at_ms"] = json!("1");
+    let deadline = engine
+        .invoke(
+            &hash,
+            &expired,
+            Arc::new(
+                SimWasmHost::new()
+                    .with_default_response(200, r#"{"Status":"Completed","result":"{}"}"#),
+            ),
+            &WasmResourceLimits::default(),
+            Arc::new(RwLock::new(StreamRegistry::default())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deadline.callback_action, "Fail");
+    assert!(
+        deadline.callback_params["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("time budget")
+    );
     for polls in [10, 11] {
         let mut context = ctx.clone();
         context.entity_state["counters"] = json!({"reasoning_phase_polls":polls});
@@ -244,5 +267,67 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
                 "Fail"
             }
         );
+    }
+    // Simulation of measured Configure→RecordResult durations from the failed live
+    // three-attempt compose phase; this is not a new live provider run.
+    let spec: toml::Value = toml::from_str(include_str!(
+        "../../../os-apps/paw-foresight/specs/semantic_run.ioa.toml"
+    ))
+    .unwrap();
+    let delay = spec["action"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"].as_str() == Some("SpawnReasoning"))
+        .unwrap()["effect"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e.get("action").and_then(toml::Value::as_str) == Some("CheckReasoning"))
+        .unwrap()["delay_seconds"]
+        .as_integer()
+        .unwrap() as u64
+        * 1000;
+    for (interval, expected_polls, expected_completed) in [(30_000, 10, false), (delay, 7, true)] {
+        let mut polls = 0;
+        let mut completed = 0;
+        for duration in [137_469u64, 112_199, 109_172] {
+            let mut elapsed = 0;
+            loop {
+                elapsed += interval;
+                polls += 1;
+                let mut context = ctx.clone();
+                context.entity_state["counters"] = json!({"reasoning_phase_polls":polls});
+                let status = if elapsed >= duration {
+                    "Completed"
+                } else {
+                    "CallingProvider"
+                };
+                let reply = json!({"Status":status,"result":"{}"});
+                let response = engine
+                    .invoke(
+                        &hash,
+                        &context,
+                        Arc::new(SimWasmHost::new().with_default_response(200, &reply.to_string())),
+                        &WasmResourceLimits::default(),
+                        Arc::new(RwLock::new(StreamRegistry::default())),
+                    )
+                    .await
+                    .unwrap();
+                if response.callback_action == "ReasoningComplete" {
+                    completed += 1;
+                    break;
+                }
+                if response.callback_action == "Fail" {
+                    break;
+                }
+                assert_eq!(response.callback_action, "ReasoningPending");
+            }
+            if polls >= 10 {
+                break;
+            }
+        }
+        assert_eq!(polls, expected_polls);
+        assert_eq!(completed == 3, expected_completed);
     }
 }
