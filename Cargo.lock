@@ -935,7 +935,7 @@ dependencies = [
 name = "chain-proof-ready"
 version = "0.1.0"
 dependencies = [
- "temper-wasm-sdk 0.1.0 (git+https://github.com/nerdsane/temper.git?rev=43f9379cc51545b9a47b8a28ccb202c31957a0e9)",
+ "temper-wasm-sdk",
 ]
 
 [[package]]
@@ -1833,7 +1833,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "temper-wasm-sdk 0.1.0 (git+https://github.com/nerdsane/temper.git?rev=d7a48b92f7caf724067972640c0cfc302f6a350e)",
+ "temper-wasm-sdk",
 ]
 
 [[package]]
@@ -1845,7 +1845,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "temper-wasm-sdk 0.1.0 (git+https://github.com/nerdsane/temper.git?rev=d7a48b92f7caf724067972640c0cfc302f6a350e)",
+ "temper-wasm-sdk",
  "thiserror 2.0.18",
  "url",
 ]
@@ -6814,16 +6814,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nerdsane/temper.git?rev=43f9379cc51545b9a47b8a28ccb202c31957a0e9#43f9379cc51545b9a47b8a28ccb202c31957a0e9"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "temper-wasm-sdk"
-version = "0.1.0"
-source = "git+https://github.com/nerdsane/temper.git?rev=d7a48b92f7caf724067972640c0cfc302f6a350e#d7a48b92f7caf724067972640c0cfc302f6a350e"
+source = "git+https://github.com/arni-labs/temper.git?rev=f2e24f4f954755abf2feeb467d07b1f5ac129604#f2e24f4f954755abf2feeb467d07b1f5ac129604"
 dependencies = [
  "serde",
  "serde_json",

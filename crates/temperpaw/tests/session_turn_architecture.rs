@@ -19,6 +19,43 @@ fn resource_attrs(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_
         .collect()
 }
 
+fn session_action<'a>(spec: &'a toml::Value, name: &str) -> &'a toml::value::Table {
+    spec.get("action")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_table())
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some(name))
+        .unwrap_or_else(|| panic!("session spec missing action {name}"))
+}
+
+/// Names of the `[[action.triggers]]` an action fires, in declaration order.
+fn trigger_names(action: &toml::value::Table) -> Vec<&str> {
+    action
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
+        .collect()
+}
+
+/// The action's effect statements, e.g. `["input_tokens += 1"]`.
+fn effect_statements(action: &toml::value::Table) -> Vec<&str> {
+    action
+        .get("effect")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .collect()
+}
+
+fn parse_session_spec(spec: &str) -> toml::Value {
+    spec.parse::<toml::Value>()
+        .expect("session.ioa.toml should parse as TOML")
+}
+
 #[test]
 fn session_spec_defines_bounded_turn_pipeline() {
     let spec = fs::read_to_string(repo_root().join("os-apps/paw-agent/specs/session.ioa.toml"))
@@ -45,10 +82,19 @@ fn session_spec_defines_bounded_turn_pipeline() {
         );
     }
 
-    assert!(
-        spec.contains("effect = [{ type = \"trigger\", name = \"prepare_context\" }]"),
-        "session spec should route turn entry points through prepare_context"
-    );
+    let parsed = parse_session_spec(&spec);
+    for entry_point in [
+        "WorkspaceReady",
+        "SandboxReady",
+        "ResumeWithPlanApproval",
+        "RecoveryComplete",
+    ] {
+        assert_eq!(
+            trigger_names(session_action(&parsed, entry_point)),
+            ["prepare_context"],
+            "session spec should route turn entry point {entry_point} through prepare_context"
+        );
+    }
 }
 
 #[test]
@@ -85,14 +131,18 @@ fn session_routes_llm_calls_through_codex_auth_gate() {
         );
     }
 
+    let parsed = parse_session_spec(&spec);
+    let context_ready = session_action(&parsed, "ContextReady");
     assert!(
-        spec.contains("to = \"EnsuringProviderAuth\"")
-            && spec.contains("effect = [{ type = \"trigger\", name = \"ensure_provider_auth\" }]"),
+        context_ready.get("to").and_then(|v| v.as_str()) == Some("EnsuringProviderAuth")
+            && trigger_names(context_ready) == ["ensure_provider_auth"],
         "ContextReady should persist prepared context then enter the provider auth gate"
     );
+    let needs_compaction = session_action(&parsed, "NeedsCompaction");
     assert!(
-        spec.contains("to = \"EnsuringCompactionAuth\"")
-            && spec.contains("effect = [\n  { type = \"increment\", var = \"input_tokens\" },\n  { type = \"increment\", var = \"output_tokens\" },\n  { type = \"trigger\", name = \"ensure_compaction_auth\" }\n]"),
+        needs_compaction.get("to").and_then(|v| v.as_str()) == Some("EnsuringCompactionAuth")
+            && effect_statements(needs_compaction) == ["input_tokens += 1", "output_tokens += 1"]
+            && trigger_names(needs_compaction) == ["ensure_compaction_auth"],
         "NeedsCompaction should enter the compaction auth gate before calling the compactor"
     );
     assert!(
@@ -186,13 +236,18 @@ fn session_defines_non_codex_provider_auth_fast_path() {
         "from = [\"PreparingContext\"]",
         "to = \"CallingProvider\"",
         "params = [\"prepared_context_file_id\", \"prepared_context_inline_json\", \"prepared_context_bytes\", \"prepared_context_entries_loaded\", \"prepared_context_content_files_loaded\", \"context_tokens\", \"system_prompt_hash\", \"system_prompt_file_id\", \"provider_auth_status\", \"provider_auth_checked_at_ms\", \"provider_auth_error\", \"provider_auth_retry_count\", \"compaction_auth_retry_count\"]",
-        "effect = [{ type = \"trigger\", name = \"call_provider\" }]",
     ] {
         assert!(
             spec.contains(needle),
             "session spec should define provider-auth skipped fast path: {needle}"
         );
     }
+    let parsed = parse_session_spec(&spec);
+    assert_eq!(
+        trigger_names(session_action(&parsed, "ContextReadyAuthSkipped")),
+        ["call_provider"],
+        "session spec should define provider-auth skipped fast path: ContextReadyAuthSkipped triggers call_provider"
+    );
 }
 
 #[test]
@@ -762,7 +817,7 @@ fn record_result_no_reply_preserves_terminal_cleanup_without_delivery_trigger() 
         "RecordResultNoReply should keep RecordResult cleanup/accounting params"
     );
     assert!(
-        action_block.contains("{ type = \"trigger\", name = \"emit_ots_trajectory\" }"),
+        action_block.contains("[[action.triggers]]\nname = \"emit_ots_trajectory\"\n"),
         "RecordResultNoReply must still emit terminal trajectory"
     );
     assert!(
@@ -832,7 +887,7 @@ fn record_result_inline_reply_preserves_channel_audit_without_agent_reply() {
         "RecordResultInlineReply should keep RecordResult cleanup/accounting params"
     );
     assert!(
-        action_block.contains("{ type = \"trigger\", name = \"emit_ots_trajectory\" }"),
+        action_block.contains("[[action.triggers]]\nname = \"emit_ots_trajectory\"\n"),
         "RecordResultInlineReply must still emit terminal trajectory"
     );
     assert!(
@@ -915,7 +970,7 @@ fn finalize_result_clears_pending_tool_state_on_terminal_completion() {
         "FinalizeResultNoReply should keep FinalizeResult result and cleanup params"
     );
     assert!(
-        no_reply_block.contains("{ type = \"trigger\", name = \"emit_ots_trajectory\" }"),
+        no_reply_block.contains("[[action.triggers]]\nname = \"emit_ots_trajectory\"\n"),
         "FinalizeResultNoReply must still emit terminal trajectory"
     );
     assert!(

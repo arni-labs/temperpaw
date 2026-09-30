@@ -351,7 +351,12 @@ fn counter_assignments_only_read_declared_action_parameters() {
         let ioa = temper_spec::automaton::parse_automaton(&source(file)).unwrap();
         for action in ioa.actions {
             for effect in action.effect {
-                if let temper_spec::automaton::Effect::SetCounterFromParam { param, .. } = effect {
+                if let temper_spec::automaton::Effect::Assign {
+                    op: temper_spec::predicate::AssignOp::Set,
+                    value: temper_spec::predicate::Arg::Param(param),
+                    ..
+                } = effect
+                {
                     assert!(
                         action
                             .params
@@ -372,15 +377,17 @@ fn incoming_counter_values_have_explicit_assignment_effects() {
         let ioa = temper_spec::automaton::parse_automaton(&source(file)).unwrap();
         for action in &ioa.actions {
             for parameter in &action.params {
-                if ioa
-                    .state
-                    .iter()
-                    .any(|state| state.name == parameter.name() && state.var_type == "counter")
-                {
+                if ioa.state.iter().any(|state| {
+                    state.name == parameter.name()
+                        && state.var_type == temper_spec::automaton::VarType::Counter
+                }) {
                     assert!(
                         action.effect.iter().any(|effect| matches!(effect,
-                        temper_spec::automaton::Effect::SetCounterFromParam { var, param }
-                            if var == parameter.name() && param == parameter.name())),
+                        temper_spec::automaton::Effect::Assign {
+                            var,
+                            op: temper_spec::predicate::AssignOp::Set,
+                            value: temper_spec::predicate::Arg::Param(param),
+                        } if var == parameter.name() && param == parameter.name())),
                         "{name}.{} must explicitly assign counter {}",
                         action.name,
                         parameter.name()
@@ -1188,7 +1195,11 @@ fn agent_action_manifest_matches_ioa_and_has_no_retired_resource_routes() {
             if let Some(operation) = name.strip_suffix("VerificationSucceeded") {
                 let flag = resource["verification_flags"][operation].as_str().unwrap();
                 assert!(action.effect.iter().any(|effect| matches!(effect,
-                    temper_spec::automaton::Effect::SetBool { var, value: true } if var == flag)));
+                    temper_spec::automaton::Effect::Assign {
+                        var,
+                        op: temper_spec::predicate::AssignOp::Set,
+                        value: temper_spec::predicate::Arg::Lit(temper_spec::predicate::Literal::Bool(true)),
+                    } if var == flag)));
                 let request = document
                     .actions
                     .iter()
@@ -1200,7 +1211,11 @@ fn agent_action_manifest_matches_ioa_and_has_no_retired_resource_routes() {
                     .filter(|variable| variable.name.ends_with("_verified"))
                 {
                     assert!(request.effect.iter().any(|effect|matches!(effect,
-                        temper_spec::automaton::Effect::SetBool {var,value:false} if var == &variable.name)));
+                        temper_spec::automaton::Effect::Assign {
+                            var,
+                            op: temper_spec::predicate::AssignOp::Set,
+                            value: temper_spec::predicate::Arg::Lit(temper_spec::predicate::Literal::Bool(false)),
+                        } if var == &variable.name)));
                 }
             }
             let selected = [

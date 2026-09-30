@@ -969,19 +969,87 @@ def sync_document():
         for trigger in item.get("triggers", []):
             if trigger.get("target_entity") == "DsfObservation":
                 trigger["principal"] = "dsf-factory-runtime"
-                trigger["params"] = {}
-                trigger["params_from"]["subject_type"] = "subject_type"
+                # Constants ('quoted') give way to the model's own subject type.
+                args = {
+                    name: value
+                    for name, value in trigger["args"].items()
+                    if not value.startswith("'")
+                }
+                args["subject_type"] = "subject_type"
                 for name in [
                     "expected_resource_sequence",
                     "observed_configuration",
                     "observed_revision",
                 ]:
-                    trigger["params_from"].pop(name, None)
+                    args.pop(name, None)
+                trigger["args"] = args
     doc["state"].append(field("subject_type"))
     configure = next(item for item in doc["action"] if item["name"] == "Configure")
     configure["params"].append({"name": "subject_type", "type": "string"})
     configure["constraints"] += nonempty("subject_type")
     return doc
+
+
+# The resource documents are assembled in the old table syntax and written in
+# the current one (ADR-0179 predicates, ADR-0180 effect statements, ADR-0181
+# typed values), the same way `temper migrate-predicates` converts a spec.
+GUARD = {
+    "max_count": lambda g: f"{g['var']} < {g['max']}",
+    "min_count": lambda g: f"{g['var']} >= {g['min']}",
+    "is_true": lambda g: g["var"],
+    "is_false": lambda g: f"!{g['var']}",
+}
+
+
+def statement(effect):
+    var = effect.get("var")
+    match effect["type"]:
+        case "set_bool":
+            return f"{var} = {'true' if effect['value'] else 'false'}"
+        case "increment":
+            return f"{var} += 1"
+        case "decrement":
+            return f"{var} -= 1"
+        case "set_counter_from_param":
+            return f"{var} = params.{effect['param']}"
+        case "trigger":
+            return None  # the action's [[action.triggers]] block declares the call
+    raise SystemExit(f"generate.py: no current syntax for effect {effect}")
+
+
+def current_syntax(document):
+    for variable in document.get("state", []):
+        if variable["type"] == "counter":
+            variable["initial"] = int(variable["initial"])
+        elif variable["type"] == "bool":
+            variable["initial"] = variable["initial"] in (True, "true")
+    for item in document.get("action", []):
+        if isinstance(item.get("guard"), list):
+            item["guard"] = " && ".join(GUARD[g["type"]](g) for g in item["guard"])
+        effects = item.get("effect")
+        if effects and isinstance(effects[0], dict):
+            statements = [s for s in map(statement, effects) if s]
+            if statements:
+                item["effect"] = statements
+            else:
+                del item["effect"]
+        for trigger in item.get("triggers", []):
+            resolver = trigger.get("resolve_target")
+            if resolver and "type" in resolver:
+                resolver["kind"] = resolver.pop("type")
+            if "params" in trigger or "params_from" in trigger:
+                args = {k: f"'{v}'" for k, v in trigger.pop("params", {}).items()}
+                args.update(trigger.pop("params_from", {}))
+                trigger["args"] = args
+    kept = []
+    for invariant in document.get("invariant", []):
+        if invariant.get("assert") == "no_further_transitions":
+            document["automaton"].setdefault("terminal", []).extend(invariant["when"])
+        else:
+            kept.append(invariant)
+    if "invariant" in document:
+        document["invariant"] = kept
+    return document
 
 
 def csdl(documents):
@@ -1200,7 +1268,7 @@ def main():
         for name in ["flow", "participant", "experiment"]
     ]
     outputs = {
-        ROOT / f"{name}.ioa.toml": render(document)
+        ROOT / f"{name}.ioa.toml": render(current_syntax(json.loads(json.dumps(document))))
         for name, document in generated.items()
     }
     outputs[ROOT / "model.csdl.xml"] = csdl(all_docs)

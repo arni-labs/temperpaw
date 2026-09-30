@@ -35,6 +35,64 @@ fn paw_patrol_wasm_source(root: &Path, module: &str) -> String {
     read(root.join(format!("os-apps/paw-patrol/wasm/{module}/src/lib.rs")))
 }
 
+/// The `[[action]]` table named `name` in a spec's TOML text.
+fn spec_action(spec: &str, name: &str) -> toml::value::Table {
+    let parsed: toml::Value = spec.parse().expect("spec should parse as TOML");
+    parsed
+        .get("action")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_table())
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some(name))
+        .cloned()
+        .unwrap_or_else(|| panic!("spec should define action {name}"))
+}
+
+/// The action's effect statements, e.g. `["run_count += 1"]`.
+fn effect_statements(action: &toml::value::Table) -> Vec<String> {
+    action
+        .get("effect")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
+/// Names of the `[[action.triggers]]` the action fires, in declaration order.
+fn trigger_names(action: &toml::value::Table) -> Vec<String> {
+    action
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// Asserts `action` has exactly these effect statements and fires exactly
+/// these triggers, in order.
+fn assert_action_effects(
+    spec: &str,
+    label: &str,
+    action: &str,
+    effects: &[&str],
+    triggers: &[&str],
+) {
+    let table = spec_action(spec, action);
+    assert_eq!(
+        effect_statements(&table),
+        effects,
+        "{label}.{action} should have effects {effects:?}"
+    );
+    assert_eq!(
+        trigger_names(&table),
+        triggers,
+        "{label}.{action} should fire triggers {triggers:?}"
+    );
+}
+
 fn agent_context(id: &str, agent_type: &str) -> SecurityContext {
     SecurityContext::from_resolved_identity(id, agent_type, None)
 }
@@ -172,7 +230,6 @@ fn paw_patrol_renames_human_intake_to_work_request_and_adds_risk_patrol_entities
     for needle in [
         "name = \"WorkRequest\"",
         "hint = \"Submit human or manager-agent intent into Patrol as work.\"",
-        "effect = [{ type = \"trigger\", name = \"route_work_request\" }]",
         "module = \"patrol_request_router\"",
         "request_text",
         "requester_id",
@@ -182,6 +239,13 @@ fn paw_patrol_renames_human_intake_to_work_request_and_adds_risk_patrol_entities
             "WorkRequest spec should contain {needle}"
         );
     }
+    assert_action_effects(
+        &work_request,
+        "WorkRequest",
+        "Submit",
+        &[],
+        &["route_work_request"],
+    );
 
     let patrol_run = read(patrol.join("specs/patrol_run.ioa.toml"));
     for needle in [
@@ -2281,9 +2345,7 @@ fn patrol_schedule_recurs_sweeps_and_daily_briefs_inside_patrol() {
     let spec = read(patrol.join("specs/patrol_schedule.ioa.toml"));
     for needle in [
         "name = \"PatrolSchedule\"",
-        "effect = [{ type = \"trigger\", name = \"patrol_schedule_activate\" }]",
-        "effect = [{ type = \"increment\", var = \"run_count\" }, { type = \"trigger\", name = \"patrol_schedule_trigger\" }]",
-        "{ type = \"schedule_at\", field = \"next_run_at\", action = \"Trigger\" }",
+        "\"schedule_at('Trigger', next_run_at)\"",
         "module = \"patrol_schedule_lifecycle\"",
         "name = \"TriggerComplete\"",
         "name = \"Recover\"",
@@ -2297,6 +2359,22 @@ fn patrol_schedule_recurs_sweeps_and_daily_briefs_inside_patrol() {
             "PatrolSchedule spec should contain {needle}"
         );
     }
+    for action in ["Activate", "Resume"] {
+        assert_action_effects(
+            &spec,
+            "PatrolSchedule",
+            action,
+            &[],
+            &["patrol_schedule_activate"],
+        );
+    }
+    assert_action_effects(
+        &spec,
+        "PatrolSchedule",
+        "Trigger",
+        &["run_count += 1"],
+        &["patrol_schedule_trigger"],
+    );
 
     let csdl = read(patrol.join("specs/model.csdl.xml"));
     for needle in [
@@ -2409,7 +2487,6 @@ fn patrol_request_submit_is_temper_native_intake_routing() {
 
     let spec = read(patrol.join("specs/patrol_request.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"route_patrol_request\" }]",
         "[[action.triggers]]",
         "name = \"route_patrol_request\"",
         "kind = \"wasm\"",
@@ -2424,6 +2501,13 @@ fn patrol_request_submit_is_temper_native_intake_routing() {
             "PatrolRequest spec should contain {needle}"
         );
     }
+    assert_action_effects(
+        &spec,
+        "PatrolRequest",
+        "Submit",
+        &[],
+        &["route_patrol_request"],
+    );
 
     let wasm_root = patrol.join("wasm/patrol_request_router");
     assert!(
@@ -2501,7 +2585,6 @@ fn signal_ingest_routes_observable_failures_into_patrol_work() {
 
     let spec = read(patrol.join("specs/signal.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"route_signal\" }]",
         "[[action.triggers]]",
         "name = \"route_signal\"",
         "kind = \"wasm\"",
@@ -2511,6 +2594,7 @@ fn signal_ingest_routes_observable_failures_into_patrol_work() {
     ] {
         assert!(spec.contains(needle), "Signal spec should contain {needle}");
     }
+    assert_action_effects(&spec, "Signal", "Ingest", &[], &["route_signal"]);
 
     let wasm_root = patrol.join("wasm/signal_router");
     assert!(
@@ -2572,13 +2656,17 @@ fn patrol_work_cycles_have_revisable_codex_plan_mode_plans() {
         "name = \"RevisePlan\"",
         "from = [\"Planned\", \"AwaitingHumanStartApproval\", \"InProgress\"]",
         "effect = [",
-        "{ type = \"increment\", var = \"plan_revision_count\" }",
     ] {
         assert!(
             work_cycle.contains(needle),
             "WorkCycle spec should support revising visible plans before and during implementation: {needle}"
         );
     }
+    assert!(
+        effect_statements(&spec_action(&work_cycle, "RevisePlan"))
+            .contains(&"plan_revision_count += 1".to_string()),
+        "WorkCycle spec should support revising visible plans before and during implementation: RevisePlan increments plan_revision_count"
+    );
 
     let csdl = read(patrol.join("specs/model.csdl.xml"));
     assert!(
@@ -2651,9 +2739,6 @@ fn worker_run_done_fans_out_to_review_evaluation_and_proof() {
 
     let spec = read(patrol.join("specs/worker_run.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"worker_run_started\" }]",
-        "effect = [{ type = \"trigger\", name = \"worker_run_finished\" }]",
-        "effect = [{ type = \"trigger\", name = \"worker_run_failed\" }]",
         "module = \"worker_run_lifecycle\"",
         "on_failure = \"ReportFailed\"",
     ] {
@@ -2661,6 +2746,13 @@ fn worker_run_done_fans_out_to_review_evaluation_and_proof() {
             spec.contains(needle),
             "WorkerRun spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("StartLocal", "worker_run_started"),
+        ("ReportDone", "worker_run_finished"),
+        ("ReportFailed", "worker_run_failed"),
+    ] {
+        assert_action_effects(&spec, "WorkerRun", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/worker_run_lifecycle");
@@ -2722,17 +2814,17 @@ fn reviewer_and_evaluator_results_gate_completion_before_human_review() {
     }
 
     let review_spec = read(patrol.join("specs/review_run.ioa.toml"));
-    for needle in [
-        "effect = [{ type = \"trigger\", name = \"review_run_approved\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_changes_requested\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_escalated\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_failed\" }]",
-        "module = \"review_gate_lifecycle\"",
+    assert!(
+        review_spec.contains("module = \"review_gate_lifecycle\""),
+        "ReviewRun spec should contain module = \"review_gate_lifecycle\""
+    );
+    for (action, trigger) in [
+        ("Approve", "review_run_approved"),
+        ("RequestChanges", "review_run_changes_requested"),
+        ("Escalate", "review_run_escalated"),
+        ("Fail", "review_run_failed"),
     ] {
-        assert!(
-            review_spec.contains(needle),
-            "ReviewRun spec should contain {needle}"
-        );
+        assert_action_effects(&review_spec, "ReviewRun", action, &[], &[trigger]);
     }
 
     let evaluation_spec = read(patrol.join("specs/evaluation_run.ioa.toml"));
@@ -2742,14 +2834,18 @@ fn reviewer_and_evaluator_results_gate_completion_before_human_review() {
         "name = \"Claim\"",
         "params = [\"evaluator_id\"]",
         "params = [\"results_json\", \"error_message\", \"failure_classification\"]",
-        "effect = [{ type = \"trigger\", name = \"evaluation_run_passed\" }]",
-        "effect = [{ type = \"trigger\", name = \"evaluation_run_failed\" }]",
         "module = \"review_gate_lifecycle\"",
     ] {
         assert!(
             evaluation_spec.contains(needle),
             "EvaluationRun spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("Pass", "evaluation_run_passed"),
+        ("Fail", "evaluation_run_failed"),
+    ] {
+        assert_action_effects(&evaluation_spec, "EvaluationRun", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/review_gate_lifecycle");
@@ -2801,8 +2897,6 @@ fn work_cycle_completion_requires_recorded_live_e2e_evidence() {
         "from = [\"Reviewing\"]",
         "to = \"Reviewing\"",
         "params = [\"e2e_summary\"]",
-        "effect = \"set e2e_ok true\"",
-        "{ type = \"is_true\", var = \"e2e_ok\" }",
         "Complete only when review, evaluation, proof, and live/E2E evidence are all attached.",
     ] {
         assert!(
@@ -2810,6 +2904,24 @@ fn work_cycle_completion_requires_recorded_live_e2e_evidence() {
             "WorkCycle should require explicit live/E2E evidence before completion: {needle}"
         );
     }
+    assert_action_effects(
+        &work_cycle,
+        "WorkCycle",
+        "ReportE2e",
+        &["e2e_ok = true"],
+        &[],
+    );
+    let complete_guard = spec_action(&work_cycle, "Complete")
+        .get("guard")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .expect("WorkCycle.Complete should declare a guard expression");
+    assert!(
+        complete_guard
+            .split("&&")
+            .any(|term| term.trim() == "e2e_ok"),
+        "WorkCycle should require explicit live/E2E evidence before completion: Complete guard `{complete_guard}` must require e2e_ok"
+    );
 
     let review_gate = read(patrol.join("wasm/review_gate_lifecycle/src/lib.rs"));
     for needle in [
@@ -2845,16 +2957,28 @@ fn review_request_changes_requeues_a_revision_worker_run() {
         "name = \"work_cycle_changes_requested\"",
         "module = \"work_cycle_lifecycle\"",
         "effect = [",
-        "{ type = \"set_bool\", var = \"review_passed\", value = false }",
-        "{ type = \"set_bool\", var = \"worker_done\", value = false }",
-        "{ type = \"set_bool\", var = \"evaluation_passed\", value = false }",
-        "{ type = \"trigger\", name = \"work_cycle_changes_requested\" }",
     ] {
         assert!(
             work_cycle.contains(needle),
             "WorkCycle.RequestChanges should reset gates and trigger rework: {needle}"
         );
     }
+    let request_changes = spec_action(&work_cycle, "RequestChanges");
+    let request_changes_effects = effect_statements(&request_changes);
+    for statement in [
+        "review_passed = false",
+        "worker_done = false",
+        "evaluation_passed = false",
+    ] {
+        assert!(
+            request_changes_effects.contains(&statement.to_string()),
+            "WorkCycle.RequestChanges should reset gates and trigger rework: {statement}"
+        );
+    }
+    assert!(
+        trigger_names(&request_changes).contains(&"work_cycle_changes_requested".to_string()),
+        "WorkCycle.RequestChanges should reset gates and trigger rework: work_cycle_changes_requested"
+    );
 
     let lifecycle = read(patrol.join("wasm/work_cycle_lifecycle/src/lib.rs"));
     for needle in [
@@ -3048,8 +3172,6 @@ fn repo_graph_snapshot_queues_sweep_and_fans_out_findings() {
 
     let spec = read(patrol.join("specs/repo_graph_snapshot.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"repo_sweep_started\" }]",
-        "effect = [{ type = \"trigger\", name = \"repo_sweep_completed\" }]",
         "module = \"repo_sweep_lifecycle\"",
         "on_failure = \"ScanFailed\"",
         "name = \"work_cycle_id\"",
@@ -3066,6 +3188,12 @@ fn repo_graph_snapshot_queues_sweep_and_fans_out_findings() {
             spec.contains(needle),
             "RepoGraphSnapshot spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("StartScan", "repo_sweep_started"),
+        ("ScanComplete", "repo_sweep_completed"),
+    ] {
+        assert_action_effects(&spec, "RepoGraphSnapshot", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/repo_sweep_lifecycle");
@@ -3153,8 +3281,12 @@ fn accepted_findings_queue_cleanup_work_cycles() {
         ("QualityFinding", quality_spec.as_str()),
         ("SecurityFinding", security_spec.as_str()),
     ] {
+        let accept = spec_action(spec, "Accept");
+        assert!(
+            effect_statements(&accept).is_empty() && !trigger_names(&accept).is_empty(),
+            "{label} should trigger cleanup work on Accept: Accept fires a trigger"
+        );
         for needle in [
-            "effect = [{ type = \"trigger\"",
             "module = \"finding_lifecycle\"",
             "name = \"Accept\"",
             "name = \"LinkPmIssue\"",
@@ -3296,7 +3428,6 @@ fn daily_brief_renders_visual_human_review_rollup() {
 
     let spec = read(patrol.join("specs/daily_brief.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"daily_brief_started\" }]",
         "module = \"daily_brief_lifecycle\"",
         "on_failure = \"Fail\"",
         "name = \"session_id\"",
@@ -3313,6 +3444,7 @@ fn daily_brief_renders_visual_human_review_rollup() {
             "DailyBrief spec should contain {needle}"
         );
     }
+    assert_action_effects(&spec, "DailyBrief", "Start", &[], &["daily_brief_started"]);
 
     let wasm_root = patrol.join("wasm/daily_brief_lifecycle");
     assert!(
@@ -3444,12 +3576,12 @@ fn paw_patrol_carries_the_stage3_s0_record_entities_and_ingest_module() {
     let ask = read(patrol.join("specs/ask.ioa.toml"));
     for needle in [
         "name = \"RaiseBlocking\"",
-        "var = \"stalls\"",
         "name = \"RecordFyi\"",
         "params = [\"effort_id\", \"kind\", \"need\", \"options\", \"chose\", \"why\", \"who\"]",
     ] {
         assert!(ask.contains(needle), "ask.ioa.toml should contain {needle}");
     }
+    assert_action_effects(&ask, "Ask", "RaiseBlocking", &["stalls = true"], &[]);
     assert!(
         !ask.contains(
             "params = [\"effort_id\", \"kind\", \"need\", \"options\", \"act\", \"stalls\""

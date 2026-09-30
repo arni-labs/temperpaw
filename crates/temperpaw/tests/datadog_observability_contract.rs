@@ -59,7 +59,7 @@ fn collect_cargo_manifests(root: &Path, relative_dir: &Path, files: &mut Vec<Pat
 fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     let manifest = load_text("crates/temperpaw/Cargo.toml");
     let lockfile = load_text("Cargo.lock");
-    let expected_rev = "43f9379cc51545b9a47b8a28ccb202c31957a0e9";
+    let expected_rev = "f2e24f4f954755abf2feeb467d07b1f5ac129604";
     let pre_llmobs_opt_out_rev = "510a0d9bc9517f7819d66849446cdf6aff2d5295";
     let observe_wait_only_rev = "6ccc483af87abbf6d9b060d0e6a6def3adfe6718";
     let host_boundary_rev = "7b170cf71246e01c337e81062b54ea8c597b9293";
@@ -82,7 +82,7 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
         "temper-store-turso",
     ] {
         let manifest_clause = format!(
-            "{temper_crate} = {{ git = \"https://github.com/nerdsane/temper.git\", rev = \"{expected_rev}\""
+            "{temper_crate} = {{ git = \"https://github.com/arni-labs/temper.git\", rev = \"{expected_rev}\""
         );
         assert!(
             manifest.contains(&manifest_clause),
@@ -118,12 +118,12 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
 #[test]
 fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
     let root = repo_root();
-    let expected_rev = "43f9379cc51545b9a47b8a28ccb202c31957a0e9";
+    let expected_rev = "f2e24f4f954755abf2feeb467d07b1f5ac129604";
     let expected_dependency = format!(
-        "temper-wasm-sdk = {{ git = \"https://github.com/nerdsane/temper.git\", rev = \"{expected_rev}\""
+        "temper-wasm-sdk = {{ git = \"https://github.com/arni-labs/temper.git\", rev = \"{expected_rev}\""
     );
     let forbidden_dependency =
-        "temper-wasm-sdk = { git = \"https://github.com/nerdsane/temper.git\", branch = \"main\"";
+        "temper-wasm-sdk = { git = \"https://github.com/arni-labs/temper.git\", branch = \"main\"";
     let mut manifests = Vec::new();
     collect_cargo_manifests(&root, Path::new("os-apps"), &mut manifests);
 
@@ -1935,7 +1935,7 @@ fn wasm_guest_observability_live_proof_is_temper_native_and_datadog_backed() {
 
     assert!(
         probe_manifest.contains("temper-wasm-sdk")
-            && probe_manifest.contains("43f9379cc51545b9a47b8a28ccb202c31957a0e9"),
+            && probe_manifest.contains("f2e24f4f954755abf2feeb467d07b1f5ac129604"),
         "proof WASM must build against the same guest SDK runtime rev as production modules"
     );
 }
