@@ -21,7 +21,7 @@ async fn run(engine: &WasmEngine, module: &str, fields: Value, host: Arc<dyn Was
         trigger_action: "Evaluate".into(),
         wasm_module: Some(module.into()),
         trigger_params: json!({}),
-        entity_state: json!({"fields":fields}),
+        entity_state: json!({"counters":{"transition_count":fields["transition_count"].as_u64().unwrap_or(0)},"fields":fields}),
         agent_id: None,
         session_id: None,
         integration_config: BTreeMap::from([
@@ -251,6 +251,38 @@ async fn layered_opposite_branches_survive_generation_evaluation_and_composition
         "{reasoning}"
     );
     assert!(reasoning.to_string().contains("branch-r1-third"));
+    let mut prior_admission: Value =
+        serde_json::from_str(fields["program_json"].as_str().unwrap()).unwrap();
+    prior_admission["exploration_admission"] =
+        json!({"admitted":true,"remaining_transitions":183,"required_transitions":96});
+    fields["program_json"] = json!(prior_admission.to_string());
+    fields["transition_count"] = json!(269);
+    let stopped_step = run(
+        &engine,
+        "semantic_step",
+        fields.clone(),
+        Arc::new(SimWasmHost::new()),
+    )
+    .await;
+    assert_eq!(stopped_step["callback_action"], "Reason", "{stopped_step}");
+    assert_eq!(stopped_step["callback_params"]["phase"], "compose");
+    let stopped_program: Value = serde_json::from_str(
+        stopped_step["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stopped_program["exploration_admission"]["admitted"], false);
+    assert_eq!(
+        stopped_program["exploration_admission"]["reason"],
+        "transition_budget"
+    );
+    assert!(
+        stopped_program["exploration_admission"]
+            .get("required_transitions")
+            .is_none()
+    );
+    fields["program_json"] = json!(stopped_program.to_string());
     fields["phase"] = json!("compose");
     fields["reasoning_result"]=json!(json!({"shared_question":"How does the premise change the whole trajectory?","worlds":[world("on",json!(["r1-b","r1-c","r1-d"])),world("off",json!(["r1-x","r1-y","r1-z"]))]}).to_string());
     let composed = run(
@@ -283,6 +315,27 @@ async fn layered_opposite_branches_survive_generation_evaluation_and_composition
         "The shared premise occurs"
     );
 
+    let composed_program: Value = serde_json::from_str(
+        composed["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        composed_program["exploration_admission"],
+        stopped_program["exploration_admission"]
+    );
+    let mut writer_fields = composed["callback_params"].clone();
+    writer_fields["phase"] = json!("synthesize");
+    let writer = run(
+        &engine,
+        "semantic_reasoning",
+        writer_fields,
+        Arc::new(SimWasmHost::new()),
+    )
+    .await;
+    assert_eq!(writer["callback_action"], "LaunchReasoning");
+    assert!(writer.to_string().contains("observed_exit"));
     // Fresh whole-world odds include the conditions, not an assumed-true branch.
     let mut world_program: Value = serde_json::from_str(
         composed["callback_params"]["program_json"]

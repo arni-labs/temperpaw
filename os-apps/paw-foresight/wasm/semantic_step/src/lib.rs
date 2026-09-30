@@ -28,6 +28,22 @@ fn next_phase(
     } else {
         String::new()
     };
+    // A prior admission authorizes one round; it is not evidence of why search
+    // eventually ended. Preserve a later hard budget exit before stage changes.
+    if program["stage"] == "exploration" && exhausted.ends_with("_budget") {
+        let previous = if program["exploration_admission"]["admitted"] == true {
+            program["exploration_admission"].clone()
+        } else {
+            Value::Null
+        };
+        program["exploration_admission"] = json!({
+            "admitted":false,"reason":exhausted,"observed_exit":true,
+            "transition_count":program["transition_count"],"transition_limit":core::transition_limit(program),
+            "remaining_transitions":core::transition_limit(program).saturating_sub(program["transition_count"].as_u64().unwrap_or(0)),
+            "calls":trace_len,"call_limit":core::call_limit(program),"elapsed_ms":elapsed_ms,"time_limit_ms":core::time_limit(program),
+            "previous_admission":previous
+        });
+    }
     if program["stage"] == "combinations" {
         core::search::finish_combinations(program);
         if !exhausted.is_empty() {
@@ -414,6 +430,23 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hard_exploration_exit_replaces_prior_admission_without_inventing_cost() {
+        let snapshot = json!({"nodes":[]});
+        let mut program = json!({"stage":"exploration","transition_count":269,"stop_reason":"transition_budget","continue_exploring":true,"exploration_admission":{"admitted":true,"remaining_transitions":183,"required_transitions":96}});
+        assert_eq!(next_phase(&snapshot, &mut program, 112, 1000), "compose");
+        let receipt = program["exploration_admission"].clone();
+        assert_eq!(receipt["admitted"], false);
+        assert_eq!(receipt["reason"], "transition_budget");
+        assert_eq!(receipt["remaining_transitions"], 0);
+        assert!(receipt.get("required_transitions").is_none());
+        assert_eq!(receipt["previous_admission"]["admitted"], true);
+        program["stage"] = json!("combinations");
+        program["stop_reason"] = json!("checking_combinations");
+        next_phase(&snapshot, &mut program, 112, 1100);
+        assert_eq!(program["exploration_admission"], receipt);
+    }
+
     #[test]
     fn independent_challenge_has_a_reserved_window_without_repeating_or_overrunning() {
         let limit = core::transition_limit(&json!({"stage":"exploration"}));
