@@ -204,7 +204,10 @@ async fn fresh_world_reply_is_not_a_component_probability() {
     {
         let requests = host.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        let state = &requests[0]["state"];
+        let mut state = requests[0]["state"]["cases"]["q0"].clone();
+        for (k, v) in requests[0]["state"]["common"].as_object().unwrap() {
+            state[k] = v.clone();
+        }
         assert_eq!(
             state["node"]["statement"],
             snapshot["nodes"][4]["statement"]
@@ -338,16 +341,19 @@ async fn composition_schedules_new_world_calls_not_component_reuse() {
         fields["reasoning_result"] = json!(broken.to_string());
         assert_eq!(
             invoke(&engine, "semantic_expand", fields.clone()).await["callback_action"],
-            "Fail",
+            "CompositionRejected",
             "{defect}"
         );
     }
     generated["baseline"]["observed"][0]["evidence_ids"] = json!(["h1"]);
     fields["reasoning_result"] = json!(generated.to_string());
-    assert_eq!(
-        invoke(&engine, "semantic_expand", fields).await["callback_action"],
-        "Fail"
-    );
+    for expected in ["CompositionRejected", "CompositionRejected", "Fail"] {
+        let rejected = invoke(&engine, "semantic_expand", fields.clone()).await;
+        assert_eq!(rejected["callback_action"], expected);
+        if expected != "Fail" {
+            fields["program_json"] = rejected["callback_params"]["program_json"].clone();
+        }
+    }
 }
 
 #[tokio::test]
@@ -381,36 +387,56 @@ async fn structural_fanout_preserves_cases_and_separates_dependent_likelihood() 
         workflow_run_id: None,
         http_request: None,
     };
-    let r = invoke_with_host(&engine, "semantic_call", ctx, host.clone(), hash).await;
-    assert_eq!(r["callback_action"], "Recorded", "{r}");
+    let mut ctx = ctx;
+    let mut r = json!({});
+    for _ in 0..5 {
+        r = invoke_with_host(
+            &engine,
+            "semantic_call",
+            ctx.clone(),
+            host.clone(),
+            hash.clone(),
+        )
+        .await;
+        assert_eq!(r["callback_action"], "Recorded", "{r}");
+        let p: Value =
+            serde_json::from_str(r["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+        if p["cursor"] == 5 {
+            break;
+        }
+        assert!(p["cursor"].as_u64().unwrap() < 5);
+        ctx.entity_state["fields"]["program_json"] = r["callback_params"]["program_json"].clone();
+        ctx.entity_state["fields"]["trace_json"] = r["callback_params"]["trace_json"].clone();
+    }
     let p: Value =
         serde_json::from_str(r["callback_params"]["program_json"].as_str().unwrap()).unwrap();
     let t: Value =
         serde_json::from_str(r["callback_params"]["trace_json"].as_str().unwrap()).unwrap();
     assert_eq!(p["cursor"], 5);
-    assert_eq!(p["http_calls"], 2);
     assert_eq!(t.as_array().unwrap().len(), 5);
     let requests = host.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0]["questions"].as_object().unwrap().len(), 4);
-    assert_eq!(requests[1]["questions"].as_object().unwrap().len(), 1);
+    assert_eq!(p["http_calls"].as_u64().unwrap() as usize, requests.len());
+    assert_eq!(requests[0]["questions"].as_object().unwrap().len(), 2);
     assert_eq!(requests[0]["state"]["cases"]["q0"]["events"][1]["Id"], "h2");
     assert_eq!(requests[0]["state"]["cases"]["q1"]["events"][1]["Id"], "h3");
-    let conditional = &requests[0]["state"]["cases"]["q2"];
-    assert_eq!(conditional["target_event"]["Id"], "h2");
+    let conditional = requests
+        .iter()
+        .flat_map(|r| r["state"]["cases"].as_object().unwrap().values())
+        .find(|c| c["target_event"]["Id"] == "h2")
+        .unwrap();
     assert_eq!(conditional["prerequisite_events"][0]["Id"], "h1");
     assert!(conditional["world"]["component_ids"].is_null());
+    let last = requests.last().unwrap();
+    assert_eq!(last["questions"].as_object().unwrap().len(), 1);
     assert_eq!(
-        requests[1]["state"]["assessment"]["check_world_consistency"],
+        last["state"]["cases"]["q0"]["assessment"]["check_world_consistency"],
         "compatible"
     );
     for i in 0..4 {
-        assert_eq!(t[i]["httpCallId"], 1);
-        assert_eq!(t[i]["questionKey"], format!("q{i}"));
         assert!(t[i]["response"]["answers"]["result"].is_object());
+        assert!(t[i]["httpCallId"].as_u64().unwrap() < t[4]["httpCallId"].as_u64().unwrap());
     }
-    assert_eq!(t[4]["httpCallId"], 2);
-    assert_eq!(t[4]["questionKey"], "result");
+    assert_eq!(t[4]["questionKey"], "q0");
     assert_ne!(t[0]["caseHash"], t[1]["caseHash"]);
     assert_eq!(t[0]["requestHash"], t[1]["requestHash"]);
 }
@@ -423,7 +449,7 @@ async fn combinations_precede_composition_and_conflicts_force_bounded_revision()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let p = json!({"stage":"exploration","cursor":0,"tasks":[],"continue_exploring":false,"results":{},"evaluations":{}});
+    let p = json!({"stage":"exploration","cursor":0,"tasks":[],"continue_exploring":false,"independent_challenge":{"status":"completed"},"results":{},"evaluations":{}});
     let mut fields = json!({"snapshot_json":snapshot.to_string(),"program_json":p.to_string(),"trace_json":"[]","started_at_ms":now.to_string()});
     let planned = invoke(&engine, "semantic_step", fields.clone()).await;
     assert_eq!(planned["callback_action"], "SearchPlanned", "{planned}");

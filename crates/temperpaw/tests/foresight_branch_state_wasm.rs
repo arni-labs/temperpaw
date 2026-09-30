@@ -48,7 +48,7 @@ impl WasmHost for Provider {
                 _ => {
                     let keys = q["criteria"].as_object().unwrap();
                     let selected = if keys.contains_key("already_observed") {
-                        if r["state"]["node"]["Id"] == "observed" {
+                        if r["state"]["cases"][id]["node"]["Id"] == "observed" {
                             "already_observed"
                         } else {
                             "future_change"
@@ -79,7 +79,7 @@ async fn invoke(snapshot: Value, program: Value) -> (Value, Vec<Value>) {
         .compile_and_cache(&std::fs::read(path).unwrap())
         .unwrap();
     let host = Arc::new(Provider::default());
-    let ctx = WasmInvocationContext {
+    let mut ctx = WasmInvocationContext {
         tenant: "test".into(),
         entity_type: "SemanticRun".into(),
         entity_id: "branch-test".into(),
@@ -96,21 +96,31 @@ async fn invoke(snapshot: Value, program: Value) -> (Value, Vec<Value>) {
         workflow_run_id: None,
         http_request: None,
     };
-    let out = engine
-        .invoke(
-            &hash,
-            &ctx,
-            host.clone(),
-            &WasmResourceLimits {
-                max_memory: 256 * 1024 * 1024,
-                max_fuel: 10_000_000_000,
-                ..Default::default()
-            },
-            Arc::new(RwLock::new(StreamRegistry::default())),
-        )
-        .await
-        .unwrap();
-    assert_eq!(out.callback_action, "Recorded", "{}", out.callback_params);
+    let out = loop {
+        let out = engine
+            .invoke(
+                &hash,
+                &ctx,
+                host.clone(),
+                &WasmResourceLimits {
+                    max_memory: 256 * 1024 * 1024,
+                    max_fuel: 10_000_000_000,
+                    ..Default::default()
+                },
+                Arc::new(RwLock::new(StreamRegistry::default())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.callback_action, "Recorded", "{}", out.callback_params);
+        let p: Value =
+            serde_json::from_str(out.callback_params["program_json"].as_str().unwrap()).unwrap();
+        assert_ne!(p["stop_reason"], "provider_error");
+        if p["cursor"].as_u64().unwrap() as usize >= p["tasks"].as_array().unwrap().len() {
+            break out;
+        }
+        ctx.entity_state["fields"]["program_json"] = out.callback_params["program_json"].clone();
+        ctx.entity_state["fields"]["trace_json"] = out.callback_params["trace_json"].clone();
+    };
     let requests = host.0.lock().unwrap().clone();
     (out.callback_params, requests)
 }
@@ -171,15 +181,15 @@ async fn temporal_classification_precedes_forecasting_and_skips_observed_stale_o
     let (out,requests)=invoke(json!({"world":{"last_ingest_date":"2026-09-29"},"nodes":nodes}),json!({"baseline_status":"established","tasks":tasks,"cursor":0,"results":{"observed":{"estimate_likelihood":"0.99"}},"evaluations":{"observed":{"estimate_likelihood":{"probability":0.99}}},"baseline":{"as_of":"2026-09-29"}})).await;
     assert_eq!(requests.len(), 7);
     assert!(
-        requests[0]["questions"]["result"]["criteria"]
+        requests[0]["questions"]["q0"]["criteria"]
             .get("already_observed")
             .is_some()
     );
     assert!(
         requests
             .iter()
-            .filter(|r| r["state"]["node"]["Id"] == "observed")
-            .all(|r| r["questions"]["result"]["type"] == "choice")
+            .filter(|r| r["state"]["cases"]["q0"]["node"]["Id"] == "observed")
+            .all(|r| r["questions"]["q0"]["type"] == "choice")
     );
     let p: Value = serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
     assert_eq!(p["cursor"], 10);

@@ -66,7 +66,7 @@ fn fixture() -> Value {
     json!({"snapshot_json":json!({"world":{"Id":"w"},"nodes":[{"Id":"h","kind":"scenario","statement":"A dated event happens in 2027","edges":"[]"}]}).to_string(),"program_json":json!({"cursor":0,"tasks":[{"nodeId":"h","function":"classify_gap"}],"results":{},"evaluations":{}}).to_string(),"trace_json":"[]"})
 }
 fn response(valid: bool) -> Value {
-    json!({"model":"jev-1.13.0","answers":{"result":{"type":"choice","choice":if valid {"evidence"} else {"timing"},"probabilities":{"evidence":0.8,"timing":0.1,"none":0.1,"prerequisite":0.0,"uncertain":0.0}}}})
+    json!({"model":"jev-1.13.0","answers":{"q0":{"type":"choice","choice":if valid {"evidence"} else {"timing"},"probabilities":{"evidence":0.8,"timing":0.1,"none":0.1,"prerequisite":0.0,"uncertain":0.0}}}})
 }
 #[tokio::test]
 async fn inconsistent_choice_retries_then_only_valid_answer_advances() {
@@ -152,8 +152,7 @@ impl WasmHost for Capture {
             .push(serde_json::from_str(body).unwrap());
         Ok((
             200,
-            json!({"model":"jev-1.13.0","answers":{"result":{"type":"noul","noul":0.23}}})
-                .to_string(),
+            json!({"model":"jev-1.13.0","answers":{"q0":{"type":"noul","noul":0.23}}}).to_string(),
         ))
     }
 }
@@ -187,7 +186,10 @@ async fn world_likelihood_interns_provenance_losslessly_in_actual_provider_input
     let host = Arc::new(Capture::default());
     let out = invoke_host(&engine, &hash, fields, host.clone(), "Recorded").await;
     let request = host.0.lock().unwrap()[0].clone();
-    let mut state = request["state"].clone();
+    let mut state = request["state"]["cases"]["q0"].clone();
+    for (key, value) in request["state"]["common"].as_object().unwrap() {
+        state[key] = value.clone();
+    }
     let sets = state["evidence_sets"].clone();
     assert_eq!(sets.as_array().unwrap().len(), 1);
     let packed = state.to_string().len();

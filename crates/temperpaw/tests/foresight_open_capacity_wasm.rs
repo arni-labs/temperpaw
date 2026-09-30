@@ -27,29 +27,32 @@ impl WasmHost for Provider {
         assert_eq!(url, "https://api.typesafe.ai/v1/systemone");
         self.calls.fetch_add(1, Ordering::SeqCst);
         let q: Value = serde_json::from_str(body).unwrap();
-        let q = &q["questions"]["result"];
-        let answer = match q["type"].as_str().unwrap() {
-            "noul" => json!({"type":"noul","noul":0.37}),
-            "score" => {
-                json!({"type":"score","score":2.0,"probabilities":{"0":0.0,"1":0.0,"2":1.0,"3":0.0,"4":0.0}})
-            }
-            _ => {
-                let opts = q["criteria"].as_object().unwrap();
-                let choice = if opts.contains_key("none") {
-                    "none"
-                } else {
-                    "monitor"
-                };
-                let probabilities: serde_json::Map<String, Value> = opts
-                    .keys()
-                    .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
-                    .collect();
-                json!({"type":"choice","choice":choice,"probabilities":probabilities})
-            }
-        };
+        let mut answers = json!({});
+        for (key, q) in q["questions"].as_object().unwrap() {
+            let answer = match q["type"].as_str().unwrap() {
+                "noul" => json!({"type":"noul","noul":0.37}),
+                "score" => {
+                    json!({"type":"score","score":2.0,"probabilities":{"0":0.0,"1":0.0,"2":1.0,"3":0.0,"4":0.0}})
+                }
+                _ => {
+                    let opts = q["criteria"].as_object().unwrap();
+                    let choice = if opts.contains_key("none") {
+                        "none"
+                    } else {
+                        "monitor"
+                    };
+                    let probabilities: serde_json::Map<String, Value> = opts
+                        .keys()
+                        .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+                        .collect();
+                    json!({"type":"choice","choice":choice,"probabilities":probabilities})
+                }
+            };
+            answers[key] = answer;
+        }
         Ok((
             200,
-            json!({"model":"jev-1.13.0","answers":{"result":answer}}).to_string(),
+            json!({"model":"jev-1.13.0","answers":answers}).to_string(),
         ))
     }
     async fn http_call_binary(
@@ -83,7 +86,8 @@ fn actual_guest_mixed_primitives_and_5000_trace_boundary() {
  let ctx=WasmInvocationContext{tenant:"test".into(),entity_type:"SemanticRun".into(),entity_id:"capacity".into(),trigger_action:"Evaluate".into(),wasm_module:Some("semantic_call".into()),trigger_params:json!({}),entity_state:json!({"fields":{"program_json":program.to_string(),"trace_json":trace.to_string(),"snapshot_json":snapshot.to_string()},"events":vec![json!({"params":{"trace_json":trace.to_string(),"program_json":program.to_string()}});1]}),agent_id:None,session_id:None,integration_config:BTreeMap::from([("typesafe_api_key".into(),"fixture-only".into())]),trace_id:String::new(),workflow_root_entity_type:None,workflow_root_entity_id:None,workflow_run_id:None,http_request:None};
  serde_json::to_value(engine.invoke(hash,&ctx,host,&WasmResourceLimits{max_memory:256*1024*1024,max_fuel:10_000_000_000,..Default::default()},Arc::new(RwLock::new(StreamRegistry::default()))).await.unwrap()).unwrap()
  }};
- let first=invoke(json!({"cursor":0,"tasks":tasks,"results":{},"evaluations":{}}),json!([])).await;
+ let mut current=json!({"cursor":0,"tasks":tasks,"results":{},"evaluations":{}});let mut current_trace=json!([]);let mut first=json!({});
+ for _ in 0..8 { first=invoke(current,current_trace).await;assert_eq!(first["callback_action"],"Recorded","{first}");current=serde_json::from_str(first["callback_params"]["program_json"].as_str().unwrap()).unwrap();current_trace=serde_json::from_str(first["callback_params"]["trace_json"].as_str().unwrap()).unwrap(); }
  assert_eq!(first["callback_action"],"Recorded","{first}");
  let p:Value=serde_json::from_str(first["callback_params"]["program_json"].as_str().unwrap()).unwrap();let trace:Value=serde_json::from_str(first["callback_params"]["trace_json"].as_str().unwrap()).unwrap();
  assert_eq!(p["cursor"],8);assert_eq!(p["evaluations"]["h0"]["estimate_likelihood"]["probability"],0.37);assert_eq!(host.calls.load(Ordering::SeqCst),8);
@@ -91,7 +95,8 @@ fn actual_guest_mixed_primitives_and_5000_trace_boundary() {
  // Capacity fixture repeats real guest-produced trace shapes, not 4992 claimed executions.
  let full:Vec<_>=(0..4992).map(|i|{let mut e=trace[i%8].clone();e["index"]=json!(i);e}).collect();assert!(serde_json::to_string(&full).unwrap().len()<24*1024*1024);
  let mut p=p;p["stage"]=json!("worlds");p["cursor"]=json!(4992);
- let last=invoke(p,json!(full)).await;assert_eq!(last["callback_action"],"Recorded","{last}");
+ let mut current=p;let mut current_trace=json!(full);let mut last=json!({});
+ for _ in 0..8 { last=invoke(current,current_trace).await;assert_eq!(last["callback_action"],"Recorded","{last}");current=serde_json::from_str(last["callback_params"]["program_json"].as_str().unwrap()).unwrap();current_trace=serde_json::from_str(last["callback_params"]["trace_json"].as_str().unwrap()).unwrap(); }
  let p:Value=serde_json::from_str(last["callback_params"]["program_json"].as_str().unwrap()).unwrap();let trace:Value=serde_json::from_str(last["callback_params"]["trace_json"].as_str().unwrap()).unwrap();
  assert_eq!(p["cursor"],5000);assert_eq!(trace.as_array().unwrap().len(),5000);assert_eq!(host.calls.load(Ordering::SeqCst),16);
  println!("actual simulated HTTP calls=16; capacity trace entries=5000; serialized trace bytes={}",trace.to_string().len());

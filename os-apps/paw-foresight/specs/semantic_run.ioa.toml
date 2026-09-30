@@ -61,6 +61,7 @@ kind = "input"
 from = ["Created"]
 to = "Preparing"
 params = ["world_id", "parent_id", "parent_type", "resume_run_id"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_prepare"
 kind = "wasm"
@@ -76,7 +77,8 @@ name = "Prepared"
 kind = "input"
 from = ["Preparing"]
 to = "ReasoningSetup"
-params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase"]
+params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase", "reasoning_phase_polls"]
+effect = [{type="increment",var="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"}]
 [[action.triggers]]
 name = "semantic_reasoning"
 kind = "wasm"
@@ -92,6 +94,7 @@ kind = "input"
 from = ["Choosing"]
 to = "Choosing"
 params = ["program_json"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"
 kind = "wasm"
@@ -107,6 +110,7 @@ kind = "input"
 from = ["Choosing"]
 to = "Calling"
 params = ["request_json"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_call"
 kind = "wasm"
@@ -123,6 +127,7 @@ kind = "input"
 from = ["Calling"]
 to = "Choosing"
 params = ["program_json", "trace_json"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"
 kind = "wasm"
@@ -138,6 +143,7 @@ kind = "input"
 from = ["Expanding"]
 to = "Completed"
 params = ["answer", "finished_at_ms"]
+effect = [{type="increment",var="transition_count"}]
 
 [[action]]
 name = "Fail"
@@ -145,6 +151,7 @@ kind = "input"
 from = ["Preparing", "Choosing", "Calling", "ReasoningSetup", "Reasoning", "Expanding"]
 to = "Failed"
 params = ["error_message"]
+effect = [{type="increment",var="transition_count"}]
 
 [[action]]
 name = "Cancel"
@@ -152,6 +159,7 @@ kind = "input"
 from = ["Preparing", "Choosing", "Calling", "ReasoningSetup", "Reasoning", "Expanding"]
 to = "Cancelled"
 params = []
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "cancel_reasoning_session"
 kind = "entity"
@@ -291,7 +299,8 @@ name = "Reason"
 kind = "input"
 from = ["Choosing"]
 to = "ReasoningSetup"
-params = ["phase", "program_json", "trace_json"]
+params = ["phase", "program_json", "trace_json", "reasoning_phase_polls"]
+effect = [{type="increment",var="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"}]
 [[action.triggers]]
 name = "semantic_reasoning"
 kind = "wasm"
@@ -306,7 +315,7 @@ name = "LaunchReasoning"
 kind = "input"
 from = ["ReasoningSetup"]
 params = ["system_prompt", "user_message", "tools_enabled", "tool_choice", "max_turns"]
-effect = [{type="schedule",action="SpawnReasoning",delay_seconds=0}]
+effect = [{type="increment",var="transition_count"},{type="schedule",action="SpawnReasoning",delay_seconds=0}]
 
 [[action]]
 name = "SpawnReasoning"
@@ -314,9 +323,9 @@ kind = "input"
 from = ["ReasoningSetup"]
 to = "Reasoning"
 params = []
-effect = [
+effect = [{type="increment",var="transition_count"},
  {type="spawn", entity_type="Session", entity_id_source="{uuid}", initial_action="Configure", store_id_in="reasoning_session_id", copy_fields="system_prompt,user_message,model,provider,provider_options_json,provider_latency_profile,tool_choice,temperature,max_turns,tools_enabled,workdir,sandbox_url,sandbox_id,sandbox_provider,sandbox_networking_type,sandbox_allowed_hosts_json,sandbox_allow_mcp_servers,sandbox_allow_package_managers,sandbox_packages_json,temper_api_url,soul_id,agent_id,reply_channel_id,reply_thread_id,reply_channel_entity_id,reply_channel_type,reply_route_source,parent_session_id,session_depth,max_follow_ups,hook_policy,reserve_tokens,keep_recent_tokens,compaction_model,heartbeat_timeout_seconds,project_harness_id,project_id,workspace_id,conversation_file_id,file_manifest_id,session_file_id,session_leaf_id,session_entries_materialized,prepared_context_file_id,prepared_context_inline_json,system_prompt_hash,system_prompt_file_id,session_mode,gen_ai_parent_trace_id,gen_ai_parent_span_id"},
- {type="schedule", action="CheckReasoning", delay_seconds=5}
+ {type="schedule", action="CheckReasoning", delay_seconds=15}
 ]
 
 [[action]]
@@ -325,6 +334,7 @@ kind = "input"
 from = ["Reasoning"]
 to = "Reasoning"
 params = []
+effect = [{type="increment",var="transition_count"},{type="increment",var="reasoning_phase_polls"}]
 [[action.triggers]]
 name = "semantic_session"
 kind = "wasm"
@@ -341,7 +351,7 @@ kind = "input"
 from = ["Reasoning"]
 to = "Reasoning"
 params = []
-effect = [{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=5}]
+effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=15}]
 
 [[action]]
 name = "ReasoningComplete"
@@ -349,6 +359,7 @@ kind = "input"
 from = ["Reasoning"]
 to = "Expanding"
 params = ["reasoning_result"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_expand"
 kind = "wasm"
@@ -364,6 +375,7 @@ kind = "input"
 from = ["Expanding"]
 to = "Choosing"
 params = ["snapshot_json", "program_json", "started_at_ms"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"
 kind = "wasm"
@@ -624,14 +636,15 @@ from = ["Reasoning"]
 to = "ReasoningSetup"
 params = ["last_retry_error", "last_retry_session_id"]
 guard = [{type="max_count",var="reasoning_retry_count",max=3}]
-effect = [{type="increment",var="reasoning_retry_count"},{type="schedule",action="SpawnReasoning",delay_seconds=15}]
+effect = [{type="increment",var="transition_count"},{type="increment",var="reasoning_retry_count"},{type="schedule",action="SpawnReasoning",delay_seconds=15}]
 
 [[action]]
 name = "ResumePrepared"
 kind = "input"
 from = ["Preparing"]
 to = "Choosing"
-params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase"]
+params = ["reasoning_phase_polls", "world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase"]
+effect = [{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"},{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"
 kind = "wasm"
@@ -649,6 +662,7 @@ kind = "input"
 from = ["Expanding"]
 to = "ReasoningSetup"
 params = ["program_json"]
+effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_reasoning"
 kind = "wasm"
@@ -657,3 +671,14 @@ on_failure = "Fail"
 [action.triggers.config]
 max_memory = "268435456"
 max_fuel = "10000000000"
+
+# Conservative bound on this run's native causal chain; never reset on model retry.
+[[state]]
+name = "transition_count"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "reasoning_phase_polls"
+type = "counter"
+initial = "0"

@@ -91,29 +91,29 @@ fn call(ctx: &Context) -> Result<(), String> {
         .get("typesafe_api_key")
         .filter(|s| !s.is_empty() && !s.contains("{secret:"))
         .ok_or("Configure foresight_typesafe_api_key in Temper settings")?;
-    // Record each question separately; independent structural questions share an HTTP call.
-    // Rebuild the next batch after recording answers so dependent estimates see audits.
-    let mut trace_bytes = trace.to_string().len();
-    for _ in 0..8 {
+    // Record each question separately and checkpoint one independent HTTP batch.
+    // The next invocation rebuilds from recorded answers before dependent estimates.
+    let trace_bytes = trace.to_string().len();
+    'batch: {
         core::skip_nonfuture_tasks(&mut p)?;
         let cursor = p["cursor"].as_u64().ok_or("Missing cursor")? as usize;
         if cursor >= p["tasks"].as_array().ok_or("Missing tasks")?.len() {
-            break;
+            break 'batch;
         }
         if trace.as_array().ok_or("Missing trace")?.len() >= core::call_limit(&p) {
             p["stop_reason"] = json!("call_budget");
-            break;
+            break 'batch;
         }
         // Reserve enough for the bounded response and metadata before spending a call.
         if trace_bytes + 192 * 1024 > core::MAX_TRACE_BYTES {
             p["stop_reason"] = json!("trace_budget");
-            break;
+            break 'batch;
         }
         if let Ok(started) = core::field(&ctx.entity_state, "started_at_ms").parse::<u64>()
             && (Context::get_time_millis() as u64).saturating_sub(started) >= core::time_limit(&p)
         {
             p["stop_reason"] = json!("time_budget");
-            break;
+            break 'batch;
         }
         let batch = core::batch::prepare(
             &snapshot,
@@ -184,7 +184,7 @@ fn call(ctx: &Context) -> Result<(), String> {
                     json!("provider_error")
                 };
                 p["last_error"] = json!(error);
-                break;
+                break 'batch;
             }
         };
         p["validation_failures"] = json!(0);
@@ -223,13 +223,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["cursor"] = json!(cursor + offset + 1);
             let index = trace.as_array().unwrap().len();
             let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
-            trace_bytes += entry.to_string().len() + 1;
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
-        }
-        // Structural fan-out may contain16 decisions. Persist each HTTP batch
-        // before another remote request can consume the actor timeout.
-        if core::search::is_structural(&batch.tasks[0]) {
-            break;
         }
     }
     set_success_result(
