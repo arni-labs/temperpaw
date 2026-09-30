@@ -125,6 +125,7 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
             .ok_or("Missing causal target")?
             .extend(from.iter().copied());
     }
+    let mut date_conflicts = vec![];
     for (target, prerequisites) in &graph {
         for source in prerequisites {
             if deadlines
@@ -132,9 +133,24 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
                 .zip(deadlines.get(target))
                 .is_some_and(|(a, b)| a > b)
             {
-                return Err("A causal effect is scheduled before its prerequisite".into());
+                let parent = links
+                    .iter()
+                    .find(|link| field(link, "to_id") == *source)
+                    .unwrap();
+                let child = links
+                    .iter()
+                    .find(|link| field(link, "to_id") == *target)
+                    .unwrap();
+                date_conflicts.push(format!("link '{}' ({}) -> link '{}' ({}): prerequisite event '{}' reaches downstream event '{}'",field(parent,"id"),field(parent,"by"),field(child,"id"),field(child,"by"),source,target));
             }
         }
+    }
+    if !date_conflicts.is_empty() {
+        return Err(format!(
+            "World '{}': causal-link milestones must be nondecreasing along each claimed dependency. {}. These are link by dates, not event resolve_by dates. Parallel developments need no causal link.",
+            field(world, "Id"),
+            date_conflicts.join("; ")
+        ));
     }
     let mut visited = BTreeSet::new();
     loop {
@@ -692,6 +708,38 @@ mod tests {
         assert!(request(&snapshot, &json!({}), &tasks[0]).is_err());
     }
 
+    #[test]
+    fn date_diagnostic_lists_every_reversed_link_with_world_and_dates() {
+        let (mut world, mut snapshot) = fixture();
+        world["component_ids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("d"));
+        world["facets"][2]["component_ids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("d"));
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"d","kind":"scenario"}));
+        world["chain"][1]["by"] = json!("2027-01-01");
+        world["chain"].as_array_mut().unwrap().push(json!({"id":"bd","from_ids":["b"],"to_id":"d","mechanism":"B enables D","by":"2027-01-15"}));
+        let error = validate_world(&world, &snapshot).unwrap_err();
+        for expected in [
+            "World 'w'",
+            "link 'ab' (2027-02-01) -> link 'bc' (2027-01-01)",
+            "link 'ab' (2027-02-01) -> link 'bd' (2027-01-15)",
+            "nondecreasing",
+            "not event resolve_by",
+            "Parallel developments need no causal link",
+        ] {
+            assert!(error.contains(expected), "{error}");
+        }
+        world["chain"][1]["by"] = json!("2027-02-01");
+        world["chain"][2]["by"] = json!("2027-02-01");
+        assert!(validate_world(&world, &snapshot).is_ok());
+    }
     #[test]
     fn causal_cycles_reversed_time_and_missing_facets_fail() {
         let (world, snapshot) = fixture();

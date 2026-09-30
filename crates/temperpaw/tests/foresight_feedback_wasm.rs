@@ -719,3 +719,52 @@ async fn captured_world_set_correction_fits_first_draft_budget() {
         serde_json::from_str(stopped["callback_params"]["program_json"].as_str().unwrap()).unwrap();
     assert_eq!(after["world_set_admission"]["admitted"], false);
 }
+
+#[tokio::test]
+async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
+    let engine = WasmEngine::new().unwrap();
+    let mut fields = prepared(&engine).await;
+    let mut snap: Value = serde_json::from_str(fields["snapshot_json"].as_str().unwrap()).unwrap();
+    let mut worlds: Vec<Value> = snap["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["kind"] == "world")
+        .cloned()
+        .collect();
+    for world in &mut worlds {
+        world["id"] = world["Id"].clone();
+    }
+    worlds[0]["chain"][0]["id"] = json!("eu_rules_make_labels_visible");
+    worlds[0]["chain"][0]["by"] = json!("2027-09-30");
+    snap["world"]["target_date"] = json!("2027-09-30");
+    worlds[0]["chain"][1]["id"] = json!("bad_outputs_create_receipts");
+    worlds[0]["chain"][1]["by"] = json!("2027-05-31");
+    snap["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|n| n["kind"] != "world");
+    fields["snapshot_json"] = json!(snap.to_string());
+    fields["reasoning_result"] =
+        json!(json!({"baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
+    fields["phase"] = json!("compose");
+    let result = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(result["callback_action"], "CompositionRejected");
+    let p: Value =
+        serde_json::from_str(result["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    let error = p["composition_correction"]["validation_error"]
+        .as_str()
+        .unwrap();
+    for expected in [
+        "eu_rules_make_labels_visible",
+        "2027-09-30",
+        "bad_outputs_create_receipts",
+        "2027-05-31",
+        "nondecreasing",
+        "not event resolve_by",
+    ] {
+        assert!(error.contains(expected), "{error}");
+    }
+    assert!(result["callback_params"].get("snapshot_json").is_none());
+    assert!(result["callback_params"].get("trace_json").is_none());
+}
