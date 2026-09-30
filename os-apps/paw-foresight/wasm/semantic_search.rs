@@ -90,15 +90,14 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
     }
     let links = world["chain"]
         .as_array()
-        .filter(|v| (2..=24).contains(&v.len()))
-        .ok_or("World needs two to twenty-four causal links")?;
+        .filter(|v| v.len() <= 24)
+        .ok_or("World needs zero to twenty-four claimed causal links")?;
     let horizon = field(&snapshot["world"], "target_date");
     let baseline = field(&snapshot["world"], "last_ingest_date");
     let mut graph: BTreeMap<&str, BTreeSet<&str>> =
         components.iter().map(|id| (*id, BTreeSet::new())).collect();
     let mut deadlines = BTreeMap::new();
     let mut link_ids = BTreeSet::new();
-    let mut connected = BTreeSet::new();
     for link in links {
         let to = field(link, "to_id");
         let from = ids(&link["from_ids"])?;
@@ -125,11 +124,6 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
             .get_mut(to)
             .ok_or("Missing causal target")?
             .extend(from.iter().copied());
-        connected.insert(to);
-        connected.extend(from);
-    }
-    if connected != components {
-        return Err("Every defining event needs a place in the causal chain".into());
     }
     for (target, prerequisites) in &graph {
         for source in prerequisites {
@@ -159,23 +153,8 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
     if visited.len() != components.len() {
         return Err("Causal chain contains a cycle".into());
     }
-    // A bag of unrelated chains is not a coherent world either.
-    let mut reachable = BTreeSet::from([*components.first().unwrap()]);
-    loop {
-        let before = reachable.len();
-        for (to, from) in &graph {
-            if reachable.contains(to) || from.iter().any(|p| reachable.contains(p)) {
-                reachable.insert(*to);
-                reachable.extend(from.iter().copied());
-            }
-        }
-        if before == reachable.len() {
-            break;
-        }
-    }
-    if reachable != components {
-        return Err("World contains disconnected event chains".into());
-    }
+    // Parallel developments need not cause one another. Facets cover the whole
+    // world; pair and whole-set judgments assess coherence without invented edges.
     Ok(())
 }
 
@@ -662,7 +641,47 @@ mod tests {
         let mut disconnected = world.clone();
         disconnected["component_ids"] = json!(["a", "b", "c", "d"]);
         disconnected["facets"][2]["component_ids"] = json!(["c", "d"]);
-        assert!(validate_world(&disconnected, &snapshot).is_err());
+        let mut parallel_snapshot = snapshot.clone();
+        parallel_snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"d","kind":"scenario","statement":"A parallel development"}));
+        assert!(validate_world(&disconnected, &parallel_snapshot).is_ok());
+    }
+    #[test]
+    fn parallel_world_keeps_all_components_in_joint_evaluation_without_fake_links() {
+        let (mut world, snapshot) = fixture();
+        world["chain"] = json!([]);
+        world["assumptions"] = json!([
+            "The developments share a background condition; neither is asserted to cause another."
+        ]);
+        assert!(validate_world(&world, &snapshot).is_ok());
+        let tasks = world_tasks(&world);
+        assert_eq!(tasks.len(), 5); // Three pairs, whole-set consistency, joint likelihood.
+        assert_eq!(tasks.last().unwrap()["function"], "estimate_likelihood");
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "check_pair")
+                .count(),
+            3
+        );
+        assert!(
+            !tasks
+                .iter()
+                .any(|t| t["function"] == "conditional_on" || t["function"] == "conditional_off")
+        );
+        let audit = audit_world(&world, &json!({"results":{}}));
+        let whole = audit["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "check_world_consistency")
+            .unwrap();
+        assert_eq!(whole["subject_ids"], world["component_ids"]);
+        let mut uncovered = world.clone();
+        uncovered["facets"][2]["component_ids"] = json!(["a"]);
+        assert!(validate_world(&uncovered, &snapshot).is_err());
     }
     #[test]
     fn pairwise_agreement_cannot_clear_a_whole_set_conflict() {
