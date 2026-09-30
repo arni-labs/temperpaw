@@ -79,3 +79,8 @@ WASM boundaries. It preserves a marginal estimate while recording a different
 conditional estimate, rejects incompatible composition, and preserves judgments
 when the original clock is exhausted. These tests establish state propagation
 and accounting, not creative quality, calibration or causal identification.
+
+
+### Comparable probability judgments
+
+Whole-world and constituent estimates are independent model judgments, so they can violate the conjunction upper bound. New likelihood receipts fingerprint the exact question/horizon, baseline, full source contents and proposition. Only matching current typed receipts are compared; legacy or changed contexts remain unassessed. The engine preserves raw odds and records `joint_exceeds_component` as probability uncertainty, not logical impossibility or calibration. The diagnostic travels through existing refinement history and answer audits. It adds no retry loop and never clamps estimates. At evidence-limit capacity the mandatory evaluation note still carries the warning without deleting another limitation.

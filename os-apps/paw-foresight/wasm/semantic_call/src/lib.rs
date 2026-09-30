@@ -208,7 +208,10 @@ fn call(ctx: &Context) -> Result<(), String> {
                 .flatten()
                 .map(|n| n["Id"].clone())
                 .collect();
-            let context = json!({"round":p["round"],"world_revision":p["world_revision"],"world_pass":p["world_pass"],"evidence_ids":evidence_ids,"task":task,"branch_state":state["branch_state"]});
+            let mut context = json!({"round":p["round"],"world_revision":p["world_revision"],"world_pass":p["world_pass"],"evidence_ids":evidence_ids,"task":task,"branch_state":state["branch_state"]});
+            if function == "estimate_likelihood" {
+                context["probability_comparison"] = core::coherence::receipt(state);
+            }
             evaluation["context"] = context.clone();
             for key in ["results", "evaluations"] {
                 if !p[key].is_object() {

@@ -323,6 +323,8 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
             });
         checks.push(json!({"id":format!("{id}/{function}"),"kind":function,"subject_ids":subject_ids,"result":result,"probability":program["evaluations"][id][function]["probability"],"branch_state":branch}));
     }
+    let probability_coherence = super::coherence::audit(world, program);
+    unknown |= probability_coherence["status"] == "inconsistent";
     let status = if conflict {
         "conflicts_found"
     } else if completed == 0 {
@@ -332,7 +334,7 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
     } else {
         "no_conflict_found"
     };
-    json!({"status":status,"planned_checks":checks.len(),"completed_checks":completed,"checks":checks})
+    json!({"status":status,"planned_checks":checks.len(),"completed_checks":completed,"checks":checks,"probability_coherence":probability_coherence})
 }
 
 /// Provider view removes repeated canonical task IDs, not audit judgments.
@@ -356,7 +358,7 @@ pub fn compact_world_audit(world: &Value, program: &Value) -> Value {
             json!([check["kind"], indices, check["result"]])
         })
         .collect();
-    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"encoding":"Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
+    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"probability_coherence":audit["probability_coherence"],"encoding":"Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
 }
 
 /// Round-robin distances cover the frontier before spending remaining budget on near duplicates.
@@ -908,7 +910,7 @@ pub fn previous_world_judgments(program: &Value, world: &Value) -> Value {
     let rounds:Vec<_>=record["rounds"].as_array().into_iter().flatten().map(|round| {
         let context=contexts.iter().position(|v|v==&round["evidence_ids"]).unwrap_or_else(||{contexts.push(round["evidence_ids"].clone());contexts.len()-1});
         let values:Vec<_>=tasks.iter().map(|task|round["assessments"][field(task,"nodeId")][field(task,"function")].clone()).collect();
-        json!({"round":round["round"],"probability":round["probability"],"audit_status":round["audit_status"],"complete":round["complete"],"evidence_context":context,"judgments":values})
+        json!({"round":round["round"],"probability":round["probability"],"audit_status":round["audit_status"],"probability_coherence":round["probability_coherence"],"complete":round["complete"],"evidence_context":context,"judgments":values})
     }).collect();
     json!({"world_id":id,"definition":record["definition"],"component_ids":components,"question_legend":legend,"evidence_contexts":contexts,"rounds":rounds,"interpretation":"Each round's judgments vector corresponds by index to question_legend; component_indices are zero-based in component_ids. Prior model judgments are not observations or ground truth. Reconsider them against supplied evidence, causal conditions and structural conflicts. Keep or revise either upward or downward; do not manufacture agreement or greater confidence."})
 }
@@ -1022,7 +1024,7 @@ pub fn refine_worlds(
             .as_str()
             .and_then(|v| v.parse::<f64>().ok())
             .filter(|p| p.is_finite() && (0.0..=1.0).contains(p));
-        let receipt = json!({"round":pass,"probability":probability,"audit_status":audit_world(world,program)["status"],"complete":complete,"evidence_ids":program["evidence_ids"],"assessments":assessments,"evaluations":evaluations});
+        let receipt = json!({"round":pass,"probability":probability,"audit_status":audit_world(world,program)["status"],"probability_coherence":super::coherence::audit(world,program),"complete":complete,"evidence_ids":program["evidence_ids"],"assessments":assessments,"evaluations":evaluations});
         if !program["world_refinement"][id].is_object() {
             program["world_refinement"][id] = json!({"world_id":id,"definition":world["statement"],"rounds":[],"stop_reason":"in_progress","converged":false,"accuracy_verified":false});
         }

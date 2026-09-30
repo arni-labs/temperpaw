@@ -824,6 +824,9 @@ fn attach_world_probabilities(
             outstanding_audits += 1;
         }
     }
+    let probability_warnings: Vec<String> = answer["outcomes"].as_array().into_iter().flatten()
+        .flat_map(|o| o["audit"]["probability_coherence"]["findings"].as_array().into_iter().flatten())
+        .map(|f| format!("Independent estimates conflict: whole world {:.1}% exceeds a required event at {:.1}%; raw estimates are unchanged, not calibrated.", f["joint_probability"].as_f64().unwrap()*100.0, f["component_probability"].as_f64().unwrap()*100.0)).collect();
     answer["world_set_audit"] = if program["world_set_audit"].is_object() {
         program["world_set_audit"].clone()
     } else {
@@ -878,6 +881,17 @@ fn attach_world_probabilities(
         answer["evaluation_note"] = json!(format!(
             "{note} {outstanding_audits} world audits still have conflicts, uncertainty or unfinished checks; likelihood estimates do not establish consistency."
         ));
+    }
+    if !probability_warnings.is_empty() {
+        let note = answer["evaluation_note"].as_str().unwrap_or("");
+        answer["evaluation_note"] = json!(format!("{note} {}", probability_warnings[0]));
+        let warning = "Some whole-world estimates exceed required-event estimates under identical recorded context. These independent judgments are inconsistent; raw odds are retained, not calibrated.";
+        let limits = answer["evidence_limits"]
+            .as_array_mut()
+            .ok_or("Missing evidence limits")?;
+        if limits.len() < 32 {
+            limits.push(json!(warning));
+        } // At capacity the mandatory evaluation_note still exposes the warning.
     }
     Ok(())
 }
