@@ -923,3 +923,69 @@ async fn contrastive_challenge_links_survive_actual_guests() {
     assert_eq!(repaired["callback_action"], "Expanded", "{repaired}");
     assert_eq!(repaired["callback_params"]["started_at_ms"], "123");
 }
+
+#[tokio::test]
+async fn ordinary_exploration_repairs_evidence_parent_without_resetting_work() {
+    let engine = WasmEngine::new().unwrap();
+    let snapshot = json!({"world":{},"nodes":[{"Id":"support-productivity-study","kind":"evidence","statement":"Observed support productivity","edges":"[]"}]});
+    let program = json!({"round":1,"tasks":[],"cursor":0,"results":{},"evaluations":{},"calls":45,"http_calls":6,"baseline_status":"established","baseline":{"observed":[]}});
+    let mut draft = json!({"hypotheses":[{"id":"h_ai_makes_customer_service_more_scripted","title":"Customer service follows scripts","statement":"Customer service becomes more scripted by 2030","mechanism":"Reusable successful responses standardize service","requires":["ref_0001"],"parent":"ref_0001","scene":"A worker reuses a reply","signal":"Reply reuse grows","falsifier":"Bespoke replies dominate","evidence_note":"Future implication of observed study","research_question":"Does reuse constrain judgment?"}],"research_evidence":[],"continue_exploring":true,"exploration_note":"Investigate downstream effects"});
+    let mut fields = json!({"phase":"explore","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":"123","trace_json":"[{\"retained\":true}]","reasoning_result":draft.to_string()});
+    let mut first_repair = Value::Null;
+    for attempt in 1..=2 {
+        let rejected = invoke(&engine, "semantic_expand", fields.clone()).await;
+        assert_eq!(
+            rejected["callback_action"], "CompositionRejected",
+            "{rejected}"
+        );
+        assert!(rejected["callback_params"].get("snapshot_json").is_none());
+        assert!(rejected["callback_params"].get("started_at_ms").is_none());
+        assert!(rejected["callback_params"].get("trace_json").is_none());
+        let p: Value = serde_json::from_str(
+            rejected["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(p["response_correction"]["attempt"], attempt);
+        assert!(
+            p["response_correction"]["validation_error"]
+                .as_str()
+                .unwrap()
+                .contains("support-productivity-study")
+        );
+        for key in [
+            "round",
+            "calls",
+            "http_calls",
+            "tasks",
+            "results",
+            "evaluations",
+            "baseline",
+        ] {
+            assert_eq!(p[key], program[key]);
+        }
+        fields["program_json"] = rejected["callback_params"]["program_json"].clone();
+        if attempt == 1 {
+            first_repair = fields.clone();
+        }
+    }
+    let exhausted = invoke(&engine, "semantic_expand", fields).await;
+    assert_eq!(exhausted["callback_action"], "Fail");
+    draft["hypotheses"][0]["parent"] = Value::Null;
+    first_repair["reasoning_result"] = json!(draft.to_string());
+    let repaired = invoke(&engine, "semantic_expand", first_repair).await;
+    assert_eq!(repaired["callback_action"], "Expanded", "{repaired}");
+    assert_eq!(repaired["callback_params"]["started_at_ms"], "123");
+    assert!(repaired["callback_params"].get("trace_json").is_none());
+    let nodes: Value = serde_json::from_str(
+        repaired["callback_params"]["snapshot_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let added = nodes["nodes"].as_array().unwrap().last().unwrap();
+    assert_eq!(added["title"], draft["hypotheses"][0]["title"]);
+    assert_eq!(added["mechanism"], draft["hypotheses"][0]["mechanism"]);
+    assert_eq!(nodes["nodes"][0], snapshot["nodes"][0]);
+}

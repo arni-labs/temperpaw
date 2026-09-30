@@ -260,7 +260,15 @@ fn expand(
         if let Some(parent) = hypothesis["parent"].as_str().filter(|p| !p.is_empty()) {
             let parent = resolve(identifier(&json!(parent))?);
             if !hypothesis_ids.contains(&parent) {
-                return Err("Unknown hypothesis parent".into());
+                let kind = nodes
+                    .iter()
+                    .find(|n| core::field(n, "Id") == parent)
+                    .map(|n| core::field(n, "kind"))
+                    .unwrap_or("unknown");
+                return Err(format!(
+                    "Hypothesis {} has invalid parent {parent} (kind: {kind}). Parent must name an existing or same-batch scenario/revision for lineage; source evidence belongs in requires/support context, not parent.",
+                    core::field(hypothesis, "id")
+                ));
             }
             lineage.insert(resolve(identifier(&hypothesis["id"])?), parent);
         }
@@ -941,16 +949,21 @@ fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, 
     Ok(program)
 }
 
-fn challenge_correction(old: &Value, error: &str) -> Result<Value, String> {
+fn exploration_correction(phase: &str, old: &Value, error: &str) -> Result<Value, String> {
     let attempt = old["response_correction"]["attempt"].as_u64().unwrap_or(0) + 1;
     if attempt > 2 {
         return Err(format!(
-            "Challenge rejected after two corrective attempts: {error}"
+            "{phase} rejected after two corrective attempts: {error}"
         ));
     }
     let mut program = old.clone();
-    program["response_correction"] = json!({"attempt":attempt,"validation_error":error,
-        "instruction":"The challenge response was not applied. Return the complete corrected challenge JSON against the unchanged visible catalog. Every premise must link existing prior hypotheses to new alternative hypotheses; every new hypothesis must be linked. Do not invent references, evidence, or evaluations. You may return empty premises and hypotheses with an honest explanation."});
+    let instruction = if phase == "challenge" {
+        "The challenge response was not applied. Return the complete corrected challenge JSON against the unchanged visible catalog. Every premise must link existing prior hypotheses to new alternative hypotheses; every new hypothesis must be linked. Do not invent references, evidence, or evaluations. You may return empty premises and hypotheses with an honest explanation."
+    } else {
+        "The exploration response was not applied. Return the complete corrected exploration JSON against the unchanged visible catalog. Parent denotes hypothesis lineage and must reference a scenario/revision or a new hypothesis in this batch; source evidence is support, not a parent. Preserve the distinction between source observations and future hypotheses. Do not invent references or evaluations, and cite only research actually retrieved."
+    };
+    program["response_correction"] =
+        json!({"attempt":attempt,"validation_error":error,"instruction":instruction});
     Ok(program)
 }
 
@@ -1074,10 +1087,10 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     } else {
         let generated = core::parse(raw)?;
         if let Err(error) = expand(&mut snapshot, &generated, phase, &old) {
-            if phase != "challenge" {
+            if !matches!(phase, "challenge" | "explore") {
                 return Err(error);
             }
-            let program = challenge_correction(&old, &error)?;
+            let program = exploration_correction(phase, &old, &error)?;
             set_success_result(
                 "CompositionRejected",
                 &json!({"program_json":program.to_string()}),
@@ -1342,9 +1355,43 @@ mod tests {
     }
 
     #[test]
+    fn evidence_as_exploration_parent_is_rejected_atomically_and_repairable() {
+        let snapshot = json!({"world":{"hindcast_mode":"false"},"nodes":[{"Id":"evidence-id","kind":"evidence","statement":"Support experiment","edges":"[]"}]});
+        let mut generated = batch("h_ai_makes_customer_service_more_scripted");
+        generated["hypotheses"][0]["parent"] = json!("ref_0001");
+        let old = json!({"round":0,"http_calls":6,"transition_count":45,"started_at_ms":"123","results":{"evidence-id":{"classify_gap":"none"}}});
+        let mut actual = snapshot.clone();
+        let error = expand(&mut actual, &generated, "explore", &old).unwrap_err();
+        assert_eq!(actual, snapshot);
+        assert!(error.contains("h_ai_makes_customer_service_more_scripted"));
+        assert!(error.contains("evidence-id (kind: evidence)"));
+        let first = exploration_correction("explore", &old, &error).unwrap();
+        assert!(
+            !first["response_correction"]["instruction"]
+                .as_str()
+                .unwrap()
+                .contains("premise")
+        );
+        for (key, value) in old.as_object().unwrap() {
+            assert_eq!(&first[key], value);
+        }
+        let second = exploration_correction("explore", &first, &error).unwrap();
+        assert!(
+            exploration_correction("explore", &second, &error)
+                .unwrap_err()
+                .contains("after two corrective attempts")
+        );
+        generated["hypotheses"][0]["parent"] = Value::Null;
+        generated["hypotheses"][0]["requires"] = json!(["ref_0001"]);
+        expand(&mut actual, &generated, "explore", &first).unwrap();
+        assert_eq!(actual["nodes"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
     fn challenge_correction_preserves_work_and_exhausts_without_resetting_budget() {
         let old = json!({"round":3,"http_calls":42,"transition_count":102,"results":{"h":{"estimate_likelihood":"0.3"}},"independent_challenge":{"status":"pending"}});
-        let first = challenge_correction(&old, "Unknown prior hypothesis: missing").unwrap();
+        let first =
+            exploration_correction("challenge", &old, "Unknown prior hypothesis: missing").unwrap();
         assert_eq!(first["response_correction"]["attempt"], 1);
         assert_eq!(
             first["response_correction"]["validation_error"],
@@ -1353,10 +1400,11 @@ mod tests {
         for (key, value) in old.as_object().unwrap() {
             assert_eq!(&first[key], value);
         }
-        let second = challenge_correction(&first, "Missing alternative group").unwrap();
+        let second =
+            exploration_correction("challenge", &first, "Missing alternative group").unwrap();
         assert_eq!(second["response_correction"]["attempt"], 2);
         assert!(
-            challenge_correction(&second, "Still invalid")
+            exploration_correction("challenge", &second, "Still invalid")
                 .unwrap_err()
                 .contains("after two corrective attempts")
         );
