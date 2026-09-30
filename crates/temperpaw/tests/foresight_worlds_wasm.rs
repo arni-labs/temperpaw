@@ -286,6 +286,7 @@ async fn composition_schedules_new_world_calls_not_component_reuse() {
         .map(|&i| {
             let mut w = full["nodes"][i].clone();
             w["id"] = w["Id"].clone();
+            w["trajectory_answer"] = json!("The clinic reorganizes access and staffing around patient-controlled scheduling.");
             w["title"] = json!("A new clinic morning");
             w["mechanism"] =
                 json!("Changing both bookings and patient consent changes the staffing model.");
@@ -299,7 +300,7 @@ async fn composition_schedules_new_world_calls_not_component_reuse() {
         })
         .collect();
     let old = json!({"cursor":0,"tasks":[],"results":{"h1":{"estimate_likelihood":"0.9"},"h2":{"estimate_likelihood":"0.8"}},"evaluations":{}});
-    let mut generated = json!({"baseline":answer(&full)["baseline"],"worlds":worlds});
+    let mut generated = json!({"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&full)["baseline"],"worlds":worlds});
     let mut fields = json!({"phase":"compose","snapshot_json":snapshot.to_string(),"program_json":old.to_string(),"reasoning_result":generated.to_string()});
     let expanded = invoke(&engine, "semantic_expand", fields.clone()).await;
     assert_eq!(expanded["callback_action"], "Expanded", "{expanded}");

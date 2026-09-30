@@ -567,6 +567,20 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .map(get)
                     .collect::<Result<Vec<_>, _>>()?
             );
+            let proposed = state["proposed_worlds"].as_array().unwrap();
+            // Historical worlds without this contract remain auditable. New worlds
+            // carry one immutable comparison target, not a topic per card.
+            if proposed.iter().any(|w| !w["shared_question"].is_null()) {
+                let shared = &proposed[0]["shared_question"];
+                if !text(shared, 800)
+                    || proposed.iter().any(|w| {
+                        &w["shared_question"] != shared || !text(&w["trajectory_answer"], 1000)
+                    })
+                {
+                    return Err("World set needs one shared question and a trajectory answer from every world".into());
+                }
+                state["shared_question"] = shared.clone();
+            }
             let required: std::collections::BTreeSet<&str> = state["proposed_worlds"]
                 .as_array()
                 .unwrap()
@@ -589,7 +603,7 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .filter(|n| required.contains(field(n, "Id")))
                     .collect::<Vec<_>>()
             );
-            json!({"type":"choice","instructions":"Assess this SET as answers to the original question. Do the proposed worlds express meaningfully different overall trajectories, mechanisms or outcomes, or are they mostly complementary topical slices of one shared direction? Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
+            json!({"type":"choice","instructions":"Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
         }
         "check_pair" => {
             let pair = ids(&task["pair_ids"])?;
@@ -1408,6 +1422,24 @@ mod world_set_tests {
         )
         .unwrap();
         assert_eq!(request["state"]["proposed_worlds"], snapshot["nodes"]);
+        let mut modern = snapshot.clone();
+        for (i, world) in modern["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            world["shared_question"] = json!("How does control of the system change?");
+            world["trajectory_answer"] =
+                json!(format!("Trajectory {i} changes the overall system"));
+        }
+        let modern_request = super::request(&modern, &json!({}), &task).unwrap();
+        assert_eq!(
+            modern_request["state"]["shared_question"],
+            modern["nodes"][0]["shared_question"]
+        );
+        modern["nodes"][1]["shared_question"] = json!("A different narrow topic");
+        assert!(super::request(&modern, &json!({}), &task).is_err());
         let mut forged = task.clone();
         forged["world_ids"][1] = json!("invented");
         assert!(validate_task(&snapshot, &forged).is_err());

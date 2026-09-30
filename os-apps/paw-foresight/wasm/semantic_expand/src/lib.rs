@@ -400,6 +400,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     let by_id: std::collections::BTreeMap<_, _> =
         nodes.iter().map(|n| (core::field(n, "Id"), n)).collect();
+    bounded_text(&generated["shared_question"], 800)
+        .map_err(|error| format!("Invalid shared_question: {error}"))?;
     let worlds = generated["worlds"]
         .as_array()
         .filter(|w| (2..=6).contains(&w.len()))
@@ -430,10 +432,12 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             ("title", 100),
             ("statement", 1000),
             ("mechanism", 1200),
+            ("trajectory_answer", 1000),
             ("scene", 600),
             ("narrative", 1200),
         ] {
-            bounded_text(&world[key], max)?;
+            bounded_text(&world[key], max)
+                .map_err(|error| format!("World {local}: invalid {key}: {error}"))?;
         }
         for key in ["signals", "falsifiers"] {
             bounded_texts(&world[key], 1, 8, 240)?;
@@ -503,6 +507,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         node.as_object_mut().ok_or("Invalid world")?.remove("id");
         node["Id"] = json!(id);
         node["kind"] = json!("world");
+        node["shared_question"] = generated["shared_question"].clone();
         node["revision"] = json!(revision);
         node["archived"] = json!(false);
         node["Status"] = json!("Hypothesis");
@@ -691,6 +696,13 @@ fn attach_world_probabilities(
         }
         outcome["scenario_ids"] = json!(context_ids);
         outcome["definition"] = node["statement"].clone();
+        for key in ["shared_question", "trajectory_answer"] {
+            if !node[key].is_null() {
+                outcome[key] = node[key].clone();
+            } else if let Some(object) = outcome.as_object_mut() {
+                object.remove(key);
+            }
+        }
         outcome["audit"] = core::search::audit_world(node, program);
         if !program["world_refinement"][&id].is_null() {
             outcome["refinement"] = program["world_refinement"][&id].clone();
@@ -1135,10 +1147,12 @@ mod tests {
     use super::*;
     fn world_fixture() -> (Value, Value, Value) {
         let snapshot = json!({"world":{"last_ingest_date":"2026-09-19","target_date":"2027-09-19"},"nodes":[{"Id":"e","kind":"evidence","statement":"Observed baseline","edges":"[]"},{"Id":"a","kind":"scenario","statement":"Component A","edges":"[]"},{"Id":"b","kind":"revision","statement":"Component B","edges":"[]"},{"Id":"c","kind":"scenario","statement":"Component C","edges":"[]"},{"Id":"d","kind":"scenario","statement":"Counter D","edges":"[]"}]});
-        let world = json!({"id":"one","title":"A whole world","statement":"A and B and C occur jointly","mechanism":"A enables B enables C","component_ids":["ref_0002","ref_0003","ref_0004"],"counter_ids":["ref_0005"],"scene":"An imagined day","narrative":"A causes B and C but D may prevent it","what_you_can_do":[],"signals":["Observe A"],"falsifiers":["Observe D"],"facets":[{"id":"f1","title":"First change","description":"A changes daily life","component_ids":["ref_0002"]},{"id":"f2","title":"Second change","description":"B changes software","component_ids":["ref_0003"]},{"id":"f3","title":"Third change","description":"C changes economic choices","component_ids":["ref_0004"]}],"chain":[{"id":"l1","from_ids":["ref_0002"],"to_id":"ref_0003","mechanism":"A makes B possible","by":"2027-03-01"},{"id":"l2","from_ids":["ref_0003"],"to_id":"ref_0004","mechanism":"B enables C","by":"2027-09-01"}],"assumptions":["The mechanism persists"]});
+        let world = json!({"id":"one","trajectory_answer":"One organization of the entire system","title":"A whole world","statement":"A and B and C occur jointly","mechanism":"A enables B enables C","component_ids":["ref_0002","ref_0003","ref_0004"],"counter_ids":["ref_0005"],"scene":"An imagined day","narrative":"A causes B and C but D may prevent it","what_you_can_do":[],"signals":["Observe A"],"falsifiers":["Observe D"],"facets":[{"id":"f1","title":"First change","description":"A changes daily life","component_ids":["ref_0002"]},{"id":"f2","title":"Second change","description":"B changes software","component_ids":["ref_0003"]},{"id":"f3","title":"Third change","description":"C changes economic choices","component_ids":["ref_0004"]}],"chain":[{"id":"l1","from_ids":["ref_0002"],"to_id":"ref_0003","mechanism":"A makes B possible","by":"2027-03-01"},{"id":"l2","from_ids":["ref_0003"],"to_id":"ref_0004","mechanism":"B enables C","by":"2027-09-01"}],"assumptions":["The mechanism persists"]});
         let mut second = world.clone();
         second["id"] = json!("two");
-        let generated = json!({"baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
+        second["trajectory_answer"] =
+            json!("A different organization with different downstream consequences");
+        let generated = json!({"shared_question":"How do the interacting constraints change the system?","baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
@@ -1534,6 +1548,28 @@ mod tests {
     }
 
     #[test]
+    fn legacy_synthesis_preserves_outcomes_without_fabricating_comparison_fields() {
+        let (mut snapshot, generated, old) = world_fixture();
+        let program = compose(&mut snapshot, &generated, &old).unwrap();
+        for node in snapshot["nodes"].as_array_mut().unwrap() {
+            node.as_object_mut().unwrap().remove("shared_question");
+            node.as_object_mut().unwrap().remove("trajectory_answer");
+        }
+        let mut answer = json!({"schema":"foresight-worlds-v3","outcomes":[
+            {"world_id":"world-r1-one","narrative":"Original first narrative"},
+            {"world_id":"world-r1-two","narrative":"Original second narrative"}
+        ]});
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        let original = answer.clone();
+        answer["outcomes"][0]["shared_question"] = json!("Invented comparison");
+        answer["outcomes"][0]["trajectory_answer"] = json!("Invented trajectory");
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        assert_eq!(answer, original);
+        assert!(answer["outcomes"][0].get("shared_question").is_none());
+        assert!(answer["outcomes"][0].get("trajectory_answer").is_none());
+    }
+
+    #[test]
     fn worlds_are_evaluated_fresh_and_never_inherit_component_probabilities() {
         let (mut snapshot, generated, old) = world_fixture();
         snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":"recent","kind":"research_evidence","statement":"Recent extracted claim","quote":"Actual source excerpt","edges":"[]"}));
@@ -1722,6 +1758,45 @@ mod tests {
         assert!(accepted["composition_correction"].is_null());
         assert_eq!(accepted["http_calls"], old["http_calls"]);
         assert_eq!(accepted["combination_search"], old["combination_search"]);
+    }
+
+    #[test]
+    fn shared_comparison_contract_is_required_and_reaches_set_audit() {
+        let (snapshot, generated, old) = world_fixture();
+        for location in ["shared_question", "trajectory_answer"] {
+            let mut bad = generated.clone();
+            if location == "shared_question" {
+                bad[location] = Value::Null;
+            } else {
+                bad["worlds"][0][location] = json!("");
+            }
+            let mut unchanged = snapshot.clone();
+            assert!(
+                compose(&mut unchanged, &bad, &old)
+                    .unwrap_err()
+                    .contains(location)
+            );
+            assert_eq!(unchanged, snapshot);
+        }
+        let mut updated = snapshot.clone();
+        let program = compose(&mut updated, &generated, &old).unwrap();
+        let request = core::search::request(&updated, &program, &program["tasks"][0]).unwrap();
+        assert_eq!(
+            request["state"]["shared_question"],
+            generated["shared_question"]
+        );
+        for (i, world) in request["state"]["proposed_worlds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(world["shared_question"], generated["shared_question"]);
+            assert_eq!(
+                world["trajectory_answer"],
+                generated["worlds"][i]["trajectory_answer"]
+            );
+        }
     }
 
     #[test]

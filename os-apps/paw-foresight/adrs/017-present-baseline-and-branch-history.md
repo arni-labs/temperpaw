@@ -30,3 +30,7 @@ Independent component judgments now share typed Jev requests. After temporal scr
 
 
 World components need not form a connected causal graph. A coherent joint scenario may contain parallel developments or shared background causes. Facets must still cover every component, while the optional causal-link list contains only asserted dependencies (zero to twenty-four). Existing link identity, date, acyclicity and reference checks remain. Pairwise and whole-set audits still evaluate all components, followed by a fresh joint likelihood; conditional branch judgments are made only for links actually claimed. This avoids inventing causation merely to satisfy graph connectivity.
+
+## A shared comparison question
+
+The composer now selects a shared central question from the user question and explored possibilities, and each world supplies its overall trajectory answer before detailing its implications. The question may involve interacting uncertainties; it imposes no domain checklist, fixed axis, or exclusive outcomes. The engine preserves this comparison on each immutable world and passes it to the set-level judgment and writer. The set-level criterion distinguishes materially different overall answers from changing subjects or stakeholders within one common account. Missing new composition fields fail atomically through the existing bounded correction path. Historical composed worlds remain readable without invented comparison fields. Contract tests establish propagation and validation, not creative quality; that still requires a live run.

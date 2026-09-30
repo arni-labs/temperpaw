@@ -206,6 +206,7 @@ async fn prepared(engine: &WasmEngine) -> Value {
         .map(|&i| {
             let mut w = full["nodes"][i].clone();
             w["id"] = w["Id"].clone();
+            w["trajectory_answer"] = json!("The clinic reorganizes access and staffing around patient-controlled scheduling.");
             for (key, text) in [
                 ("title", "A new clinic morning"),
                 (
@@ -223,7 +224,7 @@ async fn prepared(engine: &WasmEngine) -> Value {
             w
         })
         .collect();
-    let result = json!({"baseline":answer(&full)["baseline"],"worlds":worlds});
+    let result = json!({"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&full)["baseline"],"worlds":worlds});
     let fields = json!({"phase":"compose","snapshot_json":s.to_string(),"program_json":json!({"round":1,"tasks":[],"cursor":0,"results":{},"evaluations":{}}).to_string(),"reasoning_result":result.to_string()});
     let r = invoke(engine, "semantic_expand", fields).await;
     assert_eq!(r["callback_action"], "Expanded", "{r}");
@@ -750,7 +751,7 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
         .retain(|n| n["kind"] != "world");
     fields["snapshot_json"] = json!(snap.to_string());
     fields["reasoning_result"] =
-        json!(json!({"baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
+        json!(json!({"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
     fields["phase"] = json!("compose");
     let result = invoke(&engine, "semantic_expand", fields.clone()).await;
     assert_eq!(result["callback_action"], "CompositionRejected");
@@ -782,7 +783,7 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
     worlds[1]["chain"][0]["by"] = json!("2027-04-01");
     fields["program_json"] = result["callback_params"]["program_json"].clone();
     fields["reasoning_result"] =
-        json!(json!({"baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
+        json!(json!({"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
     let repaired = invoke(&engine, "semantic_expand", fields).await;
     assert_eq!(repaired["callback_action"], "Expanded", "{repaired}");
     let repaired_snapshot: Value = serde_json::from_str(
@@ -862,7 +863,7 @@ async fn optional_invalid_replacement_falls_back_but_initial_composition_still_f
     let failed = invoke(&engine, "semantic_expand", initial).await;
     assert_eq!(failed["callback_action"], "Fail");
     let mut structurally_invalid = original.clone();
-    structurally_invalid["reasoning_result"] = json!(json!({"worlds":[]}).to_string());
+    structurally_invalid["reasoning_result"] = json!(json!({"shared_question":"How does the overall system change?","worlds":[]}).to_string());
     for _ in 0..2 {
         let rejected = invoke(&engine, "semantic_expand", structurally_invalid.clone()).await;
         assert_eq!(rejected["callback_action"], "CompositionRejected");
@@ -882,7 +883,7 @@ async fn optional_invalid_replacement_falls_back_but_initial_composition_still_f
     );
     let mut oversized = original;
     oversized["reasoning_result"] =
-        json!(json!({"worlds":[],"padding":"x".repeat(256*1024)}).to_string());
+        json!(json!({"shared_question":"How does the overall system change?","worlds":[],"padding":"x".repeat(256*1024)}).to_string());
     let capped = invoke(&engine, "semantic_expand", oversized).await;
     assert_eq!(capped["callback_action"], "Expanded");
     let p: Value =
