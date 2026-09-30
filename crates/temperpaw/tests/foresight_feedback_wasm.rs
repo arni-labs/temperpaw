@@ -1027,3 +1027,38 @@ async fn ordinary_exploration_repairs_evidence_parent_without_resetting_work() {
     assert_eq!(added["mechanism"], draft["hypotheses"][0]["mechanism"]);
     assert_eq!(nodes["nodes"][0], snapshot["nodes"][0]);
 }
+
+#[tokio::test]
+async fn composition_producer_schema_matches_required_consumer_fields() {
+    let engine = WasmEngine::new().unwrap();
+    let fields = prepared(&engine).await;
+    for (phase, expects_comparison) in [("seed", false), ("compose", true)] {
+        let mut input = fields.clone();
+        input["phase"] = json!(phase);
+        let setup = invoke(&engine, "semantic_reasoning", input).await;
+        assert_eq!(setup["callback_action"], "LaunchReasoning");
+        let prompt = setup["callback_params"]["system_prompt"].as_str().unwrap();
+        let schema_text = prompt.split("Return JSON ONLY: ").nth(1).unwrap();
+        let schema: Value = serde_json::Deserializer::from_str(schema_text)
+            .into_iter::<Value>()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            schema.get("shared_question").is_some(),
+            expects_comparison,
+            "{phase} producer declares wrong root contract"
+        );
+        if expects_comparison {
+            assert!(schema["worlds"][0]["trajectory_answer"].is_string());
+            let mut missing = schema.clone();
+            missing.as_object_mut().unwrap().remove("shared_question");
+            let mut consumer = fields.clone();
+            consumer["phase"] = json!("compose");
+            consumer["reasoning_result"] = json!(missing.to_string());
+            let rejected = invoke(&engine, "semantic_expand", consumer).await;
+            assert_eq!(rejected["callback_action"], "CompositionRejected");
+            assert!(rejected.to_string().contains("Invalid shared_question"));
+        }
+    }
+}
