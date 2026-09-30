@@ -412,26 +412,27 @@ mod tests {
     use super::*;
     #[test]
     fn independent_challenge_has_a_reserved_window_without_repeating_or_overrunning() {
+        let limit = core::transition_limit(&json!({"stage":"exploration"}));
+        let trigger = limit - core::REASONING_TRANSITION_RESERVE - 32;
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});
-        let mut p =
-            json!({"stage":"exploration","baseline_status":"established","transition_count":95});
+        let mut p = json!({"stage":"exploration","baseline_status":"established","transition_count":trigger-1});
         assert!(!challenge_due(&snapshot, &p, 0));
-        p["transition_count"] = json!(90);
+        p["transition_count"] = json!(trigger - 6);
         assert!(challenge_due(
             &snapshot,
             &p,
             core::REASONING_TRANSITION_RESERVE
         ));
-        p["transition_count"] = json!(96);
+        p["transition_count"] = json!(trigger);
         assert!(challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = json!({"status":"pending"});
         assert!(!challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = json!({"status":"completed"});
         assert!(!challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = Value::Null;
-        p["transition_count"] = json!(128);
+        p["transition_count"] = json!(limit - core::REASONING_TRANSITION_RESERVE);
         assert!(!challenge_due(&snapshot, &p, 0));
-        p["transition_count"] = json!(96);
+        p["transition_count"] = json!(trigger);
         p["stage"] = json!("worlds");
         assert!(!challenge_due(&snapshot, &p, 0));
     }
@@ -446,7 +447,7 @@ mod tests {
         assert_eq!(cost["current_graph_tasks"], 80);
         assert_eq!(cost["estimated_batches"], 5);
         assert_eq!(cost["current_graph_evaluation_transitions"], 10);
-        assert_eq!(cost["required_transitions"], 106);
+        assert_eq!(cost["required_transitions"], 86);
         assert_eq!(cost["admitted"], false);
         assert_eq!(p, before);
         let mut early = p;
@@ -476,12 +477,12 @@ mod tests {
 
     #[test]
     fn transition_budget_reserves_world_work_and_writer_without_clock_reset() {
-        assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 192);
+        assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 232);
         assert_eq!(
             core::transition_limit(&json!({"stage":"combinations"})),
-            224
+            264
         );
-        assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 416);
+        assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 436);
         assert!(core::MAX_APP_TRANSITIONS + 32 <= 512);
         let mut p = json!({"stage":"exploration","stop_reason":"transition_budget"});
         assert_eq!(

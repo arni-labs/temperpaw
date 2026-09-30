@@ -221,4 +221,28 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
             );
         }
     }
+    for polls in [10, 11] {
+        let mut context = ctx.clone();
+        context.entity_state["counters"] = json!({"reasoning_phase_polls":polls});
+        let host = SimWasmHost::new()
+            .with_default_response(200, r#"{"Status":"Completed","result":"{}"}"#);
+        let result = engine
+            .invoke(
+                &hash,
+                &context,
+                Arc::new(host),
+                &WasmResourceLimits::default(),
+                Arc::new(RwLock::new(StreamRegistry::default())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.callback_action,
+            if polls == 10 {
+                "ReasoningComplete"
+            } else {
+                "Fail"
+            }
+        );
+    }
 }

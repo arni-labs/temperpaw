@@ -181,8 +181,8 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
 }
 /// Missing classifications remain readable in historical runs; new plans classify first.
 pub const MAX_APP_TRANSITIONS: u64 = 480;
-pub const REASONING_TRANSITION_RESERVE: u64 = 64;
-pub const MAX_REASONING_POLLS: u64 = 20;
+pub const REASONING_TRANSITION_RESERVE: u64 = 44;
+pub const MAX_REASONING_POLLS: u64 = 10;
 pub fn transition_count(state: &Value) -> u64 {
     state["counters"]["transition_count"]
         .as_u64()
@@ -258,6 +258,20 @@ mod tests {
         fn pipe(self) -> String {
             serde_json::to_string(&self).unwrap()
         }
+    }
+    #[test]
+    fn polling_reserve_preserves_all_stage_budgets() {
+        assert_eq!(MAX_REASONING_POLLS, 10);
+        assert_eq!(REASONING_TRANSITION_RESERVE, 44);
+        let exploration = transition_limit(&json!({"stage":"exploration"}));
+        let combinations = transition_limit(&json!({"stage":"combinations"}));
+        let worlds = transition_limit(&json!({"stage":"worlds"}));
+        assert_eq!((exploration, combinations, worlds), (232, 264, 436));
+        assert_eq!(exploration + 32, combinations);
+        assert_eq!(combinations + 44 + 128, worlds);
+        assert_eq!(worlds + 44, MAX_APP_TRANSITIONS);
+        assert_eq!(MAX_APP_TRANSITIONS + 32, 512);
+        assert!(40 + 4 <= REASONING_TRANSITION_RESERVE);
     }
     #[test]
     fn late_branch_is_screened_before_earlier_candidates_repeat_deep_checks() {

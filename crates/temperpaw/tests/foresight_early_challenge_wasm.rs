@@ -78,9 +78,9 @@ async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_c
     let tasks = json!([{"nodeId":"h","function":"classify_temporal","depth":0},{"nodeId":"h","function":"classify_gap","depth":0},{"nodeId":"h","function":"estimate_likelihood","depth":0},{"nodeId":"h","function":"evaluate_novelty","depth":0},{"nodeId":"h","function":"decision_value","depth":0}]);
     let original = json!({"stage":"exploration","baseline_status":"established","baseline":{"as_of":"2026-09-30"},"cursor":2,"tasks":tasks,"continue_exploring":true,"round":3,"rounds":[],"http_calls":41,"evidence_ids":["e"],"results":{"e":{"classify_gap":"none"},"h":{"classify_temporal":"future_change","classify_gap":"evidence"}},"evaluations":{"e":{"classify_gap":{"type":"choice"}},"h":{"classify_gap":{"type":"choice","context":{"evidence_ids":["e"]}}}}});
     let trace = json!([{"index":0,"nodeId":"h","function":"classify_gap","decision":"evidence"}]);
-    let mut fields = json!({"_transition_count":96,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":original.to_string(),"trace_json":trace.to_string()});
+    let mut fields = json!({"_transition_count":156,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":original.to_string(),"trace_json":trace.to_string()});
     let mut completed_round = fields.clone();
-    completed_round["_transition_count"] = json!(90);
+    completed_round["_transition_count"] = json!(150);
     let mut completed_program = original.clone();
     completed_program["cursor"] = json!(5);
     completed_round["program_json"] = json!(completed_program.to_string());
@@ -134,7 +134,7 @@ async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_c
     );
     fields["program_json"] = out["program_json"].clone();
     fields["phase"] = json!("challenge");
-    fields["reasoning_result"]=json!(json!({"premises_challenged":[{"assumption":"The existing mechanism remains necessary","alternative":"A different mechanism performs the purpose"}],"hypotheses":[{"id":"alternative","statement":"Another mechanism succeeds by2030","requires":["ref_0001"]}],"research_evidence":[],"continue_exploring":true,"exploration_note":"Challenge the premise"}).to_string());
+    fields["reasoning_result"]=json!(json!({"premises_challenged":[{"assumption":"The existing mechanism remains necessary","alternative":"A different mechanism performs the purpose","prior_hypothesis_ids":["ref_0002"],"alternative_hypothesis_ids":["alternative"]}],"hypotheses":[{"id":"alternative","statement":"Another mechanism succeeds by2030","requires":["ref_0001"]}],"research_evidence":[],"continue_exploring":true,"exploration_note":"Challenge the premise"}).to_string());
     let expanded = invoke_host(
         &engine,
         &module(&engine, "semantic_expand"),
@@ -182,7 +182,7 @@ async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_c
     );
     fields["program_json"] = expanded["program_json"].clone();
     fields["snapshot_json"] = expanded["snapshot_json"].clone();
-    fields["_transition_count"] = json!(120);
+    fields["_transition_count"] = json!(180);
     invoke_host(
         &engine,
         &hash,
@@ -270,4 +270,54 @@ async fn late_research_is_not_admitted_when_it_cannot_recheck_existing_evidence(
     let admitted: Value =
         serde_json::from_str(permitted["program_json"].as_str().unwrap()).unwrap();
     assert_eq!(admitted["exploration_admission"]["admitted"], true);
+}
+
+#[tokio::test]
+#[ignore = "Requires captured later snapshot and disclosed admission reconstruction"]
+async fn reconstructed_real_admission_reclaims_polling_overhead() {
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("ARN518_POLL_ADMISSION_FIXTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let snapshot = fixture["snapshot"].clone();
+    let mut program = fixture["program"].clone();
+    let observed = program["exploration_admission"].clone();
+    assert_eq!(observed["required_transitions"], 126);
+    assert_eq!(observed["remaining_transitions"], 105);
+    program["stage"] = json!("exploration");
+    program["cursor"] = json!(0);
+    program["tasks"] = json!([]);
+    program["stop_reason"] = json!("round_evaluated");
+    program["continue_exploring"] = json!(true);
+    program["independent_challenge"] = json!({"status":"completed"});
+    let engine = WasmEngine::new().unwrap();
+    let hash = module(&engine, "semantic_step");
+    let expect_old = std::env::var("ARN518_EXPECT_OLD_BUDGET").is_ok();
+    let result=invoke_host(&engine,&hash,json!({"_transition_count":87,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]"}),Arc::new(SimWasmHost::new()),"Reason").await;
+    assert_eq!(
+        result["phase"],
+        if expect_old { "compose" } else { "explore" }
+    );
+    let next: Value = serde_json::from_str(result["program_json"].as_str().unwrap()).unwrap();
+    let admission = &next["exploration_admission"];
+    assert_eq!(admission["estimated_batches"], 15);
+    assert_eq!(admission["current_graph_tasks"], 107);
+    assert_eq!(admission["current_graph_evaluation_transitions"], 30);
+    assert_eq!(
+        admission["reasoning_reserve"],
+        if expect_old { 64 } else { 44 }
+    );
+    assert_eq!(
+        admission["required_transitions"],
+        if expect_old { 126 } else { 106 }
+    );
+    assert_eq!(
+        admission["remaining_transitions"],
+        if expect_old { 105 } else { 145 }
+    );
+    assert_eq!(admission["admitted"], !expect_old);
+    assert_eq!(next["results"], program["results"]);
+    assert_eq!(next["evaluations"], program["evaluations"]);
+    assert_eq!(next["evidence_ids"], program["evidence_ids"]);
+    assert!(result.get("started_at_ms").is_none());
 }

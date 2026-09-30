@@ -143,3 +143,103 @@ fn metadata_exposes_exact_phase_reset_parameters() {
         assert_ne!(mutant, expected);
     }
 }
+
+#[test]
+fn ten_poll_phase_counts_worst_case_success_and_timeout_without_reset() {
+    let source = source().replacen("initial = \"Created\"", "initial = \"Choosing\"", 1);
+    let spec: toml::Value = toml::from_str(&source).unwrap();
+    for name in ["SpawnReasoning", "ReasoningPending"] {
+        let action = spec["action"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"].as_str() == Some(name))
+            .unwrap();
+        let schedule = action["effect"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e.get("action").and_then(toml::Value::as_str) == Some("CheckReasoning"))
+            .unwrap();
+        assert_eq!(
+            schedule
+                .get("delay_seconds")
+                .and_then(toml::Value::as_integer),
+            Some(30)
+        );
+    }
+    let retry = spec["action"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"].as_str() == Some("ReasoningRetry"))
+        .unwrap();
+    assert!(
+        retry["effect"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.get("delay_seconds").and_then(toml::Value::as_integer) == Some(15))
+    );
+    for timeout in [false, true] {
+        let mut actor = EntityActorHandler::new(
+            "SemanticRun",
+            "fixture",
+            Arc::new(TransitionTable::from_ioa_source(&source)),
+        );
+        actor.init().unwrap();
+        let mut apply = |action: &str, params: Value| {
+            actor.handle_message(action, &params.to_string()).unwrap()
+        };
+        apply(
+            "Reason",
+            json!({"phase":"compose","program_json":"{}","trace_json":"[]","reasoning_phase_polls":0}),
+        );
+        let launch = json!({"system_prompt":"fixture","user_message":"fixture","tools_enabled":"","tool_choice":"none","max_turns":"1"});
+        apply("LaunchReasoning", launch.clone());
+        apply("SpawnReasoning", json!({}));
+        for _ in 0..3 {
+            apply("CheckReasoning", json!({}));
+            apply(
+                "ReasoningRetry",
+                json!({"last_retry_error":"HTTP 503","last_retry_session_id":"old"}),
+            );
+            apply("SpawnReasoning", json!({}));
+        }
+        for _ in 0..4 {
+            apply("CheckReasoning", json!({}));
+            apply("ReasoningComplete", json!({"reasoning_result":"{}"}));
+            apply("CompositionRejected", json!({"program_json":"{}"}));
+            apply("LaunchReasoning", launch.clone());
+            apply("SpawnReasoning", json!({}));
+        }
+        for _ in 0..2 {
+            apply("CheckReasoning", json!({}));
+            apply("ReasoningPending", json!({}));
+        }
+        apply("CheckReasoning", json!({}));
+        let result = if timeout {
+            apply("ReasoningPending", json!({}));
+            apply("CheckReasoning", json!({}));
+            apply("Fail", json!({"error_message":"poll budget exhausted"}))
+        } else {
+            apply("ReasoningComplete", json!({"reasoning_result":"{}"}));
+            apply(
+                "Expanded",
+                json!({"snapshot_json":"{}","program_json":"{}","started_at_ms":"original"}),
+            )
+        };
+        assert_eq!(
+            result["counters"]["transition_count"],
+            if timeout { 40 } else { 39 }
+        );
+        assert_eq!(
+            result["counters"]["reasoning_phase_polls"],
+            if timeout { 11 } else { 10 }
+        );
+        assert_eq!(result["counters"]["reasoning_retry_count"], 3);
+        if !timeout {
+            assert_eq!(result["fields"]["started_at_ms"], "original");
+        }
+    }
+}
