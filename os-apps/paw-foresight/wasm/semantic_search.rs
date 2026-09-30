@@ -541,6 +541,85 @@ pub fn validate_task(snapshot: &Value, task: &Value) -> Result<(), String> {
     Ok(())
 }
 
+// The set audit compares supplied trajectories, not their likelihood or source validity.
+// Keep complete defining prose and qualifications; omit operational and presentation fields.
+fn set_audit_record(node: &Value, fields: &[&str]) -> Value {
+    let mut record = serde_json::Map::new();
+    for key in fields {
+        if let Some(value) = node.get(*key) {
+            record.insert((*key).into(), value.clone());
+        }
+    }
+    Value::Object(record)
+}
+fn set_audit_projection(state: &mut Value) {
+    for (group, fields) in [
+        (
+            "proposed_worlds",
+            &[
+                "Id",
+                "kind",
+                "title",
+                "statement",
+                "definition",
+                "mechanism",
+                "narrative",
+                "shared_question",
+                "trajectory_answer",
+                "assumptions",
+                "facets",
+                "chain",
+                "branch_conditions",
+                "component_ids",
+                "counter_ids",
+                "scope",
+                "resolve_by",
+                "date",
+                "by",
+            ][..],
+        ),
+        (
+            "components",
+            &[
+                "Id",
+                "kind",
+                "statement",
+                "definition",
+                "mechanism",
+                "scope",
+                "resolve_by",
+                "date",
+                "by",
+                "evidence_note",
+                "provenance",
+                "source_refs",
+            ][..],
+        ),
+        (
+            "source_evidence",
+            &[
+                "Id",
+                "kind",
+                "statement",
+                "evidence_note",
+                "evidence_metadata",
+                "provenance",
+                "claim_type",
+                "resolution",
+            ][..],
+        ),
+    ] {
+        if let Some(records) = state[group].as_array() {
+            state[group] = json!(
+                records
+                    .iter()
+                    .map(|n| set_audit_record(n, fields))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
     validate_task(snapshot, task)?;
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
@@ -605,7 +684,8 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .filter(|n| required.contains(field(n, "Id")))
                     .collect::<Vec<_>>()
             );
-            json!({"type":"choice","instructions":"Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
+            set_audit_projection(&mut state);
+            json!({"type":"choice","instructions":"This is a structural comparison of the supplied futures, not evidence verification or likelihood estimation. Source qualifications and baseline limits are retained, but full source bodies and prior scores are deliberately not inputs to this judgment. Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
         }
         "check_pair" => {
             let pair = ids(&task["pair_ids"])?;
@@ -1411,6 +1491,35 @@ mod branch_tests {
 #[cfg(test)]
 mod world_set_tests {
     use super::*;
+    #[test]
+    fn set_projection_preserves_external_premises_and_source_limitations() {
+        let branch = json!([{"branch_id":"b","kind":"not_all_occurring","by":"2036-01-01","events":[{"id":"outside-components","statement":"A scoped future premise","by":"2035-01-01"}]}]);
+        let mut state = json!({"baseline":{"unknowns":["Missing current evidence"]},"proposed_worlds":[{"Id":"w","statement":"Full definition","mechanism":"Full mechanism","branch_conditions":branch,"component_ids":["h"],"counter_ids":[],"source_session_id":"old","scene":"presentation"}],"components":[{"Id":"h","statement":"Full event","mechanism":"Full cause","evidence_note":"Limited support","source_refs":[{"quote":"Qualification"}],"branch_state":{"duplicate":true},"evaluations":{"score":9}}],"source_evidence":[{"Id":"e","statement":"Only a title was fetched; not proof of adoption","evidence_metadata":{"kind":"lead"},"provenance":"weak_signal","source_session_id":"old"}]});
+        let original = state.clone();
+        set_audit_projection(&mut state);
+        assert_eq!(state["proposed_worlds"][0]["branch_conditions"], branch);
+        assert_eq!(
+            state["components"][0]["source_refs"],
+            original["components"][0]["source_refs"]
+        );
+        assert_eq!(
+            state["source_evidence"][0]["statement"],
+            original["source_evidence"][0]["statement"]
+        );
+        assert_eq!(
+            state["source_evidence"][0]["evidence_metadata"],
+            original["source_evidence"][0]["evidence_metadata"]
+        );
+        assert_eq!(state["baseline"], original["baseline"]);
+        let mut changed = original;
+        changed["proposed_worlds"][0]["scene"] = json!("Different presentation");
+        changed["components"][0]["evaluations"] = json!({"score":0});
+        changed["source_evidence"][0]["source_session_id"] = json!("new");
+        set_audit_projection(&mut changed);
+        assert_eq!(state, changed);
+        assert!(state["components"][0].get("branch_state").is_none());
+    }
+
     #[test]
     fn set_identity_is_exact_and_every_world_remains_in_context() {
         let worlds = json!(["w1", "w2"]);

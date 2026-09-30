@@ -1005,6 +1005,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
                     values.remove("decision_value");
                     values.remove("classify_gap");
                     values.remove("estimate_likelihood");
+                    values.remove("estimate_conditional");
                 }
             }
         }
@@ -1809,12 +1810,20 @@ mod tests {
 
     #[test]
     fn new_evidence_rechecks_same_claim_without_reusing_old_estimates() {
-        let mut snapshot = json!({"nodes":[{"Id":"e","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"The same event","edges":"[]"}]});
-        let old = json!({"http_calls":17,"rounds":[],"evidence_ids":["e"],"results":{"h":{"classify_gap":"evidence","estimate_likelihood":"0.4","evaluate_novelty":"2"}},"evaluations":{"h":{"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4}}}});
+        let mut snapshot = json!({"nodes":[{"Id":"e","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"The same event","branch_id":"condition-a","edges":"[]"}]});
+        let old = json!({"http_calls":17,"rounds":[],"evidence_ids":["e"],"results":{"h":{"classify_gap":"evidence","estimate_likelihood":"0.4","estimate_conditional":"0.7","evaluate_novelty":"2"}},"evaluations":{"h":{"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4},"estimate_conditional":{"probability":0.7}}}});
         let generated = json!({"continue_exploring":true,"exploration_note":"Investigate"});
         let unchanged = replan(&snapshot, &old, &generated, 0).unwrap();
         assert_eq!(unchanged["http_calls"], 17);
         assert_eq!(unchanged["results"]["h"]["estimate_likelihood"], "0.4");
+        assert_eq!(unchanged["results"]["h"]["estimate_conditional"], "0.7");
+        assert!(
+            !unchanged["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == "estimate_conditional")
+        );
         assert!(
             !unchanged["tasks"]
                 .as_array()
@@ -1828,7 +1837,11 @@ mod tests {
             .push(json!({"Id":"new-source","kind":"research_evidence","edges":"[]"}));
         let refreshed = replan(&snapshot, &old, &generated, 1).unwrap();
         assert_eq!(refreshed["http_calls"], 17);
-        for function in ["classify_gap", "estimate_likelihood"] {
+        for function in [
+            "classify_gap",
+            "estimate_likelihood",
+            "estimate_conditional",
+        ] {
             assert!(refreshed["results"]["h"][function].is_null());
             assert!(refreshed["evaluations"]["h"][function].is_null());
             assert!(

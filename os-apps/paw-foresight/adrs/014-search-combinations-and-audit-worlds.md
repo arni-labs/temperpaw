@@ -17,8 +17,8 @@ judgments in the composition input; a surprising idea is not discarded because
 its probability or compatibility is uncertain. These candidate sets are search
 seeds, not an exhaustive enumeration or a proof of joint consistency.
 
-Each world must contain several facets, explicit assumptions and a connected,
-dated chain of defining events. Facet names emerge from the question; there are
+Each world must contain several facets, explicit assumptions and dated causal
+links where relevant; parallel independent developments need no invented link. Facet names emerge from the question; there are
 no prescribed economic, political, optimistic or pessimistic buckets. Validate
 references, coverage, acyclicity and deadline ordering deterministically.
 Source-support links are distinct from future causal prerequisites.
@@ -52,7 +52,7 @@ progress; there is no inferred “gaps cleared” count.
 
 ## Verification and limits
 
-Tests reject cycles, impossible date order, disconnected chains, missing facet
+Tests reject cycles, impossible date order, invalid causal links, missing facet
 coverage, malformed fan-out answers and invalid subject references. Higher-order
 conflicts must trigger fresh composition even when every pair was compatible.
 Conditional requests must exclude the target from their conditioning set.
@@ -64,3 +64,21 @@ proof, forecast calibration, or an exhaustive search. Worlds may overlap, so
 their probabilities do not form a distribution summing to one. This change does
 not yet maintain a claim-specific ledger proving that research questions were
 answered; unknowns remain visible rather than being counted as cleared.
+
+
+### World-set comparison input boundary
+
+The set-difference judgment receives a structural projection, not full operational
+snapshot records. It retains complete world definitions, mechanisms, narrative,
+assumptions, facets, chain links, signed branch conditions and all defining/counter
+event statements, scopes, dates and evidentiary qualifications. Baseline and source
+claim limitations remain available. Presentation cards, prior scores, session IDs
+and duplicate serialized graph data do not determine whether the proposed worlds
+answer the same question differently. No prose is truncated. Likelihood and
+individual evidence checks keep their existing inputs.
+
+This boundary addresses a captured singleton request rejected with
+`max_tokens_exceeded`; reducing question count cannot split a singleton. Artifact
+verification compares exact retained values and record-ID sets and mutates omitted
+fields to establish invariance. Byte reduction is measured, not claimed as a token
+count or live provider acceptance; supported native continuation verifies that.
