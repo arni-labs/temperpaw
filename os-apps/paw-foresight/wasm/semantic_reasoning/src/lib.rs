@@ -36,22 +36,37 @@ Reference contract: existing catalog nodes use exact ref_ identifiers; never rec
 
 Resource contract: at most128 TOTAL hypotheses plus research_evidence per batch; capacity5000 Jev calls,2048 nodes,64 rounds and one hour. These are limits, not targets or category counts. Continue while another round can add a materially different mechanism or resolve a consequential uncertainty. Stop with continue_exploring=false when it cannot, explaining why and what remains unknown. A budget stop means incomplete exploration, not convergence."#;
 
-const CHALLENGE_PROMPT: &str = r#"Challenge the shared causal premises of the supplied candidate futures. You are a fresh reasoner given the same question and observed baseline, plus existing candidate definitions and mechanisms without their scores. Identify where several candidates assume the same arrangement continues. Develop a rival mechanism and interacting downstream consequences that would change the answer to the whole question, rather than another topic or example within that arrangement. Explain which existing claims share the premise and which new claims express its alternative. Rival trajectories may overlap; do not force mutually exclusive worlds, prescribed axes, optimism or any desired outcome. Keep observations separate from conjecture and respect the vantage and horizon; frozen hindcasts admit no later knowledge.
+const CHALLENGE_PROMPT: &str = r#"Challenge the shared causal premises of the supplied candidate futures. You are a fresh reasoner given the same question and observed baseline, plus existing candidate definitions and mechanisms with current novelty and decision-value judgments. These are fallible critiques, not probabilities, targets or a required novelty threshold. Use them to examine repeated mechanisms and consequential unanswered alternatives, not to manufacture surprising claims. Identify where several candidates assume the same arrangement continues. Develop a rival mechanism and interacting downstream consequences that would change the answer to the whole question, rather than another topic or example within that arrangement. Explain which existing claims share the premise and which new claims express its alternative. Rival trajectories may overlap; do not force mutually exclusive worlds, prescribed axes, optimism or any desired outcome. Keep observations separate from conjecture and respect the vantage and horizon; frozen hindcasts admit no later knowledge.
 
 Return JSON ONLY: {"premises_challenged":[{"assumption":"shared changeable causal premise, <=600 characters","alternative":"rival mechanism and interacting consequences, <=1200 characters","prior_hypothesis_ids":["existing candidate ref_ IDs sharing this premise"],"alternative_hypothesis_ids":["new hypothesis IDs in this batch expressing the alternative"]}],"hypotheses":[{"id":"unique short ASCII ID, not ref_","title":"distinct future claim","statement":"self-contained observable future event with scope and horizon","mechanism":"causal path and assumptions","requires":["visible evidence/candidate ref_ ID or a new hypothesis ID in this batch"],"parent":"optional new hypothesis ID in this same batch only","scene":"imagined everyday consequence","signal":"observable early sign","falsifier":"what would undermine the mechanism","evidence_note":"what is observed versus conjectural","research_question":"important unanswered premise"}],"research_evidence":[],"continue_exploring":true,"exploration_note":"how the causal framing changed or why no useful alternative was found"}.
 
 Each premise needs nonempty prior and alternative ID lists. Every new hypothesis must belong to at least one alternative list; empty premises require empty hypotheses. These links record a challenge, not proof or required co-occurrence. At most32 premises and128 hypotheses are resource limits, not targets. Existing IDs use the supplied common ref_ namespace. Prior IDs must be existing candidates; alternative IDs must be new hypotheses in this batch. Return no fabricated research or probabilities. New hypotheses may depend on each other; use [] when no prerequisite is identified. You may return empty premises and hypotheses when you cannot identify a consequential rival mechanism; explain that limit honestly."#;
 
-fn challenge_input(snapshot: &Value) -> Result<Value, String> {
+fn challenge_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let evidence = references::evidence_snapshot(snapshot);
     let candidates: Vec<_> = node_catalog(snapshot)
         .into_iter()
         .filter(|node| matches!(core::field(node, "kind"), "scenario" | "revision"))
         .collect();
+    let mut judgments = json!({});
+    for candidate in &candidates {
+        let id = core::field(candidate, "Id");
+        for function in ["evaluate_novelty", "decision_value"] {
+            if !program["results"][id][function].is_null() {
+                judgments[id][function] = program["results"][id][function].clone();
+            }
+        }
+    }
     let input = references::References::new(snapshot)?.project(&json!({
+        "candidate_judgments":judgments,
+        "evaluation_semantics":{
+            "score_scale":"Expected category index on a 0–4 scale, not a probability or a percentage.",
+            "evaluate_novelty":definitions::evaluate_novelty(),
+            "decision_value":definitions::decision_value()
+        },
         "world":snapshot["world"],"observed_evidence":evidence["nodes"],
         "existing_candidates":candidates,
-        "reference_scope":"All visible IDs share the full snapshot namespace. Prior premise links use existing candidates; alternative links use new batch hypotheses. Dependencies use visible evidence, candidates or new batch hypotheses. Scores are intentionally absent."
+        "reference_scope":"All visible IDs share the full snapshot namespace. Prior premise links use existing candidates; alternative links use new batch hypotheses. Dependencies use visible evidence, candidates or new batch hypotheses. Likelihoods are intentionally absent; novelty and decision-value judgments are fallible critique."
     }));
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
         return Err("Independent challenge context exceeds context bound".into());
@@ -68,11 +83,11 @@ Begin with the present at world.last_ingest_date. Separate supported observation
 A world may contain parallel developments or changes with a shared background cause. Explain their relationship in mechanism and assumptions. chain may contain zero to twenty-four links: include only claimed causal dependencies, never invent a direct link just to connect every component. If a shared cause is itself an existing defining component, it may link separately to its consequences. All components still receive joint-world evaluation even when no causal link is claimed.
 Return JSON ONLY: {"shared_question":"<=800 characters; the same central question or interacting uncertainties, grounded in the original question and explored possibilities","baseline":{"as_of":"exact world.last_ingest_date","observed":[{"claim":"<=400 characters; present fact with scope and source-date limits","evidence_ids":["actual evidence node refs, not hypotheses"]}],"assumptions":["<=240 characters; user conditions or openly assumed premises"],"unknowns":["<=240 characters; missing current evidence"]},"worlds":[{"id":"unique short ASCII ID, not ref_","trajectory_answer":"<=1000 characters; answer the shared question with an overall trajectory and its downstream consequences, not a topic summary","title":"<=100 characters; a clear claim people can picture","statement":"<=1000 characters; precise joint future event: ALL defining component changes happen together within the target horizon, with actors and scope","mechanism":"<=1200 characters; why these changes fit together and what could break the chain","component_ids":["3–12 different existing scenario/revision refs defining this world's joint event"],"counter_ids":["0–12 existing hypothesis refs that challenge this world; not its prerequisites"],"facets":[{"id":"unique local facet id <=80 characters","title":"short emergent dimension <=100 characters","description":"what changes and interacts with other facets, <=800 characters","component_ids":["defining component refs"]}],"chain":[{"id":"unique local link id <=80 characters","from_ids":["prerequisite component refs"],"to_id":"consequence component ref","mechanism":"why these conditions change the consequence, <=800 characters","by":"YYYY-MM-DD between baseline and horizon"}],"assumptions":["0–12 explicit assumptions, each <=600 characters"],"scene":"<=600 characters; an imagined everyday moment in this world","narrative":"<=1200 characters; why this world could happen, who gains or struggles, and a serious challenge","what_you_can_do":["0–4 practical steps, each <=240 characters"],"signals":["1–8 observable early signs, each <=240 characters"],"falsifiers":["1–8 things that would undermine this world, each <=240 characters"]}]}.
 
-Choose 2–6 distinct worlds, a compact answer rather than a quota to fill. Use only exact IDs from composition_candidates.component_ids for defining components. Other catalog nodes remain context or challenges; their presence in the catalog does not make them eligible components. composition_candidates.excluded explains observed, mixed or currently unevaluated claims; never bypass these restrictions by renaming a claim. Challenges may use exact existing hypothesis refs. A component is a defining future change, not merely a source citation. Do not pick unrelated claims to make a story look rich. Do not invent new core events at this stage: they would bypass exploration. Build layered worlds, not lists of jobs or themed suggestions. Give each world 3–12 distinct facets: dimensions relevant to the question that emerge from its actual changes, without a prescribed topic list. Each facet links its defining components. Give 0–24 genuinely claimed causal links between components, each with a mechanism and date. Parallel developments need not have links between them. Claimed links must not create cycles. Each link has a distinct consequence to_id; combine its prerequisite from_ids into that link. Every component also belongs to a facet. Link dates must respect causal ordering. State assumptions separately. Use world_set_audit as the recorded set-level critique. If complementary_slices, revise overall trajectories rather than rename topical slices; retain uncertainty when the evidence cannot support distinct alternatives. Use combination_search and world_audits as recorded model judgments: they are not proof. When prior worlds are challenged, construct revised worlds that address or openly retain the specific conflicts and unknowns. Never claim a check ran unless its actual result is supplied. If exploration is weak or stopped early, say so in the baseline unknowns and the narratives. Each world will receive its OWN fresh Jev evaluation of the whole joint event, including dependencies and counterevidence. Never supply probabilities or combine the component estimates yourself. These worlds may overlap; they are not a complete partition of every possible future."#;
+Choose 2–6 distinct worlds, a compact answer rather than a quota to fill. Use only exact IDs from composition_candidates.component_ids for defining components. Other catalog nodes remain context or challenges; their presence in the catalog does not make them eligible components. composition_candidates.excluded explains observed, mixed or currently unevaluated claims; never bypass these restrictions by renaming a claim. Challenges may use exact existing hypothesis refs. A component is a defining future change, not merely a source citation. Do not pick unrelated claims to make a story look rich. Do not invent new core events at this stage: they would bypass exploration. Build layered worlds, not lists of jobs or themed suggestions. Give each world 3–12 distinct facets: dimensions relevant to the question that emerge from its actual changes, without a prescribed topic list. Each facet links its defining components. Give 0–24 genuinely claimed causal links between components, each with a mechanism and date. Parallel developments need not have links between them. Claimed links must not create cycles. Each link has a distinct consequence to_id; combine its prerequisite from_ids into that link. Every component also belongs to a facet. Link dates must respect causal ordering. State assumptions separately. Use world_set_audit as the recorded set-level critique. If complementary_slices, revise overall trajectories rather than rename topical slices; retain uncertainty when the evidence cannot support distinct alternatives. If exploration_admission.admitted is false, exploration ended for its recorded resource limit, not established convergence; preserve that limitation. Use combination_search and world_audits as recorded model judgments: they are not proof. When prior worlds are challenged, construct revised worlds that address or openly retain the specific conflicts and unknowns. Never claim a check ran unless its actual result is supplied. If exploration is weak or stopped early, say so in the baseline unknowns and the narratives. Each world will receive its OWN fresh Jev evaluation of the whole joint event, including dependencies and counterevidence. Never supply probabilities or combine the component estimates yourself. These worlds may overlap; they are not a complete partition of every possible future."#;
 
 const WRITING_STYLE: &str = r#"Write for a curious person outside the industry. Be direct, concrete and easy to picture. No corporate language, news roundups, slogans or unexplained professional shorthand. Say what a person does, buys, stops needing or notices on an ordinary day. A scene is explicitly imagined, not evidence. A title makes a clear claim; it does not name a management theme. Explain why in familiar words, including what could stop it. Do not exaggerate to sound ambitious. Translate any specialist terms into familiar words that fit the question. If a technical name is essential, explain it. Keep short paragraphs and avoid repeating the same point in every field."#;
 
-const SYNTHESIS_PROMPT: &str = r#"Present the composed WORLDS as answers to their shared_question. Preserve each trajectory_answer when explaining the comparison, rather than splitting the answer into topic summaries. These are joint futures built from many explored pieces, not individual event cards. The worlds have already been constructed and evaluated separately. Return one outcome for each supplied world, preserving its defining event, components and challenges. Do not invent, merge or split worlds at this writing step. Explain the different lives they imply, the causal path, and what could break each one. Start beyond what the baseline says is already happening. Present a few distinct worlds in plain, vivid prose rather than a summary of industry news. Explain how their supplied facets and causal chains interact. Distinguish recorded consistency judgments, conditional estimates, unresolved issues and whole-world odds. Do not claim uncertainty was resolved or consistency proven merely because an audit ran. Refinement rounds are repeated model judgments about the same world, not independent evidence. Stable scores do not establish accuracy; preserve incomplete rounds and the engine's stop reason.
+const SYNTHESIS_PROMPT: &str = r#"Present the composed WORLDS as answers to their shared_question. Preserve each trajectory_answer when explaining the comparison, rather than splitting the answer into topic summaries. These are joint futures built from many explored pieces, not individual event cards. The worlds have already been constructed and evaluated separately. Return one outcome for each supplied world, preserving its defining event, components and challenges. Do not invent, merge or split worlds at this writing step. Explain the different lives they imply, the causal path, and what could break each one. Start beyond what the baseline says is already happening. Present a few distinct worlds in plain, vivid prose rather than a summary of industry news. Explain how their supplied facets and causal chains interact. Distinguish recorded consistency judgments, conditional estimates, unresolved issues and whole-world odds. Do not claim uncertainty was resolved or consistency proven merely because an audit ran. If exploration_admission.admitted is false, state that exploration was budget-limited rather than converged. Refinement rounds are repeated model judgments about the same world, not independent evidence. Stable scores do not establish accuracy; preserve incomplete rounds and the engine's stop reason.
 
 Keep narrative prose about the imagined world. Evaluation status belongs only in the dedicated evaluation fields and evidence limits; never repeat raw status keys, audit labels or provider errors in each narrative.
 Return JSON ONLY: {"schema":"foresight-worlds-v3","headline":"<=160 characters; the important choice or contrast between these worlds","horizon":"exact world.target_date","probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"summary":"<=400 characters; what the reader learns from comparing the worlds","evidence_limits":["1–32 honest limitations, each <=240 characters"],"research_questions":["0–64 unresolved questions, each <=240 characters"],"outcomes":[{"id":"short stable ID","world_id":"exact supplied world ref_ ID","title":"<=100 characters; concrete claim","definition":"copy the exact world statement, <=1000 characters","component_ids":["copy world component refs"],"counter_ids":["copy world counter refs"],"scene":"<=600 characters; a short imagined moment in this world","narrative":"<=1200 characters; why, who gains or loses, what could break it","what_you_can_do":["0–4 concrete steps, each <=240 characters"],"signals":["1–8 things to watch, each <=240 characters"],"falsifiers":["1–8 things that would undermine this world, each <=240 characters"]}]}.
@@ -213,7 +228,7 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         "composition_correction":program["composition_correction"],
         "independent_challenge":program["independent_challenge"],
         "baseline_correction":program["baseline_correction"], "temporal_semantics":core::temporal_criteria(),
-        "issues":program["issues"], "stop_reason":program["stop_reason"],
+        "issues":program["issues"], "stop_reason":program["stop_reason"], "exploration_admission":program["exploration_admission"],
         "remaining_calls":program["remaining_calls"], "round":program["round"],
         "combination_search":program["combination_search"], "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":"If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures.",
         "active_world_ids":program["active_world_ids"], "world_revision":program["world_revision"], "world_refinement":compact_world_refinement(program)
@@ -250,7 +265,7 @@ fn world_writing_input(snapshot: &Value, program: &Value) -> Result<Value, Strin
         refs.project(&json!({
             "world":snapshot["world"], "baseline":program["baseline"], "worlds":worlds,
             "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":"If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures.", "world_refinement":compact_world_refinement(program),
-            "evaluations":evaluations, "stop_reason":program["stop_reason"],
+            "evaluations":evaluations, "stop_reason":program["stop_reason"], "exploration_admission":program["exploration_admission"],
             "evaluation_error":if program["stop_reason"] == "provider_error" {program["last_error"].clone()} else {Value::Null}, "exploration_note":program["exploration_note"]
         }))
     })
@@ -275,7 +290,7 @@ fn setup(ctx: &Context) -> Result<(), String> {
     let input = if phase == "synthesize" {
         world_writing_input(&snapshot, &program)?
     } else if phase == "challenge" {
-        challenge_input(&snapshot)?
+        challenge_input(&snapshot, &program)?
     } else {
         reasoning_input(&snapshot, &program)?
     };
@@ -346,18 +361,18 @@ mod reasoning_tests {
         assert_eq!(input["catalog"].as_array().unwrap().len(), 5);
     }
     #[test]
-    fn contrastive_challenge_retains_candidates_but_excludes_scores() {
+    fn contrastive_challenge_retains_candidates_but_excludes_likelihoods() {
         let a = json!({"world":{"description":"What might change?"},"nodes":[{"Id":"h","kind":"scenario","title":"Review","statement":"Review remains essential","mechanism":"Present arrangement persists","probability":0.99},{"Id":"e","kind":"evidence","statement":"Observed capability"},{"Id":"w","kind":"world","statement":"Hidden world"}]});
-        let input = challenge_input(&a).unwrap();
+        let input = challenge_input(&a, &json!({})).unwrap();
         assert_eq!(input["existing_candidates"].as_array().unwrap().len(), 1);
         assert_eq!(input["existing_candidates"][0]["Id"], "ref_0001");
         assert_eq!(input["observed_evidence"][0]["Id"], "ref_0002");
         assert!(input["existing_candidates"][0].get("probability").is_none());
         let mut b = a.clone();
         b["nodes"][0]["probability"] = json!(0.01);
-        assert_eq!(input, challenge_input(&b).unwrap());
+        assert_eq!(input, challenge_input(&b, &json!({})).unwrap());
         b["nodes"][0]["mechanism"] = json!("A different causal premise");
-        assert_ne!(input, challenge_input(&b).unwrap());
+        assert_ne!(input, challenge_input(&b, &json!({})).unwrap());
         let premise = json!({"prior_hypothesis_ids":["h"],"alternative_hypothesis_ids":["h"],"assumption":"Review needed","alternative":"Different mechanism"});
         let ordinary = reasoning_input(
             &a,
@@ -369,6 +384,35 @@ mod reasoning_tests {
             "ref_0001"
         );
         assert!(!research_enabled("challenge", &a));
+    }
+
+    #[test]
+    fn challenge_gets_current_compact_judgments_without_likelihood_and_admission_survives() {
+        let snapshot = json!({"nodes":[{"Id":"e","kind":"evidence"},{"Id":"h","kind":"scenario"},{"Id":"w1","kind":"world"},{"Id":"w2","kind":"world"}]});
+        let program = json!({"results":{"h":{"evaluate_novelty":"1.2","decision_value":"2.3","estimate_likelihood":"0.97"},"e":{"evaluate_novelty":"4"}},"exploration_admission":{"admitted":false,"remaining_transitions":87,"required_transitions":134},"stop_reason":"worlds_evaluated"});
+        let input = challenge_input(&snapshot, &program).unwrap();
+        assert_eq!(
+            input["candidate_judgments"],
+            json!({"ref_0002":{"evaluate_novelty":"1.2","decision_value":"2.3"}})
+        );
+        assert_eq!(
+            input["evaluation_semantics"]["evaluate_novelty"],
+            definitions::evaluate_novelty()
+        );
+        assert_eq!(
+            input["evaluation_semantics"]["decision_value"],
+            definitions::decision_value()
+        );
+        for input in [
+            reasoning_input(&snapshot, &program).unwrap(),
+            world_writing_input(&snapshot, &program).unwrap(),
+        ] {
+            assert_eq!(
+                input["exploration_admission"],
+                program["exploration_admission"]
+            );
+            assert_eq!(input["stop_reason"], "worlds_evaluated");
+        }
     }
 
     #[test]
