@@ -79,6 +79,29 @@ async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_c
     let original = json!({"stage":"exploration","baseline_status":"established","baseline":{"as_of":"2026-09-30"},"cursor":2,"tasks":tasks,"continue_exploring":true,"round":3,"rounds":[],"http_calls":41,"evidence_ids":["e"],"results":{"e":{"classify_gap":"none"},"h":{"classify_temporal":"future_change","classify_gap":"evidence"}},"evaluations":{"e":{"classify_gap":{"type":"choice"}},"h":{"classify_gap":{"type":"choice","context":{"evidence_ids":["e"]}}}}});
     let trace = json!([{"index":0,"nodeId":"h","function":"classify_gap","decision":"evidence"}]);
     let mut fields = json!({"_transition_count":96,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":original.to_string(),"trace_json":trace.to_string()});
+    let mut completed_round = fields.clone();
+    completed_round["_transition_count"] = json!(90);
+    let mut completed_program = original.clone();
+    completed_program["cursor"] = json!(5);
+    completed_round["program_json"] = json!(completed_program.to_string());
+    let anticipatory = invoke_host(
+        &engine,
+        &hash,
+        completed_round,
+        Arc::new(SimWasmHost::new()),
+        "Reason",
+    )
+    .await;
+    assert_eq!(
+        anticipatory["phase"], "challenge",
+        "another generation phase could jump over the reserved window"
+    );
+    let anticipatory_program: Value =
+        serde_json::from_str(anticipatory["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        anticipatory_program["independent_challenge"]["trigger"],
+        "reserved_before_next_exploration"
+    );
     let out = invoke_host(
         &engine,
         &hash,

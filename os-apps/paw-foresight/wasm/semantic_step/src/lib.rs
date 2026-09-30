@@ -143,15 +143,15 @@ fn plan_combination_phase(
 
 // Reserve a full independent challenge and a subsequent evaluation window
 // before ordinary exploration spends the transition budget. Never reset it.
-fn challenge_due(snapshot: &Value, program: &Value) -> bool {
+fn challenge_due(snapshot: &Value, program: &Value, upcoming_transitions: u64) -> bool {
     let limit = core::transition_limit(program);
     let transitions = program["transition_count"].as_u64().unwrap_or(0);
     let trigger = limit.saturating_sub(core::REASONING_TRANSITION_RESERVE + 32);
     program["stage"] == "exploration"
         && program["baseline_status"] == "established"
         && program["independent_challenge"].is_null()
-        && transitions >= trigger
-        && transitions + core::REASONING_TRANSITION_RESERVE < limit
+        && transitions.saturating_add(upcoming_transitions) >= trigger
+        && transitions.saturating_add(core::REASONING_TRANSITION_RESERVE) < limit
         && snapshot["nodes"]
             .as_array()
             .into_iter()
@@ -188,7 +188,7 @@ fn step(ctx: &Context) -> Result<(), String> {
     if !stopped
         && calls < core::call_limit(&program)
         && elapsed < core::time_limit(&program)
-        && challenge_due(&snapshot, &program)
+        && challenge_due(&snapshot, &program, 0)
     {
         program["independent_challenge"] =
             json!({"status":"pending","trigger":"reserved_transition_window"});
@@ -208,7 +208,17 @@ fn step(ctx: &Context) -> Result<(), String> {
     {
         program["remaining_calls"] = json!(core::MAX_CALLS.saturating_sub(calls));
         program["remaining_round_tasks"] = json!(count.saturating_sub(cursor));
-        let phase = next_phase(&snapshot, &mut program, calls, elapsed);
+        let mut phase = next_phase(&snapshot, &mut program, calls, elapsed);
+        // A further generation phase can consume its full allowance before the
+        // next step. Challenge now rather than jump over the reserved window.
+        if phase == "explore"
+            && challenge_due(&snapshot, &program, core::REASONING_TRANSITION_RESERVE)
+        {
+            program["independent_challenge"] =
+                json!({"status":"pending","trigger":"reserved_before_next_exploration"});
+            program["stop_reason"] = json!("independent_challenge_pending");
+            phase = "challenge";
+        }
         if phase == "refine" {
             set_success_result(
                 "SearchPlanned",
@@ -249,19 +259,25 @@ mod tests {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});
         let mut p =
             json!({"stage":"exploration","baseline_status":"established","transition_count":95});
-        assert!(!challenge_due(&snapshot, &p));
+        assert!(!challenge_due(&snapshot, &p, 0));
+        p["transition_count"] = json!(90);
+        assert!(challenge_due(
+            &snapshot,
+            &p,
+            core::REASONING_TRANSITION_RESERVE
+        ));
         p["transition_count"] = json!(96);
-        assert!(challenge_due(&snapshot, &p));
+        assert!(challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = json!({"status":"pending"});
-        assert!(!challenge_due(&snapshot, &p));
+        assert!(!challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = json!({"status":"completed"});
-        assert!(!challenge_due(&snapshot, &p));
+        assert!(!challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = Value::Null;
         p["transition_count"] = json!(128);
-        assert!(!challenge_due(&snapshot, &p));
+        assert!(!challenge_due(&snapshot, &p, 0));
         p["transition_count"] = json!(96);
         p["stage"] = json!("worlds");
-        assert!(!challenge_due(&snapshot, &p));
+        assert!(!challenge_due(&snapshot, &p, 0));
     }
 
     fn evaluated_world(label: &str) -> (Value, Value) {
