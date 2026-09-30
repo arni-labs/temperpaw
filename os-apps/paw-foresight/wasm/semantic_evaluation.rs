@@ -15,6 +15,7 @@ fn digest(node: &Value) -> Value {
         "quote",
         "observed_at",
         "claim_type",
+        "evidence_metadata",
         "evidence_note",
         "signal",
         "statement",

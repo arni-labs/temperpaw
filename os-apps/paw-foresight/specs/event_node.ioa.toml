@@ -57,6 +57,12 @@ name = "source_refs"
 type = "string"
 initial = "[]"
 
+# Structured source metadata; empty historical records remain unverified.
+[[state]]
+name = "evidence_json"
+type = "string"
+initial = ""
+
 # JSON array of conditional edges: [{"to_id": "...", "kind": "requires|moves|excludes", "note": "..."}]
 # Judged-resolution working state (ADR-004 commitment 2): the adjudicator's
 # verdict, validated by adjudicate_nodes before any Resolve is dispatched.

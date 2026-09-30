@@ -1,4 +1,5 @@
 // Validate presentation probabilities separately from Jev's causal classifiers.
+use crate::core::evidence as evidence_contract;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -113,6 +114,33 @@ fn validate_v1(answer: &Value, snapshot: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn leads_and_unverified_legacy_cannot_establish_new_baselines() {
+        let baseline = json!({"as_of":"2026-09-30","observed":[{"claim":"A substantive finding","evidence_ids":["e"]}],"assumptions":[],"unknowns":[]});
+        let metadata = json!({"kind":"lead","publication_date":"2025","observation_period":{"start":"2020","end":"2021"},"retrieved_at":"2026-09-30"});
+        let mut snapshot = json!({"world":{"last_ingest_date":"2026-09-30","evidence_contract":"v1"},"nodes":[{"Id":"e","kind":"evidence","evidence_metadata":metadata}]});
+        assert!(
+            validate_baseline(&baseline, &snapshot)
+                .unwrap_err()
+                .contains("lead")
+        );
+        snapshot["nodes"][0]["evidence_metadata"]["kind"] = json!("finding");
+        assert!(validate_baseline(&baseline, &snapshot).is_ok());
+        snapshot["nodes"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence_metadata");
+        assert!(validate_baseline(&baseline, &snapshot).is_err());
+        let mut limited = baseline.clone();
+        limited["observed"] = json!([]);
+        limited["unknowns"] = json!(["Historical source content has not been verified."]);
+        assert!(validate_baseline(&limited, &snapshot).is_ok());
+        snapshot["world"]
+            .as_object_mut()
+            .unwrap()
+            .remove("evidence_contract");
+        assert!(validate_baseline(&baseline, &snapshot).is_ok());
+    }
     fn fixture() -> (Value, Value) {
         let outcome = |id: &str, refs: Vec<&str>, probability: f64| json!({"id":id,"title":"A future","definition":"Observable non-overlapping outcome rule","probability":probability,"scenario_ids":refs,"narrative":"Hypothetical outcome, not an observation.","signals":["A dated observable signal"],"falsifiers":["A measurable disconfirmation"]});
         (
@@ -360,9 +388,26 @@ pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), Strin
                 .iter()
                 .find(|n| n["Id"] == *id)
                 .ok_or("Unknown baseline evidence")?;
+            let metadata = &node["evidence_metadata"];
+            if !metadata.is_null() && metadata["kind"] != "legacy_unverified" {
+                evidence_contract::validate(metadata)?;
+                evidence_contract::within_vantage(
+                    metadata,
+                    baseline["as_of"].as_str().unwrap_or(""),
+                )?;
+                if metadata["kind"] == "lead" {
+                    return Err("Research lead cannot establish a baseline observation".into());
+                }
+            }
+            if snapshot["world"]["evidence_contract"] == "v1" && metadata["kind"] != "finding" {
+                return Err("Baseline observation needs a typed finding; legacy evidence belongs in explicit unknowns until verified".into());
+            }
             if let (Some(observed), Some(vantage)) =
                 (node["observed_at"].as_str(), baseline["as_of"].as_str())
-                && observed.len() == 10 && vantage.len() == 10 && observed > vantage {
+                && observed.len() == 10
+                && vantage.len() == 10
+                && observed > vantage
+            {
                 return Err("Baseline evidence is later than its vantage date".into());
             }
             if matches!(

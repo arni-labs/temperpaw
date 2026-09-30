@@ -7,6 +7,17 @@
 
 use temper_wasm_sdk::prelude::*;
 
+fn search_result(result: &Value) -> Value {
+    json!({
+        "title": result.get("title").and_then(Value::as_str).unwrap_or(""),
+        "url": result.get("url").and_then(Value::as_str).unwrap_or(""),
+        "text": result.get("text").and_then(Value::as_str).unwrap_or(""),
+        // Indexed publication metadata is not the observation or retrieval date.
+        // Missing metadata remains unknown rather than borrowing today's date.
+        "published_at": result.get("publishedDate").and_then(Value::as_str),
+    })
+}
+
 /// Entry point.
 #[unsafe(no_mangle)]
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
@@ -16,10 +27,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
 
-        let query = fields
-            .get("query")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let query = fields.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
         if query.is_empty() {
             set_success_result(
@@ -88,17 +96,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let results = parsed
             .get("results")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(|r| {
-                        json!({
-                            "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                            "url": r.get("url").and_then(|v| v.as_str()).unwrap_or(""),
-                            "text": r.get("text").and_then(|v| v.as_str()).unwrap_or(""),
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().map(search_result).collect::<Vec<_>>())
             .unwrap_or_default();
 
         let results_json = serde_json::to_string(&results)
@@ -109,10 +107,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             &format!("web_search: got {} results", results.len()),
         );
 
-        set_success_result(
-            "RecordResults",
-            &json!({"results": results_json}),
-        );
+        set_success_result("RecordResults", &json!({"results": results_json}));
 
         Ok(())
     })();
@@ -121,4 +116,30 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         set_error_result(&e);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_publication_date_survives_without_inventing_missing_dates() {
+        let historical = search_result(&json!({
+            "title": "An older study", "url": "https://example.org/study",
+            "text": "Study participants were observed in 2020–2021.",
+            "publishedDate": "2025-04-10T00:00:00.000Z"
+        }));
+        assert_eq!(historical["published_at"], "2025-04-10T00:00:00.000Z");
+        assert_eq!(
+            historical["text"],
+            "Study participants were observed in 2020–2021."
+        );
+        for missing in [
+            json!({}),
+            json!({"publishedDate": null}),
+            json!({"publishedDate": 2025}),
+        ] {
+            assert!(search_result(&missing)["published_at"].is_null());
+        }
+    }
 }

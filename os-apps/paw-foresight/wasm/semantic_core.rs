@@ -29,6 +29,9 @@ pub fn time_limit(program: &Value) -> u64 {
         _ => MAX_MS - WORLD_TIME_RESERVE_MS,
     }
 }
+pub mod evidence {
+    include!("semantic_evidence.rs");
+}
 pub mod evaluation {
     include!("semantic_evaluation.rs");
 }

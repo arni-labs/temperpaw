@@ -487,6 +487,7 @@
         <Property Name="Probability" Type="Edm.String"/>
         <Property Name="Provenance" Type="Edm.String"/>
         <Property Name="SourceRefs" Type="Edm.String"/>
+        <Property Name="EvidenceJson" Type="Edm.String"/>
         <Property Name="AdjudicatedOutcome" Type="Edm.String"/>
         <Property Name="AdjudicationEvidenceRefs" Type="Edm.String"/>
         <Property Name="AdjudicationConfidence" Type="Edm.String"/>

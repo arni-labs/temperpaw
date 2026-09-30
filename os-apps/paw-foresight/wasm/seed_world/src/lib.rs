@@ -242,6 +242,19 @@ keep this imagined possibility separate from the observations that motivated it.
 
 Persist useful research as it emerges so the person can watch it build. Use the exact API:
 temper.create("EventNodes", {{"world_id": "{world_id}", "statement": "<what the source actually establishes, with its date, scope and limits>", "layer": "mid", "probability": "", "provenance": "observed", "source_refs": "[\"<URL or corpus reference with a short supporting quotation and source date>\"]", "resolve_by": "{target_date}", "author_agent_id": "{agent_id}"}})
+For each sourced node also pass evidence_json, a JSON-encoded object with exactly:
+{{"kind":"finding","publication_date":null,"observation_period":{{"start":null,"end":null}},"retrieved_at":null}}.
+Each typed record has exactly one source_refs entry; split different sources into separate
+records so publication chronology has an unambiguous source.
+A finding contains substantive content actually read in a source or returned extracted
+excerpt. A title, source existence, report contents list or missing result is a lead,
+retained for further research but cannot establish the substantive present baseline.
+Publication and observation dates accept YYYY, YYYY-MM or YYYY-MM-DD at the precision
+actually supported. Retrieval accepts YYYY-MM-DD. Unknown dates are null, never guessed
+from the current vantage or URL. These are different dates: a paper retrieved today can
+report a study from years ago. Search published_at is provider-reported metadata; check
+against the source before treating it as its publication date. No dated metadata makes a
+source true or a forecast observed. Hypothesis nodes need no evidence_json.
 Use provenance observed, contested, weak_signal, or hypothesis to identify the claim's
 status. Use determined only for an actually fixed fact. Leave probability empty for research
 claims: unknown does not mean 0.5 and sourced does not mean 1.0. A genuinely quoted,

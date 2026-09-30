@@ -305,7 +305,15 @@ fn expand(
                     && s.split_whitespace().count() <= 25
             })
             .ok_or("Research excerpt exceeds quotation limit")?;
-        added.push(json!({"Id":resolve(identifier(&report["id"])?),"statement":statement,"kind":"research_evidence","Status":"Reported","provenance":"session_research_report","claim_type":report["provenance"],"edges":"[]","source_refs":json!([url]).to_string(),"quote":quote,"observed_at":report["observed_at"],"evidence_note":"Retrieved report, not proof of a future event."}));
+        let metadata = if report["evidence_metadata"].is_null()
+            && snapshot["world"]["evidence_contract"] != "v1"
+        {
+            core::evidence::legacy()
+        } else {
+            core::evidence::validate(&report["evidence_metadata"])?;
+            report["evidence_metadata"].clone()
+        };
+        added.push(json!({"evidence_metadata":metadata,"Id":resolve(identifier(&report["id"])?),"statement":statement,"kind":"research_evidence","Status":"Reported","provenance":"session_research_report","claim_type":report["provenance"],"edges":"[]","source_refs":json!([url]).to_string(),"quote":quote,"observed_at":report["observed_at"],"evidence_note":"Retrieved report, not proof of a future event."}));
     }
     for hypothesis in hypotheses {
         let mut v = hypothesis.clone();

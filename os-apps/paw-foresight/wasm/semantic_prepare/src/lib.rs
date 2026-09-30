@@ -84,7 +84,7 @@ fn read_checkpoint_response(
         body: response,
     })
 }
-fn snapshot_node(n: &Value) -> Value {
+fn snapshot_node(n: &Value) -> Result<Value, String> {
     let mut safe = json!({});
     for k in [
         "Id",
@@ -103,12 +103,16 @@ fn snapshot_node(n: &Value) -> Value {
     if core::field(&safe, "edges").trim().is_empty() {
         safe["edges"] = json!("[]");
     }
+    safe["evidence_metadata"] = core::evidence::parse(core::field(n, "evidence_json"))?;
+    if safe["evidence_metadata"]["kind"] != "legacy_unverified" {
+        core::evidence::single_source(&safe["source_refs"])?;
+    }
     safe["kind"] = json!(if core::field(n, "provenance") == "hypothesis" {
         "scenario"
     } else {
         "evidence"
     });
-    safe
+    Ok(safe)
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -417,7 +421,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         if core::field(n, "world_id") != id {
             return Err("Cross-world snapshot rejected".into());
         }
-        let safe = snapshot_node(n);
+        let safe = snapshot_node(n)?;
         nodes.push(safe);
     }
     let program = core::plan(&nodes)?;
@@ -434,7 +438,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     if agent_id.is_empty() {
         return Err("Research agent is unavailable".into());
     }
-    let mut safe_world = json!({});
+    let mut safe_world = json!({"evidence_contract":"v1"});
     for k in [
         "Id",
         "name",
@@ -844,10 +848,12 @@ mod tests {
     fn researched_hypotheses_remain_hypotheses_in_the_evaluation_graph() {
         let h = snapshot_node(
             &json!({"Id":"h","provenance":"hypothesis","statement":"An inferred future"}),
-        );
+        )
+        .unwrap();
         let e = snapshot_node(
             &json!({"Id":"e","provenance":"contested","statement":"A disputed source claim"}),
-        );
+        )
+        .unwrap();
         assert_eq!(h["kind"], "scenario");
         assert_eq!(e["kind"], "evidence");
         assert_eq!(e["provenance"], "contested");
