@@ -7,11 +7,23 @@
 
 use temper_wasm_sdk::prelude::*;
 
+const TEXT_MAX_CHARACTERS: usize = 5000;
+
+fn search_request(query: &str) -> Value {
+    json!({"query": query, "type": "auto", "numResults": 10,
+        "contents": {"text": {"maxCharacters": TEXT_MAX_CHARACTERS}}})
+}
+
 fn search_result(result: &Value) -> Value {
+    let text = result.get("text").and_then(Value::as_str).unwrap_or("");
     json!({
         "title": result.get("title").and_then(Value::as_str).unwrap_or(""),
         "url": result.get("url").and_then(Value::as_str).unwrap_or(""),
-        "text": result.get("text").and_then(Value::as_str).unwrap_or(""),
+        "text": text,
+        "text_max_characters": TEXT_MAX_CHARACTERS,
+        // Computed from the returned excerpt, not a provider truncation flag.
+        // A shorter excerpt does not establish full-source completeness.
+        "text_limit_reached": text.chars().count() >= TEXT_MAX_CHARACTERS,
         // Indexed publication metadata is not the observation or retrieval date.
         // Missing metadata remains unknown rather than borrowing today's date.
         "published_at": result.get("publishedDate").and_then(Value::as_str),
@@ -54,16 +66,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         }
 
         // Build Exa search request
-        let body = json!({
-            "query": query,
-            "type": "auto",
-            "numResults": 10,
-            "contents": {
-                "text": {
-                    "maxCharacters": 1000
-                }
-            }
-        });
+        let body = search_request(query);
 
         let headers = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
@@ -121,6 +124,22 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_and_unicode_excerpt_limit_are_explicit() {
+        let request = search_request("a focused source query");
+        assert_eq!(request["contents"]["text"]["maxCharacters"], 5000);
+        assert_eq!(request["numResults"], 10);
+        assert_eq!(request["query"], "a focused source query");
+        for count in [4999, 5000, 5001] {
+            let text = "🦀".repeat(count);
+            let result = search_result(&json!({"text": text}));
+            assert_eq!(result["text"], text);
+            assert_eq!(result["text_max_characters"], 5000);
+            assert_eq!(result["text_limit_reached"], count >= 5000);
+        }
+        assert_eq!(search_result(&json!({}))["text_limit_reached"], false);
+    }
 
     #[test]
     fn indexed_publication_date_survives_without_inventing_missing_dates() {
