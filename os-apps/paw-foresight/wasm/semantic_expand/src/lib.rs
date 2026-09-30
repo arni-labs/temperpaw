@@ -532,8 +532,12 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         .iter()
         .filter(|n| identities.contains(core::field(n, "Id")))
         .collect();
-    for node in &active {
-        core::search::validate_world(node, &updated)?;
+    let errors: Vec<_> = active
+        .iter()
+        .filter_map(|node| core::search::validate_world(node, &updated).err())
+        .collect();
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
     }
     let mut tasks: Vec<_> = active
         .iter()

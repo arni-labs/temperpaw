@@ -740,6 +740,10 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
     snap["world"]["target_date"] = json!("2027-09-30");
     worlds[0]["chain"][1]["id"] = json!("bad_outputs_create_receipts");
     worlds[0]["chain"][1]["by"] = json!("2027-05-31");
+    worlds[1]["chain"][0]["id"] = json!("second_world_late_cause");
+    worlds[1]["chain"][0]["by"] = json!("2027-08-30");
+    worlds[1]["chain"][1]["id"] = json!("second_world_early_effect");
+    worlds[1]["chain"][1]["by"] = json!("2027-04-30");
     snap["nodes"]
         .as_array_mut()
         .unwrap()
@@ -760,6 +764,10 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
         "2027-09-30",
         "bad_outputs_create_receipts",
         "2027-05-31",
+        "second_world_late_cause",
+        "2027-08-30",
+        "second_world_early_effect",
+        "2027-04-30",
         "nondecreasing",
         "not event resolve_by",
     ] {
@@ -767,6 +775,31 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
     }
     assert!(result["callback_params"].get("snapshot_json").is_none());
     assert!(result["callback_params"].get("trace_json").is_none());
+    for world in &worlds {
+        assert!(error.contains(world["id"].as_str().unwrap()), "{error}");
+    }
+    worlds[0]["chain"][0]["by"] = json!("2027-04-01");
+    worlds[1]["chain"][0]["by"] = json!("2027-04-01");
+    fields["program_json"] = result["callback_params"]["program_json"].clone();
+    fields["reasoning_result"] =
+        json!(json!({"baseline":answer(&snapshot())["baseline"],"worlds":worlds}).to_string());
+    let repaired = invoke(&engine, "semantic_expand", fields).await;
+    assert_eq!(repaired["callback_action"], "Expanded", "{repaired}");
+    let repaired_snapshot: Value = serde_json::from_str(
+        repaired["callback_params"]["snapshot_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        repaired_snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["kind"] == "world" && n["archived"] != true)
+            .count(),
+        worlds.len()
+    );
 }
 
 #[tokio::test]
