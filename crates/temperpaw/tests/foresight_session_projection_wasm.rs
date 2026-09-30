@@ -141,6 +141,22 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
     for (status, error, count, expected) in [
         (
             "Failed",
+            "OpenAI Codex API returned 500: native turn auth context mismatch: scopes",
+            0,
+            "ReasoningRetry",
+        ),
+        (
+            "Failed",
+            "OpenAI Codex API returned 500: native turn auth context mismatch: scopes",
+            3,
+            "Fail",
+        ),
+        ("Failed", "HTTP 500: authentication failed", 0, "Fail"),
+        ("Failed", "HTTP 500: permission denied", 0, "Fail"),
+        ("Failed", "HTTP 500: billing limit", 0, "Fail"),
+        ("Failed", "HTTP 500: validation failed", 0, "Fail"),
+        (
+            "Failed",
             "OpenAI Codex API returned 503: upstream connect error or disconnect/reset before headers. connection timeout",
             0,
             "ReasoningRetry",
@@ -190,6 +206,11 @@ async fn polling_projects_result_without_echoing_three_megabyte_prompt() {
         if expected == "ReasoningRetry" {
             assert_eq!(result["callback_params"]["last_retry_error"], error);
             assert_eq!(result["callback_params"]["last_retry_session_id"], "child");
+            assert_eq!(
+                result["callback_params"].as_object().unwrap().len(),
+                2,
+                "Retry must not reset clock, counters or retained work"
+            );
         }
     }
 }

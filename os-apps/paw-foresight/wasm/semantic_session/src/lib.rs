@@ -10,13 +10,22 @@ fn transient_provider_error(error: &str) -> bool {
         "unauthorized",
         "denied",
         "validation",
+        "authentication failed",
+        "invalid credentials",
+        "invalid api key",
+        "invalid token",
+        "token expired",
+        "insufficient scope",
+        "billing",
+        "payment required",
+        "insufficient quota",
     ]
     .iter()
     .any(|word| error.contains(word))
     {
         return false;
     }
-    [429, 502, 503, 504].iter().any(|status| {
+    [429, 500, 502, 503, 504].iter().any(|status| {
         [
             format!("api returned {status}"),
             format!("provider http {status}"),
@@ -132,13 +141,22 @@ mod retry_tests {
     use super::*;
     #[test]
     fn only_explicit_transient_provider_statuses_retry() {
-        for status in [429, 502, 503, 504] {
+        for status in [429, 500, 502, 503, 504] {
             assert!(transient_provider_error(&format!(
                 "OpenAI Codex API returned {status}: upstream connect error"
             )));
         }
+        assert!(transient_provider_error(
+            "OpenAI Codex API returned 500: native turn auth context mismatch: scopes"
+        ));
         for error in [
             "API returned 401",
+            "HTTP 500: authentication failed",
+            "HTTP 500: invalid credentials",
+            "HTTP 500: insufficient scope",
+            "HTTP 500: billing limit",
+            "HTTP 500: permission denied",
+            "HTTP 500: validation failed",
             "API returned 403",
             "validation error: HTTP 503",
             "permission denied",
