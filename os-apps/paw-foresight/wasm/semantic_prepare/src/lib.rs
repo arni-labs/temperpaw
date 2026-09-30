@@ -322,7 +322,7 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
         return Ok(
             json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,
             "snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":trace_raw,
-            "started_at_ms":started_raw,"phase":"explore"}),
+            "started_at_ms":started_raw,"phase":"explore","reasoning_phase_polls":0}),
         );
     }
     // Keep the program exactly unless a spent budget needs its honest stop reason.
@@ -349,7 +349,7 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     Ok(
         json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,
         "snapshot_json":snapshot_raw,"program_json":program_raw,"trace_json":trace_raw,
-        "started_at_ms":started_raw,"phase":phase}),
+        "started_at_ms":started_raw,"phase":phase,"reasoning_phase_polls":0}),
     )
 }
 
@@ -453,7 +453,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     }
     set_success_result(
         "Prepared",
-        &json!({"world_id":id,"agent_id":agent_id,"model":core::field(&world,"agent_model"),"provider":core::field(&world,"agent_provider"),"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":Context::get_time_millis().to_string(),"phase":"seed"}),
+        &json!({"world_id":id,"agent_id":agent_id,"model":core::field(&world,"agent_model"),"provider":core::field(&world,"agent_provider"),"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":Context::get_time_millis().to_string(),"phase":"seed","reasoning_phase_polls":0}),
     );
     Ok(())
 }

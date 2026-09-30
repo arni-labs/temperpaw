@@ -86,7 +86,9 @@ pub fn compact_evaluation_contexts(state: &mut Value) {
 
 pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
-    let task = &program["tasks"][cursor];
+    request_task(snapshot, program, &program["tasks"][cursor])
+}
+pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
     if super::search::is_structural(task) {
         return super::search::request(snapshot, program, task);
     }

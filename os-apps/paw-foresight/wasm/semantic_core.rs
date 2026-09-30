@@ -38,6 +38,7 @@ pub mod search {
 pub mod batch {
     include!("semantic_batch.rs");
 }
+#[allow(unused_imports)] // Each native phase consumes a different shared entry point.
 pub use evaluation::{evaluation_value, request, validate};
 pub fn field<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get("fields")
@@ -156,6 +157,19 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         .collect();
     tasks.retain(|t| t["function"] != "classify_temporal");
     screening.sort_by_key(|t| std::cmp::Reverse(positions[field(t, "nodeId")]));
+    // Same-depth nodes cannot depend on one another. Complete each assessment
+    // wave before advancing: own earlier scores and all parent scores remain fresh.
+    tasks.sort_by_key(|t| {
+        (
+            t["depth"].as_u64().unwrap_or(0),
+            match field(t, "function") {
+                "classify_gap" => 0,
+                "estimate_likelihood" => 1,
+                "evaluate_novelty" => 2,
+                _ => 3,
+            },
+        )
+    });
     screening.extend(tasks);
     let tasks = screening;
     Ok(
@@ -163,6 +177,22 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
     )
 }
 /// Missing classifications remain readable in historical runs; new plans classify first.
+pub const MAX_APP_TRANSITIONS: u64 = 480;
+pub const REASONING_TRANSITION_RESERVE: u64 = 64;
+pub const MAX_REASONING_POLLS: u64 = 20;
+pub fn transition_count(state: &Value) -> u64 {
+    state["counters"]["transition_count"]
+        .as_u64()
+        .or_else(|| state["transition_count"].as_u64())
+        .unwrap_or(0)
+}
+pub fn transition_limit(program: &Value) -> u64 {
+    match field(program, "stage") {
+        "worlds" => MAX_APP_TRANSITIONS - REASONING_TRANSITION_RESERVE,
+        "combinations" => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128,
+        _ => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128 - 32,
+    }
+}
 pub fn temporal_allows_forecast(program: &Value, id: &str) -> bool {
     match program["results"][id]["classify_temporal"].as_str() {
         Some("future_change" | "uncertain") => true,
@@ -315,8 +345,8 @@ mod tests {
             .map(|i| node(&format!("h{i}"), "scenario", &[]))
             .collect();
         let mut nodes = nodes;
-        for i in 1..100 {
-            nodes[i]["edges"] = json!(format!(
+        for (i, node) in nodes.iter_mut().enumerate().take(100).skip(1) {
+            node["edges"] = json!(format!(
                 "[{{\"kind\":\"requires\",\"to_id\":\"h{}\"}}]",
                 i - 1
             ));

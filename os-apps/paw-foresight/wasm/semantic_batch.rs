@@ -7,7 +7,7 @@ pub struct Batch {
 }
 impl Batch {
     pub fn question_key(&self, index: usize) -> String {
-        if super::search::is_structural(&self.tasks[0]) {
+        if self.request["state"]["cases"].is_object() {
             format!("q{index}")
         } else {
             "result".into()
@@ -36,14 +36,6 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
     let tasks = program["tasks"].as_array().ok_or("Missing tasks")?;
     let first = tasks.get(cursor).ok_or("Task cursor exhausted")?;
     let structural = super::search::is_structural(first);
-    if !structural && remaining > 0 {
-        let request = super::request(snapshot, program)?;
-        return Ok(Batch {
-            request: request.clone(),
-            tasks: vec![first.clone()],
-            individual: vec![request],
-        });
-    }
     let mut batch = Batch {
         request: json!({"model":super::MODEL,"state":{"common":{},"cases":{}},"questions":{}}),
         tasks: vec![],
@@ -52,20 +44,32 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
     for (_index, task) in tasks
         .iter()
         .enumerate()
-        .take(
-            tasks
-                .len()
-                .min(cursor + if structural { 16 } else { 1 })
-                .min(cursor + remaining),
-        )
+        .take(tasks.len().min(cursor + 16).min(cursor + remaining))
         .skip(cursor)
     {
-        if structural && !super::search::is_structural(task) {
+        if structural != super::search::is_structural(task)
+            || (!structural
+                && (task["function"] != first["function"]
+                    || (task["function"] != "classify_temporal"
+                        && task["depth"] != first["depth"])))
+        {
+            break;
+        }
+        // An ineligible item ends the contiguous batch; native skipping advances
+        // it on the next call without consuming a provider judgment.
+        if !structural
+            && program["stage"] != "worlds"
+            && matches!(
+                super::field(task, "function"),
+                "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+            )
+            && !super::temporal_allows_forecast(program, super::field(task, "nodeId"))
+        {
             break;
         }
         // Structural requests take their task explicitly; avoid cloning the whole
         // accumulated program for every independent question.
-        let individual = super::search::request(snapshot, program, task)?;
+        let individual = super::evaluation::request_task(snapshot, program, task)?;
         let key = format!("q{}", batch.tasks.len());
         let mut state = individual["state"].clone();
         let mut common = json!({});
@@ -178,6 +182,61 @@ mod tests {
     }
 
     #[test]
+    fn whole_world_likelihood_does_not_require_component_temporal_classification() {
+        let snapshot = json!({"world":{},"nodes":[{"Id":"world-r1-a","kind":"world","statement":"Joint world","edges":"[]","component_ids":[],"counter_ids":[]}]});
+        let program = json!({"stage":"worlds","baseline_status":"established","cursor":0,"tasks":[{"nodeId":"world-r1-a","function":"estimate_likelihood"}],"results":{}});
+        let batch = prepare(&snapshot, &program, 16).unwrap();
+        assert_eq!(batch.tasks.len(), 1);
+        assert_eq!(batch.individual[0]["questions"]["result"]["type"], "noul");
+    }
+    #[test]
+    fn ordinary_waves_batch_without_crossing_assessment_or_parent_dependencies() {
+        let nodes = vec![
+            json!({"Id":"a","kind":"scenario","statement":"A","edges":"[]"}),
+            json!({"Id":"b","kind":"scenario","statement":"B","edges":"[]"}),
+            json!({"Id":"child","kind":"revision","statement":"Child","edges":"[{\"kind\":\"requires\",\"to_id\":\"a\"}]"}),
+        ];
+        let snapshot = json!({"world":{},"nodes":nodes});
+        let mut p = super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        // Temporal prefix may cross depth boundaries only in separate requests.
+        for id in ["a", "b", "child"] {
+            p["results"][id]["classify_temporal"] = json!("future_change");
+        }
+        let tasks = p["tasks"].as_array().unwrap().clone();
+        let start = tasks
+            .iter()
+            .position(|t| t["function"] == "classify_gap")
+            .unwrap();
+        p["cursor"] = json!(start);
+        let batch = prepare(&snapshot, &p, 16).unwrap();
+        assert_eq!(batch.tasks.len(), 2);
+        assert!(
+            batch
+                .tasks
+                .iter()
+                .all(|t| t["function"] == "classify_gap" && t["depth"] == 0)
+        );
+        assert_eq!(batch.question_key(0), "q0");
+        for (i, task) in batch.tasks.iter().enumerate() {
+            assert_eq!(
+                batch.individual[i],
+                super::super::evaluation::request_task(&snapshot, &p, task).unwrap()
+            );
+        }
+        let parent_last = tasks
+            .iter()
+            .rposition(|t| t["nodeId"] == "a" && t["function"] != "classify_temporal")
+            .unwrap();
+        let child_first = tasks
+            .iter()
+            .position(|t| t["nodeId"] == "child" && t["function"] != "classify_temporal")
+            .unwrap();
+        assert!(parent_last < child_first);
+        let answer = json!({"type":"choice","choice":"none","probabilities":{"none":0.8,"prerequisite":0.05,"evidence":0.05,"timing":0.05,"uncertain":0.05}});
+        let response = json!({"model":super::super::MODEL,"answers":{"q0":answer,"q1":answer}});
+        assert_eq!(answers(&batch, &response).unwrap().len(), 2);
+    }
+    #[test]
     fn batches_independent_pairs_but_stops_before_dependent_likelihood() {
         let s = json!({"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"}]});
         let p = json!({"cursor":0,"tasks":[{"nodeId":"pair:1:a:1:b","function":"check_pair","pair_ids":["a","b"]},{"nodeId":"pair:1:a:1:c","function":"check_pair","pair_ids":["a","c"]},{"nodeId":"a","function":"estimate_likelihood"}]});
@@ -218,4 +277,32 @@ fn adaptive_packing_preserves_context_cursor_and_all_pending_tasks() {
     program["cursor"] = json!(1);
     let rest = prepare(&snapshot, &program, 10).unwrap();
     assert_eq!(rest.individual[0], first.individual[1]);
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "Requires captured live large baseline"]
+fn captured_live_component_wave_preserves_sources_and_packs_multiple_questions() {
+    let fields: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("FORESIGHT_WAVE_FIXTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let snapshot = super::parse(fields["snapshot_json"].as_str().unwrap()).unwrap();
+    let program = super::parse(fields["program_json"].as_str().unwrap()).unwrap();
+    let batch = prepare(&snapshot, &program, 16).unwrap();
+    eprintln!(
+        "actual component wave: {} questions, {} bytes, {} shared bytes",
+        batch.tasks.len(),
+        batch.request.to_string().len(),
+        batch.request["state"]["common"].to_string().len()
+    );
+    assert!(batch.tasks.len() > 1);
+    for (i, task) in batch.tasks.iter().enumerate() {
+        let exact = super::evaluation::request_task(&snapshot, &program, task).unwrap();
+        assert_eq!(batch.individual[i], exact);
+        assert_eq!(
+            batch.request["state"]["common"]["source_evidence"],
+            exact["state"]["source_evidence"]
+        );
+    }
 }

@@ -10,7 +10,7 @@ fn next_phase(
 ) -> &'static str {
     let exhausted = if matches!(
         program["stop_reason"].as_str(),
-        Some("trace_budget" | "provider_error" | "time_budget")
+        Some("trace_budget" | "provider_error" | "time_budget" | "transition_budget")
     ) {
         program["stop_reason"].as_str().unwrap().to_owned()
     } else if trace_len >= core::call_limit(program) {
@@ -132,6 +132,7 @@ fn plan_combination_phase(
             program["stop_reason"].as_str(),
             Some("provider_error" | "trace_budget")
         )
+        && program["transition_count"].as_u64().unwrap_or(0) < core::transition_limit(&search)
         && elapsed < core::time_limit(&search)
         && core::search::plan_combinations(
             snapshot,
@@ -144,6 +145,10 @@ fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
 
+    program["transition_count"] = json!(core::transition_count(&ctx.entity_state));
+    if core::transition_count(&ctx.entity_state) >= core::transition_limit(&program) {
+        program["stop_reason"] = json!("transition_budget");
+    }
     core::skip_nonfuture_tasks(&mut program)?;
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let started = core::field(&ctx.entity_state, "started_at_ms")
@@ -157,7 +162,9 @@ fn step(ctx: &Context) -> Result<(), String> {
     }
     let stopped = matches!(
         program["stop_reason"].as_str(),
-        Some("trace_budget" | "provider_error" | "time_budget" | "call_budget")
+        Some(
+            "trace_budget" | "provider_error" | "time_budget" | "call_budget" | "transition_budget"
+        )
     );
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     if cursor >= count
@@ -184,7 +191,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         }
         set_success_result(
             "Reason",
-            &json!({"phase":phase,"program_json":program.to_string(),"trace_json":trace.to_string()}),
+            &json!({"phase":phase,"program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
         );
     } else {
         let request = core::request(&snapshot, &program)?;
@@ -220,6 +227,28 @@ mod tests {
         (snapshot, program)
     }
 
+    #[test]
+    fn transition_budget_reserves_world_work_and_writer_without_clock_reset() {
+        assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 192);
+        assert_eq!(
+            core::transition_limit(&json!({"stage":"combinations"})),
+            224
+        );
+        assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 416);
+        assert!(core::MAX_APP_TRANSITIONS + 32 <= 512);
+        let mut p = json!({"stage":"exploration","stop_reason":"transition_budget"});
+        assert_eq!(
+            next_phase(&json!({"nodes":[]}), &mut p, 1001, 1000),
+            "compose"
+        );
+        assert_eq!(p["stop_reason"], "transition_budget");
+        let mut p = json!({"stage":"worlds","stop_reason":"transition_budget","active_world_ids":[],"world_pass":1});
+        assert_eq!(
+            next_phase(&json!({"nodes":[]}), &mut p, 1001, 1000),
+            "synthesize"
+        );
+        assert_eq!(p["stop_reason"], "transition_budget");
+    }
     #[test]
     fn world_evaluation_stops_with_real_time_reserved_for_final_writing() {
         let snapshot = json!({"nodes":[]});

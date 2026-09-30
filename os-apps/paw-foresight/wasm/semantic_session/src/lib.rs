@@ -39,6 +39,18 @@ fn retry_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 fn check(ctx: &Context) -> Result<(), String> {
+    let polls = ctx.entity_state["counters"]["reasoning_phase_polls"]
+        .as_u64()
+        .unwrap_or(0);
+    if polls > core::MAX_REASONING_POLLS {
+        return Err(
+            "Reasoning phase exhausted its reserved polling budget; saved work is preserved."
+                .into(),
+        );
+    }
+    if core::transition_count(&ctx.entity_state) >= core::MAX_APP_TRANSITIONS {
+        return Err("Native transition budget exhausted; saved work is preserved.".into());
+    }
     let id = core::field(&ctx.entity_state, "reasoning_session_id");
     if id.is_empty()
         || !id
@@ -98,7 +110,9 @@ fn check(ctx: &Context) -> Result<(), String> {
             return Err(format!("Reasoning session {id} did not complete: {error}"));
         }
         _ => {
-            // Poll counts span children; elapsed-time limits own run/stage budgets.
+            if polls >= core::MAX_REASONING_POLLS {
+                return Err("Reasoning phase exhausted its reserved polling budget; saved work is preserved.".into());
+            }
             set_success_result("ReasoningPending", &json!({}));
         }
     };

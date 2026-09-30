@@ -477,6 +477,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "independent_challenge",
         "batch_byte_cap",
         "http_calls",
+        "transition_count",
         "evidence_ids",
     ] {
         if !old[key].is_null() {
@@ -631,6 +632,9 @@ fn attach_world_probabilities(
                 core::field(program, "last_error")
             ),
             "time_budget" => "The available evaluation time ended.".to_owned(),
+            "transition_budget" => {
+                "The native work budget was reserved for completing this answer.".to_owned()
+            }
             "call_budget" => "The available evaluation calls were used.".to_owned(),
             "trace_budget" => "The evaluation record reached its size limit.".to_owned(),
             _ => "The remaining worlds have no whole-world probability estimate.".to_owned(),
@@ -690,6 +694,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "temporal_decomposition_requested",
         "rounds",
         "http_calls",
+        "transition_count",
         "independent_challenge",
         "batch_byte_cap",
         "world_revision",
