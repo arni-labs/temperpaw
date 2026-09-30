@@ -1,4 +1,4 @@
-// Only independent structural questions share HTTP calls. Node decisions remain sequential.
+// Independent questions share payloads without changing their individual contexts.
 use serde_json::{Value, json};
 pub struct Batch {
     pub request: Value,
@@ -90,10 +90,33 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         }
         let mut candidate = batch.request.clone();
         candidate["state"]["common"] = common;
+        if let Some(comparisons) = state.get("comparisons").and_then(Value::as_array).cloned()
+            && !comparisons.is_empty()
+        {
+            if !candidate["state"]["comparison_catalog"].is_array() {
+                candidate["state"]["comparison_catalog"] = json!([]);
+            }
+            let catalog = candidate["state"]["comparison_catalog"]
+                .as_array_mut()
+                .unwrap();
+            let indices: Vec<_> = comparisons
+                .into_iter()
+                .map(|comparison| {
+                    if let Some(index) = catalog.iter().position(|value| value == &comparison) {
+                        index
+                    } else {
+                        catalog.push(comparison);
+                        catalog.len() - 1
+                    }
+                })
+                .collect();
+            state.as_object_mut().unwrap().remove("comparisons");
+            state["comparison_refs"] = json!(indices);
+        }
         candidate["state"]["cases"][&key] = state;
         let mut question = individual["questions"]["result"].clone();
         question["instructions"] = json!(format!(
-            "For this question, state means ONLY state.cases.{key} combined with state.common. Other cases are separate hypothetical questions, not assumed facts. {}",
+            "For this question, first expand state.cases.{key}: if it contains comparison_refs, replace that field with comparisons containing exactly the entries of state.comparison_catalog at those zero-based indices, in order. Then state means ONLY that expanded case combined with state.common; no other catalog entries belong to this case. This is lossless reference encoding, not additional evidence. Other cases are separate hypothetical questions, not assumed facts. {}",
             super::field(&question, "instructions")
         ));
         candidate["questions"][&key] = question;
@@ -129,6 +152,85 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn assert_comparison_roundtrip(batch: &Batch) {
+        for (i, individual) in batch.individual.iter().enumerate() {
+            let mut state = batch.request["state"]["cases"][format!("q{i}")].clone();
+            for (k, v) in batch.request["state"]["common"].as_object().unwrap() {
+                state[k] = v.clone();
+            }
+            if let Some(refs) = state.as_object_mut().unwrap().remove("comparison_refs") {
+                state["comparisons"] = json!(
+                    refs.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| batch.request["state"]["comparison_catalog"]
+                            [r.as_u64().unwrap() as usize]
+                            .clone())
+                        .collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(state, individual["state"]);
+        }
+    }
+    #[test]
+    fn comparison_catalog_is_lossless_and_allows_multiple_deep_questions() {
+        let nodes: Vec<_> = (0..16).map(|i|json!({"Id":format!("h{i:02}"),"kind":"scenario","statement":format!("event {i}"),"mechanism":"mechanism detail ".repeat(70),"edges":"[]"})).collect();
+        let snapshot = json!({"world":{},"nodes":nodes});
+        let mut p = super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        if !p["tasks"].is_array() {
+            p["tasks"] =
+                super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap()["tasks"].clone();
+        }
+        p["batch_byte_cap"] = json!(51928);
+        p["cursor"] = json!(
+            p["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|t| t["function"] == "classify_gap")
+                .unwrap()
+        );
+        let batch = prepare(&snapshot, &p, 16).unwrap();
+        assert!(batch.tasks.len() > 1);
+        assert!(batch.request.to_string().len() <= 51928);
+        assert_comparison_roundtrip(&batch);
+    }
+    #[test]
+    #[ignore = "Requires captured native UUID snapshot/program"]
+    fn saved_uuid_deep_batch_interns_comparisons_losslessly() {
+        let raw: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FORESIGHT_PACKING_FIXTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let f = raw.get("fields").unwrap_or(&raw);
+        let snapshot: Value = serde_json::from_str(f["snapshot_json"].as_str().unwrap()).unwrap();
+        let mut p: Value = serde_json::from_str(f["program_json"].as_str().unwrap()).unwrap();
+        if !p["tasks"].is_array() {
+            p["tasks"] =
+                super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap()["tasks"].clone();
+        }
+        p["batch_byte_cap"] = json!(51928);
+        p["cursor"] = json!(
+            p["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|t| t["function"] == "classify_gap")
+                .unwrap()
+        );
+        let batch = prepare(&snapshot, &p, 16).unwrap();
+        if let Ok(path) = std::env::var("FORESIGHT_PACKING_OUTPUT") {
+            std::fs::write(path,json!({"snapshot_json":snapshot.to_string(),"program_json":p.to_string(),"individual":batch.individual,"expected_tasks":batch.tasks.len()}).to_string()).unwrap();
+        }
+        eprintln!(
+            "actual deep tasks={} bytes={}",
+            batch.tasks.len(),
+            batch.request.to_string().len()
+        );
+        assert!(batch.tasks.len() > 1);
+        assert!(batch.request.to_string().len() <= 51928);
+        assert_comparison_roundtrip(&batch);
+    }
     #[test]
     #[ignore = "Requires saved long-exploration checkpoint"]
     fn saved_combinations_checkpoint_packs_reduced_batches_without_losing_inputs() {

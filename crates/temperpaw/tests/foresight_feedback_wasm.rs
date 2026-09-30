@@ -13,6 +13,11 @@ use temper_wasm::{
 };
 
 fn bytes(module: &str) -> Vec<u8> {
+    if module == "semantic_call"
+        && let Ok(path) = std::env::var("ARN518_CALL_WASM_OVERRIDE")
+    {
+        return std::fs::read(path).unwrap();
+    }
     if module == "semantic_step"
         && let Ok(path) = std::env::var("ARN518_STEP_WASM_OVERRIDE")
     {
@@ -533,4 +538,53 @@ async fn optional_refinement_declines_before_erasing_completed_world_odds() {
     .unwrap();
     assert_eq!(p["refinement_admission"]["admitted"], true);
     assert_eq!(p["world_pass"], 2);
+}
+
+#[tokio::test]
+#[ignore = "Requires prepared native UUID packing fixture"]
+async fn captured_uuid_deep_batch_preserves_every_comparison() {
+    let raw: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("FORESIGHT_PACKING_OUTPUT").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut fields = json!({"snapshot_json":raw["snapshot_json"],"program_json":raw["program_json"],"trace_json":"[]"});
+    fields["started_at_ms"] = json!(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            .to_string()
+    );
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    let result = call(&engine, fields, host.clone()).await;
+    assert_eq!(result["callback_action"], "Recorded");
+    let requests = host.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(
+        request["questions"].as_object().unwrap().len(),
+        raw["expected_tasks"].as_u64().unwrap() as usize
+    );
+    assert!(request["questions"].as_object().unwrap().len() > 1);
+    assert!(request.to_string().len() <= 51928);
+    for (i, original) in raw["individual"].as_array().unwrap().iter().enumerate() {
+        let mut state = request["state"]["cases"][format!("q{i}")].clone();
+        for (k, v) in request["state"]["common"].as_object().unwrap() {
+            state[k] = v.clone();
+        }
+        if let Some(refs) = state.as_object_mut().unwrap().remove("comparison_refs") {
+            state["comparisons"] = json!(
+                refs.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(
+                        |r| request["state"]["comparison_catalog"][r.as_u64().unwrap() as usize]
+                            .clone()
+                    )
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(state, original["state"]);
+    }
 }
