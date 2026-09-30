@@ -95,27 +95,27 @@ initial = ""
 [[state]]
 name = "pull_request_urls"
 type = "list"
-initial = "[]"
+initial = []
 
 [[state]]
 name = "evidence"
 type = "list"
-initial = "[]"
+initial = []
 
 [[state]]
 name = "ask_ids"
 type = "list"
-initial = "[]"
+initial = []
 
 [[state]]
 name = "review_run_ids"
 type = "list"
-initial = "[]"
+initial = []
 
 [[state]]
 name = "proof_packet_ids"
 type = "list"
-initial = "[]"
+initial = []
 
 # Historical context remains readable; none of these fields gates new work.
 
@@ -154,7 +154,7 @@ name = "AttachPullRequest"
 kind = "input"
 from = ["Open", "Done", "Cancelled", "Intended", "Specified", "Planned", "Building", "InReview", "Proving", "Merged", "Deploying", "ResourceMergeChecking", "ResourceVerifying", "Verified", "Stalled", "Abandoned"]
 params = ["pull_request_urls"]
-effect = [{ type = "list_append", var = "pull_request_urls" }]
+effect = ["append(pull_request_urls, params.pull_request_urls)"]
 hint = "Append one PR URL. Multiple PRs from the same repository are supported."
 
 [[action]]
@@ -162,7 +162,7 @@ name = "RecordEvidence"
 kind = "input"
 from = ["Open", "Done", "Cancelled", "Intended", "Specified", "Planned", "Building", "InReview", "Proving", "Merged", "Deploying", "ResourceMergeChecking", "ResourceVerifying", "Verified", "Stalled", "Abandoned"]
 params = ["evidence"]
-effect = [{ type = "list_append", var = "evidence" }]
+effect = ["append(evidence, params.evidence)"]
 hint = "Append a concise result, command output, screenshot or other evidence link."
 
 [[action]]
@@ -170,7 +170,7 @@ name = "AttachAsk"
 kind = "input"
 from = ["Open", "Done", "Cancelled", "Intended", "Specified", "Planned", "Building", "InReview", "Proving", "Merged", "Deploying", "ResourceMergeChecking", "ResourceVerifying", "Verified", "Stalled", "Abandoned"]
 params = ["ask_ids"]
-effect = [{ type = "list_append", var = "ask_ids" }]
+effect = ["append(ask_ids, params.ask_ids)"]
 hint = "Append one related Ask ID without blocking the effort."
 
 [[action]]

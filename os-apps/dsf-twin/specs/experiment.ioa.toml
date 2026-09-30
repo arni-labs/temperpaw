@@ -5,6 +5,7 @@ states = ["Draft", "Configured", "Ready", "Compared", "Selecting", "Selected", "
 initial = "Draft"
 strict_action_params = true
 allow_indefinite_states = ["Draft", "Configured", "Ready", "Compared", "Selected", "SelectionUnknown", "Failed", "ValidationUnknown", "RunUnknown", "CleanupUnknown"]
+terminal = ["Cleaned"]
 
 [[state]]
 name = "effort_id"
@@ -124,17 +125,17 @@ initial = ""
 [[state]]
 name = "isolated"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "operation_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "selection_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Configure"
@@ -188,7 +189,7 @@ name = "Validate"
 kind = "input"
 from = ["Configured"]
 to = "ValidationPreparing"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "trigger", name = "dsf_experiment_validate" }]
+effect = ["operation_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_experiment_validate"
@@ -202,7 +203,6 @@ name = "ResumeValidation"
 kind = "input"
 from = ["ValidationUnknown"]
 to = "ValidationPreparing"
-effect = [{ type = "trigger", name = "dsf_experiment_validate" }]
 
 [[action.triggers]]
 name = "dsf_experiment_validate"
@@ -243,10 +243,10 @@ target_entity = "Exec"
 target_action = "Run"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "exec_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
 computer_id = "computer_id"
 command = "command"
 
@@ -279,7 +279,6 @@ name = "PollValidation"
 kind = "input"
 from = ["Validating"]
 to = "Validating"
-effect = [{ type = "trigger", name = "dsf_experiment_validate" }]
 
 [[action.triggers]]
 name = "dsf_experiment_validate"
@@ -294,7 +293,7 @@ kind = "input"
 from = ["Validating"]
 to = "Ready"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "production_database_id", type = "string" }, { name = "production_media_bucket", type = "string" }, { name = "isolation_evidence_ref", type = "string" }]
-effect = [{ type = "set_bool", var = "isolated", value = true }]
+effect = ["isolated = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -375,8 +374,8 @@ name = "Run"
 kind = "input"
 from = ["Ready"]
 to = "RunPreparing"
-guard = [{ type = "is_true", var = "isolated" }]
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "trigger", name = "dsf_experiment_run" }]
+guard = "isolated"
+effect = ["operation_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_experiment_run"
@@ -390,7 +389,6 @@ name = "ResumeRun"
 kind = "input"
 from = ["RunUnknown"]
 to = "RunPreparing"
-effect = [{ type = "trigger", name = "dsf_experiment_run" }]
 
 [[action.triggers]]
 name = "dsf_experiment_run"
@@ -431,10 +429,10 @@ target_entity = "Exec"
 target_action = "Run"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "exec_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
 computer_id = "computer_id"
 command = "command"
 
@@ -467,7 +465,6 @@ name = "PollRun"
 kind = "input"
 from = ["Running"]
 to = "Running"
-effect = [{ type = "trigger", name = "dsf_experiment_run" }]
 
 [[action.triggers]]
 name = "dsf_experiment_run"
@@ -548,7 +545,7 @@ name = "Cleanup"
 kind = "input"
 from = ["Configured", "Ready", "Compared", "Selected", "Failed"]
 to = "CleanupPreparing"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "trigger", name = "dsf_experiment_cleanup" }]
+effect = ["operation_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_experiment_cleanup"
@@ -562,7 +559,6 @@ name = "ResumeCleanup"
 kind = "input"
 from = ["CleanupUnknown"]
 to = "CleanupPreparing"
-effect = [{ type = "trigger", name = "dsf_experiment_cleanup" }]
 
 [[action.triggers]]
 name = "dsf_experiment_cleanup"
@@ -603,10 +599,10 @@ target_entity = "Exec"
 target_action = "Run"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "exec_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
 computer_id = "computer_id"
 command = "command"
 
@@ -639,7 +635,6 @@ name = "PollCleanup"
 kind = "input"
 from = ["Cleaning"]
 to = "Cleaning"
-effect = [{ type = "trigger", name = "dsf_experiment_cleanup" }]
 
 [[action.triggers]]
 name = "dsf_experiment_cleanup"
@@ -717,7 +712,7 @@ kind = "input"
 from = ["Compared"]
 to = "Selecting"
 params = [{ name = "selection_ask_id", type = "string" }, { name = "delivery_effort_id", type = "string" }]
-effect = [{ type = "increment", var = "selection_sequence" }, { type = "trigger", name = "dsf_experiment_select" }]
+effect = ["selection_sequence += 1"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -739,7 +734,6 @@ name = "ResumeSelection"
 kind = "input"
 from = ["SelectionUnknown"]
 to = "Selecting"
-effect = [{ type = "trigger", name = "dsf_experiment_select" }]
 
 [[action.triggers]]
 name = "dsf_experiment_select"
@@ -801,10 +795,4 @@ on_timeout = "SelectionTimedOut"
 
 [[invariant]]
 name = "RunningExperimentIsIsolated"
-when = ["Ready", "RunPreparing", "Running", "RunUnknown", "Compared", "Selecting", "Selected", "SelectionUnknown"]
-assert = "isolated"
-
-[[invariant]]
-name = "CleanedExperimentIsFinal"
-when = ["Cleaned"]
-assert = "no_further_transitions"
+assert = "status in ['Ready', 'RunPreparing', 'Running', 'RunUnknown', 'Compared', 'Selecting', 'Selected', 'SelectionUnknown'] => isolated"

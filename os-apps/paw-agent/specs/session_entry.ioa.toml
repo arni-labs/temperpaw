@@ -30,7 +30,7 @@ initial = ""
 [[state]]
 name = "sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "entry_type"
@@ -46,10 +46,7 @@ initial = ""
 name = "content"
 type = "string"
 initial = ""
-# Inline JSON for the entry content. Hot conversational turns are intentionally
-# inline here; large governed artifacts should be referenced with content_file_id
-# instead of making PawFS part of every turn mutation.
-overflow_inline_max_bytes = "1048576"
+overflow_inline_max_bytes = 1048576
 
 [[state]]
 name = "content_file_id"
@@ -65,18 +62,14 @@ initial = ""
 name = "extra_json"
 type = "string"
 initial = "{}"
-overflow_inline_max_bytes = "131072"
+overflow_inline_max_bytes = 131072
 
 [[state]]
 name = "tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[field_invariant]]
 name = "RecordedRequiresSessionAndEntryIds"
-when = { field = "Status", equals = "Recorded" }
-require = { all_of = [
-  { not = { field = "SessionId", empty = true } },
-  { not = { field = "EntryId", empty = true } },
-] }
 message = "SessionEntry.Recorded requires SessionId and EntryId"
+assert = "Status == 'Recorded' => !empty(SessionId) && !empty(EntryId)"

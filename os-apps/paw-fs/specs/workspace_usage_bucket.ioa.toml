@@ -9,16 +9,17 @@ name = "WorkspaceUsageBucket"
 states = ["Active", "Sealed"]
 initial = "Active"
 allow_indefinite_states = ["Active"]
+terminal = ["Sealed"]
 
 [[state]]
 name = "bytes_delta"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "file_delta"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Create"
@@ -34,10 +35,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["workspace_id", "bucket_key", "artifact_batch_id", "bytes_delta", "file_delta"]
-effect = [
-  { type = "increment", var = "bytes_delta", amount = "bytes_delta" },
-  { type = "increment", var = "file_delta", amount = "file_delta" },
-]
+effect = ["bytes_delta += params.bytes_delta", "file_delta += params.file_delta"]
 hint = "Record a bounded usage delta without touching the Workspace actor."
 
 [[action]]
@@ -48,16 +46,9 @@ to = "Sealed"
 hint = "Seal this bucket after reconciliation or retention rollover."
 
 [[invariant]]
-name = "SealedIsFinal"
-when = ["Sealed"]
-assert = "no_further_transitions"
-
-[[invariant]]
 name = "BytesDeltaNonNegative"
-when = ["Active", "Sealed"]
-assert = "bytes_delta >= 0"
+assert = "status in ['Active', 'Sealed'] => bytes_delta >= 0"
 
 [[invariant]]
 name = "FileDeltaNonNegative"
-when = ["Active", "Sealed"]
-assert = "file_delta >= 0"
+assert = "status in ['Active', 'Sealed'] => file_delta >= 0"

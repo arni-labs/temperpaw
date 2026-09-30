@@ -11,6 +11,7 @@ states = ["Created", "Authorizing", "Generating", "Storing", "Complete", "Failed
 initial = "Created"
 
 allow_indefinite_states = ["Created", "Complete", "Failed"]
+terminal = ["Complete", "Failed"]
 
 # --- Request fields ---
 
@@ -90,12 +91,12 @@ initial = ""
 [[state]]
 name = "provider_auth_retry_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "compaction_auth_retry_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- Result fields ---
 
@@ -138,7 +139,7 @@ initial = ""
 name = "result_image_base64"
 type = "string"
 initial = ""
-overflow_ttl_seconds = "3600"
+overflow_ttl_seconds = 3600
 
 [[state]]
 name = "error"
@@ -159,7 +160,6 @@ from = ["Created", "Failed"]
 to = "Authorizing"
 params = ["prompt", "media_type", "operation", "provider", "model", "size", "quality", "output_format", "background", "workspace_id", "output_path"]
 hint = "Start a governed media generation request. provider: omit it or pass 'openai_codex' (aliases: openai, codex) — the only v1 provider; media_type 'image', operation 'generate'."
-effect = [{ type = "trigger", name = "ensure_provider_auth" }]
 
 [[action.triggers]]
 name = "ensure_provider_auth"
@@ -180,7 +180,6 @@ from = ["Authorizing"]
 to = "Generating"
 params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Codex subscription auth is fresh enough for a provider call."
-effect = [{ type = "trigger", name = "generate_openai_codex_image" }]
 
 [[action.triggers]]
 name = "generate_openai_codex_image"
@@ -223,30 +222,20 @@ to = "Failed"
 params = ["error", "last_error"]
 hint = "Generation failed."
 
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
-
 [[state_timeout]]
 state = "Authorizing"
 after_seconds = 90
 on_timeout = "RecordError"
-params = { error = "media generation auth did not complete within 90s", last_error = "auth timeout" }
+args = { error = "'media generation auth did not complete within 90s'", last_error = "'auth timeout'" }
 
 [[state_timeout]]
 state = "Generating"
 after_seconds = 600
 on_timeout = "RecordError"
-params = { error = "media generation provider call did not complete within 600s", last_error = "provider timeout" }
+args = { error = "'media generation provider call did not complete within 600s'", last_error = "'provider timeout'" }
 
 [[state_timeout]]
 state = "Storing"
 after_seconds = 90
 on_timeout = "RecordError"
-params = { error = "media generation storage did not complete within 90s", last_error = "storage timeout" }
+args = { error = "'media generation storage did not complete within 90s'", last_error = "'storage timeout'" }

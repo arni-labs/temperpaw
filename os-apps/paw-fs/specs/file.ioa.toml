@@ -14,6 +14,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Ready", "Locked"]
+terminal = ["Archived"]
 
 # --- Declared keys (ADR-0153) ---
 # (WorkspaceId, Path) is the addressable identity of a file — a path is unique within a
@@ -30,17 +31,17 @@ properties = ["WorkspaceId", "Path"]
 [[state]]
 name = "version_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "size_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "has_content"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "content_hash"
@@ -73,11 +74,7 @@ kind = "input"
 from = ["Created", "Ready"]
 to = "Ready"
 params = ["content_hash", "size_bytes", "mime_type", "version_number", "previous_version_id", "created_by"]
-effect = [
-  { type = "increment", var = "version_count" },
-  { type = "set_counter_from_param", var = "size_bytes", param = "size_bytes" },
-  { type = "set_bool", var = "has_content", value = "true" },
-]
+effect = ["version_count += 1", "size_bytes = params.size_bytes", "has_content = true"]
 hint = "Fired by $value PUT handler after WASM upload succeeds. Updates content metadata and advances to Ready. Not callable from Locked."
 
 # ADR-0046: inline triggers are the single source of truth for the
@@ -90,11 +87,11 @@ hint = "Fired by $value PUT handler after WASM upload succeeds. Updates content 
 name = "file_stream_updated_creates_version"
 kind = "entity"
 principal = "file-service"
-to_state = "Ready"
 target_entity = "FileVersion"
 target_action = "Create"
+guard = "status == 'Ready'"
 
-[action.triggers.params_from]
+[action.triggers.args]
 file_id = "Id"
 version_number = "version_count"
 content_hash = "content_hash"
@@ -104,7 +101,7 @@ previous_version_id = "previous_version_id"
 created_by = "created_by"
 
 [action.triggers.resolve_target]
-type = "create"
+kind = "create"
 
 [[action.triggers]]
 name = "file_stream_updated_supersedes_old_version"
@@ -114,8 +111,8 @@ target_entity = "FileVersion"
 target_action = "Supersede"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "last_version_id"
+kind = "field"
+id_field = "last_version_id"
 
 [[action]]
 name = "RecordVersion"
@@ -158,24 +155,14 @@ name = "FileContentUpdatedEvent"
 kind = "output"
 hint = "Emitted when file content is updated via StreamUpdated."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "ReadyFilesHaveContent"
-when = ["Ready", "Locked"]
-assert = "has_content"
+assert = "status in ['Ready', 'Locked'] => has_content"
 
 [[invariant]]
 name = "VersionCountNonNegative"
-when = ["Created", "Ready", "Locked", "Archived"]
-assert = "version_count >= 0"
+assert = "status in ['Created', 'Ready', 'Locked', 'Archived'] => version_count >= 0"
 
 [[invariant]]
 name = "SizeBytesNonNegative"
-when = ["Created", "Ready", "Locked", "Archived"]
-assert = "size_bytes >= 0"
+assert = "status in ['Created', 'Ready', 'Locked', 'Archived'] => size_bytes >= 0"

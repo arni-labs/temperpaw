@@ -6,6 +6,7 @@ initial = "Draft"
 strict_action_params = true
 # Durable records may wait indefinitely; work in progress has explicit timeouts.
 allow_indefinite_states = ["Draft","Active"]
+terminal = ["Retired"]
 
 [[state]]
 name = "application_id"
@@ -50,12 +51,12 @@ initial = ""
 [[state]]
 name = "observed_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "RegisterAgent"
@@ -103,7 +104,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = [{ name = "activity_window", type = "string" }, { name = "activity_summary", type = "string" }, { name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }]
-effect = [{ type = "increment", var = "observed_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -132,8 +133,3 @@ name = "Retire"
 kind = "input"
 from = ["Active"]
 to = "Retired"
-
-[[invariant]]
-name = "RetiredParticipantIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"

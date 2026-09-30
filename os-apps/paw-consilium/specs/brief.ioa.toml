@@ -15,6 +15,7 @@ initial = "Draft"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Draft", "Published"]
+terminal = ["Archived"]
 
 # Parent deliberation
 [[state]]
@@ -66,10 +67,3 @@ from = ["Published"]
 to = "Archived"
 params = []
 hint = "Archive the brief."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

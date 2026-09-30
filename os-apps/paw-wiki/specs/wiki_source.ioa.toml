@@ -18,6 +18,7 @@ initial = "Submitted"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Submitted"]
+terminal = ["Indexed", "Failed"]
 
 # Which scope's wiki this source feeds
 [[state]]
@@ -97,15 +98,3 @@ from = ["Submitted"]
 to = "Failed"
 params = ["error_message"]
 hint = "Mark source as failed if indexing could not complete."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "IndexedIsFinal"
-when = ["Indexed"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

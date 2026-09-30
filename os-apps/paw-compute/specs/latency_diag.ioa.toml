@@ -45,7 +45,6 @@ kind = "input"
 from = ["Idle", "Ready", "Failed"]
 to = "Scanning"
 hint = "Run the canned p95 latency diagnostic on the computer. No parameters."
-effect = [{ type = "trigger", name = "computer_exec" }]
 
 [[action.triggers]]
 name = "computer_exec"

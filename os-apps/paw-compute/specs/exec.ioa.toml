@@ -22,6 +22,7 @@ initial = "Created"
 # a state_timeout (start-safety and the poll loop), so they are bounded, not
 # indefinite.
 allow_indefinite_states = ["Created"]
+terminal = ["Succeeded", "Failed"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -105,7 +106,6 @@ from = ["Created"]
 to = "Starting"
 params = ["computer_id", "command"]
 hint = "Start the command on the named computer's sandbox (Ready, Leased, or Sleeping — Sleeping resumes first). Returns immediately; completion is driven by the Poll loop."
-effect = [{ type = "trigger", name = "computer_exec_start" }]
 
 [[action.triggers]]
 name = "computer_exec_start"
@@ -135,13 +135,13 @@ hint = "Callback from computer_exec_start — the process was launched; the Poll
 name = "exec_started_wakes_computer"
 kind = "entity"
 principal = "system"
-to_state = "Running"
 target_entity = "Computer"
 target_action = "Wake"
+guard = "status == 'Running'"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "computer_id"
+kind = "field"
+id_field = "computer_id"
 
 # The poll loop: while Running, fire Poll every N seconds; each Poll re-enters
 # Running, re-arming this timeout.
@@ -163,7 +163,7 @@ reset_on = ["Poll"]
 state = "Starting"
 after_seconds = 120
 on_timeout = "RunFailed"
-params = { error = "exec did not start within 120s", exit_code = "", stdout_tail = "", stderr_tail = "" }
+args = { error = "'exec did not start within 120s'", exit_code = "''", stdout_tail = "''", stderr_tail = "''" }
 
 [[action]]
 name = "Poll"
@@ -171,20 +171,19 @@ kind = "input"
 from = ["Running"]
 to = "Running"
 hint = "Poll the started process once (computer_exec_poll). Self-loop listed in the Running timeout's reset_on, so each Poll re-arms the next tick. On a not-done poll the module reports success with an EMPTY callback action — the kernel accepts that (engine/mod.rs: callback_action defaults to \"\"; wasm.rs: dispatch is skipped when empty → Ok(None)), so no KeepRunning callback is needed; the loop rides the reset_on re-arm alone."
-effect = [{ type = "trigger", name = "computer_exec_poll" }]
 
 # A long exec must keep the source's 180s Sleep clock from firing mid-run.
 [[action.triggers]]
 name = "exec_poll_heartbeats_computer"
 kind = "entity"
 principal = "system"
-to_state = "Running"
 target_entity = "Computer"
 target_action = "Heartbeat"
+guard = "status == 'Running'"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "computer_id"
+kind = "field"
+id_field = "computer_id"
 
 [[action.triggers]]
 name = "computer_exec_poll"
@@ -211,13 +210,13 @@ hint = "Callback from computer_exec_poll — the command finished; record exit c
 name = "exec_succeeded_heartbeats_computer"
 kind = "entity"
 principal = "system"
-to_state = "Succeeded"
 target_entity = "Computer"
 target_action = "Heartbeat"
+guard = "status == 'Succeeded'"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "computer_id"
+kind = "field"
+id_field = "computer_id"
 
 [[action]]
 name = "RunFailed"
@@ -231,13 +230,13 @@ hint = "Execution failed (start error, poll error, or deadline). Result fields c
 name = "exec_failed_heartbeats_computer"
 kind = "entity"
 principal = "system"
-to_state = "Failed"
 target_entity = "Computer"
 target_action = "Heartbeat"
+guard = "status == 'Failed'"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "computer_id"
+kind = "field"
+id_field = "computer_id"
 
 [[action]]
 name = "Cancel"
@@ -246,13 +245,3 @@ from = ["Running", "Starting"]
 to = "Failed"
 params = ["error"]
 hint = "Cancel a running exec. The governed exec stops (the row goes Failed, the poll loop ends); the sandbox process is bounded by its own timeout wrapper."
-
-[[invariant]]
-name = "SucceededIsFinal"
-when = ["Succeeded"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

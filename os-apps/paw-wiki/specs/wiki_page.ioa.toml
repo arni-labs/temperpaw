@@ -21,6 +21,7 @@ initial = "Drafting"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Drafting", "Published", "Revising"]
+terminal = ["Archived"]
 
 # Which scope's wiki this page belongs to
 [[state]]
@@ -110,7 +111,6 @@ from = ["Drafting"]
 to = "Published"
 params = []
 hint = "Publish the draft. Increments version counter."
-effect = [{ type = "increment", field = "version" }]
 
 # --- Published ---
 
@@ -153,11 +153,3 @@ from = ["Revising"]
 to = "Published"
 params = []
 hint = "Republish revised page. Increments version counter."
-effect = [{ type = "increment", field = "version" }]
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

@@ -6,6 +6,7 @@ states = ["Draft", "Active", "Refreshing", "Retired", "DeployValidating", "Deplo
 initial = "Draft"
 strict_action_params = true
 allow_indefinite_states = ["Draft", "Active", "Refreshing", "DeployValidating", "DeployReady", "DeployExecuting", "DeployUnknown", "DeployReconciling", "DeployObserved", "DeployVerifying", "DeployBlocked", "DeployFailed", "ApplyConfigurationValidating", "ApplyConfigurationReady", "ApplyConfigurationExecuting", "ApplyConfigurationUnknown", "ApplyConfigurationReconciling", "ApplyConfigurationObserved", "ApplyConfigurationVerifying", "ApplyConfigurationBlocked", "ApplyConfigurationFailed", "RollbackValidating", "RollbackReady", "RollbackExecuting", "RollbackUnknown", "RollbackReconciling", "RollbackObserved", "RollbackVerifying", "RollbackBlocked", "RollbackFailed", "SetAliasValidating", "SetAliasReady", "SetAliasExecuting", "SetAliasUnknown", "SetAliasReconciling", "SetAliasObserved", "SetAliasVerifying", "SetAliasBlocked", "SetAliasFailed"]
+terminal = ["Retired"]
 
 [[state]]
 name = "account_id"
@@ -225,87 +226,87 @@ initial = ""
 [[state]]
 name = "model_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "operation_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "execution_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "reconciliation_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "verification_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "refresh_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "collected_observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "collected_expected_resource_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observation_available"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "provider_known"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "operation_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "deploy_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "apply_configuration_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "rollback_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "set_alias_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "coverage"
@@ -345,7 +346,7 @@ name = "ReviseModel"
 kind = "input"
 from = ["Active"]
 params = [{ name = "expected_model_sequence", type = "counter" }, { name = "name", type = "string" }, { name = "source_repository", type = "string" }, { name = "dependency_ids", type = "string" }, { name = "config_ref", type = "string" }, { name = "config_sha256", type = "string" }, { name = "allowed_operations", type = "string" }, { name = "model_provenance_ref", type = "string" }]
-effect = [{ type = "increment", var = "model_sequence" }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "deploy_verified", value = false }, { type = "set_bool", var = "apply_configuration_verified", value = false }, { type = "set_bool", var = "rollback_verified", value = false }, { type = "set_bool", var = "set_alias_verified", value = false }]
+effect = ["model_sequence += 1", "operation_verified = false", "deploy_verified = false", "apply_configuration_verified = false", "rollback_verified = false", "set_alias_verified = false"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -370,15 +371,15 @@ kind = "input"
 from = ["Active"]
 params = []
 to = "Active"
-effect = [{ type = "decrement", var = "operation_sequence" }]
-guard = [{ type = "max_count", var = "operation_sequence", max = 1 }]
+effect = ["operation_sequence -= 1"]
+guard = "operation_sequence < 1"
 
 [[action]]
 name = "Observe"
 kind = "input"
 from = ["Active", "Refreshing", "DeployValidating", "DeployReady", "DeployExecuting", "DeployUnknown", "DeployReconciling", "DeployObserved", "DeployVerifying", "DeployBlocked", "DeployFailed", "ApplyConfigurationValidating", "ApplyConfigurationReady", "ApplyConfigurationExecuting", "ApplyConfigurationUnknown", "ApplyConfigurationReconciling", "ApplyConfigurationObserved", "ApplyConfigurationVerifying", "ApplyConfigurationBlocked", "ApplyConfigurationFailed", "RollbackValidating", "RollbackReady", "RollbackExecuting", "RollbackUnknown", "RollbackReconciling", "RollbackObserved", "RollbackVerifying", "RollbackBlocked", "RollbackFailed", "SetAliasValidating", "SetAliasReady", "SetAliasExecuting", "SetAliasUnknown", "SetAliasReconciling", "SetAliasObserved", "SetAliasVerifying", "SetAliasBlocked", "SetAliasFailed"]
 params = [{ name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "outcome", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "increment", var = "observed_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "set_bool", var = "observation_available", value = true }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms", "observation_available = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -407,7 +408,7 @@ name = "ObserveUnavailable"
 kind = "input"
 from = ["Active", "Refreshing", "DeployValidating", "DeployReady", "DeployExecuting", "DeployUnknown", "DeployReconciling", "DeployObserved", "DeployVerifying", "DeployBlocked", "DeployFailed", "ApplyConfigurationValidating", "ApplyConfigurationReady", "ApplyConfigurationExecuting", "ApplyConfigurationUnknown", "ApplyConfigurationReconciling", "ApplyConfigurationObserved", "ApplyConfigurationVerifying", "ApplyConfigurationBlocked", "ApplyConfigurationFailed", "RollbackValidating", "RollbackReady", "RollbackExecuting", "RollbackUnknown", "RollbackReconciling", "RollbackObserved", "RollbackVerifying", "RollbackBlocked", "RollbackFailed", "SetAliasValidating", "SetAliasReady", "SetAliasExecuting", "SetAliasUnknown", "SetAliasReconciling", "SetAliasObserved", "SetAliasVerifying", "SetAliasBlocked", "SetAliasFailed"]
 params = [{ name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "outcome", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }]
-effect = [{ type = "increment", var = "observed_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "set_bool", var = "observation_available", value = false }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms", "observation_available = false"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -437,7 +438,7 @@ kind = "input"
 from = ["Active"]
 params = []
 to = "Refreshing"
-effect = [{ type = "increment", var = "refresh_sequence" }, { type = "trigger", name = "dsf_vercel_collect" }]
+effect = ["refresh_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_vercel_collect"
@@ -472,7 +473,7 @@ kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }, { name = "collected_observed_configuration", type = "string" }, { name = "collected_observed_revision", type = "string" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -507,10 +508,11 @@ target_entity = "DsfObservation"
 target_action = "RecordVercelProjectMeasured"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfVercelProject'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -526,16 +528,13 @@ source = "config_ref"
 observed_configuration = "collected_observed_configuration"
 observed_revision = "collected_observed_revision"
 
-[action.triggers.params]
-subject_type = "DsfVercelProject"
-
 [[action]]
 name = "CollectionAbsent"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -570,10 +569,11 @@ target_entity = "DsfObservation"
 target_action = "RecordVercelProjectAbsent"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfVercelProject'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -587,16 +587,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfVercelProject"
-
 [[action]]
 name = "CollectionInaccessible"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -631,10 +628,11 @@ target_entity = "DsfObservation"
 target_action = "RecordVercelProjectInaccessible"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfVercelProject'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -648,16 +646,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfVercelProject"
-
 [[action]]
 name = "CollectionStale"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -692,10 +687,11 @@ target_entity = "DsfObservation"
 target_action = "RecordVercelProjectStale"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfVercelProject'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -709,16 +705,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfVercelProject"
-
 [[action]]
 name = "Deploy"
 kind = "input"
 from = ["Active"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }, { name = "effort_id", type = "string" }, { name = "request_revision", type = "string" }, { name = "request_configuration", type = "string" }, { name = "proof_ref", type = "string" }, { name = "deployment_target", type = "string" }]
 to = "DeployValidating"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "set_bool", var = "provider_known", value = false }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "deploy_verified", value = false }, { type = "set_bool", var = "apply_configuration_verified", value = false }, { type = "set_bool", var = "rollback_verified", value = false }, { type = "set_bool", var = "set_alias_verified", value = false }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_deploy_validate" }]
+effect = ["operation_sequence += 1", "provider_known = false", "operation_verified = false", "deploy_verified = false", "apply_configuration_verified = false", "rollback_verified = false", "set_alias_verified = false", "execution_attempts -= 1", "execution_attempts -= 1", "execution_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -791,7 +784,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployValidationBlocked"
@@ -841,7 +834,6 @@ kind = "input"
 from = ["DeployBlocked"]
 params = []
 to = "DeployValidating"
-effect = [{ type = "trigger", name = "dsf_vercel_deploy_validate" }]
 
 [[action.triggers]]
 name = "dsf_vercel_deploy_validate"
@@ -857,8 +849,8 @@ kind = "input"
 from = ["DeployReady"]
 params = []
 to = "DeployExecuting"
-effect = [{ type = "increment", var = "execution_attempts" }, { type = "trigger", name = "dsf_vercel_deploy_execute" }]
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+effect = ["execution_attempts += 1"]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_deploy_execute"
@@ -874,7 +866,7 @@ kind = "input"
 from = ["DeployExecuting"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -902,7 +894,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployExecutionUncertain"
@@ -927,8 +919,8 @@ kind = "input"
 from = ["DeployUnknown"]
 params = []
 to = "DeployReconciling"
-effect = [{ type = "increment", var = "reconciliation_attempts" }, { type = "trigger", name = "dsf_vercel_deploy_observe" }]
-guard = [{ type = "max_count", var = "reconciliation_attempts", max = 20 }]
+effect = ["reconciliation_attempts += 1"]
+guard = "reconciliation_attempts < 20"
 
 [[action.triggers]]
 name = "dsf_vercel_deploy_observe"
@@ -944,7 +936,7 @@ kind = "input"
 from = ["DeployReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -972,7 +964,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployProviderAbsent"
@@ -980,7 +972,7 @@ kind = "input"
 from = ["DeployReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "absence_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployReady"
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1004,7 +996,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployObservationFailed"
@@ -1029,8 +1021,8 @@ kind = "input"
 from = ["DeployObserved"]
 params = []
 to = "DeployVerifying"
-effect = [{ type = "increment", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_deploy_verify" }]
-guard = [{ type = "max_count", var = "verification_attempts", max = 40 }, { type = "is_true", var = "provider_known" }]
+effect = ["verification_attempts += 1"]
+guard = "verification_attempts < 40 && provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_deploy_verify"
@@ -1046,7 +1038,7 @@ kind = "input"
 from = ["DeployVerifying"]
 params = [{ name = "operation_key", type = "string" }, { name = "verified_resource_id", type = "string" }, { name = "verified_revision", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "flow_evidence_ref", type = "string" }, { name = "telemetry_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_bool", var = "operation_verified", value = true }, { type = "set_bool", var = "deploy_verified", value = true }]
+effect = ["operation_verified = true", "deploy_verified = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1124,7 +1116,7 @@ kind = "input"
 from = ["DeployObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "error_message", type = "string" }, { name = "failure_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployFailed"
-guard = [{ type = "min_count", var = "verification_attempts", min = 40 }]
+guard = "verification_attempts >= 40"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1196,7 +1188,7 @@ kind = "input"
 from = ["DeployUnknown"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployUnknown"
-effect = [{ type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }]
+effect = ["reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1216,7 +1208,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployReconcile"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployResumeVerification"
@@ -1224,7 +1216,7 @@ kind = "input"
 from = ["DeployObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "DeployObserved"
-effect = [{ type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }]
+effect = ["verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1244,7 +1236,7 @@ target_entity = "DsfVercelProject"
 target_action = "DeployVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "DeployValidatingTimedOut"
@@ -1280,7 +1272,7 @@ kind = "input"
 from = ["Active"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }, { name = "effort_id", type = "string" }, { name = "request_revision", type = "string" }, { name = "request_configuration", type = "string" }, { name = "proof_ref", type = "string" }, { name = "deployment_target", type = "string" }]
 to = "ApplyConfigurationValidating"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "set_bool", var = "provider_known", value = false }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "deploy_verified", value = false }, { type = "set_bool", var = "apply_configuration_verified", value = false }, { type = "set_bool", var = "rollback_verified", value = false }, { type = "set_bool", var = "set_alias_verified", value = false }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_configuration_validate" }]
+effect = ["operation_sequence += 1", "provider_known = false", "operation_verified = false", "deploy_verified = false", "apply_configuration_verified = false", "rollback_verified = false", "set_alias_verified = false", "execution_attempts -= 1", "execution_attempts -= 1", "execution_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1353,7 +1345,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationValidationBlocked"
@@ -1403,7 +1395,6 @@ kind = "input"
 from = ["ApplyConfigurationBlocked"]
 params = []
 to = "ApplyConfigurationValidating"
-effect = [{ type = "trigger", name = "dsf_vercel_configuration_validate" }]
 
 [[action.triggers]]
 name = "dsf_vercel_configuration_validate"
@@ -1419,8 +1410,8 @@ kind = "input"
 from = ["ApplyConfigurationReady"]
 params = []
 to = "ApplyConfigurationExecuting"
-effect = [{ type = "increment", var = "execution_attempts" }, { type = "trigger", name = "dsf_vercel_configuration_execute" }]
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+effect = ["execution_attempts += 1"]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_configuration_execute"
@@ -1436,7 +1427,7 @@ kind = "input"
 from = ["ApplyConfigurationExecuting"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1464,7 +1455,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationExecutionUncertain"
@@ -1489,8 +1480,8 @@ kind = "input"
 from = ["ApplyConfigurationUnknown"]
 params = []
 to = "ApplyConfigurationReconciling"
-effect = [{ type = "increment", var = "reconciliation_attempts" }, { type = "trigger", name = "dsf_vercel_configuration_observe" }]
-guard = [{ type = "max_count", var = "reconciliation_attempts", max = 20 }]
+effect = ["reconciliation_attempts += 1"]
+guard = "reconciliation_attempts < 20"
 
 [[action.triggers]]
 name = "dsf_vercel_configuration_observe"
@@ -1506,7 +1497,7 @@ kind = "input"
 from = ["ApplyConfigurationReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1534,7 +1525,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationProviderAbsent"
@@ -1542,7 +1533,7 @@ kind = "input"
 from = ["ApplyConfigurationReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "absence_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationReady"
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1566,7 +1557,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationObservationFailed"
@@ -1591,8 +1582,8 @@ kind = "input"
 from = ["ApplyConfigurationObserved"]
 params = []
 to = "ApplyConfigurationVerifying"
-effect = [{ type = "increment", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_configuration_verify" }]
-guard = [{ type = "max_count", var = "verification_attempts", max = 40 }, { type = "is_true", var = "provider_known" }]
+effect = ["verification_attempts += 1"]
+guard = "verification_attempts < 40 && provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_configuration_verify"
@@ -1608,7 +1599,7 @@ kind = "input"
 from = ["ApplyConfigurationVerifying"]
 params = [{ name = "operation_key", type = "string" }, { name = "verified_resource_id", type = "string" }, { name = "verified_configuration", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "flow_evidence_ref", type = "string" }, { name = "telemetry_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_bool", var = "operation_verified", value = true }, { type = "set_bool", var = "apply_configuration_verified", value = true }]
+effect = ["operation_verified = true", "apply_configuration_verified = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1686,7 +1677,7 @@ kind = "input"
 from = ["ApplyConfigurationObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "error_message", type = "string" }, { name = "failure_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationFailed"
-guard = [{ type = "min_count", var = "verification_attempts", min = 40 }]
+guard = "verification_attempts >= 40"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1758,7 +1749,7 @@ kind = "input"
 from = ["ApplyConfigurationUnknown"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationUnknown"
-effect = [{ type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }]
+effect = ["reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1778,7 +1769,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationReconcile"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationResumeVerification"
@@ -1786,7 +1777,7 @@ kind = "input"
 from = ["ApplyConfigurationObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "ApplyConfigurationObserved"
-effect = [{ type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }]
+effect = ["verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1806,7 +1797,7 @@ target_entity = "DsfVercelProject"
 target_action = "ApplyConfigurationVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "ApplyConfigurationValidatingTimedOut"
@@ -1842,7 +1833,7 @@ kind = "input"
 from = ["Active"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }, { name = "effort_id", type = "string" }, { name = "request_revision", type = "string" }, { name = "request_configuration", type = "string" }, { name = "proof_ref", type = "string" }, { name = "deployment_target", type = "string" }, { name = "rollback_execution_id", type = "string" }]
 to = "RollbackValidating"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "set_bool", var = "provider_known", value = false }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "deploy_verified", value = false }, { type = "set_bool", var = "apply_configuration_verified", value = false }, { type = "set_bool", var = "rollback_verified", value = false }, { type = "set_bool", var = "set_alias_verified", value = false }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_rollback_validate" }]
+effect = ["operation_sequence += 1", "provider_known = false", "operation_verified = false", "deploy_verified = false", "apply_configuration_verified = false", "rollback_verified = false", "set_alias_verified = false", "execution_attempts -= 1", "execution_attempts -= 1", "execution_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1919,7 +1910,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackValidationBlocked"
@@ -1969,7 +1960,6 @@ kind = "input"
 from = ["RollbackBlocked"]
 params = []
 to = "RollbackValidating"
-effect = [{ type = "trigger", name = "dsf_vercel_rollback_validate" }]
 
 [[action.triggers]]
 name = "dsf_vercel_rollback_validate"
@@ -1985,8 +1975,8 @@ kind = "input"
 from = ["RollbackReady"]
 params = []
 to = "RollbackExecuting"
-effect = [{ type = "increment", var = "execution_attempts" }, { type = "trigger", name = "dsf_vercel_rollback_execute" }]
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+effect = ["execution_attempts += 1"]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_rollback_execute"
@@ -2002,7 +1992,7 @@ kind = "input"
 from = ["RollbackExecuting"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2030,7 +2020,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackExecutionUncertain"
@@ -2055,8 +2045,8 @@ kind = "input"
 from = ["RollbackUnknown"]
 params = []
 to = "RollbackReconciling"
-effect = [{ type = "increment", var = "reconciliation_attempts" }, { type = "trigger", name = "dsf_vercel_rollback_observe" }]
-guard = [{ type = "max_count", var = "reconciliation_attempts", max = 20 }]
+effect = ["reconciliation_attempts += 1"]
+guard = "reconciliation_attempts < 20"
 
 [[action.triggers]]
 name = "dsf_vercel_rollback_observe"
@@ -2072,7 +2062,7 @@ kind = "input"
 from = ["RollbackReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2100,7 +2090,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackProviderAbsent"
@@ -2108,7 +2098,7 @@ kind = "input"
 from = ["RollbackReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "absence_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackReady"
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2132,7 +2122,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackObservationFailed"
@@ -2157,8 +2147,8 @@ kind = "input"
 from = ["RollbackObserved"]
 params = []
 to = "RollbackVerifying"
-effect = [{ type = "increment", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_rollback_verify" }]
-guard = [{ type = "max_count", var = "verification_attempts", max = 40 }, { type = "is_true", var = "provider_known" }]
+effect = ["verification_attempts += 1"]
+guard = "verification_attempts < 40 && provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_rollback_verify"
@@ -2174,7 +2164,7 @@ kind = "input"
 from = ["RollbackVerifying"]
 params = [{ name = "operation_key", type = "string" }, { name = "verified_resource_id", type = "string" }, { name = "verified_revision", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "flow_evidence_ref", type = "string" }, { name = "telemetry_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_bool", var = "operation_verified", value = true }, { type = "set_bool", var = "rollback_verified", value = true }]
+effect = ["operation_verified = true", "rollback_verified = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2252,7 +2242,7 @@ kind = "input"
 from = ["RollbackObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "error_message", type = "string" }, { name = "failure_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackFailed"
-guard = [{ type = "min_count", var = "verification_attempts", min = 40 }]
+guard = "verification_attempts >= 40"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2324,7 +2314,7 @@ kind = "input"
 from = ["RollbackUnknown"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackUnknown"
-effect = [{ type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }]
+effect = ["reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2344,7 +2334,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackReconcile"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackResumeVerification"
@@ -2352,7 +2342,7 @@ kind = "input"
 from = ["RollbackObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RollbackObserved"
-effect = [{ type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }]
+effect = ["verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2372,7 +2362,7 @@ target_entity = "DsfVercelProject"
 target_action = "RollbackVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RollbackValidatingTimedOut"
@@ -2408,7 +2398,7 @@ kind = "input"
 from = ["Active"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }, { name = "effort_id", type = "string" }, { name = "request_revision", type = "string" }, { name = "request_configuration", type = "string" }, { name = "proof_ref", type = "string" }, { name = "deployment_target", type = "string" }, { name = "alias", type = "string" }, { name = "provider_execution_id", type = "string" }]
 to = "SetAliasValidating"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "set_bool", var = "provider_known", value = false }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "deploy_verified", value = false }, { type = "set_bool", var = "apply_configuration_verified", value = false }, { type = "set_bool", var = "rollback_verified", value = false }, { type = "set_bool", var = "set_alias_verified", value = false }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_alias_validate" }]
+effect = ["operation_sequence += 1", "provider_known = false", "operation_verified = false", "deploy_verified = false", "apply_configuration_verified = false", "rollback_verified = false", "set_alias_verified = false", "execution_attempts -= 1", "execution_attempts -= 1", "execution_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2489,7 +2479,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasValidationBlocked"
@@ -2539,7 +2529,6 @@ kind = "input"
 from = ["SetAliasBlocked"]
 params = []
 to = "SetAliasValidating"
-effect = [{ type = "trigger", name = "dsf_vercel_alias_validate" }]
 
 [[action.triggers]]
 name = "dsf_vercel_alias_validate"
@@ -2555,8 +2544,8 @@ kind = "input"
 from = ["SetAliasReady"]
 params = []
 to = "SetAliasExecuting"
-effect = [{ type = "increment", var = "execution_attempts" }, { type = "trigger", name = "dsf_vercel_alias_execute" }]
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+effect = ["execution_attempts += 1"]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_alias_execute"
@@ -2572,7 +2561,7 @@ kind = "input"
 from = ["SetAliasExecuting"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2600,7 +2589,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasExecutionUncertain"
@@ -2625,8 +2614,8 @@ kind = "input"
 from = ["SetAliasUnknown"]
 params = []
 to = "SetAliasReconciling"
-effect = [{ type = "increment", var = "reconciliation_attempts" }, { type = "trigger", name = "dsf_vercel_alias_observe" }]
-guard = [{ type = "max_count", var = "reconciliation_attempts", max = 20 }]
+effect = ["reconciliation_attempts += 1"]
+guard = "reconciliation_attempts < 20"
 
 [[action.triggers]]
 name = "dsf_vercel_alias_observe"
@@ -2642,7 +2631,7 @@ kind = "input"
 from = ["SetAliasReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2670,7 +2659,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasProviderAbsent"
@@ -2678,7 +2667,7 @@ kind = "input"
 from = ["SetAliasReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "absence_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasReady"
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2702,7 +2691,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasObservationFailed"
@@ -2727,8 +2716,8 @@ kind = "input"
 from = ["SetAliasObserved"]
 params = []
 to = "SetAliasVerifying"
-effect = [{ type = "increment", var = "verification_attempts" }, { type = "trigger", name = "dsf_vercel_alias_verify" }]
-guard = [{ type = "max_count", var = "verification_attempts", max = 40 }, { type = "is_true", var = "provider_known" }]
+effect = ["verification_attempts += 1"]
+guard = "verification_attempts < 40 && provider_known"
 
 [[action.triggers]]
 name = "dsf_vercel_alias_verify"
@@ -2744,7 +2733,7 @@ kind = "input"
 from = ["SetAliasVerifying"]
 params = [{ name = "operation_key", type = "string" }, { name = "verified_resource_id", type = "string" }, { name = "verified_configuration", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "flow_evidence_ref", type = "string" }, { name = "telemetry_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_bool", var = "operation_verified", value = true }, { type = "set_bool", var = "set_alias_verified", value = true }]
+effect = ["operation_verified = true", "set_alias_verified = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2822,7 +2811,7 @@ kind = "input"
 from = ["SetAliasObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "error_message", type = "string" }, { name = "failure_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasFailed"
-guard = [{ type = "min_count", var = "verification_attempts", min = 40 }]
+guard = "verification_attempts >= 40"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2894,7 +2883,7 @@ kind = "input"
 from = ["SetAliasUnknown"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasUnknown"
-effect = [{ type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }]
+effect = ["reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2914,7 +2903,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasReconcile"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasResumeVerification"
@@ -2922,7 +2911,7 @@ kind = "input"
 from = ["SetAliasObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "SetAliasObserved"
-effect = [{ type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }]
+effect = ["verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -2942,7 +2931,7 @@ target_entity = "DsfVercelProject"
 target_action = "SetAliasVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "SetAliasValidatingTimedOut"
@@ -3136,11 +3125,6 @@ state = "SetAliasVerifying"
 after_seconds = 300
 on_timeout = "SetAliasVerifyingTimedOut"
 max_occurrences = 40
-
-[[invariant]]
-name = "RetiredIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"
 
 [[invariant]]
 name = "BoundedWrites"

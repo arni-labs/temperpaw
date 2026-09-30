@@ -54,7 +54,6 @@ kind = "input"
 from = ["Idle", "Ready", "Failed"]
 to = "Scanning"
 hint = "GET the pinned path and filter. No parameters."
-effect = [{ type = "trigger", name = "contract_probe_scan" }]
 
 [[action.triggers]]
 name = "contract_probe_scan"

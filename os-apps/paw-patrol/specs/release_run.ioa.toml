@@ -30,6 +30,7 @@
 name = "ReleaseRun"
 states = ["Requested", "Merging", "Watching", "Healthy", "Unhealthy", "RolledBack", "Failed"]
 initial = "Requested"
+terminal = ["Healthy", "RolledBack", "Failed"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -103,7 +104,7 @@ initial = ""
 [[state]]
 name = "check_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # Consecutive probes where the NEW commit is serving but degraded. Reset to 0
 # by any healthy/old-commit probe; the WASM rolls back only after 3 in a row,
@@ -111,7 +112,7 @@ initial = "0"
 [[state]]
 name = "degraded_streak"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "revert_sha"
@@ -136,7 +137,6 @@ kind = "input"
 from = ["Requested"]
 to = "Merging"
 params = ["work_cycle_id", "repo", "pr_number", "computer_id", "health_url", "max_checks", "expected_head_sha"]
-effect = [{ type = "trigger", name = "release_merge" }]
 hint = "Preflight (base==main) and merge the PR on the computer, then start watching. Fired declaratively by WorkCycle.Complete as the patrol-release-service principal."
 
 [[action.triggers]]
@@ -158,7 +158,7 @@ github_app_private_key = "{secret:github_app_private_key}"
 state = "Merging"
 after_seconds = 600
 on_timeout = "Fail"
-params = { error_message = "ReleaseRun stayed Merging for 10m (merge callback lost)." }
+args = { error_message = "'ReleaseRun stayed Merging for 10m (merge callback lost).'" }
 
 # Requested is entered and immediately Request'd by the WorkCycle trigger; cap
 # it so a failure to dispatch Request cannot hang the run.
@@ -166,7 +166,7 @@ params = { error_message = "ReleaseRun stayed Merging for 10m (merge callback lo
 state = "Requested"
 after_seconds = 600
 on_timeout = "Fail"
-params = { error_message = "ReleaseRun stayed Requested for 10m (Request never dispatched)." }
+args = { error_message = "'ReleaseRun stayed Requested for 10m (Request never dispatched).'" }
 
 [[action]]
 name = "MergeSucceeded"
@@ -193,10 +193,7 @@ name = "Check"
 kind = "input"
 from = ["Watching"]
 to = "Watching"
-effect = [
-  { type = "increment", var = "check_count" },
-  { type = "trigger", name = "release_check" }
-]
+effect = ["check_count += 1"]
 hint = "One probe of health_url on the computer. Reports CheckHealthy, CheckPending, or CheckUnhealthy."
 
 [[action.triggers]]
@@ -218,7 +215,7 @@ kind = "input"
 from = ["Watching"]
 to = "Watching"
 params = ["observed_sha", "degraded_streak"]
-effect = [{ type = "set_counter_from_param", var = "degraded_streak", param = "degraded_streak" }]
+effect = ["degraded_streak = params.degraded_streak"]
 hint = "Callback — the service is up but still serving a different commit, or the new commit is briefly degraded; carry the degraded streak and wait for the next Check."
 
 [[action]]
@@ -235,7 +232,6 @@ kind = "input"
 from = ["Watching"]
 to = "Unhealthy"
 params = ["reason", "observed_sha"]
-effect = [{ type = "trigger", name = "release_rollback" }]
 hint = "Callback — the new commit served degraded for 3 consecutive checks, or max_checks elapsed without it becoming healthy. Starts the rollback."
 
 # -- Rollback ----------------------------------------------------------------
@@ -258,7 +254,7 @@ github_app_private_key = "{secret:github_app_private_key}"
 state = "Unhealthy"
 after_seconds = 600
 on_timeout = "Fail"
-params = { error_message = "ReleaseRun stayed Unhealthy for 10m (rollback callback lost)." }
+args = { error_message = "'ReleaseRun stayed Unhealthy for 10m (rollback callback lost).'" }
 
 [[action]]
 name = "RollbackPushed"
@@ -283,18 +279,3 @@ from = ["Requested", "Merging", "Watching", "Unhealthy"]
 to = "Failed"
 params = ["error_message"]
 hint = "A step could not run (computer unavailable, PR not on main, merge rejected, revert conflict) or a callback was lost. Visible terminal failure."
-
-[[invariant]]
-name = "HealthyIsFinal"
-when = ["Healthy"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "RolledBackIsFinal"
-when = ["RolledBack"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

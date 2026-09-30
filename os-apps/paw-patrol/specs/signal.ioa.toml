@@ -51,7 +51,6 @@ kind = "input"
 from = ["Received"]
 to = "Received"
 params = ["source", "payload", "source_url", "severity"]
-effect = [{ type = "trigger", name = "route_signal" }]
 hint = "Record a raw machine signal from Discord, Datadog, GitHub, schedule, or sweep."
 
 [[action.triggers]]
@@ -101,16 +100,16 @@ hint = "Archive noise or already-accounted-for signals."
 state = "Received"
 after_seconds = 86400
 on_timeout = "Archive"
-params = { summary = "Signal was not normalized within 24h.", error_message = "", integration = "signal_timeout" }
+args = { summary = "'Signal was not normalized within 24h.'", error_message = "''", integration = "'signal_timeout'" }
 
 [[state_timeout]]
 state = "Normalized"
 after_seconds = 86400
 on_timeout = "Archive"
-params = { summary = "Signal was not triaged within 24h.", error_message = "", integration = "signal_timeout" }
+args = { summary = "'Signal was not triaged within 24h.'", error_message = "''", integration = "'signal_timeout'" }
 
 [[state_timeout]]
 state = "Triaged"
 after_seconds = 86400
 on_timeout = "Archive"
-params = { summary = "Signal was not linked within 24h.", error_message = "", integration = "signal_timeout" }
+args = { summary = "'Signal was not linked within 24h.'", error_message = "''", integration = "'signal_timeout'" }

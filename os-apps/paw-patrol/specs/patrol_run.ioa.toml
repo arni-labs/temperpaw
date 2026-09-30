@@ -138,7 +138,6 @@ name = "Start"
 kind = "input"
 from = ["Created"]
 to = "Queued"
-effect = [{ type = "trigger", name = "patrol_run_started" }]
 hint = "Start a Risk Patrol run by queueing a capable worker."
 
 [[action.triggers]]
@@ -166,7 +165,6 @@ kind = "input"
 from = ["Running"]
 to = "EvidenceReady"
 params = ["evidence_json", "observability_finding_ids", "signal_ids", "factory_case_ids", "work_cycle_ids"]
-effect = [{ type = "trigger", name = "patrol_evidence_recorded" }]
 hint = "Record Datadog Patrol evidence and the created Patrol entities."
 
 [[action.triggers]]
@@ -216,13 +214,13 @@ hint = "Record a failed PatrolRun."
 state = "Queued"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "PatrolRun stayed Queued for 24h without a worker.", integration = "patrol_run_timeout" }
+args = { error_message = "'PatrolRun stayed Queued for 24h without a worker.'", integration = "'patrol_run_timeout'" }
 
 [[state_timeout]]
 state = "Running"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { error_message = "PatrolRun ran for 6h without evidence.", integration = "patrol_run_timeout" }
+args = { error_message = "'PatrolRun ran for 6h without evidence.'", integration = "'patrol_run_timeout'" }
 
 # A model investigation uses native reactions and does not create a WorkCycle.
 [[action]]
@@ -253,10 +251,10 @@ target_entity = "WorkerRun"
 target_action = "ConfigureModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "worker_run_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
 patrol_run_id = "Id"
 task = "task"
 branch_name = "branch_name"
@@ -320,10 +318,10 @@ target_entity = "WorkerRun"
 target_action = "ConfigureModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "worker_run_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
 patrol_run_id = "Id"
 task = "task"
 branch_name = "branch_name"

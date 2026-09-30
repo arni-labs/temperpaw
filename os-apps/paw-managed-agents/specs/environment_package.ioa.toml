@@ -25,13 +25,5 @@ initial = ""
 
 [[field_invariant]]
 name = "ManagerMustBeKnown"
-when = { not = { field = "Manager", absent = true } }
-require = { any_of = [
-  { field = "Manager", equals = "pip" },
-  { field = "Manager", equals = "npm" },
-  { field = "Manager", equals = "apt" },
-  { field = "Manager", equals = "cargo" },
-  { field = "Manager", equals = "gem" },
-  { field = "Manager", equals = "go" },
-] }
 message = "EnvironmentPackage.Manager must be one of the supported package managers"
+assert = "Manager != null => Manager in ['pip', 'npm', 'apt', 'cargo', 'gem', 'go']"

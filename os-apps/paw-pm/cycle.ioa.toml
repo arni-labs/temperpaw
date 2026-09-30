@@ -12,18 +12,19 @@ initial = "Planning"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Planning", "Active"]
+terminal = ["Completed"]
 
 # --- State Variables ---
 
 [[state]]
 name = "issue_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "completed_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "project_id"
@@ -43,7 +44,7 @@ hint = "Associate this cycle with a project."
 name = "AddIssueToCycle"
 kind = "input"
 from = ["Planning", "Active"]
-effect = "increment issue_count"
+effect = ["issue_count += 1"]
 params = ["IssueId"]
 hint = "Add an issue to this cycle."
 
@@ -59,7 +60,7 @@ hint = "Start the cycle. Requires at least one issue."
 name = "MarkIssueComplete"
 kind = "input"
 from = ["Active"]
-effect = "increment completed_count"
+effect = ["completed_count += 1"]
 params = ["IssueId"]
 hint = "Record that an issue within this cycle has been completed."
 
@@ -78,17 +79,9 @@ guard = "issue_count > 0"
 params = ["IssueId"]
 hint = "Remove an issue from this cycle."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "CompletedIsFinal"
-when = ["Completed"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "ActiveRequiresIssues"
-when = ["Active"]
-assert = "issue_count > 0"
+assert = "status in ['Active'] => issue_count > 0"
 
 # --- Liveness ---
 

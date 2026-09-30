@@ -16,6 +16,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Active", "Paused"]
+terminal = ["Expired"]
 
 [[state]]
 name = "name"
@@ -96,7 +97,7 @@ initial = ""
 [[state]]
 name = "run_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_runs"
@@ -126,7 +127,6 @@ kind = "input"
 from = ["Created"]
 to = "Active"
 hint = "Start the cron schedule — computes first next_run_at."
-effect = [{ type = "trigger", name = "cron_activate" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -147,7 +147,7 @@ kind = "input"
 from = ["Active"]
 params = ["next_run_at"]
 hint = "First next_run_at computed. Schedule initial trigger."
-effect = [{ type = "schedule_at", field = "next_run_at", action = "Trigger" }]
+effect = ["schedule_at('Trigger', next_run_at)"]
 
 [[action]]
 name = "ActivateFailed"
@@ -169,7 +169,13 @@ kind = "input"
 from = ["Paused"]
 to = "Active"
 hint = "Resume the cron schedule — recomputes next_run_at."
-effect = [{ type = "trigger", name = "cron_activate" }]
+
+[[action.triggers]]
+name = "cron_activate"
+kind = "wasm"
+module = "cron_compute_next"
+on_failure = "ActivateFailed"
+config = { mode = "activate" }
 
 [[action]]
 name = "Trigger"
@@ -177,7 +183,7 @@ kind = "input"
 from = ["Active"]
 params = ["last_run_at"]
 hint = "Fire the cron job — increments run count and computes next schedule + user message."
-effect = [{ type = "increment", var = "run_count" }, { type = "trigger", name = "cron_compute_next" }]
+effect = ["run_count += 1"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -198,10 +204,7 @@ kind = "input"
 from = ["Active"]
 params = ["next_run_at", "user_message"]
 hint = "Cron computation complete. Spawn Session with copied fields, schedule next run."
-effect = [
-  { type = "spawn", entity_type = "Session", entity_id_source = "{uuid}", initial_action = "Configure", store_id_in = "last_session_id", copy_fields = "system_prompt,user_message,model,provider,provider_options_json,temperature,tools_enabled,soul_id,sandbox_url,max_turns" },
-  { type = "schedule_at", field = "next_run_at", action = "Trigger" },
-]
+effect = ["spawn('Session', 'Configure', last_session_id, copy(system_prompt, user_message, model, provider, provider_options_json, temperature, tools_enabled, soul_id, sandbox_url, max_turns))", "schedule_at('Trigger', next_run_at)"]
 
 [[action]]
 name = "TriggerFailed"
@@ -216,8 +219,3 @@ kind = "input"
 from = ["Active"]
 to = "Expired"
 hint = "Max runs reached or manually expired."
-
-[[invariant]]
-name = "ExpiredIsFinal"
-when = ["Expired"]
-assert = "no_further_transitions"

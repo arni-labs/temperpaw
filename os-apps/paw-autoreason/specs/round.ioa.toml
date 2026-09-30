@@ -12,6 +12,7 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active"]
+terminal = ["Complete"]
 
 [[state]]
 name = "tournament_id"
@@ -86,10 +87,3 @@ from = ["Active"]
 to = "Complete"
 params = ["winner", "borda_scores_json", "label_mapping_json"]
 hint = "Record tally result."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"

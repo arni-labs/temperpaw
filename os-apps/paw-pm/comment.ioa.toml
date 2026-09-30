@@ -13,13 +13,14 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active", "Edited"]
+terminal = ["Deleted"]
 
 # --- State Variables ---
 
 [[state]]
 name = "edit_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "issue_id"
@@ -40,7 +41,7 @@ name = "Edit"
 kind = "input"
 from = ["Active", "Edited"]
 to = "Edited"
-effect = "increment edit_count"
+effect = ["edit_count += 1"]
 params = ["body"]
 hint = "Edit the comment body."
 
@@ -58,14 +59,6 @@ from = ["Active", "Edited"]
 params = ["emoji", "reactor_id"]
 hint = "Add a reaction to the comment."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "DeletedIsFinal"
-when = ["Deleted"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "EditedHasEdits"
-when = ["Edited"]
-assert = "edit_count > 0"
+assert = "status in ['Edited'] => edit_count > 0"
