@@ -159,6 +159,38 @@ fn challenge_due(snapshot: &Value, program: &Value, upcoming_transitions: u64) -
             .any(|node| matches!(core::field(node, "kind"), "scenario" | "revision"))
 }
 
+// Research can invalidate every hypothesis judgment, so optional generation
+// must leave room to reassess the current graph, not only its pending suffix.
+// This is a planning estimate, not a promise about an unseen generated payload.
+fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, String> {
+    let mut scratch = core::plan(snapshot["nodes"].as_array().ok_or("Missing nodes")?)?;
+    for key in ["baseline", "batch_byte_cap", "evidence_ids", "round"] {
+        if !program[key].is_null() {
+            scratch[key] = program[key].clone();
+        }
+    }
+    // Missing temporal results in this cache-free scratch plan must not erase
+    // forecast costs. Legacy eligibility is used only for unsent size planning;
+    // no classifications, requests or evaluations from it enter the run.
+    scratch["baseline_status"] = Value::Null;
+    let task_count = scratch["tasks"].as_array().unwrap().len();
+    let mut batches = 0u64;
+    let mut cursor = 0usize;
+    while cursor < task_count {
+        scratch["cursor"] = json!(cursor);
+        let batch = core::batch::prepare(snapshot, &scratch, task_count - cursor)?;
+        cursor += batch.tasks.len();
+        batches += 1;
+    }
+    let evaluation_transitions = batches.saturating_mul(2);
+    let required = core::REASONING_TRANSITION_RESERVE + evaluation_transitions + 32;
+    let remaining = core::transition_limit(program)
+        .saturating_sub(program["transition_count"].as_u64().unwrap_or(0));
+    Ok(
+        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"reasoning_reserve":core::REASONING_TRANSITION_RESERVE,"current_graph_evaluation_transitions":evaluation_transitions,"new_work_reserve":32,"estimated_batches":batches,"current_graph_tasks":task_count,"unseen_payload_bounded":false}),
+    )
+}
+
 fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -219,6 +251,45 @@ fn step(ctx: &Context) -> Result<(), String> {
             program["stop_reason"] = json!("independent_challenge_pending");
             phase = "challenge";
         }
+        if phase == "explore" {
+            let has_hypotheses = snapshot["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|node| matches!(core::field(node, "kind"), "scenario" | "revision"));
+            // The first hypothesis generation is required work, not optional
+            // research. Do not price a repeat of baseline evidence against it.
+            let admission = if !has_hypotheses {
+                json!({"admitted":true,"reason":"initial_hypotheses_required"})
+            } else {
+                exploration_admission(&snapshot, &program)
+                    .unwrap_or_else(|error| json!({"admitted":false,"planning_error":error}))
+            };
+            let admitted = admission["admitted"] == true;
+            program["exploration_admission"] = admission;
+            if !admitted {
+                program["stop_reason"] = json!("transition_budget");
+                phase = "compose";
+            }
+        }
+        if phase == "compose" && program["baseline_status"] == "established" {
+            let eligible = snapshot["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|node| {
+                    matches!(core::field(node, "kind"), "scenario" | "revision")
+                        && core::temporal_allows_forecast(&program, core::field(node, "Id"))
+                })
+                .count();
+            if eligible < 3 {
+                set_success_result(
+                    "Fail",
+                    &json!({"error_message":format!("Cannot compose worlds: only {eligible} current eligible hypotheses; at least three are required. Not enough currently evaluated future candidates are available.")}),
+                );
+                return Ok(());
+            }
+        }
         if phase == "refine" {
             set_success_result(
                 "SearchPlanned",
@@ -278,6 +349,27 @@ mod tests {
         p["transition_count"] = json!(96);
         p["stage"] = json!("worlds");
         assert!(!challenge_due(&snapshot, &p, 0));
+    }
+
+    #[test]
+    fn optional_research_reserves_all_rechecks_without_singleton_overcounting() {
+        let nodes:Vec<_>=(0..16).map(|i|json!({"Id":format!("h{i}"),"kind":"scenario","statement":"A future event","edges":"[]"})).collect();
+        let snapshot = json!({"world":{},"nodes":nodes});
+        let p = json!({"stage":"exploration","baseline_status":"established","transition_count":150,"results":{"h0":{"classify_temporal":"already_observed"}}});
+        let before = p.clone();
+        let cost = exploration_admission(&snapshot, &p).unwrap();
+        assert_eq!(cost["current_graph_tasks"], 80);
+        assert_eq!(cost["estimated_batches"], 5);
+        assert_eq!(cost["current_graph_evaluation_transitions"], 10);
+        assert_eq!(cost["required_transitions"], 106);
+        assert_eq!(cost["admitted"], false);
+        assert_eq!(p, before);
+        let mut early = p;
+        early["transition_count"] = json!(20);
+        assert_eq!(
+            exploration_admission(&snapshot, &early).unwrap()["admitted"],
+            true
+        );
     }
 
     fn evaluated_world(label: &str) -> (Value, Value) {

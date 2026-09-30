@@ -475,6 +475,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "world_audits",
         "world_refinement",
         "independent_challenge",
+        "exploration_admission",
         "batch_byte_cap",
         "http_calls",
         "transition_count",
@@ -696,6 +697,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "http_calls",
         "transition_count",
         "independent_challenge",
+        "exploration_admission",
         "batch_byte_cap",
         "world_revision",
         "world_refinement",
@@ -927,6 +929,23 @@ mod tests {
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
+    #[test]
+    fn research_admission_receipt_survives_composition_and_replanning() {
+        let (mut snapshot, generated, mut old) = world_fixture();
+        old["exploration_admission"] =
+            json!({"admitted":false,"required_transitions":106,"remaining_transitions":22});
+        let composed = compose(&mut snapshot, &generated, &old).unwrap();
+        assert_eq!(
+            composed["exploration_admission"],
+            old["exploration_admission"]
+        );
+        let replanned = replan(&snapshot, &old, &json!({"continue_exploring":false}), 0).unwrap();
+        assert_eq!(
+            replanned["exploration_admission"],
+            old["exploration_admission"]
+        );
+    }
+
     #[test]
     #[ignore = "Requires captured rejected composition"]
     fn actual_composition_rejection_identifies_unclassified_component_not_bad_alias() {

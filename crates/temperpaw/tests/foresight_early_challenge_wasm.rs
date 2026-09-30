@@ -192,3 +192,82 @@ async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_c
     )
     .await;
 }
+
+#[tokio::test]
+async fn late_research_is_not_admitted_when_it_cannot_recheck_existing_evidence() {
+    let engine = WasmEngine::new().unwrap();
+    let hash = module(&engine, "semantic_step");
+    let snapshot = json!({"world":{"Id":"w"},"nodes":[{"Id":"e","kind":"evidence","statement":"Observed baseline","edges":"[]"},{"Id":"a","kind":"scenario","statement":"Event A by2030","edges":"[]"},{"Id":"b","kind":"scenario","statement":"Event B by2030","edges":"[]"},{"Id":"c","kind":"scenario","statement":"Event C by2030","edges":"[]"}]});
+    let p = json!({"stage":"exploration","baseline_status":"established","baseline":{"as_of":"2026-09-30"},"cursor":0,"tasks":[],"continue_exploring":true,"independent_challenge":{"status":"completed"},"results":{"a":{"classify_temporal":"future_change","estimate_likelihood":"0.4"},"b":{"classify_temporal":"future_change","estimate_likelihood":"0.6"},"c":{"classify_temporal":"future_change","estimate_likelihood":"0.5"}},"evaluations":{"a":{},"b":{},"c":{}},"evidence_ids":["e"],"http_calls":76});
+    let fields = json!({"_transition_count":170,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":p.to_string(),"trace_json":"[]"});
+    let out = invoke_host(
+        &engine,
+        &hash,
+        fields.clone(),
+        Arc::new(SimWasmHost::new()),
+        "SearchPlanned",
+    )
+    .await;
+    let planned: Value = serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(planned["stage"], "combinations");
+    assert_eq!(planned["exploration_admission"]["admitted"], false);
+    assert_eq!(planned["exploration_admission"]["current_graph_tasks"], 16);
+    assert_eq!(planned["results"], p["results"]);
+    assert_eq!(planned["http_calls"], 76);
+    assert_eq!(planned["evidence_ids"], p["evidence_ids"]);
+    assert!(out.get("snapshot_json").is_none());
+    assert!(out.get("trace_json").is_none());
+    assert!(out.get("started_at_ms").is_none());
+    let mut missing = fields.clone();
+    let mut no_current = p.clone();
+    no_current["results"] = json!({});
+    no_current["evaluations"] = json!({});
+    missing["program_json"] = json!(no_current.to_string());
+    let failed = invoke_host(
+        &engine,
+        &hash,
+        missing,
+        Arc::new(SimWasmHost::new()),
+        "Fail",
+    )
+    .await;
+    assert!(
+        failed["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("only 0 current eligible")
+    );
+    let mut first = fields.clone();
+    first["snapshot_json"] =
+        json!(json!({"world":snapshot["world"],"nodes":[snapshot["nodes"][0]]}).to_string());
+    first["program_json"] = json!(no_current.to_string());
+    let initial = invoke_host(
+        &engine,
+        &hash,
+        first,
+        Arc::new(SimWasmHost::new()),
+        "Reason",
+    )
+    .await;
+    assert_eq!(initial["phase"], "explore");
+    let initial_program: Value =
+        serde_json::from_str(initial["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        initial_program["exploration_admission"]["reason"],
+        "initial_hypotheses_required"
+    );
+    let mut early = fields;
+    early["_transition_count"] = json!(20);
+    let permitted = invoke_host(
+        &engine,
+        &hash,
+        early,
+        Arc::new(SimWasmHost::new()),
+        "Reason",
+    )
+    .await;
+    assert_eq!(permitted["phase"], "explore");
+    let admitted: Value =
+        serde_json::from_str(permitted["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(admitted["exploration_admission"]["admitted"], true);
+}
