@@ -15,13 +15,14 @@ async fn invoke(
     response: &Value,
 ) -> Value {
     let host = SimWasmHost::new().with_default_response(status, &response.to_string());
-    invoke_host(engine, hash, fields, Arc::new(host)).await
+    invoke_host(engine, hash, fields, Arc::new(host), "Recorded").await
 }
 async fn invoke_host(
     engine: &WasmEngine,
     hash: &str,
     fields: Value,
     host: Arc<dyn WasmHost>,
+    expected_action: &str,
 ) -> Value {
     let ctx = WasmInvocationContext {
         tenant: "test".into(),
@@ -54,7 +55,11 @@ async fn invoke_host(
         )
         .await
         .unwrap();
-    assert_eq!(r.callback_action, "Recorded", "{:?}", r.callback_params);
+    assert_eq!(
+        r.callback_action, expected_action,
+        "{:?}",
+        r.callback_params
+    );
     r.callback_params
 }
 fn fixture() -> Value {
@@ -180,7 +185,7 @@ async fn world_likelihood_interns_provenance_losslessly_in_actual_provider_input
         .compile_and_cache(&std::fs::read(path).unwrap())
         .unwrap();
     let host = Arc::new(Capture::default());
-    let out = invoke_host(&engine, &hash, fields, host.clone()).await;
+    let out = invoke_host(&engine, &hash, fields, host.clone(), "Recorded").await;
     let request = host.0.lock().unwrap()[0].clone();
     let mut state = request["state"].clone();
     let sets = state["evidence_sets"].clone();
@@ -282,7 +287,7 @@ async fn captured_large_pair_program_fits_existing_fuel_budget() {
         .compile_and_cache(&std::fs::read(path).unwrap())
         .unwrap();
     let host = Arc::new(PairCapture::default());
-    let out = invoke_host(&engine, &hash, fields, host.clone()).await;
+    let out = invoke_host(&engine, &hash, fields, host.clone(), "Recorded").await;
     let after: Value = serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
     let nexttrace: Value = serde_json::from_str(out["trace_json"].as_str().unwrap()).unwrap();
     assert!(after["cursor"].as_u64().unwrap() > before["cursor"].as_u64().unwrap());
@@ -298,4 +303,79 @@ async fn captured_large_pair_program_fits_existing_fuel_budget() {
         after["cursor"],
         host.0.lock().unwrap().len()
     );
+}
+
+#[tokio::test]
+async fn transient_520_retries_same_question_without_losing_receipts_or_clock() {
+    let engine = WasmEngine::new().unwrap();
+    let path=std::env::var("ARN518_VALIDATION_WASM").unwrap_or_else(|_|format!("{}/../../os-apps/paw-foresight/wasm/semantic_call/target/wasm32-unknown-unknown/release/semantic_call.wasm",env!("CARGO_MANIFEST_DIR")));
+    let hash = engine
+        .compile_and_cache(&std::fs::read(path).unwrap())
+        .unwrap();
+    let mut fields = fixture();
+    fields["started_at_ms"] = json!("9999999999999");
+    let failure = invoke(
+        &engine,
+        &hash,
+        fields.clone(),
+        520,
+        &json!({"error":"temporary upstream failure"}),
+    )
+    .await;
+    let failed: Value = serde_json::from_str(failure["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(failed["stop_reason"], "provider_retry");
+    assert_eq!(failed["cursor"], 0);
+    assert_eq!(failed["http_calls"], 1);
+    assert_eq!(failed["evaluations"], json!({}));
+    assert!(failure.get("started_at_ms").is_none());
+    fields["program_json"] = failure["program_json"].clone();
+    fields["trace_json"] = failure["trace_json"].clone();
+    let step_path = format!(
+        "{}/../../os-apps/paw-foresight/wasm/semantic_step/target/wasm32-unknown-unknown/release/semantic_step.wasm",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let step_hash = engine
+        .compile_and_cache(&std::fs::read(step_path).unwrap())
+        .unwrap();
+    invoke_host(
+        &engine,
+        &step_hash,
+        fields.clone(),
+        Arc::new(SimWasmHost::new()),
+        "Evaluate",
+    )
+    .await;
+    let success = invoke(&engine, &hash, fields.clone(), 200, &response(true)).await;
+    let p: Value = serde_json::from_str(success["program_json"].as_str().unwrap()).unwrap();
+    let before: Value = serde_json::from_str(failure["trace_json"].as_str().unwrap()).unwrap();
+    let trace: Value = serde_json::from_str(success["trace_json"].as_str().unwrap()).unwrap();
+    assert_eq!(p["cursor"], 1);
+    assert_eq!(p["http_calls"], 2);
+    assert_eq!(p["transient_provider_failures"], 0);
+    assert_eq!(p["stop_reason"], "");
+    assert_eq!(trace[0], before[0]);
+    assert_eq!(trace[0]["requestHash"], trace[1]["requestHash"]);
+    assert!(success.get("started_at_ms").is_none());
+    for attempt in 2..=3 {
+        let next = invoke(&engine, &hash, fields.clone(), 520, &json!({})).await;
+        let p: Value = serde_json::from_str(next["program_json"].as_str().unwrap()).unwrap();
+        assert_eq!(p["cursor"], 0);
+        assert_eq!(p["http_calls"], attempt);
+        assert_eq!(
+            p["stop_reason"],
+            if attempt == 2 {
+                "provider_retry"
+            } else {
+                "provider_error"
+            }
+        );
+        fields["program_json"] = next["program_json"].clone();
+        fields["trace_json"] = next["trace_json"].clone();
+    }
+    for status in [400, 401, 402, 403] {
+        let permanent = invoke(&engine, &hash, fixture(), status, &json!({})).await;
+        let p: Value = serde_json::from_str(permanent["program_json"].as_str().unwrap()).unwrap();
+        assert_eq!(p["stop_reason"], "provider_error");
+        assert_eq!(p["http_calls"], 1);
+    }
 }

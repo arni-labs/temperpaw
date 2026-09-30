@@ -57,6 +57,19 @@ fn validation_retry(program: &mut serde_json::Value) -> bool {
     program["validation_failures"] = json!(failures);
     failures <= 2
 }
+fn transient_http_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504 | 520 | 522 | 524)
+}
+// Retries are checkpointed, counted attempts at the same cursor, not replacement results.
+fn transient_retry(program: &mut serde_json::Value) -> bool {
+    let failures = program["transient_provider_failures"]
+        .as_u64()
+        .unwrap_or(0)
+        .saturating_add(1);
+    program["transient_provider_failures"] = json!(failures);
+    failures <= 2
+}
+
 fn safe_rejected_response(response: &serde_json::Value, secret: &str) -> serde_json::Value {
     let typed = json!({"model":response["model"],"answers":response["answers"]});
     let encoded = typed.to_string();
@@ -119,6 +132,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             + 1;
         p["http_calls"] = json!(http_call);
         let mut token_overflow = false;
+        let mut transient_error = false;
         let mut rejected_response = None;
         let response_result = (|| -> Result<serde_json::Value, String> {
             let r = ctx
@@ -131,9 +145,13 @@ fn call(ctx: &Context) -> Result<(), String> {
                     ],
                     &encoded,
                 )
-                .map_err(|_| "Semantic provider transport failed")?;
+                .map_err(|error| {
+                    transient_error = !error.to_ascii_lowercase().contains("authorization denied");
+                    "Semantic provider transport failed"
+                })?;
             if !(200..300).contains(&r.status) {
                 token_overflow = is_token_overflow(r.status, &r.body);
+                transient_error = transient_http_status(r.status);
                 return Err(provider_error(r.status, &r.body, key));
             }
             if r.body.len() > 128 * 1024 {
@@ -156,7 +174,9 @@ fn call(ctx: &Context) -> Result<(), String> {
                     .collect();
                 let index = trace.as_array().unwrap().len();
                 trace.as_array_mut().unwrap().push(json!({"index":index,"nodeId":node,"function":function,"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"error":error,"requestFormat":"failed-attempt-hash-only","httpCallId":http_call,"task":task,"rejectedResponse":rejected_response.as_ref().map(|v| safe_rejected_response(v, key))}));
-                p["stop_reason"] = if rejected_response.is_some() && validation_retry(&mut p) {
+                p["stop_reason"] = if transient_error && transient_retry(&mut p) {
+                    json!("provider_retry")
+                } else if rejected_response.is_some() && validation_retry(&mut p) {
                     json!("validation_retry")
                 } else if token_overflow && core::batch::reduce_cap(&mut p, &batch) {
                     json!("batch_repacking")
@@ -168,9 +188,10 @@ fn call(ctx: &Context) -> Result<(), String> {
             }
         };
         p["validation_failures"] = json!(0);
+        p["transient_provider_failures"] = json!(0);
         if matches!(
             p["stop_reason"].as_str(),
-            Some("validation_retry" | "batch_repacking")
+            Some("validation_retry" | "batch_repacking" | "provider_retry")
         ) {
             p["stop_reason"] = json!("");
         }
@@ -288,4 +309,21 @@ fn validation_retries_are_bounded_without_mutating_checkpoint() {
     );
     assert_eq!(safe["answers"]["result"]["choice"], "[redacted]");
     assert!(safe.get("unrelated").is_none());
+}
+
+#[cfg(test)]
+#[test]
+fn transient_failures_retry_twice_but_permissions_billing_and_invalid_requests_do_not() {
+    for status in [408, 429, 500, 502, 503, 504, 520, 522, 524] {
+        assert!(transient_http_status(status));
+    }
+    for status in [400, 401, 402, 403, 404, 422] {
+        assert!(!transient_http_status(status));
+    }
+    let mut p = json!({"cursor":17,"http_calls":616});
+    assert!(transient_retry(&mut p));
+    assert!(transient_retry(&mut p));
+    assert!(!transient_retry(&mut p));
+    assert_eq!(p["cursor"], 17);
+    assert_eq!(p["http_calls"], 616);
 }
