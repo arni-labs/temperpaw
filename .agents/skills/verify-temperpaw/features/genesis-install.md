@@ -14,3 +14,12 @@ The installed pinned ref matches what was published, and the app's entity set an
 
 ## Gotchas
 GENESIS_TOKEN (not GENESIS_API_KEY). Install does not GC superseded Cedar (ARN-399) - policy tightening needs a check that old permits are gone.
+
+
+## Corrections (maintain pass 2026-08-26)
+- No 'list installed apps' surface: prove via the install response body (app_ref, closure_id, materialized_apps, wasm_modules) and provenance rows.
+- GENESIS_TOKEN belongs to publish/sync, not install (install fetches unauthenticated).
+- Pass registry_url EXPLICITLY: omitting it silently targets production Genesis. Git materialization fallback is off unless TEMPER_GENESIS_INSTALL_GIT_FALLBACK is set.
+- Re-POST the same ref -> skipped (idempotence proof).
+- follow_policy is pinned (default) or follow_latest; only pinned proves a hash match.
+- SECURITY (ARN-410): this endpoint does not authenticate - a wrong bearer key with a valid body reaches install logic (500 on unreachable registry, not 401). Confirmed live.
