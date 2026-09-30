@@ -1,0 +1,171 @@
+//! Actual guest proof of bounded independent batching and preserved dependencies.
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
+use temper_wasm::{
+    SimWasmHost, StreamRegistry, WasmEngine, WasmHost, WasmInvocationContext, WasmResourceLimits,
+};
+#[allow(dead_code)]
+async fn invoke(
+    engine: &WasmEngine,
+    hash: &str,
+    fields: Value,
+    status: u16,
+    response: &Value,
+) -> Value {
+    let host = SimWasmHost::new().with_default_response(status, &response.to_string());
+    invoke_host(engine, hash, fields, Arc::new(host), "Recorded").await
+}
+async fn invoke_host(
+    engine: &WasmEngine,
+    hash: &str,
+    fields: Value,
+    host: Arc<dyn WasmHost>,
+    expected_action: &str,
+) -> Value {
+    let ctx = WasmInvocationContext {
+        tenant: "test".into(),
+        entity_type: "SemanticRun".into(),
+        entity_id: "retry-fixture".into(),
+        trigger_action: "Evaluate".into(),
+        wasm_module: Some("semantic_call".into()),
+        trigger_params: json!({}),
+        entity_state: json!({"fields":fields,"counters":{"transition_count":fields["_transition_count"].as_u64().unwrap_or(0)}}),
+        agent_id: None,
+        session_id: None,
+        integration_config: BTreeMap::from([("typesafe_api_key".into(), "fixture-key".into())]),
+        trace_id: String::new(),
+        workflow_root_entity_type: None,
+        workflow_root_entity_id: None,
+        workflow_run_id: None,
+        http_request: None,
+    };
+    let r = engine
+        .invoke(
+            hash,
+            &ctx,
+            host,
+            &WasmResourceLimits {
+                max_memory: 256 * 1024 * 1024,
+                max_fuel: 10_000_000_000,
+                ..Default::default()
+            },
+            Arc::new(RwLock::new(StreamRegistry::default())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.callback_action, expected_action,
+        "{:?}",
+        r.callback_params
+    );
+    r.callback_params
+}
+
+fn module(engine: &WasmEngine, name: &str) -> String {
+    let path=if name=="semantic_step" { std::env::var("ARN518_CHALLENGE_STEP").ok() }else{None}.unwrap_or_else(||format!("{}/../../os-apps/paw-foresight/wasm/{name}/target/wasm32-unknown-unknown/release/{name}.wasm",env!("CARGO_MANIFEST_DIR")));
+    engine
+        .compile_and_cache(&std::fs::read(path).unwrap())
+        .unwrap()
+}
+#[tokio::test]
+async fn reserved_challenge_interrupts_pending_work_and_replans_without_losing_cached_judgments() {
+    let engine = WasmEngine::new().unwrap();
+    let hash = module(&engine, "semantic_step");
+    let snapshot = json!({"world":{"hindcast_mode":"false"},"nodes":[{"Id":"e","kind":"evidence","statement":"Observed baseline","edges":"[]"},{"Id":"h","kind":"scenario","statement":"A future event by2030","edges":"[]"}]});
+    let tasks = json!([{"nodeId":"h","function":"classify_temporal","depth":0},{"nodeId":"h","function":"classify_gap","depth":0},{"nodeId":"h","function":"estimate_likelihood","depth":0},{"nodeId":"h","function":"evaluate_novelty","depth":0},{"nodeId":"h","function":"decision_value","depth":0}]);
+    let original = json!({"stage":"exploration","baseline_status":"established","baseline":{"as_of":"2026-09-30"},"cursor":2,"tasks":tasks,"continue_exploring":true,"round":3,"rounds":[],"http_calls":41,"evidence_ids":["e"],"results":{"e":{"classify_gap":"none"},"h":{"classify_temporal":"future_change","classify_gap":"evidence"}},"evaluations":{"e":{"classify_gap":{"type":"choice"}},"h":{"classify_gap":{"type":"choice","context":{"evidence_ids":["e"]}}}}});
+    let trace = json!([{"index":0,"nodeId":"h","function":"classify_gap","decision":"evidence"}]);
+    let mut fields = json!({"_transition_count":96,"started_at_ms":"9999999999999","snapshot_json":snapshot.to_string(),"program_json":original.to_string(),"trace_json":trace.to_string()});
+    let out = invoke_host(
+        &engine,
+        &hash,
+        fields.clone(),
+        Arc::new(SimWasmHost::new()),
+        "Reason",
+    )
+    .await;
+    assert_eq!(out["phase"], "challenge");
+    assert_eq!(out["reasoning_phase_polls"], 0);
+    let p: Value = serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
+    for key in [
+        "tasks",
+        "cursor",
+        "results",
+        "evaluations",
+        "http_calls",
+        "round",
+    ] {
+        assert_eq!(p[key], original[key], "{key}");
+    }
+    assert_eq!(
+        serde_json::from_str::<Value>(out["trace_json"].as_str().unwrap()).unwrap(),
+        trace
+    );
+    assert!(out.get("started_at_ms").is_none());
+    assert_eq!(
+        p["independent_challenge"]["trigger"],
+        "reserved_transition_window"
+    );
+    fields["program_json"] = out["program_json"].clone();
+    fields["phase"] = json!("challenge");
+    fields["reasoning_result"]=json!(json!({"premises_challenged":[{"assumption":"The existing mechanism remains necessary","alternative":"A different mechanism performs the purpose"}],"hypotheses":[{"id":"alternative","statement":"Another mechanism succeeds by2030","requires":["ref_0001"]}],"research_evidence":[],"continue_exploring":true,"exploration_note":"Challenge the premise"}).to_string());
+    let expanded = invoke_host(
+        &engine,
+        &module(&engine, "semantic_expand"),
+        fields.clone(),
+        Arc::new(SimWasmHost::new()),
+        "Expanded",
+    )
+    .await;
+    assert_eq!(expanded["started_at_ms"], fields["started_at_ms"]);
+    assert!(expanded.get("trace_json").is_none());
+    let after: Value = serde_json::from_str(expanded["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(after["results"], original["results"]);
+    assert_eq!(after["evaluations"], original["evaluations"]);
+    assert_eq!(after["http_calls"], 41);
+    assert_eq!(after["independent_challenge"]["status"], "completed");
+    for f in ["estimate_likelihood", "evaluate_novelty", "decision_value"] {
+        assert!(
+            after["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == f)
+        );
+    }
+    for f in ["classify_temporal", "classify_gap"] {
+        assert!(
+            !after["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == f)
+        );
+    }
+    assert!(
+        after["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["nodeId"] == "r4-alternative" && t["function"] == "classify_temporal")
+    );
+    let updated: Value = serde_json::from_str(expanded["snapshot_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        &updated["nodes"].as_array().unwrap()[..2],
+        snapshot["nodes"].as_array().unwrap()
+    );
+    fields["program_json"] = expanded["program_json"].clone();
+    fields["snapshot_json"] = expanded["snapshot_json"].clone();
+    fields["_transition_count"] = json!(120);
+    invoke_host(
+        &engine,
+        &hash,
+        fields,
+        Arc::new(SimWasmHost::new()),
+        "Evaluate",
+    )
+    .await;
+}

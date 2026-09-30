@@ -330,6 +330,54 @@ async fn composition_schedules_new_world_calls_not_component_reuse() {
             .all(|t| t["nodeId"].as_str().unwrap().starts_with("world-")),
         "Components are already evaluated"
     );
+    for links in [0, 1] {
+        let mut parallel = generated.clone();
+        for world in parallel["worlds"].as_array_mut().unwrap() {
+            world["chain"].as_array_mut().unwrap().truncate(links);
+        }
+        let mut parallel_fields = fields.clone();
+        parallel_fields["reasoning_result"] = json!(parallel.to_string());
+        let accepted = invoke(&engine, "semantic_expand", parallel_fields).await;
+        assert_eq!(
+            accepted["callback_action"], "Expanded",
+            "parallel components must not require invented links: {accepted}"
+        );
+        let program: Value = serde_json::from_str(
+            accepted["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let tasks = program["tasks"].as_array().unwrap();
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "check_pair")
+                .count(),
+            6
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "check_world_consistency")
+                .count(),
+            2
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "estimate_likelihood")
+                .count(),
+            2
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "conditional_on")
+                .count(),
+            links * 2
+        );
+    }
     for defect in ["cycle", "reversed_time", "bad_date", "uncovered_facet"] {
         let mut broken = generated.clone();
         match defect {

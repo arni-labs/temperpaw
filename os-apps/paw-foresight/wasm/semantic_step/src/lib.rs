@@ -141,6 +141,24 @@ fn plan_combination_phase(
         )
 }
 
+// Reserve a full independent challenge and a subsequent evaluation window
+// before ordinary exploration spends the transition budget. Never reset it.
+fn challenge_due(snapshot: &Value, program: &Value) -> bool {
+    let limit = core::transition_limit(program);
+    let transitions = program["transition_count"].as_u64().unwrap_or(0);
+    let trigger = limit.saturating_sub(core::REASONING_TRANSITION_RESERVE + 32);
+    program["stage"] == "exploration"
+        && program["baseline_status"] == "established"
+        && program["independent_challenge"].is_null()
+        && transitions >= trigger
+        && transitions + core::REASONING_TRANSITION_RESERVE < limit
+        && snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|node| matches!(core::field(node, "kind"), "scenario" | "revision"))
+}
+
 fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -167,6 +185,22 @@ fn step(ctx: &Context) -> Result<(), String> {
         )
     );
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    if !stopped
+        && calls < core::call_limit(&program)
+        && elapsed < core::time_limit(&program)
+        && challenge_due(&snapshot, &program)
+    {
+        program["independent_challenge"] =
+            json!({"status":"pending","trigger":"reserved_transition_window"});
+        program["stop_reason"] = json!("independent_challenge_pending");
+        program["remaining_calls"] = json!(core::MAX_CALLS.saturating_sub(calls));
+        program["remaining_round_tasks"] = json!(count.saturating_sub(cursor));
+        set_success_result(
+            "Reason",
+            &json!({"phase":"challenge","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
+        );
+        return Ok(());
+    }
     if cursor >= count
         || calls >= core::call_limit(&program)
         || elapsed >= core::time_limit(&program)
@@ -210,6 +244,26 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_challenge_has_a_reserved_window_without_repeating_or_overrunning() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});
+        let mut p =
+            json!({"stage":"exploration","baseline_status":"established","transition_count":95});
+        assert!(!challenge_due(&snapshot, &p));
+        p["transition_count"] = json!(96);
+        assert!(challenge_due(&snapshot, &p));
+        p["independent_challenge"] = json!({"status":"pending"});
+        assert!(!challenge_due(&snapshot, &p));
+        p["independent_challenge"] = json!({"status":"completed"});
+        assert!(!challenge_due(&snapshot, &p));
+        p["independent_challenge"] = Value::Null;
+        p["transition_count"] = json!(128);
+        assert!(!challenge_due(&snapshot, &p));
+        p["transition_count"] = json!(96);
+        p["stage"] = json!("worlds");
+        assert!(!challenge_due(&snapshot, &p));
+    }
+
     fn evaluated_world(label: &str) -> (Value, Value) {
         let world = json!({"Id":"w","kind":"world","statement":"A, B and C occur together","component_ids":["a","b","c"],"chain":[]});
         let snapshot = json!({"nodes":[world]});
