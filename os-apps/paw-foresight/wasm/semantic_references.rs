@@ -78,6 +78,7 @@ impl References {
                         | "scenario_ids"
                         | "requires"
                         | "world_id"
+                        | "event_ids"
                         | "component_ids"
                         | "counter_ids"
                         | "evidence_ids"
@@ -112,6 +113,7 @@ impl References {
                 if matches!(
                     field,
                     "world_id"
+                        | "event_ids"
                         | "component_ids"
                         | "counter_ids"
                         | "evidence_ids"

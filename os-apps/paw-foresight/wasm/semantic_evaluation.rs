@@ -39,6 +39,7 @@ fn digest(node: &Value) -> Value {
         "facets",
         "chain",
         "assumptions",
+        "branch_conditions",
     ] {
         if let Some(value) = node.get("fields").unwrap_or(node).get(key) {
             out.insert(key.into(), value.clone());
@@ -104,7 +105,7 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
     if matches!(field(node, "kind"), "scenario" | "revision")
         && matches!(
             field(task, "function"),
-            "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+            "estimate_likelihood" | "estimate_conditional" | "evaluate_novelty" | "decision_value"
         )
         && !super::temporal_allows_forecast(program, field(task, "nodeId"))
     {
@@ -149,6 +150,9 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         }
         "classify_gap" => {
             json!({"type":"choice","instructions":"Identify the most consequential causal gap in this hypothesis using actual supplied evidence. Future events are hypotheses, not false observations. Source URLs alone do not prove contents. A coherent mechanism does not imply a likely outcome.","criteria":super::gap_criteria()})
+        }
+        "estimate_conditional" => {
+            json!({"type":"noul","instructions":"Estimate P(the target event occurs within its explicit scope and stated deadline (or question horizon when no narrower deadline is stated) | every hypothetical clause in state.branch_state.conditions). These clauses are assumptions for THIS conditional estimate only, never evidence. all_occurring requires all listed events by their deadlines; not_all_occurring requires at least one fails, without identifying which. Inherit every ancestor clause. Do not assume target, descendants or unrelated future events. This is not the marginal event probability or a causal intervention estimate.","criteria":{"true":"Target event occurs under the supplied condition.","false":"Target event does not occur under the supplied condition."}})
         }
         "estimate_likelihood" => {
             json!({"type":"noul","instructions":"Estimate whether the explicit event described by state.node will occur within its stated date or horizon, conditioned on the supplied world question, evidence and prerequisite assessments. This is an event proposition, not a question about coherence, novelty, confidence, or whether the text asserts the event. Account for unsupported premises and contrary evidence. Preserve uncertainty; overlapping hypotheses need not sum to one.","criteria":{"true":"The described event occurs within its stated horizon.","false":"The described event does not occur within its stated horizon."}})
@@ -203,7 +207,7 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         // rather than treating component likelihoods as evidence for a joint event.
         if task["function"] == "estimate_likelihood" {
             question["instructions"] = json!(
-                "Estimate the probability of the WHOLE JOINT WORLD defined by state.node.statement AND ALL its defining component events in state.prerequisites, within the world horizon. Every defining component must occur for this joint world to occur. Evaluate causal interactions, correlations, shared assumptions, supplied source evidence, baseline unknowns, and counter hypotheses. Component estimates are context only: never average, multiply, inherit, or substitute them for a fresh assessment of the joint world. Counter hypotheses are contrary context, not required events. This is event likelihood, not narrative coherence or confidence. Worlds may overlap and need not sum to one."
+                "Estimate the probability of the WHOLE JOINT WORLD defined by state.node.statement AND ALL its defining component events in state.prerequisites, within the world horizon. Every defining component must occur for this joint world to occur. Evaluate causal interactions, correlations, shared assumptions, supplied source evidence, baseline unknowns, and counter hypotheses. The signed clauses in state.node.branch_conditions are ALSO defining events in this JOINT probability, not conditions assumed true. Include their uncertainty. Component estimates are context only: never average, multiply, inherit, or substitute them for a fresh assessment of the joint world. Counter hypotheses are contrary context, not required events. This is event likelihood, not narrative coherence or confidence. Worlds may overlap and need not sum to one."
             );
         }
     }
@@ -213,6 +217,23 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         Value::Null
     };
     let mut request = json!({"model":MODEL,"state":{"world":snapshot["world"],"node":digest(node),"prerequisites":prerequisites,"counter_hypotheses":counter_hypotheses,"source_evidence":evidence,"baseline":program["baseline"],"world_audit":audit,"previous_world_judgments":if is_world { super::search::previous_world_judgments(program,node) } else { Value::Null },"comparisons":comparisons,"assessment":program["results"][id],"evaluations":program["evaluations"][id]},"questions":{"result":question}});
+    if task["function"] == "estimate_conditional" {
+        request["state"]["branch_state"] =
+            super::branches::state(snapshot, field(node, "branch_id"), Some(id))?;
+        let mut judgments = json!({});
+        for clause in request["state"]["branch_state"]["conditions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            for event in clause["events"].as_array().into_iter().flatten() {
+                let premise = field(event, "id");
+                judgments[premise] = program["results"][premise].clone();
+            }
+        }
+        request["state"]["premise_judgments"] = judgments;
+    }
+
     if task["function"] == "classify_temporal" {
         request["state"].as_object_mut().unwrap().retain(|key, _| {
             matches!(

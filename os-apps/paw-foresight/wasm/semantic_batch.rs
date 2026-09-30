@@ -63,7 +63,10 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
             && program["stage"] != "worlds"
             && matches!(
                 super::field(task, "function"),
-                "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+                "estimate_likelihood"
+                    | "estimate_conditional"
+                    | "evaluate_novelty"
+                    | "decision_value"
             )
             && !super::temporal_allows_forecast(program, super::field(task, "nodeId"))
         {

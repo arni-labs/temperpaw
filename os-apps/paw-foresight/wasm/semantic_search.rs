@@ -21,7 +21,7 @@ fn text(value: &Value, max: usize) -> bool {
         .as_str()
         .is_some_and(|s| !s.trim().is_empty() && s.len() <= max)
 }
-fn date(value: &str) -> bool {
+pub(crate) fn date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'
@@ -368,7 +368,7 @@ pub fn plan_combinations(snapshot: &Value, program: &mut Value, remaining: usize
         .filter(|n| {
             matches!(field(n, "kind"), "scenario" | "revision")
                 && !replaced.contains(field(n, "Id"))
-                && super::temporal_allows_forecast(program, field(n, "Id"))
+                && super::branches::future_eligible(snapshot, program, field(n, "Id"))
         })
         .map(|n| field(n, "Id"))
         .collect();

@@ -42,3 +42,40 @@ The existing contrastive challenge receives current candidate novelty and decisi
 New seed records use `evidence_json`, normalized into `evidence_metadata` throughout the semantic graph and Jev input. One typed record has one source reference. `kind` distinguishes a substantive finding from a source lead; publication date, observation-period endpoints and retrieval date are separate nullable values. Publication and observation preserve year/month/day precision; retrieval is a day. Unknown dates remain unknown, and indexed publication metadata requires source checking. A lead stays visible as research context but cannot establish a baseline observation. Known publication or observation intervals later than the vantage are ineligible; later retrieval of a frozen source does not change its historical vantage.
 
 Newly prepared snapshots declare evidence contract v1. Historical untyped records remain explicitly `legacy_unverified`; new baseline construction may report them as unresolved research but cannot silently upgrade them into findings. Already saved snapshots without the version marker keep their historical baseline readable. Later research uses the same metadata format; legacy sessions may retain missing metadata as unverified rather than fabricating it. Malformed new metadata is rejected atomically. This validates representation and eligibility, not truth: a researcher could still falsely label a title as a substantive finding, and dates may be wrong despite valid syntax. No claim of independent source verification follows from this contract.
+
+### Generate consequences under recorded hypothetical branches
+
+Previously, inherited conditions existed only in audits after world composition.
+Exploration's `parent` meant revision lineage and `requires` linked support or
+prerequisites; neither represented the opposite outcome of an uncertain premise.
+Ordinary exploration can now propose immutable `snapshot.branches` records and
+associate new consequences through `branch_id`. A branch names its parent,
+`all_occurring` or `not_all_occurring` premise IDs, and a dated milestone. The
+engine derives parent-first conditions and readable event descriptors. A failed
+conjunction does not assign every premise false. Conditions remain hypothetical,
+separate from the sourced baseline; no topic axes or branching quota are imposed.
+
+One shared validator rejects foreign references, cycles, self/downstream
+conditioning, malformed dates/types and directly contradictory signed clauses
+before committing any generated nodes. Branch premise links affect evaluation
+ordering without being rewritten into a candidate's marginal prerequisites.
+Each branched candidate receives a separately keyed `estimate_conditional` Jev
+question alongside its unchanged marginal estimate. Its current typed receipt
+contains the exact conditioning state. Existing lossless request packing and
+admission estimates include these additional tasks; clocks and native transition
+limits do not reset. Changed evidence still invalidates current judgments.
+
+Composition uses only currently eligible future candidates and future premises.
+It carries the union of inherited conditions into `world.branch_conditions`,
+rejecting incompatible assignments. A fresh whole-world probability assesses the
+joint defining events **and** these signed conditions, not probability assuming
+those conditions true. The engine copies conditions and their event descriptions
+to the final answer, so readers do not need a separate hypothesis lookup.
+Historical snapshots without branches remain readable without invented history.
+
+Verification exercises opposite premises and three-level inheritance through
+actual generation-input, expansion, Jev-request, composition and final-answer
+WASM boundaries. It preserves a marginal estimate while recording a different
+conditional estimate, rejects incompatible composition, and preserves judgments
+when the original clock is exhausted. These tests establish state propagation
+and accounting, not creative quality, calibration or causal identification.

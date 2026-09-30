@@ -183,6 +183,19 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     let program_raw = core::field(record, "program_json");
     let trace_raw = core::field(record, "trace_json");
     let snapshot = core::parse(snapshot_raw)?;
+    core::branches::validate(&snapshot)?;
+    for node in snapshot["nodes"].as_array().into_iter().flatten() {
+        if !core::field(node, "branch_id").is_empty()
+            && node["branch_state"]
+                != core::branches::state(
+                    &snapshot,
+                    core::field(node, "branch_id"),
+                    Some(core::field(node, "Id")),
+                )?
+        {
+            return Err("Checkpoint branch history differs from canonical conditions".into());
+        }
+    }
     let mut program = core::parse(program_raw)?;
     let trace = core::parse(trace_raw)?;
     if core::field(&snapshot["world"], "Id") != world_id {

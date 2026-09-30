@@ -29,6 +29,9 @@ pub fn time_limit(program: &Value) -> u64 {
         _ => MAX_MS - WORLD_TIME_RESERVE_MS,
     }
 }
+pub mod branches {
+    include!("semantic_branches.rs");
+}
 pub mod evidence {
     include!("semantic_evidence.rs");
 }
@@ -97,6 +100,23 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         } else {
             issues.push(json!({"nodeId":id,"result":"invalid_edges"}));
         }
+        for clause in node["branch_state"]["conditions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            for event in clause["events"].as_array().into_iter().flatten() {
+                let target = field(event, "id");
+                if !by_id.contains_key(target) {
+                    return Err("Missing branch premise in plan".into());
+                }
+                refs.insert(target.to_owned());
+                dependents
+                    .entry(target.to_owned())
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
         prerequisites.insert(id.clone(), refs);
     }
     let mut remaining: BTreeMap<String, usize> = prerequisites
@@ -131,6 +151,9 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         };
         for function in functions {
             tasks.push(json!({"nodeId":id,"function":function,"depth":depth}));
+        }
+        if hypothesis && !field(by_id[&id], "branch_id").is_empty() {
+            tasks.push(json!({"nodeId":id,"function":"estimate_conditional","depth":depth}));
         }
         for dependent in dependents.get(&id).into_iter().flatten() {
             let count = remaining
@@ -168,8 +191,9 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
             match field(t, "function") {
                 "classify_gap" => 0,
                 "estimate_likelihood" => 1,
-                "evaluate_novelty" => 2,
-                _ => 3,
+                "estimate_conditional" => 2,
+                "evaluate_novelty" => 3,
+                _ => 4,
             },
         )
     });
@@ -217,7 +241,12 @@ pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
     for id in excluded {
         for collection in ["results", "evaluations"] {
             if let Some(values) = program[collection][&id].as_object_mut() {
-                for function in ["estimate_likelihood", "evaluate_novelty", "decision_value"] {
+                for function in [
+                    "estimate_likelihood",
+                    "estimate_conditional",
+                    "evaluate_novelty",
+                    "decision_value",
+                ] {
                     values.remove(function);
                 }
             }
@@ -228,7 +257,7 @@ pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
     while let Some(task) = tasks.get(cursor) {
         if matches!(
             field(task, "function"),
-            "estimate_likelihood" | "evaluate_novelty" | "decision_value"
+            "estimate_likelihood" | "estimate_conditional" | "evaluate_novelty" | "decision_value"
         ) && !temporal_allows_forecast(program, field(task, "nodeId"))
         {
             cursor += 1;

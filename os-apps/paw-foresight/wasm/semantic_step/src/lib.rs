@@ -364,7 +364,11 @@ fn step(ctx: &Context) -> Result<(), String> {
                 .flatten()
                 .filter(|node| {
                     matches!(core::field(node, "kind"), "scenario" | "revision")
-                        && core::temporal_allows_forecast(&program, core::field(node, "Id"))
+                        && core::branches::future_eligible(
+                            &snapshot,
+                            &program,
+                            core::field(node, "Id"),
+                        )
                 })
                 .count();
             if eligible < 3 {

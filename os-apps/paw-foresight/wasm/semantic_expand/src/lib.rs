@@ -353,6 +353,21 @@ fn expand(
             }
         }
         node["edges"] = json!(edges.to_string());
+        if !hypothesis["branch_id"].is_null() && !hypothesis["branch_id"].is_string() {
+            return Err("branch_id must be a string or null".into());
+        }
+        if let Some(branch_id) = hypothesis["branch_id"].as_str().filter(|id| !id.is_empty()) {
+            let is_new = generated["branches"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|b| core::field(b, "id") == branch_id);
+            node["branch_id"] = json!(if is_new {
+                format!("branch-r{}-{branch_id}", round)
+            } else {
+                branch_id.to_owned()
+            });
+        }
         node["title"] = v["title"].clone();
         node["mechanism"] = v["mechanism"].clone();
         if let Some(parent) = parent {
@@ -365,11 +380,86 @@ fn expand(
         });
         added.push(node);
     }
-    // Append only after every reference and report has validated.
-    snapshot["nodes"]
+    // Commit nodes and branch records together only after complete validation.
+    let mut updated = snapshot.clone();
+    updated["nodes"]
         .as_array_mut()
         .ok_or("Missing nodes")?
         .extend(added);
+    if let Some(branches) = generated.get("branches") {
+        let branches = branches.as_array().ok_or("branches must be an array")?;
+        let locals: std::collections::BTreeSet<_> = branches
+            .iter()
+            .map(|b| identifier(&b["id"]))
+            .collect::<Result<_, _>>()?;
+        if locals.len() != branches.len() {
+            return Err("Duplicate branch identity".into());
+        }
+        let branch_id = |id: &str| {
+            if locals.contains(id) {
+                format!("branch-r{round}-{id}")
+            } else {
+                id.to_owned()
+            }
+        };
+        if updated["branches"].is_null() {
+            updated["branches"] = json!([]);
+        }
+        for branch in branches {
+            if !branch["parent_branch_id"].is_null() && !branch["parent_branch_id"].is_string() {
+                return Err("parent_branch_id must be a string or null".into());
+            }
+            let mut record = branch.clone();
+            record["id"] = json!(branch_id(identifier(&branch["id"])?));
+            record["parent_branch_id"] = match branch["parent_branch_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+            {
+                Some(id) => json!(branch_id(id)),
+                None => Value::Null,
+            };
+            record["condition"]["event_ids"] = json!(
+                branch["condition"]["event_ids"]
+                    .as_array()
+                    .ok_or("Missing branch premise IDs")?
+                    .iter()
+                    .map(|id| identifier(id).map(&resolve))
+                    .collect::<Result<Vec<_>, _>>()?
+            );
+            updated["branches"]
+                .as_array_mut()
+                .ok_or("Invalid persisted branches")?
+                .push(record);
+        }
+    }
+    core::branches::validate(&updated)?;
+    let states: Vec<_> = updated["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            if core::field(n, "branch_id").is_empty() {
+                Ok(Value::Null)
+            } else {
+                core::branches::state(
+                    &updated,
+                    core::field(n, "branch_id"),
+                    Some(core::field(n, "Id")),
+                )
+            }
+        })
+        .collect::<Result<_, String>>()?;
+    for (node, state) in updated["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(states)
+    {
+        if !state.is_null() {
+            node["branch_state"] = state;
+        }
+    }
+    *snapshot = updated;
     Ok(())
 }
 
@@ -465,7 +555,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
                     "World component {reference} is not an existing scenario or revision"
                 ));
             }
-            if !core::temporal_allows_forecast(old, reference) {
+            if !core::branches::future_eligible(snapshot, old, reference) {
                 let classification = old["results"][reference]["classify_temporal"]
                     .as_str()
                     .unwrap_or("not evaluated in current evidence context");
@@ -516,6 +606,18 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         node["Id"] = json!(id);
         node["kind"] = json!("world");
         node["shared_question"] = generated["shared_question"].clone();
+        node["branch_conditions"] =
+            core::branches::world_conditions(snapshot, &node["component_ids"])?;
+        for clause in node["branch_conditions"].as_array().unwrap() {
+            for event in clause["events"].as_array().unwrap() {
+                if !core::temporal_allows_forecast(old, core::field(event, "id")) {
+                    return Err(format!(
+                        "Branch premise {} is not a currently evaluated future event; separate observed conditions from hypothetical future changes",
+                        core::field(event, "id")
+                    ));
+                }
+            }
+        }
         node["revision"] = json!(revision);
         node["archived"] = json!(false);
         node["Status"] = json!("Hypothesis");
@@ -675,6 +777,7 @@ fn attach_world_probabilities(
         for key in [
             "component_ids",
             "counter_ids",
+            "branch_conditions",
             "facets",
             "chain",
             "assumptions",

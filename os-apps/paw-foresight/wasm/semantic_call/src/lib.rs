@@ -208,7 +208,7 @@ fn call(ctx: &Context) -> Result<(), String> {
                 .flatten()
                 .map(|n| n["Id"].clone())
                 .collect();
-            let context = json!({"round":p["round"],"world_revision":p["world_revision"],"world_pass":p["world_pass"],"evidence_ids":evidence_ids,"task":task});
+            let context = json!({"round":p["round"],"world_revision":p["world_revision"],"world_pass":p["world_pass"],"evidence_ids":evidence_ids,"task":task,"branch_state":state["branch_state"]});
             evaluation["context"] = context.clone();
             for key in ["results", "evaluations"] {
                 if !p[key].is_object() {
@@ -222,7 +222,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["evaluations"][node][function] = evaluation.clone();
             p["cursor"] = json!(cursor + offset + 1);
             let index = trace.as_array().unwrap().len();
-            let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
+            let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"premise_judgments":state["premise_judgments"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
         }
     }
