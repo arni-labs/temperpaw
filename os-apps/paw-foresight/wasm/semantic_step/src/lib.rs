@@ -483,7 +483,7 @@ mod tests {
             264
         );
         assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 436);
-        assert!(core::MAX_APP_TRANSITIONS + 32 <= 512);
+        const { assert!(core::MAX_APP_TRANSITIONS + 32 <= 512) };
         let mut p = json!({"stage":"exploration","stop_reason":"transition_budget"});
         assert_eq!(
             next_phase(&json!({"nodes":[]}), &mut p, 1001, 1000),

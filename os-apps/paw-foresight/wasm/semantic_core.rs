@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(combinations + 44 + 128, worlds);
         assert_eq!(worlds + 44, MAX_APP_TRANSITIONS);
         assert_eq!(MAX_APP_TRANSITIONS + 32, 512);
-        assert!(40 + 4 <= REASONING_TRANSITION_RESERVE);
+        const { assert!(40 + 4 <= REASONING_TRANSITION_RESERVE) };
     }
     #[test]
     fn late_branch_is_screened_before_earlier_candidates_repeat_deep_checks() {
