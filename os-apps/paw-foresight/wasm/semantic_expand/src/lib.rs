@@ -801,6 +801,54 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
 }
 // Invalid model output is correctable without discarding evaluated work. The
 // rejected draft remains untrusted and never enters the snapshot or task queue.
+// Optional set-quality revision must not discard a structurally valid prior answer.
+// Initial composition and unrelated failures have no such fallback.
+fn optional_composition_fallback(
+    snapshot: &Value,
+    old: &Value,
+    error: &str,
+    raw: &str,
+) -> Option<Value> {
+    let audit = &old["world_set_audit"];
+    let active = old["active_world_ids"].as_array()?;
+    if old["stage"] != "worlds"
+        || !(2..=6).contains(&active.len())
+        || audit["correction_status"] != "revision_requested"
+        || !matches!(
+            audit["verdict"].as_str(),
+            Some("complementary_slices" | "uncertain")
+        )
+        || audit["world_ids"] != old["active_world_ids"]
+        || audit["task_id"] != core::search::world_set_task(active)["nodeId"]
+    {
+        return None;
+    }
+    let nodes = snapshot["nodes"].as_array()?;
+    for id in active {
+        let world = nodes
+            .iter()
+            .find(|n| n["Id"] == *id && n["kind"] == "world" && n["archived"] != true)?;
+        core::search::validate_world(world, snapshot).ok()?;
+    }
+    let exhausted = old["composition_correction"]["attempt"]
+        .as_u64()
+        .unwrap_or(0)
+        .max(old["response_correction"]["attempt"].as_u64().unwrap_or(0))
+        >= 2;
+    if !exhausted && raw.len() <= 256 * 1024 {
+        return None;
+    }
+    let mut program = old.clone();
+    program["world_set_audit"]["correction_status"] = json!(if exhausted {
+        "correction_exhausted"
+    } else {
+        "correction_context_limit"
+    });
+    program["world_set_audit"]["correction_error"] = json!(error);
+    program["stop_reason"] = json!("round_evaluated");
+    Some(program)
+}
+
 fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, String> {
     let attempt = old["composition_correction"]["attempt"]
         .as_u64()
@@ -850,20 +898,33 @@ fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, St
 fn run_inner(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
-    let generated =
-        match generated_response(core::field(&ctx.entity_state, "reasoning_result"), &old)? {
-            Ok(value) => value,
-            Err(program) => {
+    let mut snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    let response = core::field(&ctx.entity_state, "reasoning_result");
+    let generated = match generated_response(response, &old) {
+        Ok(Ok(value)) => value,
+        Err(error) => {
+            if phase == "compose"
+                && let Some(program) =
+                    optional_composition_fallback(&snapshot, &old, &error, response)
+            {
                 set_success_result(
-                    "CompositionRejected",
-                    &json!({"program_json":program.to_string()}),
+                    "Expanded",
+                    &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
                 );
                 return Ok(());
             }
-        };
+            return Err(error);
+        }
+        Ok(Err(program)) => {
+            set_success_result(
+                "CompositionRejected",
+                &json!({"program_json":program.to_string()}),
+            );
+            return Ok(());
+        }
+    };
     let raw_owned = generated.to_string();
     let raw = raw_owned.as_str();
-    let mut snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     if phase == "synthesize" {
         let mut answer = core::parse(raw)?;
         references::References::new(&snapshot)?.resolve_generated(&mut answer);
@@ -906,7 +967,21 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         match core::parse(raw).and_then(|generated| compose(&mut snapshot, &generated, &old)) {
             Ok(program) => Some(program),
             Err(error) => {
-                let program = composition_correction(&old, raw, &error)?;
+                let program = match composition_correction(&old, raw, &error) {
+                    Ok(program) => program,
+                    Err(correction_error) => {
+                        if let Some(program) =
+                            optional_composition_fallback(&snapshot, &old, &error, raw)
+                        {
+                            set_success_result(
+                                "Expanded",
+                                &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+                            );
+                            return Ok(());
+                        }
+                        return Err(correction_error);
+                    }
+                };
                 set_success_result(
                     "CompositionRejected",
                     &json!({"program_json":program.to_string()}),
@@ -957,6 +1032,41 @@ mod tests {
         let generated = json!({"baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
+    }
+    #[test]
+    fn optional_fallback_requires_valid_prior_set_and_exhausted_invalid_correction() {
+        let (mut snapshot, generated, old) = world_fixture();
+        let mut program = compose(&mut snapshot, &generated, &old).unwrap();
+        let active = program["active_world_ids"].clone();
+        program["world_set_audit"] = json!({"task_id":core::search::world_set_task(active.as_array().unwrap())["nodeId"],"world_ids":active,"verdict":"complementary_slices","correction_status":"revision_requested"});
+        assert!(
+            optional_composition_fallback(&snapshot, &program, "invalid draft", "{}").is_none()
+        );
+        program["composition_correction"] = json!({"attempt":2});
+        let fallback =
+            optional_composition_fallback(&snapshot, &program, "specific link error", "{}")
+                .unwrap();
+        assert_eq!(
+            fallback["world_set_audit"]["correction_error"],
+            "specific link error"
+        );
+        assert_eq!(
+            fallback["world_set_audit"]["correction_status"],
+            "correction_exhausted"
+        );
+        assert_eq!(fallback["tasks"], program["tasks"]);
+        assert!(optional_composition_fallback(&snapshot, &old, "invalid initial", "{}").is_none());
+        let id = active[0].as_str().unwrap();
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| n["Id"] == id)
+            .unwrap()["chain"][1]["by"] = json!("2026-01-01");
+        assert!(
+            optional_composition_fallback(&snapshot, &program, "invalid saved world", "{}")
+                .is_none()
+        );
     }
     #[test]
     fn research_admission_receipt_survives_composition_and_replanning() {

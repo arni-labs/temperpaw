@@ -768,3 +768,94 @@ async fn rejected_draft_names_causal_links_and_their_milestone_dates() {
     assert!(result["callback_params"].get("snapshot_json").is_none());
     assert!(result["callback_params"].get("trace_json").is_none());
 }
+
+#[tokio::test]
+async fn optional_invalid_replacement_falls_back_but_initial_composition_still_fails() {
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    host.slices.store(true, Ordering::SeqCst);
+    let mut fields = prepared(&engine).await;
+    let recorded = call(&engine, fields.clone(), host.clone()).await;
+    apply(&mut fields, &recorded);
+    let request = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(request["callback_params"]["phase"], "compose");
+    apply(&mut fields, &request);
+    fields["phase"] = json!("compose");
+    let original = fields.clone();
+    fields["reasoning_result"] = json!("{malformed replacement");
+    for _ in 0..2 {
+        let rejected = invoke(&engine, "semantic_expand", fields.clone()).await;
+        assert_eq!(rejected["callback_action"], "CompositionRejected");
+        apply(&mut fields, &rejected);
+    }
+    let preserved = program(&fields);
+    let fallback = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(fallback["callback_action"], "Expanded", "{fallback}");
+    assert_eq!(
+        fallback["callback_params"]["snapshot_json"],
+        original["snapshot_json"]
+    );
+    assert_eq!(
+        fallback["callback_params"]["started_at_ms"],
+        original["started_at_ms"]
+    );
+    assert!(fallback["callback_params"].get("trace_json").is_none());
+    apply(&mut fields, &fallback);
+    let p = program(&fields);
+    for key in [
+        "results",
+        "evaluations",
+        "world_refinement",
+        "world_set_audits",
+        "active_world_ids",
+        "world_revision",
+        "tasks",
+        "cursor",
+    ] {
+        assert_eq!(p[key], preserved[key], "{key}");
+    }
+    assert_eq!(
+        p["world_set_audit"]["correction_status"],
+        "correction_exhausted"
+    );
+    assert!(p["world_set_audit"]["correction_error"].as_str().is_some());
+    let next = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(next["callback_action"], "Evaluate");
+    let mut initial = fields.clone();
+    let mut initial_program = program(&initial);
+    initial_program["active_world_ids"] = json!([]);
+    initial_program["world_set_audit"] = Value::Null;
+    initial["program_json"] = json!(initial_program.to_string());
+    let failed = invoke(&engine, "semantic_expand", initial).await;
+    assert_eq!(failed["callback_action"], "Fail");
+    let mut structurally_invalid = original.clone();
+    structurally_invalid["reasoning_result"] = json!(json!({"worlds":[]}).to_string());
+    for _ in 0..2 {
+        let rejected = invoke(&engine, "semantic_expand", structurally_invalid.clone()).await;
+        assert_eq!(rejected["callback_action"], "CompositionRejected");
+        apply(&mut structurally_invalid, &rejected);
+    }
+    let fallback = invoke(&engine, "semantic_expand", structurally_invalid).await;
+    assert_eq!(fallback["callback_action"], "Expanded");
+    let p: Value = serde_json::from_str(
+        fallback["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        p["world_set_audit"]["correction_status"],
+        "correction_exhausted"
+    );
+    let mut oversized = original;
+    oversized["reasoning_result"] =
+        json!(json!({"worlds":[],"padding":"x".repeat(256*1024)}).to_string());
+    let capped = invoke(&engine, "semantic_expand", oversized).await;
+    assert_eq!(capped["callback_action"], "Expanded");
+    let p: Value =
+        serde_json::from_str(capped["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        p["world_set_audit"]["correction_status"],
+        "correction_context_limit"
+    );
+}
