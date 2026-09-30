@@ -47,7 +47,9 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         .take(tasks.len().min(cursor + 16).min(cursor + remaining))
         .skip(cursor)
     {
-        if structural != super::search::is_structural(task)
+        if (!batch.tasks.is_empty()
+            && (first["function"] == "check_world_set" || task["function"] == "check_world_set"))
+            || structural != super::search::is_structural(task)
             || (!structural
                 && (task["function"] != first["function"]
                     || (task["function"] != "classify_temporal"

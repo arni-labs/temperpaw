@@ -426,10 +426,23 @@ pub fn finish_combinations(program: &mut Value) {
     program["combination_search"]["unresolved_candidates_retained"] = json!(true);
 }
 
+pub fn world_set_task(world_ids: &[Value]) -> Value {
+    let key = world_ids
+        .iter()
+        .map(|id| {
+            let s = id.as_str().unwrap_or("");
+            format!("{}:{s}", s.len())
+        })
+        .collect::<Vec<_>>()
+        .join(":");
+    json!({"nodeId":format!("world-set:{key}"),"function":"check_world_set","world_ids":world_ids,"depth":0})
+}
+
 pub fn is_structural(task: &Value) -> bool {
     matches!(
         field(task, "function"),
         "check_pair"
+            | "check_world_set"
             | "check_world_consistency"
             | "check_transition"
             | "conditional_on"
@@ -441,6 +454,24 @@ pub fn is_structural(task: &Value) -> bool {
 /// Checkpoint reads must not serialize evidence and judgment histories per receipt.
 pub fn validate_task(snapshot: &Value, task: &Value) -> Result<(), String> {
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
+    if task["function"] == "check_world_set" {
+        let subjects = task["world_ids"].as_array().ok_or("Missing world set")?;
+        if !(2..=6).contains(&subjects.len()) || world_set_task(subjects) != *task {
+            return Err("Invalid world-set identity".into());
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for id in subjects {
+            let id = id.as_str().ok_or("Invalid world identity")?;
+            if !unique.insert(id)
+                || !nodes
+                    .iter()
+                    .any(|n| field(n, "Id") == id && n["kind"] == "world")
+            {
+                return Err("Invalid world-set subject".into());
+            }
+        }
+        return Ok(());
+    }
     let world = nodes.iter().find(|n| n["Id"] == task["world_id"]);
     if task["world_id"].is_string() && world.is_none_or(|w| field(w, "kind") != "world") {
         return Err("Structural task references missing world".into());
@@ -508,6 +539,42 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
         state["previous_world_judgments"] = previous_world_judgments(program, world);
     }
     let question = match field(task, "function") {
+        "check_world_set" => {
+            if program["active_world_ids"].is_array()
+                && program["active_world_ids"] != task["world_ids"]
+            {
+                return Err("World set does not match active revision".into());
+            }
+            state["proposed_worlds"] = json!(
+                ids(&task["world_ids"])?
+                    .into_iter()
+                    .map(get)
+                    .collect::<Result<Vec<_>, _>>()?
+            );
+            let required: std::collections::BTreeSet<&str> = state["proposed_worlds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|world| {
+                    ["component_ids", "counter_ids"]
+                        .into_iter()
+                        .flat_map(move |key| {
+                            world[key]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                        })
+                })
+                .collect();
+            state["components"] = json!(
+                nodes
+                    .iter()
+                    .filter(|n| required.contains(field(n, "Id")))
+                    .collect::<Vec<_>>()
+            );
+            json!({"type":"choice","instructions":"Assess this SET as answers to the original question. Do the proposed worlds express meaningfully different overall trajectories, mechanisms or outcomes, or are they mostly complementary topical slices of one shared direction? Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
+        }
         "check_pair" => {
             let pair = ids(&task["pair_ids"])?;
             state["events"] = json!([get(pair[0])?, get(pair[1])?]);
@@ -834,7 +901,12 @@ pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) 
     let limit = super::MAX_APP_TRANSITIONS - super::REASONING_TRANSITION_RESERVE;
     let remaining = limit.saturating_sub(super::transition_count(program));
     // One SearchPlanned callback, then Evaluate/Recorded for each HTTP attempt.
-    let required = 1 + batches * 2 * 3;
+    let set_checkpoint = u64::from(
+        tasks
+            .iter()
+            .any(|task| task["function"] == "check_world_set"),
+    );
+    let required = 1 + set_checkpoint + batches * 2 * 3;
     json!({"admitted":required <= remaining,"estimated_batches":batches,
         "remaining_transitions":remaining,"required_transitions":required,
         "retry_attempts_per_batch":2,"writing_reserve":super::REASONING_TRANSITION_RESERVE,
@@ -1269,5 +1341,29 @@ mod branch_tests {
         assert!(!ids.contains(&json!("b")));
         assert!(ids.contains(&json!("c")));
         assert!(ids.contains(&json!("d")));
+    }
+}
+
+#[cfg(test)]
+mod world_set_tests {
+    use super::*;
+    #[test]
+    fn set_identity_is_exact_and_every_world_remains_in_context() {
+        let worlds = json!(["w1", "w2"]);
+        let task = world_set_task(worlds.as_array().unwrap());
+        let snapshot = json!({"world":{"name":"Open question"},"nodes":[{"Id":"w1","kind":"world","statement":"One direction","assumptions":["A"]},{"Id":"w2","kind":"world","statement":"Another direction","assumptions":["B"]}]});
+        assert!(validate_task(&snapshot, &task).is_ok());
+        let request = request(
+            &snapshot,
+            &json!({"baseline":{"as_of":"2026-09-30"}}),
+            &task,
+        )
+        .unwrap();
+        assert_eq!(request["state"]["proposed_worlds"], snapshot["nodes"]);
+        let mut forged = task.clone();
+        forged["world_ids"][1] = json!("invented");
+        assert!(validate_task(&snapshot, &forged).is_err());
+        let duplicate = world_set_task(&[json!("w1"), json!("w1")]);
+        assert!(validate_task(&snapshot, &duplicate).is_err());
     }
 }

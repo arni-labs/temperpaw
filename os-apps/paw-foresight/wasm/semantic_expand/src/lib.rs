@@ -458,10 +458,14 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     for node in &active {
         core::search::validate_world(node, &updated)?;
     }
-    let tasks: Vec<_> = active
+    let mut tasks: Vec<_> = active
         .iter()
         .flat_map(|n| core::search::world_tasks(n))
         .collect();
+    tasks.insert(
+        0,
+        core::search::world_set_task(&identities.iter().map(|s| json!(s)).collect::<Vec<_>>()),
+    );
     let mut program = core::plan(updated["nodes"].as_array().unwrap())?;
     for key in [
         "results",
@@ -473,6 +477,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "last_error",
         "combination_search",
         "world_audits",
+        "world_set_audits",
+        "world_set_audit",
         "world_refinement",
         "independent_challenge",
         "exploration_admission",
@@ -488,6 +494,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     program["tasks"] = json!(tasks);
     program["active_world_ids"] = json!(identities);
     program["world_revision"] = json!(revision);
+    program["world_set_audit"] = Value::Null;
     program["world_pass"] = json!(1);
     program["evidence_ids"] = json!(evidence_ids(&updated));
     program["stage"] = json!("worlds");
@@ -613,6 +620,11 @@ fn attach_world_probabilities(
             outstanding_audits += 1;
         }
     }
+    answer["world_set_audit"] = if program["world_set_audit"].is_object() {
+        program["world_set_audit"].clone()
+    } else {
+        json!({"task_id":core::search::world_set_task(program["active_world_ids"].as_array().unwrap_or(&vec![]))["nodeId"],"revision":program["world_revision"],"world_ids":program["active_world_ids"],"verdict":"uncertain","evaluation":null,"correction_status":"unavailable"})
+    };
     answer["baseline"] = program["baseline"].clone();
     answer["evaluation_status"] = json!(if evaluated == count && count > 0 {
         "evaluated"
@@ -642,6 +654,21 @@ fn attach_world_probabilities(
         };
         format!("{evaluated} of {count} worlds were evaluated separately by Jev. {reason}")
     });
+    let set_note = match answer["world_set_audit"]["verdict"].as_str() {
+        Some("complementary_slices") => {
+            " These are complementary views of a shared direction; distinct alternative answers remain unresolved."
+        }
+        Some("alternative_answers") => {
+            " Jev judged these meaningfully different answers; that judgment does not establish their truth."
+        }
+        _ => {
+            " Whether this set offers meaningfully different answers remains uncertain or unverified."
+        }
+    };
+    answer["evaluation_note"] = json!(format!(
+        "{}{set_note}",
+        answer["evaluation_note"].as_str().unwrap_or("")
+    ));
     if outstanding_audits > 0 {
         let note = answer["evaluation_note"].as_str().unwrap_or("");
         answer["evaluation_note"] = json!(format!(
@@ -702,6 +729,8 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "world_revision",
         "world_refinement",
         "world_audits",
+        "world_set_audits",
+        "world_set_audit",
         "active_world_ids",
         "resume_mode",
     ] {
@@ -1193,7 +1222,8 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|t| core::field(t, "world_id").starts_with("world-r1-")
+                .all(|t| t["function"] == "check_world_set"
+                    || core::field(t, "world_id").starts_with("world-r1-")
                     || core::field(t, "nodeId").starts_with("world-r1-"))
         );
         assert!(program["results"]["world-r1-one"].is_null());

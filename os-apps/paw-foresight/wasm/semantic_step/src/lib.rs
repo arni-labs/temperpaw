@@ -63,13 +63,14 @@ fn next_phase(
         }
         let mut revision_allowed = false;
         if has_conflict {
-            let tasks: Vec<_> = snapshot["nodes"]
+            let mut tasks: Vec<_> = snapshot["nodes"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter(|n| active.contains(&n["Id"]))
                 .flat_map(core::search::world_tasks)
                 .collect();
+            tasks.insert(0, core::search::world_set_task(&active));
             let mut admission = core::search::refinement_admission(snapshot, program, &tasks);
             let required = admission["required_transitions"]
                 .as_u64()
@@ -238,6 +239,69 @@ fn step(ctx: &Context) -> Result<(), String> {
         )
     );
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    if program["stage"] == "worlds" && program["tasks"][0]["function"] == "check_world_set" {
+        let task = program["tasks"][0].clone();
+        let id = core::field(&task, "nodeId").to_owned();
+        if program["world_set_audit"]["task_id"] != id
+            && let Some(verdict) = program["results"][&id]["check_world_set"]
+                .as_str()
+                .map(str::to_owned)
+        {
+            let mut audit = json!({"task_id":id,"revision":program["world_revision"],"world_ids":task["world_ids"],"verdict":verdict,"evaluation":program["evaluations"][&id]["check_world_set"],"correction_status":"not_needed"});
+            let mut revise = false;
+            if verdict == "complementary_slices" {
+                let mut admission = core::search::refinement_admission(
+                    &snapshot,
+                    &program,
+                    program["tasks"].as_array().unwrap(),
+                );
+                // This is correction of an untested draft, not optional replacement
+                // of completed probabilities. Reserve expected packed work plus two
+                // extra HTTP attempts overall; do not promise every batch can retry.
+                let required = admission["estimated_batches"]
+                    .as_u64()
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(2)
+                    .saturating_add(core::REASONING_TRANSITION_RESERVE + 2 + 4);
+                admission["retry_attempts_total"] = json!(2);
+                admission
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("retry_attempts_per_batch");
+                revise = !stopped
+                    && program["world_revision"].as_u64().unwrap_or(1) < 3
+                    && admission["estimated_batches"].is_u64()
+                    && required <= admission["remaining_transitions"].as_u64().unwrap_or(0)
+                    && calls + program["tasks"].as_array().unwrap().len() < core::MAX_CALLS
+                    && elapsed < core::time_limit(&program).saturating_sub(120_000);
+                admission["required_transitions"] = json!(required);
+                admission["admitted"] = json!(revise);
+                program["world_set_admission"] = admission;
+                audit["correction_status"] = json!(if revise {
+                    "revision_requested"
+                } else if program["world_revision"].as_u64().unwrap_or(1) >= 3 {
+                    "revision_limit"
+                } else {
+                    "transition_budget"
+                });
+            }
+            program["world_set_audits"][&id] = audit.clone();
+            program["world_set_audit"] = audit;
+            if revise {
+                program["stop_reason"] = json!("world_set_revision_needed");
+                set_success_result(
+                    "Reason",
+                    &json!({"phase":"compose","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
+                );
+                return Ok(());
+            }
+            set_success_result(
+                "SearchPlanned",
+                &json!({"program_json":program.to_string()}),
+            );
+            return Ok(());
+        }
+    }
     if !stopped
         && calls < core::call_limit(&program)
         && elapsed < core::time_limit(&program)
@@ -597,7 +661,7 @@ mod tests {
     }
     #[test]
     fn world_conflict_triggers_revision_but_never_an_endless_rewrite() {
-        let s = json!({"nodes":[{"Id":"w","component_ids":["a","b","c"],"counter_ids":[],"edges":"[]","chain":[]}]});
+        let s = json!({"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},{"Id":"w","kind":"world","component_ids":["a","b","c"],"counter_ids":[],"edges":"[]","chain":[]}]});
         let mut p = json!({"stage":"worlds","world_revision":1,"active_world_ids":["w"],"results":{"w":{"check_world_consistency":"conflict"}}});
         assert_eq!(next_phase(&s, &mut p, 300, 1000), "compose");
         assert_eq!(p["world_audits"]["w"]["status"], "conflicts_found");

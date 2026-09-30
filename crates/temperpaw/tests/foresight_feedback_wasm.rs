@@ -94,6 +94,7 @@ struct WorldProvider {
     requests: Mutex<Vec<Value>>,
     fail: AtomicBool,
     drift: AtomicBool,
+    slices: AtomicBool,
 }
 #[async_trait::async_trait]
 impl WasmHost for WorldProvider {
@@ -125,7 +126,13 @@ impl WasmHost for WorldProvider {
                     json!({"type":"noul","noul":probability})
                 } else {
                     let options = q["criteria"].as_object().unwrap();
-                    let choice = if options.contains_key("compatible") {
+                    let choice = if options.contains_key("alternative_answers") {
+                        if self.slices.load(Ordering::SeqCst) {
+                            "complementary_slices"
+                        } else {
+                            "alternative_answers"
+                        }
+                    } else if options.contains_key("compatible") {
                         "compatible"
                     } else if options.contains_key("plausible") {
                         "plausible"
@@ -258,7 +265,13 @@ async fn complete_pass(engine: &WasmEngine, mut fields: Value, host: Arc<WorldPr
         let result = call(engine, fields.clone(), host.clone()).await;
         assert_eq!(result["callback_action"], "Recorded");
         apply(&mut fields, &result);
-        let p = program(&fields);
+        let mut p = program(&fields);
+        if p["tasks"][0]["function"] == "check_world_set" && p["cursor"] == 1 {
+            let audit = invoke(engine, "semantic_step", fields.clone()).await;
+            assert_eq!(audit["callback_action"], "SearchPlanned");
+            apply(&mut fields, &audit);
+            p = program(&fields);
+        }
         if p["cursor"].as_u64().unwrap() as usize >= p["tasks"].as_array().unwrap().len()
             || p["stop_reason"] == "provider_error"
         {
@@ -313,11 +326,11 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
     );
     assert_eq!(
         trace.as_array().unwrap().len(),
-        first_trace.as_array().unwrap().len() * 2
+        first_trace.as_array().unwrap().len() * 2 - 1
     );
     {
         let requests = host.requests.lock().unwrap();
-        assert_eq!(requests.len(), first_http * 2);
+        assert_eq!(requests.len(), first_http * 2 - 1);
         let second_input = requests[first_http].to_string();
         assert!(second_input.contains("previous_world_judgments"));
         assert!(second_input.contains("0.23"));
@@ -379,6 +392,13 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
     );
     let output: Value =
         serde_json::from_str(completed["callback_params"]["answer"].as_str().unwrap()).unwrap();
+    assert_eq!(output["world_set_audit"], p["world_set_audit"]);
+    assert!(
+        output["evaluation_note"]
+            .as_str()
+            .unwrap()
+            .contains("Jev judged")
+    );
     for outcome in output["outcomes"].as_array().unwrap() {
         assert_eq!(
             outcome["refinement"],
@@ -587,4 +607,115 @@ async fn captured_uuid_deep_batch_preserves_every_comparison() {
         }
         assert_eq!(state, original["state"]);
     }
+}
+
+#[tokio::test]
+async fn world_set_review_precedes_world_checks_and_preserves_rejected_revision() {
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    host.slices.store(true, Ordering::SeqCst);
+    let mut fields = prepared(&engine).await;
+    let original = program(&fields);
+    assert_eq!(original["tasks"][0]["function"], "check_world_set");
+    let recorded = call(&engine, fields.clone(), host.clone()).await;
+    assert_eq!(recorded["callback_action"], "Recorded");
+    apply(&mut fields, &recorded);
+    let p = program(&fields);
+    assert_eq!(p["cursor"], 1);
+    assert_eq!(host.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        host.requests.lock().unwrap()[0]["questions"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
+    let request = host.requests.lock().unwrap()[0].clone();
+    assert_eq!(
+        request["state"]["cases"]["q0"]["proposed_worlds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    fields["transition_count"] = json!(245);
+    let revised = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(revised["callback_action"], "Reason");
+    assert_eq!(revised["callback_params"]["phase"], "compose");
+    let revised_p: Value =
+        serde_json::from_str(revised["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        revised_p["world_set_audit"]["verdict"],
+        "complementary_slices"
+    );
+    assert_eq!(revised_p["active_world_ids"], original["active_world_ids"]);
+    assert_eq!(revised_p["results"], p["results"]);
+    assert!(revised["callback_params"].get("snapshot_json").is_none());
+    fields["transition_count"] = json!(410);
+    let bounded = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(bounded["callback_action"], "SearchPlanned");
+    apply(&mut fields, &bounded);
+    assert_eq!(
+        program(&fields)["world_set_audit"]["correction_status"],
+        "transition_budget"
+    );
+    let next = invoke(&engine, "semantic_step", fields).await;
+    assert_eq!(next["callback_action"], "Evaluate");
+    assert_eq!(host.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "Requires captured final world snapshot/program"]
+async fn captured_world_set_correction_fits_first_draft_budget() {
+    let raw: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("FORESIGHT_WORLD_SET_FIXTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let f = raw.get("fields").unwrap_or(&raw);
+    let mut p: Value = serde_json::from_str(f["program_json"].as_str().unwrap()).unwrap();
+    let ids = p["active_world_ids"].as_array().unwrap().clone();
+    let key = ids
+        .iter()
+        .map(|id| {
+            let id = id.as_str().unwrap();
+            format!("{}:{id}", id.len())
+        })
+        .collect::<Vec<_>>()
+        .join(":");
+    let task = json!({"nodeId":format!("world-set:{key}"),"function":"check_world_set","world_ids":ids,"depth":0});
+    for t in p["tasks"].as_array().unwrap().clone() {
+        for collection in ["results", "evaluations"] {
+            if let Some(values) = p[collection][t["nodeId"].as_str().unwrap()].as_object_mut() {
+                values.remove(t["function"].as_str().unwrap());
+            }
+        }
+    }
+    p["tasks"].as_array_mut().unwrap().insert(0, task.clone());
+    p["cursor"] = json!(1);
+    p["world_pass"] = json!(1);
+    p["world_revision"] = json!(1);
+    p["world_refinement"] = json!({});
+    p["world_set_audit"] = Value::Null;
+    p["stop_reason"] = json!("round_evaluated");
+    p["results"][task["nodeId"].as_str().unwrap()]["check_world_set"] =
+        json!("complementary_slices");
+    p["evaluations"][task["nodeId"].as_str().unwrap()]["check_world_set"] = json!({"type":"choice","selected":"complementary_slices","answer":{"type":"choice","choice":"complementary_slices","probabilities":{"alternative_answers":0.0,"complementary_slices":1.0,"uncertain":0.0}}});
+    let mut fields = json!({"snapshot_json":f["snapshot_json"],"program_json":p.to_string(),"trace_json":"[]","transition_count":245,"started_at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string()});
+    let engine = WasmEngine::new().unwrap();
+    let result = invoke(&engine, "semantic_step", fields.clone()).await;
+    let after: Value =
+        serde_json::from_str(result["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    eprintln!(
+        "actual world set admission {}",
+        after["world_set_admission"]
+    );
+    assert_eq!(result["callback_action"], "Reason");
+    assert_eq!(result["callback_params"]["phase"], "compose");
+    assert_eq!(after["world_set_admission"]["admitted"], true);
+    fields["transition_count"] = json!(410);
+    let stopped = invoke(&engine, "semantic_step", fields).await;
+    assert_eq!(stopped["callback_action"], "SearchPlanned");
+    let after: Value =
+        serde_json::from_str(stopped["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(after["world_set_admission"]["admitted"], false);
 }
