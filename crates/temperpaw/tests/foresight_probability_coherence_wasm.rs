@@ -98,6 +98,7 @@ async fn final_answer_preserves_inconsistent_raw_odds_and_reports_them() {
         worlds.push(json!({"Id":id,"kind":"world","statement":"The changes occur together by 2036","title":"A whole future","component_ids":["h","h2","h3"],"counter_ids":[],"branch_conditions":[],"edges":"[]","scene":"A future day","narrative":"A whole future with uncertain consequences","signals":["A signal"],"falsifiers":["A contrary event"],"what_you_can_do":[],"chain":[],"facets":[{"id":"f","title":"A facet","description":"A consequence","component_ids":["h","h2","h3"]}],"assumptions":[]}));
     }
     for world in &mut worlds {
+        world["facets"]=json!(["h","h2","h3"].iter().enumerate().map(|(i,id)|json!({"id":format!("f{i}"),"title":format!("Consequence {}",i+1),"description":"A defining consequence in this synthetic world","component_ids":[id]})).collect::<Vec<_>>());
         world["edges"]=json!(json!([{"kind":"requires","to_id":"h"},{"kind":"requires","to_id":"h2"},{"kind":"requires","to_id":"h3"}]).to_string());
     }
     let mut snapshot = json!({"world":{"last_ingest_date":"2026-10-01","target_date":"2036-10-01"},"nodes":[h.clone(),worlds[0].clone(),worlds[1].clone()]});
@@ -107,7 +108,7 @@ async fn final_answer_preserves_inconsistent_raw_odds_and_reports_them() {
         snapshot["nodes"].as_array_mut().unwrap().push(node);
     }
     let baseline = json!({"as_of":"2026-10-01","observed":[],"assumptions":[],"unknowns":["No source verification in this synthetic test"]});
-    let mut program = json!({"stage":"worlds","baseline":baseline,"active_world_ids":["w1","w2"],"results":{},"evaluations":{},"http_calls":0});
+    let mut program = json!({"stage":"worlds","world_revision":1,"baseline":baseline,"active_world_ids":["w1","w2"],"results":{},"evaluations":{},"http_calls":0});
     let mut trace = "[]".to_owned();
     for (id, p) in [("h", 0.42), ("w1", 0.49), ("w2", 0.4)] {
         program["tasks"] = json!([{"nodeId":id,"function":"estimate_likelihood","depth":0}]);
