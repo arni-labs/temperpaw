@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 pub const PREFIX: &str = "ref_";
 
-// A separate namespace makes independent generation insensitive to candidate
-// prose, order, scores, or the number of previously explored hypotheses.
+// Select observed evidence for a reasoning view; callers retain the full snapshot
+// reference namespace when projecting this view alongside existing hypotheses.
 pub fn evidence_snapshot(snapshot: &Value) -> Value {
     json!({"world":snapshot["world"],"nodes":snapshot["nodes"].as_array().into_iter().flatten()
         .filter(|node| matches!(node["kind"].as_str(),Some("evidence"|"research_evidence")))
@@ -76,7 +76,19 @@ impl References {
                         | "parent"
                         | "hypothesis_id"
                         | "scenario_ids"
-                        | "requires" | "world_id" | "component_ids" | "counter_ids" | "evidence_ids" | "from_ids" | "from_id" | "active_world_ids" | "supports" | "candidate_ids" | "pair_ids"
+                        | "requires"
+                        | "world_id"
+                        | "component_ids"
+                        | "counter_ids"
+                        | "evidence_ids"
+                        | "from_ids"
+                        | "from_id"
+                        | "active_world_ids"
+                        | "supports"
+                        | "candidate_ids"
+                        | "pair_ids"
+                        | "prior_hypothesis_ids"
+                        | "alternative_hypothesis_ids"
                 ) =>
             {
                 json!(self.forward.get(text).unwrap_or(text))
@@ -86,9 +98,36 @@ impl References {
     }
     fn resolve_world_fields(&self, value: &mut Value, field: &str) {
         match value {
-            Value::Object(map) => for (key, value) in map { self.resolve_world_fields(value, key); },
-            Value::Array(values) => for value in values { self.resolve_world_fields(value, field); },
-            Value::String(text) if matches!(field, "world_id" | "component_ids" | "counter_ids" | "evidence_ids" | "from_ids" | "from_id" | "to_id" | "active_world_ids" | "supports" | "candidate_ids" | "pair_ids") => *text = self.resolve(text),
+            Value::Object(map) => {
+                for (key, value) in map {
+                    self.resolve_world_fields(value, key);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    self.resolve_world_fields(value, field);
+                }
+            }
+            Value::String(text)
+                if matches!(
+                    field,
+                    "world_id"
+                        | "component_ids"
+                        | "counter_ids"
+                        | "evidence_ids"
+                        | "from_ids"
+                        | "from_id"
+                        | "to_id"
+                        | "active_world_ids"
+                        | "supports"
+                        | "candidate_ids"
+                        | "pair_ids"
+                        | "prior_hypothesis_ids"
+                        | "alternative_hypothesis_ids"
+                ) =>
+            {
+                *text = self.resolve(text)
+            }
             _ => (),
         }
     }

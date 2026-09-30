@@ -36,20 +36,25 @@ Reference contract: existing catalog nodes use exact ref_ identifiers; never rec
 
 Resource contract: at most128 TOTAL hypotheses plus research_evidence per batch; capacity5000 Jev calls,2048 nodes,64 rounds and one hour. These are limits, not targets or category counts. Continue while another round can add a materially different mechanism or resolve a consequential uncertainty. Stop with continue_exploring=false when it cannot, explaining why and what remains unknown. A budget stop means incomplete exploration, not convergence."#;
 
-const CHALLENGE_PROMPT: &str = r#"Independently challenge the framing of the user's future question. You have the question, its conditions and observed evidence, but no previous candidate futures or scores. Identify causal assumptions that make today's arrangements seem necessary. Construct alternative mechanisms under which those assumptions change, and follow their consequences for what people can do and what becomes unnecessary. Also consider what could prevent or reverse the change. Do not preserve a familiar workflow merely because it appears in current sources. No particular future, topic, positive outcome or disappearance is required. A conjecture needs a coherent mechanism, not a source already predicting it. Keep observations separate from conjecture and respect the supplied vantage and horizon; frozen hindcasts admit no later knowledge.
+const CHALLENGE_PROMPT: &str = r#"Challenge the shared causal premises of the supplied candidate futures. You are a fresh reasoner given the same question and observed baseline, plus existing candidate definitions and mechanisms without their scores. Identify where several candidates assume the same arrangement continues. Develop a rival mechanism and interacting downstream consequences that would change the answer to the whole question, rather than another topic or example within that arrangement. Explain which existing claims share the premise and which new claims express its alternative. Rival trajectories may overlap; do not force mutually exclusive worlds, prescribed axes, optimism or any desired outcome. Keep observations separate from conjecture and respect the vantage and horizon; frozen hindcasts admit no later knowledge.
 
-Return JSON ONLY: {"premises_challenged":[{"assumption":"a changeable causal premise, <=600 characters","alternative":"how it could differ and why that matters, <=1200 characters"}],"hypotheses":[{"id":"unique short ASCII ID, not ref_","title":"distinct future claim","statement":"self-contained observable future event with scope and horizon","mechanism":"causal path and assumptions","requires":["exact visible evidence ref_ ID or a new hypothesis ID in this batch"],"parent":"optional new hypothesis ID in this same batch only","scene":"imagined everyday consequence","signal":"observable early sign","falsifier":"what would undermine the mechanism","evidence_note":"what is observed versus conjectural","research_question":"important unanswered premise"}],"research_evidence":[],"continue_exploring":true,"exploration_note":"what changed in the framing and whether more exploration would add a different mechanism"}.
+Return JSON ONLY: {"premises_challenged":[{"assumption":"shared changeable causal premise, <=600 characters","alternative":"rival mechanism and interacting consequences, <=1200 characters","prior_hypothesis_ids":["existing candidate ref_ IDs sharing this premise"],"alternative_hypothesis_ids":["new hypothesis IDs in this batch expressing the alternative"]}],"hypotheses":[{"id":"unique short ASCII ID, not ref_","title":"distinct future claim","statement":"self-contained observable future event with scope and horizon","mechanism":"causal path and assumptions","requires":["visible evidence/candidate ref_ ID or a new hypothesis ID in this batch"],"parent":"optional new hypothesis ID in this same batch only","scene":"imagined everyday consequence","signal":"observable early sign","falsifier":"what would undermine the mechanism","evidence_note":"what is observed versus conjectural","research_question":"important unanswered premise"}],"research_evidence":[],"continue_exploring":true,"exploration_note":"how the causal framing changed or why no useful alternative was found"}.
 
-At most32 premises and128 hypotheses; these are resource limits, not targets. Return no fabricated research. Existing ref_ IDs refer only to the visible evidence catalog; do not guess hidden hypotheses or reconstruct UUIDs. New hypotheses may depend on each other. Use [] when there is no identified prerequisite. Probabilities are evaluated separately by Jev; never supply them. You may return no new hypotheses if you cannot formulate another consequential mechanism, explaining the limit honestly."#;
+Each premise needs nonempty prior and alternative ID lists. Every new hypothesis must belong to at least one alternative list; empty premises require empty hypotheses. These links record a challenge, not proof or required co-occurrence. At most32 premises and128 hypotheses are resource limits, not targets. Existing IDs use the supplied common ref_ namespace. Prior IDs must be existing candidates; alternative IDs must be new hypotheses in this batch. Return no fabricated research or probabilities. New hypotheses may depend on each other; use [] when no prerequisite is identified. You may return empty premises and hypotheses when you cannot identify a consequential rival mechanism; explain that limit honestly."#;
 
 fn challenge_input(snapshot: &Value) -> Result<Value, String> {
     let evidence = references::evidence_snapshot(snapshot);
-    let input = references::References::new(&evidence)?.project(&json!({
-        "world":evidence["world"],"observed_evidence":evidence["nodes"],
-        "reference_scope":"Only the evidence references shown here and new hypotheses in your own batch may be referenced."
+    let candidates: Vec<_> = node_catalog(snapshot)
+        .into_iter()
+        .filter(|node| matches!(core::field(node, "kind"), "scenario" | "revision"))
+        .collect();
+    let input = references::References::new(snapshot)?.project(&json!({
+        "world":snapshot["world"],"observed_evidence":evidence["nodes"],
+        "existing_candidates":candidates,
+        "reference_scope":"All visible IDs share the full snapshot namespace. Prior premise links use existing candidates; alternative links use new batch hypotheses. Dependencies use visible evidence, candidates or new batch hypotheses. Scores are intentionally absent."
     }));
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
-        return Err("Independent challenge evidence exceeds context bound".into());
+        return Err("Independent challenge context exceeds context bound".into());
     }
     Ok(input)
 }
@@ -202,6 +207,7 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         },
         "composition_candidates":composition_candidates(snapshot,program),
         "composition_correction":program["composition_correction"],
+        "independent_challenge":program["independent_challenge"],
         "baseline_correction":program["baseline_correction"], "temporal_semantics":core::temporal_criteria(),
         "issues":program["issues"], "stop_reason":program["stop_reason"],
         "remaining_calls":program["remaining_calls"], "round":program["round"],
@@ -318,20 +324,26 @@ mod reasoning_tests {
         assert_eq!(input["catalog"].as_array().unwrap().len(), 5);
     }
     #[test]
-    fn independent_challenge_ignores_candidate_prose_scores_and_order_but_retains_evidence() {
-        let source = json!({"Id":"e","kind":"evidence","statement":"Observed capability","provenance":"observed"});
-        let a = json!({"world":{"description":"What might change?"},"nodes":[{"Id":"h","kind":"scenario","statement":"Review remains essential","mechanism":"Present arrangement persists"},source]});
-        let b = json!({"world":a["world"],"nodes":[source,{"Id":"different","kind":"revision","statement":"Review disappears","mechanism":"A different premise","probability":0.99}]});
-        assert_eq!(challenge_input(&a).unwrap(), challenge_input(&b).unwrap());
-        let mut c = b.clone();
-        c["nodes"][0]["statement"] = json!("A different observed capability");
-        assert_ne!(challenge_input(&a).unwrap(), challenge_input(&c).unwrap());
-        let program = json!({"results":{"h":{"evaluate_novelty":"3.9"}}});
-        let ordinary = reasoning_input(&a, &program).unwrap();
-        assert_eq!(ordinary["catalog"].as_array().unwrap().len(), 2);
-        assert!(challenge_input(&a).unwrap()["catalog"].is_null());
+    fn contrastive_challenge_retains_candidates_but_excludes_scores() {
+        let a = json!({"world":{"description":"What might change?"},"nodes":[{"Id":"h","kind":"scenario","title":"Review","statement":"Review remains essential","mechanism":"Present arrangement persists","probability":0.99},{"Id":"e","kind":"evidence","statement":"Observed capability"},{"Id":"w","kind":"world","statement":"Hidden world"}]});
+        let input = challenge_input(&a).unwrap();
+        assert_eq!(input["existing_candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(input["existing_candidates"][0]["Id"], "ref_0001");
+        assert_eq!(input["observed_evidence"][0]["Id"], "ref_0002");
+        assert!(input["existing_candidates"][0].get("probability").is_none());
+        let mut b = a.clone();
+        b["nodes"][0]["probability"] = json!(0.01);
+        assert_eq!(input, challenge_input(&b).unwrap());
+        b["nodes"][0]["mechanism"] = json!("A different causal premise");
+        assert_ne!(input, challenge_input(&b).unwrap());
+        let premise = json!({"prior_hypothesis_ids":["h"],"alternative_hypothesis_ids":["h"],"assumption":"Review needed","alternative":"Different mechanism"});
+        let ordinary = reasoning_input(
+            &a,
+            &json!({"independent_challenge":{"premises_challenged":[premise]}}),
+        )
+        .unwrap();
         assert_eq!(
-            challenge_input(&a).unwrap()["observed_evidence"][0]["Id"],
+            ordinary["independent_challenge"]["premises_challenged"][0]["prior_hypothesis_ids"][0],
             "ref_0001"
         );
         assert!(!research_enabled("challenge", &a));

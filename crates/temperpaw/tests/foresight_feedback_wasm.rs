@@ -859,3 +859,67 @@ async fn optional_invalid_replacement_falls_back_but_initial_composition_still_f
         "correction_context_limit"
     );
 }
+
+#[tokio::test]
+async fn contrastive_challenge_links_survive_actual_guests() {
+    let engine = WasmEngine::new().unwrap();
+    let snapshot = json!({"world":{},"nodes":[{"Id":"prior","kind":"scenario","title":"Existing arrangement","statement":"Review remains essential","mechanism":"Individual review controls errors","edges":"[]"},{"Id":"source","kind":"evidence","statement":"Observed capability","edges":"[]"}]});
+    let program = json!({"round":1,"tasks":[],"cursor":0,"results":{},"evaluations":{}});
+    let mut fields = json!({"phase":"challenge","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":"123","trace_json":"[]"});
+    let setup = invoke(&engine, "semantic_reasoning", fields.clone()).await;
+    assert_eq!(setup["callback_action"], "LaunchReasoning");
+    let input: Value =
+        serde_json::from_str(setup["callback_params"]["user_message"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        input["existing_candidates"][0]["mechanism"],
+        "Individual review controls errors"
+    );
+    let prior = input["existing_candidates"][0]["Id"].clone();
+    let source = input["observed_evidence"][0]["Id"].clone();
+    let draft = json!({"premises_challenged":[{"assumption":"Each output needs individual review","alternative":"Shared verification changes the workflow","prior_hypothesis_ids":[prior],"alternative_hypothesis_ids":["rival"]}],"hypotheses":[{"id":"rival","title":"Shared verification","statement":"Shared verification replaces individual review by 2030","mechanism":"Reusable verification makes repeated review unnecessary","requires":[source],"parent":null,"scene":"A shared check is reused","signal":"Checks are reused","falsifier":"Checks remain bespoke","evidence_note":"Hypothetical consequence","research_question":"Can checks transfer?"}],"research_evidence":[],"continue_exploring":false,"exploration_note":"A rival mechanism changes the arrangement"});
+    fields["reasoning_result"] = json!(draft.to_string());
+    let expanded = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(expanded["callback_action"], "Expanded", "{expanded}");
+    let next = expanded["callback_params"].clone();
+    let saved: Value = serde_json::from_str(next["program_json"].as_str().unwrap()).unwrap();
+    let nodes: Value = serde_json::from_str(next["snapshot_json"].as_str().unwrap()).unwrap();
+    let links = &saved["independent_challenge"]["premises_challenged"][0];
+    assert_eq!(links["prior_hypothesis_ids"], json!(["prior"]));
+    let added = nodes["nodes"].as_array().unwrap().last().unwrap();
+    assert_eq!(links["alternative_hypothesis_ids"], json!([added["Id"]]));
+    assert_eq!(added["mechanism"], draft["hypotheses"][0]["mechanism"]);
+    let mut compose = next;
+    compose["phase"] = json!("compose");
+    let setup = invoke(&engine, "semantic_reasoning", compose).await;
+    let input: Value =
+        serde_json::from_str(setup["callback_params"]["user_message"].as_str().unwrap()).unwrap();
+    let premise = &input["independent_challenge"]["premises_challenged"][0];
+    assert_eq!(premise["prior_hypothesis_ids"], json!(["ref_0001"]));
+    assert_eq!(premise["alternative_hypothesis_ids"], json!(["ref_0003"]));
+    let mut invalid = draft.clone();
+    invalid["premises_challenged"][0]["prior_hypothesis_ids"] = json!(["ref_0002"]);
+    fields["reasoning_result"] = json!(invalid.to_string());
+    for attempt in 1..=2 {
+        let rejected = invoke(&engine, "semantic_expand", fields.clone()).await;
+        assert_eq!(
+            rejected["callback_action"], "CompositionRejected",
+            "{rejected}"
+        );
+        let p: Value = serde_json::from_str(
+            rejected["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(p["response_correction"]["attempt"], attempt);
+        assert_eq!(p["tasks"], program["tasks"]);
+        assert_eq!(fields["snapshot_json"], snapshot.to_string());
+        fields["program_json"] = rejected["callback_params"]["program_json"].clone();
+    }
+    let exhausted = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(exhausted["callback_action"], "Fail");
+    fields["reasoning_result"] = json!(draft.to_string());
+    let repaired = invoke(&engine, "semantic_expand", fields).await;
+    assert_eq!(repaired["callback_action"], "Expanded", "{repaired}");
+    assert_eq!(repaired["callback_params"]["started_at_ms"], "123");
+}

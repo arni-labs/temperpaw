@@ -54,8 +54,7 @@ fn generated_node(
     )
 }
 fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), String> {
-    let evidence = references::evidence_snapshot(snapshot);
-    references::References::new(&evidence)?.resolve_generated(generated);
+    references::References::new(snapshot)?.resolve_generated(generated);
     let premises = generated["premises_challenged"]
         .as_array()
         .ok_or("Missing challenged premises")?;
@@ -77,12 +76,60 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
         .ok_or("Missing challenge hypotheses")?;
     let new_ids: std::collections::BTreeSet<_> =
         hypotheses.iter().filter_map(|n| n["id"].as_str()).collect();
-    let evidence_ids: std::collections::BTreeSet<_> = evidence["nodes"]
+    let existing_ids: std::collections::BTreeSet<_> = snapshot["nodes"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|n| {
+            matches!(
+                core::field(n, "kind"),
+                "evidence" | "research_evidence" | "scenario" | "revision"
+            )
+        })
         .filter_map(|n| n["Id"].as_str())
         .collect();
+    let prior_ids: std::collections::BTreeSet<_> = snapshot["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| matches!(core::field(n, "kind"), "scenario" | "revision"))
+        .filter_map(|n| n["Id"].as_str())
+        .collect();
+    for premise in premises {
+        for (key, allowed) in [
+            ("prior_hypothesis_ids", &prior_ids),
+            ("alternative_hypothesis_ids", &new_ids),
+        ] {
+            let ids = premise[key]
+                .as_array()
+                .filter(|ids| !ids.is_empty() && ids.len() <= 128)
+                .ok_or_else(|| {
+                    format!("Challenge {key} must name a nonempty bounded hypothesis group")
+                })?;
+            let mut seen = std::collections::BTreeSet::new();
+            for id in ids {
+                let id = id
+                    .as_str()
+                    .ok_or("Invalid challenged hypothesis reference")?;
+                if !allowed.contains(id) || !seen.insert(id) {
+                    return Err(format!(
+                        "Invalid or duplicate challenge {key} reference: {id}"
+                    ));
+                }
+            }
+        }
+    }
+    let linked_ids: std::collections::BTreeSet<_> = premises
+        .iter()
+        .flat_map(|p| p["alternative_hypothesis_ids"].as_array().unwrap())
+        .filter_map(Value::as_str)
+        .collect();
+    if linked_ids != new_ids {
+        return Err(
+            "Every challenge hypothesis must belong to a challenged premise alternative group"
+                .into(),
+        );
+    }
     for hypothesis in hypotheses {
         if let Some(parent) = hypothesis["parent"].as_str().filter(|p| !p.is_empty())
             && !new_ids.contains(parent)
@@ -94,9 +141,9 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
             .ok_or("Missing challenge prerequisites")?
         {
             let reference = reference.as_str().ok_or("Invalid challenge reference")?;
-            if !new_ids.contains(reference) && !evidence_ids.contains(reference) {
+            if !new_ids.contains(reference) && !existing_ids.contains(reference) {
                 return Err(format!(
-                    "Challenge reference {reference} is outside its visible evidence and new hypotheses"
+                    "Challenge reference {reference} is outside its visible catalog and new hypotheses"
                 ));
             }
         }
@@ -104,13 +151,35 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
     Ok(())
 }
 
-fn record_challenge(snapshot: &Value, before: usize, generated: &Value, program: &mut Value) {
+fn record_challenge(
+    snapshot: &Value,
+    before: usize,
+    generated: &Value,
+    program: &mut Value,
+) -> Result<(), String> {
+    let mut prior = snapshot.clone();
+    prior["nodes"]
+        .as_array_mut()
+        .ok_or("Missing nodes")?
+        .truncate(before);
+    let mut generated = generated.clone();
+    resolve_challenge(&prior, &mut generated)?;
+    let round = program["round"].as_u64().ok_or("Missing challenge round")?;
+    for premise in generated["premises_challenged"].as_array_mut().unwrap() {
+        for id in premise["alternative_hypothesis_ids"]
+            .as_array_mut()
+            .unwrap()
+        {
+            *id = json!(format!("r{round}-{}", id.as_str().unwrap()));
+        }
+    }
     program["independent_challenge"] = json!({
         "status":"completed","trigger":"candidate_generation_reported_saturation",
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
         "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
         "note":generated["exploration_note"],"accuracy_verified":false
     });
+    Ok(())
 }
 
 fn expand(
@@ -872,6 +941,19 @@ fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, 
     Ok(program)
 }
 
+fn challenge_correction(old: &Value, error: &str) -> Result<Value, String> {
+    let attempt = old["response_correction"]["attempt"].as_u64().unwrap_or(0) + 1;
+    if attempt > 2 {
+        return Err(format!(
+            "Challenge rejected after two corrective attempts: {error}"
+        ));
+    }
+    let mut program = old.clone();
+    program["response_correction"] = json!({"attempt":attempt,"validation_error":error,
+        "instruction":"The challenge response was not applied. Return the complete corrected challenge JSON against the unchanged visible catalog. Every premise must link existing prior hypotheses to new alternative hypotheses; every new hypothesis must be linked. Do not invent references, evidence, or evaluations. You may return empty premises and hypotheses with an honest explanation."});
+    Ok(program)
+}
+
 fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, String> {
     let raw = raw.trim();
     let json_text = if raw.starts_with("```") {
@@ -991,7 +1073,17 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         }
     } else {
         let generated = core::parse(raw)?;
-        expand(&mut snapshot, &generated, phase, &old)?;
+        if let Err(error) = expand(&mut snapshot, &generated, phase, &old) {
+            if phase != "challenge" {
+                return Err(error);
+            }
+            let program = challenge_correction(&old, &error)?;
+            set_success_result(
+                "CompositionRejected",
+                &json!({"program_json":program.to_string()}),
+            );
+            return Ok(());
+        }
         None
     };
     let nodes = snapshot["nodes"].as_array_mut().ok_or("Missing nodes")?;
@@ -1005,7 +1097,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         replan(&snapshot, &old, &core::parse(raw)?, added)?
     };
     if phase == "challenge" {
-        record_challenge(&snapshot, before, &core::parse(raw)?, &mut program);
+        record_challenge(&snapshot, before, &core::parse(raw)?, &mut program)?;
     }
     set_success_result(
         "Expanded",
@@ -1250,11 +1342,32 @@ mod tests {
     }
 
     #[test]
-    fn independent_challenge_uses_its_own_reference_scope_and_evaluates_new_events() {
+    fn challenge_correction_preserves_work_and_exhausts_without_resetting_budget() {
+        let old = json!({"round":3,"http_calls":42,"transition_count":102,"results":{"h":{"estimate_likelihood":"0.3"}},"independent_challenge":{"status":"pending"}});
+        let first = challenge_correction(&old, "Unknown prior hypothesis: missing").unwrap();
+        assert_eq!(first["response_correction"]["attempt"], 1);
+        assert_eq!(
+            first["response_correction"]["validation_error"],
+            "Unknown prior hypothesis: missing"
+        );
+        for (key, value) in old.as_object().unwrap() {
+            assert_eq!(&first[key], value);
+        }
+        let second = challenge_correction(&first, "Missing alternative group").unwrap();
+        assert_eq!(second["response_correction"]["attempt"], 2);
+        assert!(
+            challenge_correction(&second, "Still invalid")
+                .unwrap_err()
+                .contains("after two corrective attempts")
+        );
+    }
+
+    #[test]
+    fn contrastive_challenge_preserves_exact_prior_and_new_alternative_relationships() {
         let snapshot = json!({"world":{"hindcast_mode":"false"},"nodes":[{"Id":"old","kind":"scenario","statement":"Old framing","edges":"[]"},{"Id":"e","kind":"evidence","statement":"Observed fact","edges":"[]"}]});
         let mut generated = batch("alternative");
-        generated["premises_challenged"] = json!([{"assumption":"The current workflow remains necessary","alternative":"A different mechanism performs its purpose"}]);
-        generated["hypotheses"][0]["requires"] = json!(["ref_0001"]);
+        generated["premises_challenged"] = json!([{"assumption":"The current workflow remains necessary","alternative":"A different mechanism performs its purpose","prior_hypothesis_ids":["ref_0001"],"alternative_hypothesis_ids":["alternative"]}]);
+        generated["hypotheses"][0]["requires"] = json!(["ref_0002"]);
         let mut updated = snapshot.clone();
         expand(&mut updated, &generated, "challenge", &json!({})).unwrap();
         assert_eq!(updated["nodes"][0], snapshot["nodes"][0]);
@@ -1264,7 +1377,15 @@ mod tests {
             "e"
         );
         let mut program = replan(&updated, &json!({}), &generated, 1).unwrap();
-        record_challenge(&updated, 2, &generated, &mut program);
+        record_challenge(&updated, 2, &generated, &mut program).unwrap();
+        assert_eq!(
+            program["independent_challenge"]["premises_challenged"][0]["prior_hypothesis_ids"],
+            json!(["old"])
+        );
+        assert_eq!(
+            program["independent_challenge"]["premises_challenged"][0]["alternative_hypothesis_ids"],
+            json!(["r1-alternative"])
+        );
         let id = added["Id"].as_str().unwrap();
         assert!(
             program["tasks"]
@@ -1283,14 +1404,53 @@ mod tests {
             next["independent_challenge"],
             program["independent_challenge"]
         );
-        for invalid in ["ref_0002", "old"] {
+        for invalid in ["ref_9999", "invented"] {
             let mut bad = generated.clone();
             bad["hypotheses"][0]["requires"] = json!([invalid]);
             assert!(expand(&mut snapshot.clone(), &bad, "challenge", &json!({})).is_err());
         }
+        for (field, invalid) in [
+            ("prior_hypothesis_ids", json!(["ref_0002"])),
+            ("prior_hypothesis_ids", json!(["missing"])),
+            ("prior_hypothesis_ids", json!([])),
+            ("alternative_hypothesis_ids", json!(["old"])),
+            ("alternative_hypothesis_ids", json!(["missing"])),
+            (
+                "alternative_hypothesis_ids",
+                json!(["alternative", "alternative"]),
+            ),
+        ] {
+            let mut bad = generated.clone();
+            bad["premises_challenged"][0][field] = invalid;
+            let mut unchanged = snapshot.clone();
+            assert!(expand(&mut unchanged, &bad, "challenge", &json!({})).is_err());
+            assert_eq!(
+                unchanged, snapshot,
+                "Invalid relationship must fail atomically"
+            );
+        }
         let mut linked = generated.clone();
         linked["hypotheses"].as_array_mut().unwrap().push(json!({"id":"consequence","statement":"A subsequent future consequence","requires":["alternative"],"parent":"alternative"}));
+        let mut unchanged = snapshot.clone();
+        assert!(expand(&mut unchanged, &linked, "challenge", &json!({})).is_err());
+        assert_eq!(unchanged, snapshot);
+        linked["premises_challenged"][0]["alternative_hypothesis_ids"] =
+            json!(["alternative", "consequence"]);
         assert!(expand(&mut snapshot.clone(), &linked, "challenge", &json!({})).is_ok());
+        let mut hidden = snapshot.clone();
+        hidden["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"hidden-world","kind":"world"}));
+        let mut bad = generated.clone();
+        bad["hypotheses"][0]["requires"] = json!(["ref_0003"]);
+        let original = hidden.clone();
+        assert!(expand(&mut hidden, &bad, "challenge", &json!({})).is_err());
+        assert_eq!(hidden, original);
+        let mut empty = generated.clone();
+        empty["hypotheses"] = json!([]);
+        empty["premises_challenged"] = json!([]);
+        assert!(expand(&mut snapshot.clone(), &empty, "challenge", &json!({})).is_ok());
     }
 
     #[test]
