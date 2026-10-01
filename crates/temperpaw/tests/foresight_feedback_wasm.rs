@@ -510,7 +510,7 @@ async fn optional_refinement_declines_before_erasing_completed_world_odds() {
         apply(&mut fields, &result);
     }
     let before = program(&fields);
-    fields["transition_count"] = json!(410);
+    fields["transition_count"] = json!(435);
     let stopped = invoke(&engine, "semantic_step", fields.clone()).await;
     assert_eq!(stopped["callback_action"], "Reason", "{stopped}");
     assert_eq!(stopped["callback_params"]["phase"], "synthesize");

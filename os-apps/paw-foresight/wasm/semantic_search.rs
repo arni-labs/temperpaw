@@ -1218,10 +1218,14 @@ pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) 
             .iter()
             .any(|task| task["function"] == "check_world_set"),
     );
-    let required = 1 + set_checkpoint + batches * 2 * 3;
+    // Reserve nominal packed work plus two extra attempts for this pass. Actual
+    // retries, repacking and growth remain bounded by the live global limits;
+    // admission estimates capacity, it does not guarantee completion.
+    let retry_headroom_attempts = 2;
+    let required = 1 + set_checkpoint + batches * 2 + retry_headroom_attempts * 2;
     json!({"admitted":required <= remaining,"estimated_batches":batches,
         "remaining_transitions":remaining,"required_transitions":required,
-        "retry_attempts_per_batch":2,"writing_reserve":super::REASONING_TRANSITION_RESERVE,
+        "retry_headroom_attempts":retry_headroom_attempts,"completion_guaranteed":false,"writing_reserve":super::REASONING_TRANSITION_RESERVE,
         "response_growth_bounded":false,"adaptive_repacking_bounded":false})
 }
 
@@ -1351,6 +1355,29 @@ mod refinement_tests {
         let snapshot = json!({"world":{},"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},world]});
         let program = json!({"active_world_ids":["w"],"world_pass":1,"results":{},"evaluations":{},"evidence_ids":["source"]});
         (snapshot, program)
+    }
+    #[test]
+    fn refinement_uses_pass_contingency_without_claiming_completion() {
+        let (snapshot, mut program) = fixture();
+        fill(&snapshot, &mut program, 0.4);
+        let tasks = world_tasks(&snapshot["nodes"][3]);
+        let initial = refinement_admission(&snapshot, &program, &tasks);
+        let nominal = 1 + initial["estimated_batches"].as_u64().unwrap() * 2;
+        program["transition_count"] = json!(
+            super::super::MAX_APP_TRANSITIONS
+                - super::super::REASONING_TRANSITION_RESERVE
+                - nominal
+                - 4
+        );
+        let admission = refinement_admission(&snapshot, &program, &tasks);
+        assert_eq!(admission["admitted"], true);
+        assert_eq!(admission["completion_guaranteed"], false);
+        assert_eq!(admission["retry_headroom_attempts"], 2);
+        program["transition_count"] = json!(program["transition_count"].as_u64().unwrap() + 1);
+        assert_eq!(
+            refinement_admission(&snapshot, &program, &tasks)["admitted"],
+            false
+        );
     }
     fn fill(snapshot: &Value, program: &mut Value, probability: f64) {
         for task in world_tasks(&snapshot["nodes"][3]) {
