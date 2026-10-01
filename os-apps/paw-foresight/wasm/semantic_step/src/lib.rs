@@ -60,6 +60,7 @@ fn next_phase(
             .cloned()
             .unwrap_or_default();
         let mut unresolved = false;
+        let mut incomplete = false;
         let mut has_conflict = false;
         let mut next_questions = 0;
         if !program["world_audits"].is_object() {
@@ -73,6 +74,8 @@ fn next_phase(
         {
             let audit = core::search::audit_world(world, program);
             unresolved |= audit["status"] != "no_conflict_found";
+            incomplete |= audit["completed_checks"].as_u64().unwrap_or(0)
+                < audit["planned_checks"].as_u64().unwrap_or(0);
             has_conflict |= audit["status"] == "conflicts_found";
             next_questions += core::search::world_tasks(world).len();
             program["world_audits"][core::field(world, "Id")] = audit;
@@ -112,8 +115,10 @@ fn next_phase(
         }
         program["stop_reason"] = json!(if !exhausted.is_empty() {
             &exhausted
-        } else if unresolved {
+        } else if incomplete {
             "world_audits_incomplete"
+        } else if unresolved {
+            "world_audits_unresolved"
         } else {
             "worlds_evaluated"
         });
@@ -536,6 +541,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Private captured food snapshot/program supplied explicitly"]
+    fn captured_food_complete_audits_keep_uncertainty_and_estimates() {
+        let dir = std::env::var("FOOD_AUDIT_FIXTURE_DIR").unwrap();
+        let snapshot: Value = serde_json::from_slice(
+            &std::fs::read(format!("{dir}/food-a03-resumed-final-snapshot.json")).unwrap(),
+        )
+        .unwrap();
+        let mut program: Value = serde_json::from_slice(
+            &std::fs::read(format!("{dir}/food-a03-resumed-final-checkpoint.json")).unwrap(),
+        )
+        .unwrap();
+        let before = program.clone();
+        // Replay scheduling only, with captured judgments; no clock or native run is changed.
+        assert_eq!(next_phase(&snapshot, &mut program, 0, 0), "synthesize");
+        assert_eq!(program["stop_reason"], "world_audits_unresolved");
+        assert_eq!(program["results"], before["results"]);
+        assert_eq!(program["evaluations"], before["evaluations"]);
+        assert_eq!(program["world_refinement"], before["world_refinement"]);
+        assert_eq!(program["world_audits"], before["world_audits"]);
+    }
+
+    #[test]
+    fn completed_audit_uncertainty_is_distinct_from_missing_checks() {
+        for (label, expected) in [
+            ("uncertain", "world_audits_unresolved"),
+            ("conflict", "world_audits_unresolved"),
+            ("compatible", "worlds_evaluated"),
+        ] {
+            let (snapshot, mut program) = evaluated_world(label);
+            program["world_pass"] = json!(3);
+            program["world_revision"] = json!(3);
+            let results = program["results"].clone();
+            assert_eq!(next_phase(&snapshot, &mut program, 20, 1000), "synthesize");
+            assert_eq!(program["stop_reason"], expected);
+            assert_eq!(program["results"], results);
+            assert_eq!(
+                program["world_audits"]["w"]["planned_checks"],
+                program["world_audits"]["w"]["completed_checks"]
+            );
+        }
+        let (snapshot, mut program) = evaluated_world("uncertain");
+        program["world_pass"] = json!(3);
+        program["results"]["w"]
+            .as_object_mut()
+            .unwrap()
+            .remove("check_world_consistency");
+        assert_eq!(next_phase(&snapshot, &mut program, 20, 1000), "synthesize");
+        assert_eq!(program["stop_reason"], "world_audits_incomplete");
+    }
+
+    #[test]
     fn transition_budget_reserves_world_work_and_writer_without_clock_reset() {
         assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 232);
         assert_eq!(
@@ -600,7 +656,7 @@ mod tests {
             json!({"context":{"world_pass":2},"probability":0.42});
         assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "synthesize");
         assert_eq!(program["world_audits"]["w"]["status"], "uncertain");
-        assert_eq!(program["stop_reason"], "world_audits_incomplete");
+        assert_eq!(program["stop_reason"], "world_audits_unresolved");
         assert_eq!(program["results"], results);
         assert_eq!(program["active_world_ids"], json!(["w"]));
         assert_eq!(program["world_revision"], 1);
