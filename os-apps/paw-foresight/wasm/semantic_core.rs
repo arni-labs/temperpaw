@@ -191,6 +191,7 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         let hypothesis = matches!(field(by_id[&id], "kind"), "scenario" | "revision");
         let functions: &[&str] = if hypothesis {
             &[
+                "classify_claim_role",
                 "classify_temporal",
                 "classify_gap",
                 "estimate_likelihood",
@@ -229,11 +230,26 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
         .collect();
     let mut screening: Vec<_> = tasks
         .iter()
-        .filter(|t| t["function"] == "classify_temporal")
+        .filter(|t| {
+            matches!(
+                field(t, "function"),
+                "classify_claim_role" | "classify_temporal"
+            )
+        })
         .cloned()
         .collect();
-    tasks.retain(|t| t["function"] != "classify_temporal");
-    screening.sort_by_key(|t| std::cmp::Reverse(positions[field(t, "nodeId")]));
+    tasks.retain(|t| {
+        !matches!(
+            field(t, "function"),
+            "classify_claim_role" | "classify_temporal"
+        )
+    });
+    screening.sort_by_key(|t| {
+        (
+            t["function"] != "classify_claim_role",
+            std::cmp::Reverse(positions[field(t, "nodeId")]),
+        )
+    });
     // Same-depth nodes cannot depend on one another. Complete each assessment
     // wave before advancing: own earlier scores and all parent scores remain fresh.
     tasks.sort_by_key(|t| {
@@ -250,8 +266,23 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
     });
     screening.extend(tasks);
     let tasks = screening;
+    let event_dependencies: BTreeMap<_, Vec<_>> = prerequisites
+        .iter()
+        .filter(|(id, _)| matches!(field(by_id[*id], "kind"), "scenario" | "revision"))
+        .map(|(id, dependencies)| {
+            (
+                id,
+                dependencies
+                    .iter()
+                    .filter(|dependency| {
+                        matches!(field(by_id[*dependency], "kind"), "scenario" | "revision")
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
     Ok(
-        json!({"schema":"foresight-open-semantic-v2","stage":"exploration","cursor":0,"tasks":tasks,"issues":issues,"results":{},"evaluations":{},"round":0,"rounds":[],"continue_exploring":true,"max_calls":MAX_CALLS,"max_nodes":MAX_NODES,"time_budget_ms":MAX_MS}),
+        json!({"schema":"foresight-open-semantic-v2","claim_role_contract":1,"event_dependencies":event_dependencies,"stage":"exploration","cursor":0,"tasks":tasks,"issues":issues,"results":{},"evaluations":{},"round":0,"rounds":[],"continue_exploring":true,"max_calls":MAX_CALLS,"max_nodes":MAX_NODES,"time_budget_ms":MAX_MS}),
     )
 }
 /// Missing classifications remain readable in historical runs; new plans classify first.
@@ -278,15 +309,94 @@ pub fn temporal_allows_forecast(program: &Value, id: &str) -> bool {
         _ => program["baseline_status"].is_null(),
     }
 }
-pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
+/// New plans distinguish an event proposition from research commentary before
+/// forecasting. Legacy programs retain their recorded admission semantics.
+pub fn claim_role_allows_forecast(program: &Value, id: &str) -> bool {
+    if program["claim_role_contract"] != 1 {
+        return true;
+    }
+    let mut pending = vec![id];
+    let mut visited = BTreeSet::new();
+    while let Some(candidate) = pending.pop() {
+        if !visited.insert(candidate) {
+            continue;
+        }
+        if visited.len() > MAX_NODES
+            || program["results"][candidate]["classify_claim_role"] != "event"
+        {
+            return false;
+        }
+        for dependency in program["event_dependencies"][candidate]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(dependency) = dependency.as_str() else {
+                return false;
+            };
+            pending.push(dependency);
+        }
+    }
+    true
+}
+
+pub fn forecast_allows(program: &Value, id: &str) -> bool {
+    claim_role_allows_forecast(program, id) && temporal_allows_forecast(program, id)
+}
+
+pub fn forecast_exclusion_reason<'a>(program: &'a Value, id: &str) -> &'a str {
+    if program["claim_role_contract"] == 1 {
+        match program["results"][id]["classify_claim_role"].as_str() {
+            Some("context") => return "Research context, not an event proposition",
+            Some("unresolved") => return "Event proposition is unresolved",
+            Some("event") => {}
+            _ => return "Event admission pending",
+        }
+        if !claim_role_allows_forecast(program, id) {
+            return "A required claim is not an admitted event proposition";
+        }
+    }
+    program["results"][id]["classify_temporal"]
+        .as_str()
+        .unwrap_or("not evaluated in current evidence context")
+}
+
+/// Screening is independent of prior probabilities. A non-event remains in the
+/// snapshot as context, but never receives event-specific judgments.
+pub fn task_allowed(program: &Value, task: &Value) -> bool {
+    if program["stage"] == "worlds" || task["function"] == "classify_claim_role" {
+        return true;
+    }
+    let id = field(task, "nodeId");
+    if program["claim_role_contract"] == 1
+        && program["event_dependencies"].get(id).is_some()
+        && !claim_role_allows_forecast(program, id)
+    {
+        return false;
+    }
+    !matches!(
+        field(task, "function"),
+        "estimate_likelihood" | "estimate_conditional" | "evaluate_novelty" | "decision_value"
+    ) || forecast_allows(program, id)
+}
+
+/// Invalidate before filtering a replanned task queue so newly required
+/// admission checks cannot erase odds whose replacement tasks were removed.
+pub fn clear_ineligible_forecasts(program: &mut Value) {
     if program["stage"] == "worlds" {
-        return Ok(());
+        return;
     }
     let excluded: Vec<String> = program["results"]
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(id, _)| !temporal_allows_forecast(program, id))
+        .filter(|(id, _)| {
+            // Composed worlds have a separate planner and immutable estimates;
+            // event admission only owns the candidates in this plan.
+            (program["claim_role_contract"] != 1
+                || program["event_dependencies"].get(*id).is_some())
+                && !forecast_allows(program, id)
+        })
         .map(|(id, _)| id.clone())
         .collect();
     for id in excluded {
@@ -303,14 +413,17 @@ pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
             }
         }
     }
+}
+
+pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
+    if program["stage"] == "worlds" {
+        return Ok(());
+    }
+    clear_ineligible_forecasts(program);
     let mut cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let tasks = program["tasks"].as_array().ok_or("Missing tasks")?;
     while let Some(task) = tasks.get(cursor) {
-        if matches!(
-            field(task, "function"),
-            "estimate_likelihood" | "estimate_conditional" | "evaluate_novelty" | "decision_value"
-        ) && !temporal_allows_forecast(program, field(task, "nodeId"))
-        {
+        if !task_allowed(program, task) {
             cursor += 1;
         } else {
             break;
@@ -435,6 +548,8 @@ mod tests {
                     .any(|t| t["nodeId"] == "new" && t["function"] == function)
             );
         }
+        p["results"]["h"]["classify_claim_role"] = json!("event");
+        p["results"]["new"]["classify_claim_role"] = json!("event");
         p["results"]["new"]["classify_temporal"] = json!("future_change");
         let request = evaluation::request_task(
             &snapshot,
@@ -477,7 +592,7 @@ mod tests {
         assert!(
             tasks[..21]
                 .iter()
-                .all(|t| t["function"] == "classify_temporal")
+                .all(|t| t["function"] == "classify_claim_role")
         );
         let parent = tasks
             .iter()
@@ -490,19 +605,19 @@ mod tests {
             })
             .unwrap();
         assert!(parent < child);
-        assert_eq!(tasks.len(), 105); // Required evaluations remain scheduled.
+        assert_eq!(tasks.len(), 126); // Required evaluations remain scheduled.
     }
     #[test]
     fn observed_and_mixed_claims_are_classified_before_forecast_and_do_not_keep_stale_odds() {
         let mut p = plan(&[node("h", "scenario", &[])]).unwrap();
-        assert_eq!(p["tasks"][0]["function"], "classify_temporal");
+        assert_eq!(p["tasks"][0]["function"], "classify_claim_role");
         for classification in ["already_observed", "mixed", "future_change", "uncertain"] {
-            p["cursor"] = json!(2);
-            p["results"]["h"] = json!({"classify_temporal":classification,"estimate_likelihood":"0.8","evaluate_novelty":"4"});
+            p["cursor"] = json!(3);
+            p["results"]["h"] = json!({"classify_claim_role":"event","classify_temporal":classification,"estimate_likelihood":"0.8","evaluate_novelty":"4"});
             p["evaluations"]["h"] = json!({"estimate_likelihood":{"probability":0.8}});
             skip_nonfuture_tasks(&mut p).unwrap();
             let excluded = matches!(classification, "already_observed" | "mixed");
-            assert_eq!(p["cursor"], json!(if excluded { 5 } else { 2 }));
+            assert_eq!(p["cursor"], json!(if excluded { 6 } else { 3 }));
             assert_eq!(p["results"]["h"]["estimate_likelihood"].is_null(), excluded);
             assert_eq!(
                 p["evaluations"]["h"]["estimate_likelihood"].is_null(),
@@ -519,9 +634,9 @@ mod tests {
             node("z", "evidence", &[]),
         ])
         .unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 11);
-        assert_eq!(p["tasks"][2]["nodeId"], "z");
-        assert_eq!(p["tasks"][1]["function"], "classify_temporal");
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 13);
+        assert_eq!(p["tasks"][4]["nodeId"], "z");
+        assert_eq!(p["tasks"][1]["function"], "classify_claim_role");
     }
     #[test]
     fn thousands_of_evaluations_are_planned_without_a_cartesian_product() {
@@ -529,7 +644,7 @@ mod tests {
             .map(|i| node(&format!("h{i}"), "scenario", &[]))
             .collect();
         let p = plan(&nodes).unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 5000);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 6000);
         assert_eq!(p["max_calls"], 5000);
     }
     #[test]
@@ -540,7 +655,7 @@ mod tests {
             node("ok", "scenario", &["missing"]),
         ])
         .unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 5);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 6);
         assert!(
             p["issues"]
                 .to_string()
@@ -561,8 +676,8 @@ mod tests {
             ));
         }
         let p = plan(&nodes).unwrap();
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 500);
-        assert_eq!(p["tasks"][499]["depth"], 99);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 600);
+        assert_eq!(p["tasks"][599]["depth"], 99);
     }
     #[test]
     fn identities_and_memory_budget_are_enforced() {
@@ -578,4 +693,9 @@ mod tests {
             .is_err()
         );
     }
+}
+
+#[cfg(test)]
+mod claim_role_tests {
+    include!("semantic_claim_role_tests.rs");
 }

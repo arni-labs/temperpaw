@@ -27,6 +27,12 @@ pub fn reduce_cap(program: &mut Value, batch: &Batch) -> bool {
     program["batch_byte_cap"] = json!(next);
     true
 }
+/// Validation policy is local engine metadata, never part of the Jev API payload.
+fn provider_request(individual: &Value) -> Value {
+    let mut request = individual.clone();
+    request.as_object_mut().unwrap().remove("validation");
+    request
+}
 pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Batch, String> {
     let cap = program["batch_byte_cap"]
         .as_u64()
@@ -53,24 +59,16 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
             || structural != super::search::is_structural(task)
             || (!structural
                 && (task["function"] != first["function"]
-                    || (task["function"] != "classify_temporal"
-                        && task["depth"] != first["depth"])))
+                    || (!matches!(
+                        super::field(task, "function"),
+                        "classify_claim_role" | "classify_temporal"
+                    ) && task["depth"] != first["depth"])))
         {
             break;
         }
         // An ineligible item ends the contiguous batch; native skipping advances
         // it on the next call without consuming a provider judgment.
-        if !structural
-            && program["stage"] != "worlds"
-            && matches!(
-                super::field(task, "function"),
-                "estimate_likelihood"
-                    | "estimate_conditional"
-                    | "evaluate_novelty"
-                    | "decision_value"
-            )
-            && !super::temporal_allows_forecast(program, super::field(task, "nodeId"))
-        {
+        if !structural && !super::task_allowed(program, task) {
             break;
         }
         // Structural requests take their task explicitly; avoid cloning the whole
@@ -166,7 +164,7 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
                 // request_task already enforces the individual hard limit. The
                 // batch wrapper must not reject an otherwise valid single request.
                 return Ok(Batch {
-                    request: individual.clone(),
+                    request: provider_request(&individual),
                     tasks: vec![task.clone()],
                     individual: vec![individual],
                 });
@@ -402,6 +400,9 @@ mod tests {
             p["tasks"] =
                 super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap()["tasks"].clone();
         }
+        for node in snapshot["nodes"].as_array().unwrap() {
+            p["results"][super::super::field(node, "Id")]["classify_claim_role"] = json!("event");
+        }
         p["batch_byte_cap"] = json!(51928);
         p["cursor"] = json!(
             p["tasks"]
@@ -518,6 +519,7 @@ mod tests {
         let mut p = super::super::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
         // Temporal prefix may cross depth boundaries only in separate requests.
         for id in ["a", "b", "child"] {
+            p["results"][id]["classify_claim_role"] = json!("event");
             p["results"][id]["classify_temporal"] = json!("future_change");
         }
         let tasks = p["tasks"].as_array().unwrap().clone();
@@ -543,11 +545,23 @@ mod tests {
         }
         let parent_last = tasks
             .iter()
-            .rposition(|t| t["nodeId"] == "a" && t["function"] != "classify_temporal")
+            .rposition(|t| {
+                t["nodeId"] == "a"
+                    && !matches!(
+                        super::super::field(t, "function"),
+                        "classify_claim_role" | "classify_temporal"
+                    )
+            })
             .unwrap();
         let child_first = tasks
             .iter()
-            .position(|t| t["nodeId"] == "child" && t["function"] != "classify_temporal")
+            .position(|t| {
+                t["nodeId"] == "child"
+                    && !matches!(
+                        super::super::field(t, "function"),
+                        "classify_claim_role" | "classify_temporal"
+                    )
+            })
             .unwrap();
         assert!(parent_last < child_first);
         let answer = json!({"type":"choice","choice":"none","probabilities":{"none":0.8,"prerequisite":0.05,"evidence":0.05,"timing":0.05,"uncertain":0.05}});

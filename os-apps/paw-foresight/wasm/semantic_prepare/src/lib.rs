@@ -151,10 +151,14 @@ fn restore_exploration(snapshot: &Value, program: &Value) -> Result<(Value, Valu
         .cloned()
         .collect();
     let mut planned = core::plan(&nodes)?;
-    planned["tasks"].as_array_mut().unwrap().retain(|task| {
-        program["results"][core::field(task, "nodeId")][core::field(task, "function")].is_null()
-    });
     let mut restored = program.clone();
+    restored["claim_role_contract"] = planned["claim_role_contract"].clone();
+    restored["event_dependencies"] = planned["event_dependencies"].clone();
+    restored["stage"] = json!("exploration");
+    core::clear_ineligible_forecasts(&mut restored);
+    planned["tasks"].as_array_mut().unwrap().retain(|task| {
+        restored["results"][core::field(task, "nodeId")][core::field(task, "function")].is_null()
+    });
     restored["tasks"] = planned["tasks"].clone();
     core::defer_recorded_rankings(
         &mut restored,
@@ -496,6 +500,28 @@ mod tests {
         json!({"Status":"Failed","world_id":"w","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":"1000","phase":"explore","agent_id":"agent-a","model":"model-a","provider":"provider-a"})
     }
     #[test]
+    fn legacy_resume_requeues_odds_removed_by_new_admission() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","edges":"[]"}]});
+        let old = json!({"baseline_status":"established","results":{"h":{"classify_temporal":"uncertain","estimate_likelihood":"0.61","estimate_conditional":"0.73"}},"evaluations":{"h":{"estimate_likelihood":{"probability":0.61}}}});
+        let (_, mut restored) = restore_exploration(&snapshot, &old).unwrap();
+        assert_eq!(restored["claim_role_contract"], 1);
+        assert!(restored["results"]["h"]["estimate_likelihood"].is_null());
+        assert!(restored["results"]["h"]["estimate_conditional"].is_null());
+        for function in ["classify_claim_role", "estimate_likelihood"] {
+            assert!(
+                restored["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["function"] == function)
+            );
+        }
+        restored["results"]["h"]["classify_claim_role"] = json!("event");
+        assert!(core::forecast_allows(&restored, "h"));
+        assert_eq!(old["results"]["h"]["estimate_likelihood"], "0.61");
+    }
+
+    #[test]
     fn resumed_exploration_does_not_reschedule_historical_rankings() {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","edges":"[]"}]});
         let old = json!({"results":{},"evaluations":{},"historical_search_guidance":{"h":{"evaluate_novelty":{"result":"2","current":false},"decision_value":{"result":"3","current":false}}}});
@@ -508,7 +534,7 @@ mod tests {
             core::field(t, "function"),
             "evaluate_novelty" | "decision_value"
         )));
-        assert_eq!(p["tasks"].as_array().unwrap().len(), 3);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -571,7 +597,11 @@ mod tests {
         let plan = core::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
         for task in plan["tasks"].as_array().unwrap() {
             old["results"][core::field(task, "nodeId")][core::field(task, "function")] =
-                json!("recorded");
+                json!(if task["function"] == "classify_claim_role" {
+                    "event"
+                } else {
+                    "recorded"
+                });
         }
         let trace =
             json!([{"nodeId":"old-world","function":"classify_gap","error":"max_tokens_exceeded"}]);
@@ -616,9 +646,17 @@ mod tests {
         assert_eq!(prepared["phase"], "explore");
         assert_eq!(resume_transition(&prepared).unwrap(), "ResumePrepared");
         assert_eq!(restored["resume_mode"], "unfinished_exploration");
-        for key in ["results", "evaluations", "http_calls", "world_revision"] {
+        for key in ["http_calls", "world_revision"] {
             assert_eq!(restored[key], program[key]);
         }
+        assert!(restored["results"]["h"]["estimate_likelihood"].is_null());
+        assert!(
+            restored["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == "estimate_likelihood")
+        );
         assert_eq!(prepared["trace_json"], record["trace_json"]);
         assert_eq!(prepared["started_at_ms"], record["started_at_ms"]);
         let restored_snapshot = core::parse(core::field(&prepared, "snapshot_json")).unwrap();
@@ -898,7 +936,7 @@ mod tests {
                 .iter()
                 .filter(|t| t["nodeId"] == "h")
                 .count(),
-            5
+            6
         );
     }
 }

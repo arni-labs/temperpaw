@@ -223,7 +223,7 @@ pub fn world_conditions(snapshot: &Value, component_ids: &Value) -> Result<Value
 
 /// The same eligibility decision is used by the composition catalog and validator.
 pub fn future_eligible(snapshot: &Value, program: &Value, id: &str) -> bool {
-    if !super::temporal_allows_forecast(program, id) {
+    if !super::forecast_allows(program, id) {
         return false;
     }
     let Ok(node) = hypothesis(snapshot, id) else {
@@ -240,7 +240,7 @@ pub fn future_eligible(snapshot: &Value, program: &Value, id: &str) -> bool {
             .as_array()
             .into_iter()
             .flatten()
-            .all(|e| super::temporal_allows_forecast(program, field(e, "id")))
+            .all(|e| super::forecast_allows(program, field(e, "id")))
     })
 }
 

@@ -107,9 +107,9 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
             field(task, "function"),
             "estimate_likelihood" | "estimate_conditional" | "evaluate_novelty" | "decision_value"
         )
-        && !super::temporal_allows_forecast(program, field(task, "nodeId"))
+        && !super::forecast_allows(program, field(task, "nodeId"))
     {
-        return Err("Observed or mixed claims require separation before future evaluation".into());
+        return Err("Claim is not an admitted future event in the current context".into());
     }
     let edges = parse(field(node, "edges"))?;
     let mut prerequisites: Vec<Value> = edges.as_array().ok_or("Invalid edges")?.iter().filter(|e| e["kind"] == "requires").map(|edge| {
@@ -145,6 +145,9 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         .map(|n| digest(n))
         .collect();
     let mut question = match task["function"].as_str().ok_or("Missing function")? {
+        "classify_claim_role" => {
+            json!({"type":"choice","instructions":"Identify what the exact claim says, not whether it is likely or supported. An event may be uncertain, conditional, persistence, or a change in scale. Do not invent a proposition to rescue research commentary. Preserve the original scope and horizon; classify before judging temporal novelty or likelihood.","criteria":{"event":"An identifiable occurrence or condition in the world whose truth could be assessed within the stated scope and horizon. Low likelihood or missing evidence does not make it a non-event.","context":"Research commentary, a caveat, a question, advice about interpretation, or an evaluation of a narrative rather than an occurrence or condition in the world.","unresolved":"The claim cannot be identified as an event or context without adding or choosing an interpretation not stated in the claim."}})
+        }
         "classify_temporal" => {
             json!({"type":"choice","instructions":"Compare the exact scoped claim against the supplied dated present baseline and source evidence as of world.last_ingest_date. Classify its temporal role before forecasting. Distinguish an existing capability from a future change in scale, access, adoption or consequences. Do not assume a cited prediction has already happened, use remembered later events in a hindcast, or call a conjecture false merely because evidence is absent. This judgment is not verification of source truth. Preserve uncertainty.","criteria":super::temporal_criteria()})
         }
@@ -240,13 +243,23 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         request["state"]["premise_judgments"] = judgments;
     }
 
-    if task["function"] == "classify_temporal" {
+    if matches!(
+        field(task, "function"),
+        "classify_claim_role" | "classify_temporal"
+    ) {
         request["state"].as_object_mut().unwrap().retain(|key, _| {
             matches!(
                 key.as_str(),
                 "world" | "node" | "source_evidence" | "baseline"
             )
         });
+    }
+    if task["function"] == "classify_claim_role" {
+        request["validation"] = json!({"selection_policy":"provider_argmax"});
+        request["state"]["node"]
+            .as_object_mut()
+            .unwrap()
+            .remove("probability");
     }
     compact_evaluation_contexts(&mut request["state"]);
     if request.to_string().len() > 128 * 1024 {
@@ -325,12 +338,17 @@ pub fn validate(request: &Value, response: &Value) -> Result<String, String> {
                     answer["probabilities"][selected]
                 ));
             }
-            Ok(if max < 0.65 && options.contains_key("uncertain") {
-                "uncertain"
-            } else {
-                selected
-            }
-            .into())
+            Ok(
+                if request["validation"]["selection_policy"] != "provider_argmax"
+                    && max < 0.65
+                    && options.contains_key("uncertain")
+                {
+                    "uncertain"
+                } else {
+                    selected
+                }
+                .into(),
+            )
         }
         _ => Err("Unsupported answer type".into()),
     }

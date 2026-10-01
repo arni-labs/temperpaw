@@ -216,6 +216,7 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
     // forecast costs. Legacy eligibility is used only for unsent size planning;
     // no classifications, requests or evaluations from it enter the run.
     scratch["baseline_status"] = Value::Null;
+    scratch["claim_role_contract"] = Value::Null;
     core::defer_recorded_rankings(&mut scratch, program);
     let task_count = scratch["tasks"].as_array().unwrap().len();
     let mut batches = 0u64;
@@ -526,10 +527,10 @@ mod tests {
         let p = json!({"stage":"exploration","baseline_status":"established","transition_count":150,"results":{"h0":{"classify_temporal":"already_observed"}}});
         let before = p.clone();
         let cost = exploration_admission(&snapshot, &p).unwrap();
-        assert_eq!(cost["current_graph_tasks"], 80);
-        assert_eq!(cost["estimated_batches"], 5);
-        assert_eq!(cost["current_graph_evaluation_transitions"], 10);
-        assert_eq!(cost["required_transitions"], 86);
+        assert_eq!(cost["current_graph_tasks"], 96);
+        assert_eq!(cost["estimated_batches"], 6);
+        assert_eq!(cost["current_graph_evaluation_transitions"], 12);
+        assert_eq!(cost["required_transitions"], 88);
         assert_eq!(cost["admitted"], false);
         assert_eq!(p, before);
         let mut early = p;

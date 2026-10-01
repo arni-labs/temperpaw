@@ -877,11 +877,9 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
                 ));
             }
             if !core::branches::future_eligible(snapshot, old, reference) {
-                let classification = old["results"][reference]["classify_temporal"]
-                    .as_str()
-                    .unwrap_or("not evaluated in current evidence context");
+                let classification = core::forecast_exclusion_reason(old, reference);
                 return Err(format!(
-                    "World component {reference} is temporally ineligible: {classification}. Select only composition_candidates.component_ids; keep this node as context."
+                    "World component {reference} is ineligible for forecasting: {classification}. Select only composition_candidates.component_ids; keep this node as context."
                 ));
             }
             if !components.insert(reference) {
@@ -912,6 +910,9 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
                             "is evidence, not a future hypothesis; evidence belongs in the baseline or source context",
                         )
                     }
+                    Some(_) if !core::claim_role_allows_forecast(old, reference) => Some(
+                        "is not an admitted event proposition; retain research commentary in context",
+                    ),
                     _ => None,
                 }
             };
@@ -944,7 +945,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             core::branches::world_conditions(snapshot, &node["component_ids"])?;
         for clause in node["branch_conditions"].as_array().unwrap() {
             for event in clause["events"].as_array().unwrap() {
-                if !core::temporal_allows_forecast(old, core::field(event, "id")) {
+                if !core::forecast_allows(old, core::field(event, "id")) {
                     return Err(format!(
                         "Branch premise {} is not a currently evaluated future event; separate observed conditions from hypothetical future changes",
                         core::field(event, "id")
@@ -997,6 +998,19 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         core::search::world_set_tasks(&identities.iter().map(|s| json!(s)).collect::<Vec<_>>()),
     );
     let mut program = core::plan(updated["nodes"].as_array().unwrap())?;
+    // Composition evaluates whole worlds, not candidate admission. Preserve
+    // whether the source exploration actually ran the claim-role contract.
+    if let Some(contract) = old
+        .get("claim_role_contract")
+        .filter(|value| !value.is_null())
+    {
+        program["claim_role_contract"] = contract.clone();
+    } else {
+        program
+            .as_object_mut()
+            .unwrap()
+            .remove("claim_role_contract");
+    }
     for key in [
         "results",
         "evaluations",
@@ -1402,6 +1416,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         {
             for collection in ["results", "evaluations"] {
                 if let Some(values) = program[collection][core::field(node, "Id")].as_object_mut() {
+                    values.remove("classify_claim_role");
                     values.remove("classify_temporal");
                     values.remove("evaluate_novelty");
                     values.remove("decision_value");
@@ -1413,6 +1428,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         }
     }
     program["evidence_ids"] = json!(current_evidence);
+    core::clear_ineligible_forecasts(&mut program);
     let results = program["results"].clone();
     program["tasks"]
         .as_array_mut()
@@ -1937,9 +1953,115 @@ mod tests {
         second["trajectory_answer"] =
             json!("A different organization with different downstream consequences");
         let generated = json!({"shared_question":"How do the interacting constraints change the system?","baseline":{"as_of":"2026-09-19","observed":[{"claim":"Observed baseline","evidence_ids":["ref_0001"]}],"assumptions":[],"unknowns":[]},"worlds":[world,second]});
-        let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
+        let program = json!({"claim_role_contract":1,"results":{"a":{"classify_claim_role":"event","estimate_likelihood":"0.9"},"b":{"classify_claim_role":"event","estimate_likelihood":"0.8"},"c":{"classify_claim_role":"event"},"d":{"classify_claim_role":"event"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
+    #[test]
+    fn claim_role_admission_rejects_context_components_without_altering_worlds() {
+        let (snapshot, generated, mut program) = world_fixture();
+        program["claim_role_contract"] = json!(1);
+        program["baseline_status"] = json!("established");
+        for id in ["a", "b", "c", "d"] {
+            program["results"][id]["classify_claim_role"] = json!("event");
+            program["results"][id]["classify_temporal"] = json!("uncertain");
+        }
+        assert!(compose(&mut snapshot.clone(), &generated, &program).is_ok());
+        for role in ["context", "unresolved"] {
+            program["results"]["a"]["classify_claim_role"] = json!(role);
+            let mut untouched = snapshot.clone();
+            assert!(compose(&mut untouched, &generated, &program).is_err());
+            assert_eq!(untouched, snapshot);
+        }
+        program["results"]["a"]["classify_claim_role"] = json!("event");
+        program["results"]["d"]["classify_claim_role"] = json!("context");
+        assert!(
+            compose(&mut snapshot.clone(), &generated, &program)
+                .unwrap_err()
+                .contains("not an admitted event proposition")
+        );
+        program["results"]["d"]["classify_claim_role"] = json!("event");
+        program["results"]["a"]
+            .as_object_mut()
+            .unwrap()
+            .remove("classify_claim_role");
+        assert!(compose(&mut snapshot.clone(), &generated, &program).is_err());
+    }
+
+    #[test]
+    fn legacy_composition_does_not_claim_new_admission_checks_ran() {
+        let (mut snapshot, generated, mut old) = world_fixture();
+        old.as_object_mut().unwrap().remove("claim_role_contract");
+        for fields in old["results"].as_object_mut().unwrap().values_mut() {
+            fields
+                .as_object_mut()
+                .unwrap()
+                .remove("classify_claim_role");
+        }
+        let program = compose(&mut snapshot, &generated, &old).unwrap();
+        assert!(program.get("claim_role_contract").is_none());
+        assert_eq!(program["results"]["a"]["estimate_likelihood"], "0.9");
+    }
+
+    #[test]
+    fn legacy_replan_requeues_probability_after_new_role_admission() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","edges":"[]"}]});
+        let old = json!({"results":{"h":{"classify_temporal":"uncertain","estimate_likelihood":"0.61"}},"rounds":[]});
+        let mut program = replan(&snapshot, &old, &json!({"continue_exploring":true}), 0).unwrap();
+        assert!(program["results"]["h"]["estimate_likelihood"].is_null());
+        assert!(
+            program["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["function"] == "estimate_likelihood")
+        );
+        program["results"]["h"]["classify_claim_role"] = json!("event");
+        assert!(core::forecast_allows(&program, "h"));
+        assert_eq!(old["results"]["h"]["estimate_likelihood"], "0.61");
+    }
+
+    #[test]
+    fn revisions_get_new_role_checks_and_new_evidence_invalidates_roles() {
+        let mut snapshot = json!({"nodes":[{"Id":"e","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"Research commentary","edges":"[]"}]});
+        let mut old = core::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        old["evidence_ids"] = json!(["e"]);
+        old["results"]["h"]["classify_claim_role"] = json!("context");
+        old["evaluations"]["h"]["classify_claim_role"] = json!({"selected":"context"});
+        snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":"revision","kind":"revision","parent":"h","statement":"An observable event happens by 2030","edges":"[]"}));
+        let generated = json!({"continue_exploring":true});
+        let revised = replan(&snapshot, &old, &generated, 1).unwrap();
+        assert_eq!(revised["results"]["h"]["classify_claim_role"], "context");
+        assert!(revised["results"]["revision"]["classify_claim_role"].is_null());
+        assert!(
+            revised["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "revision" && t["function"] == "classify_claim_role")
+        );
+        assert!(
+            !revised["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == "classify_claim_role")
+        );
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"new-source","kind":"research_evidence","edges":"[]"}));
+        let refreshed = replan(&snapshot, &revised, &generated, 1).unwrap();
+        assert!(refreshed["results"]["h"]["classify_claim_role"].is_null());
+        assert!(refreshed["evaluations"]["h"]["classify_claim_role"].is_null());
+        assert!(
+            refreshed["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == "classify_claim_role")
+        );
+    }
+
     #[test]
     fn rejected_draft_is_exact_or_explicitly_too_large() {
         let raw = "{\"source\":\"retrieved text\"}";
@@ -2399,9 +2521,11 @@ mod tests {
                     .iter()
                     .any(|t| t["nodeId"] == id && t["function"] == "estimate_conditional")
             );
+            program["results"][id]["classify_claim_role"] = json!("event");
             program["results"][id]["classify_temporal"] = json!("future_change");
             assert!(!core::branches::future_eligible(&snapshot, &program, id));
         }
+        program["results"]["r1-premise"]["classify_claim_role"] = json!("event");
         program["results"]["r1-premise"]["classify_temporal"] = json!("future_change");
         assert!(core::branches::future_eligible(
             &snapshot, &program, "r1-on"
@@ -2691,7 +2815,7 @@ mod tests {
     #[test]
     fn new_evidence_rechecks_same_claim_without_reusing_old_estimates() {
         let mut snapshot = json!({"nodes":[{"Id":"e","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"The same event","branch_id":"condition-a","edges":"[]"}]});
-        let old = json!({"http_calls":17,"rounds":[],"evidence_ids":["e"],"results":{"h":{"classify_gap":"evidence","estimate_likelihood":"0.4","estimate_conditional":"0.7","evaluate_novelty":"2"}},"evaluations":{"h":{"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4},"estimate_conditional":{"probability":0.7}}}});
+        let old = json!({"http_calls":17,"rounds":[],"evidence_ids":["e"],"results":{"h":{"classify_claim_role":"event","classify_gap":"evidence","estimate_likelihood":"0.4","estimate_conditional":"0.7","evaluate_novelty":"2"}},"evaluations":{"h":{"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4},"estimate_conditional":{"probability":0.7}}}});
         let generated = json!({"continue_exploring":true,"exploration_note":"Investigate"});
         let unchanged = replan(&snapshot, &old, &generated, 0).unwrap();
         assert_eq!(unchanged["http_calls"], 17);
@@ -2984,11 +3108,11 @@ mod tests {
         expand(&mut s, &g, "seed", &json!({})).unwrap();
         let mut p = replan(&s, &json!({}), &g, 1).unwrap();
         p["evidence_ids"] = json!(["e"]);
-        p["results"] = json!({"e":{"classify_gap":"none","choose_next_operation":"monitor"},"r1-h":{"classify_temporal":"future_change","classify_gap":"evidence","estimate_likelihood":"0.37","evaluate_novelty":"0.8","decision_value":"0.7","choose_next_operation":"connect"}});
+        p["results"] = json!({"e":{"classify_gap":"none","choose_next_operation":"monitor"},"r1-h":{"classify_claim_role":"event","classify_temporal":"future_change","classify_gap":"evidence","estimate_likelihood":"0.37","evaluate_novelty":"0.8","decision_value":"0.7","choose_next_operation":"connect"}});
         expand(&mut s, &g, "explore", &p).unwrap();
         let next = replan(&s, &p, &g, 1).unwrap();
         assert_eq!(next["round"], 2);
-        assert_eq!(next["tasks"].as_array().unwrap().len(), 5);
+        assert_eq!(next["tasks"].as_array().unwrap().len(), 6);
         assert_eq!(s["nodes"][0], original);
         let mut expected = p["results"].clone();
         for function in ["evaluate_novelty", "decision_value"] {

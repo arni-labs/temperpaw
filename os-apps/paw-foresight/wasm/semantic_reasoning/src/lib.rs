@@ -223,7 +223,7 @@ fn composition_candidates(snapshot: &Value, program: &Value) -> Value {
         if core::branches::future_eligible(snapshot, program, id) {
             eligible.push(id);
         } else {
-            excluded.push(json!({"nodeId":id,"reason":if core::temporal_allows_forecast(program,id) { "Branch premises are not all currently evaluated future events" } else {program["results"][id]["classify_temporal"].as_str().unwrap_or("not evaluated in current evidence context")}}));
+            excluded.push(json!({"nodeId":id,"reason":if core::forecast_allows(program,id) { "Branch premises are not all currently evaluated future events" } else {core::forecast_exclusion_reason(program,id)}}));
         }
     }
     json!({"component_ids":eligible,"excluded":excluded})
@@ -658,6 +658,7 @@ mod reasoning_tests {
     fn reasoning_score_legends_are_the_same_definitions_sent_to_jev() {
         let snapshot = json!({"world":{},"nodes":[{"Id":"h","kind":"scenario","statement":"Future","edges":"[]","signal":"Signal","falsifier":"Falsifier","evidence_note":"Limited evidence","research_question":"Unanswered","scene":"Hypothetical scene"}]});
         let mut program = core::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        program["results"]["h"]["classify_claim_role"] = json!("event");
         let input = reasoning_input(&snapshot, &program).unwrap();
         for function in ["evaluate_novelty", "decision_value"] {
             let index = program["tasks"]
