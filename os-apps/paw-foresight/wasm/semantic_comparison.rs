@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn contract() -> &'static str {
-    "Return comparison_frame:{description,evidence_ids:[existing evidence refs]} once for the set (description 1–800 characters; evidence_ids 1–16 distinct refs). It describes the SAME underlying situation compared across worlds, preserving the original question and horizon, not a new assumed fact or narrowed event scope. Each world returns trajectory_binding:{organizing_component_ids:[its defining component refs],organizing_branch_ids:[its inherited branch IDs],downstream_component_ids:[its defining component refs],counterpart_world_id:another proposed world's local id}. Component arrays contain at most 12 distinct refs each; organizing_branch_ids at most 2048 distinct IDs. Bind downstream changes through existing chain links or branch ancestry; do not invent causal links to satisfy this format. Parallel effects may remain. A missing or unsupported binding remains unresolved. The named counterpart must differ in organizing mechanism and consequences within the common situation, not merely region or topic. Existing event scopes remain exact; a comparison frame does not specialize a broad claim to a chosen place or assume its future conditions true."
+    "Return comparison_frame:{description,evidence_ids:[existing evidence refs]} once for the set (description 1–800 characters; evidence_ids 1–16 distinct refs). It describes the SAME underlying situation compared across worlds, preserving the original question and horizon, not a new assumed fact or narrowed event scope. Each world returns trajectory_binding:{organizing_component_ids:[selected driving component refs],organizing_branch_ids:[its inherited organizing branch IDs],downstream_component_ids:[distinct consequence component refs],counterpart_world_id:another proposed world's local id}. Organizing and downstream component arrays must be disjoint: a driver is not its own consequence. Include a downstream component only when an existing chain links it from a selected driver or it inherits a selected organizing branch. Parallel context may remain in component_ids and facets without being listed as downstream; do not force every defining component into the binding. Component arrays contain at most 12 distinct refs each; organizing_branch_ids at most 2048 distinct IDs. Bind downstream changes through existing chain links or branch ancestry; do not invent causal links to satisfy this format. Parallel effects may remain. A missing or unsupported binding remains unresolved. The named counterpart must differ in organizing mechanism and consequences within the common situation, not merely region or topic. Existing event scopes remain exact; a comparison frame does not specialize a broad claim to a chosen place or assume its future conditions true."
 }
 
 /// Reject malformed public types; absence remains a truthful unresolved binding.
@@ -232,6 +232,36 @@ mod tests {
             vec![json!({"Id":"w1"}), json!({"Id":"w2"})],
         )
     }
+    #[test]
+    fn contract_separates_drivers_consequences_and_parallel_context() {
+        let guidance = contract();
+        for rule in [
+            "organizing_component_ids:[selected driving component refs]",
+            "downstream_component_ids:[distinct consequence component refs]",
+            "Organizing and downstream component arrays must be disjoint",
+            "Parallel context may remain in component_ids and facets without being listed as downstream",
+            "do not invent causal links",
+        ] {
+            assert!(guidance.contains(rule), "Missing binding instruction: {rule}");
+        }
+        let (mut snapshot, mut world, active) = fixture();
+        snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":"parallel","kind":"scenario"}));
+        world["component_ids"].as_array_mut().unwrap().push(json!("parallel"));
+        // A parallel component remains part of the world without claiming a path.
+        assert_eq!(audit(&snapshot, &world, &active)["status"], "supported");
+        world["trajectory_binding"]["downstream_component_ids"] = json!(["a", "c", "parallel"]);
+        let invalid = audit(&snapshot, &world, &active);
+        assert_eq!(invalid["status"], "unresolved");
+        let issues = invalid["issues"].to_string();
+        assert!(issues.contains("cannot be its own downstream consequence"));
+        assert!(issues.contains("No declared chain or inherited organizing branch supports parallel"));
+        world["trajectory_binding"]["downstream_component_ids"] = json!(["c"]);
+        let valid = audit(&snapshot, &world, &active);
+        assert_eq!(valid["status"], "supported");
+        assert_eq!(valid["paths"][0]["links"], world["chain"]);
+        assert!(world["component_ids"].as_array().unwrap().contains(&json!("parallel")));
+    }
+
     #[test]
     fn malformed_types_are_not_published_as_unresolved_values() {
         assert!(validate_proposal(&Value::Null, &Value::Null).is_ok());
