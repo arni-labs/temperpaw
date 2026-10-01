@@ -81,6 +81,10 @@ impl References {
                         | "world_ids"
                         | "focal_world_id"
                         | "event_ids"
+                        | "organizing_component_ids"
+                        | "downstream_component_ids"
+                        | "counterpart_world_id"
+                        | "target_event_id"
                         | "component_ids"
                         | "counter_ids"
                         | "evidence_ids"
@@ -116,6 +120,10 @@ impl References {
                     field,
                     "world_id"
                         | "event_ids"
+                        | "organizing_component_ids"
+                        | "downstream_component_ids"
+                        | "counterpart_world_id"
+                        | "target_event_id"
                         | "component_ids"
                         | "counter_ids"
                         | "evidence_ids"
@@ -170,6 +178,21 @@ impl References {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparison_bindings_project_and_resolve_without_changing_prose() {
+        let refs = References::new(&json!({"nodes":[{"Id":"a"},{"Id":"b"},{"Id":"w"}]})).unwrap();
+        let original = json!({"trajectory_binding":{"organizing_component_ids":["a"],"downstream_component_ids":["b"],"organizing_branch_ids":["branch-a"],"counterpart_world_id":"w"},"paths":[{"target_event_id":"b"}],"description":"a and w remain literal prose"});
+        let mut projected = refs.project(&original);
+        assert_eq!(
+            projected["trajectory_binding"]["counterpart_world_id"],
+            "ref_0003"
+        );
+        assert_eq!(projected["paths"][0]["target_event_id"], "ref_0002");
+        assert_eq!(projected["description"], original["description"]);
+        refs.resolve_world_fields(&mut projected, "");
+        assert_eq!(projected, original);
+    }
+
     #[test]
     fn focal_audit_projects_world_identity_consistently_without_rewriting_prose() {
         let refs = References::new(&json!({"nodes":[{"Id":"world-a"},{"Id":"world-b"}]})).unwrap();

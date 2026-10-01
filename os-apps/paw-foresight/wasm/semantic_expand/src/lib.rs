@@ -204,7 +204,7 @@ fn record_challenge(
         .cloned()
         .collect();
     program["independent_challenge"] = json!({
-        "status":"completed","trigger":"candidate_generation_reported_saturation",
+        "status":"completed","trigger":old["independent_challenge"]["trigger"].as_str().unwrap_or("candidate_generation_reported_saturation"),
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
         "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
         "note":generated["exploration_note"],"accuracy_verified":false,
@@ -841,6 +841,19 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         node["Id"] = json!(id);
         node["kind"] = json!("world");
         node["shared_question"] = generated["shared_question"].clone();
+        core::comparison::validate_proposal(
+            &generated["comparison_frame"],
+            &node["trajectory_binding"],
+        )?;
+        node["comparison_contract"] = json!("v1");
+        node["comparison_frame"] =
+            core::comparison::frame(snapshot, &generated["comparison_frame"]);
+        if let Some(counterpart) = node["trajectory_binding"]["counterpart_world_id"].as_str()
+            && worlds.iter().any(|w| w["id"] == counterpart)
+        {
+            node["trajectory_binding"]["counterpart_world_id"] =
+                json!(format!("world-r{revision}-{counterpart}"));
+        }
         node["branch_conditions"] =
             core::branches::world_conditions(snapshot, &node["component_ids"])?;
         for clause in node["branch_conditions"].as_array().unwrap() {
@@ -925,6 +938,12 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         if !old[key].is_null() {
             program[key] = old[key].clone();
         }
+    }
+    program["comparison_bindings"] = json!({});
+    let active_values: Vec<_> = active.iter().map(|w| (*w).clone()).collect();
+    for world in &active_values {
+        program["comparison_bindings"][core::field(world, "Id")] =
+            core::comparison::audit(&updated, world, &active_values);
     }
     program["tasks"] = json!(tasks);
     program["active_world_ids"] = json!(identities);
@@ -1040,6 +1059,18 @@ fn attach_world_probabilities(
             "assumptions",
         ] {
             outcome[key] = node[key].clone();
+        }
+        for key in [
+            "comparison_contract",
+            "comparison_frame",
+            "trajectory_binding",
+        ] {
+            if let Some(value) = node.get(key) {
+                outcome[key] = value.clone();
+            }
+        }
+        if let Some(binding_audit) = program["comparison_bindings"].get(&id) {
+            outcome["comparison_binding_audit"] = binding_audit.clone();
         }
         // Context references are persisted world inputs, not writer-generated identities.
         let mut context_ids = std::collections::BTreeSet::new();
@@ -2198,6 +2229,19 @@ mod tests {
         );
         let mut program = replan(&updated, &json!({}), &generated, 1).unwrap();
         record_challenge(&updated, 2, &generated, &json!({}), &mut program).unwrap();
+        assert_eq!(
+            program["independent_challenge"]["trigger"],
+            "candidate_generation_reported_saturation"
+        );
+        for trigger in [
+            "reserved_before_next_exploration",
+            "reserved_transition_window",
+        ] {
+            let old = json!({"independent_challenge":{"status":"pending","trigger":trigger}});
+            record_challenge(&updated, 2, &generated, &old, &mut program).unwrap();
+            assert_eq!(program["independent_challenge"]["trigger"], trigger);
+        }
+
         assert_eq!(
             program["independent_challenge"]["premises_challenged"][0]["prior_hypothesis_ids"],
             json!(["old"])

@@ -179,7 +179,7 @@ impl WasmHost for WorldProvider {
     fn log(&self, _: &str, _: &str) {}
 }
 fn snapshot() -> Value {
-    let mut s = json!({"world":{"Id":"question","target_date":"2027-09-20","last_ingest_date":"2026-09-20","hindcast_mode":"false"},"nodes":[
+    let mut s = json!({"world":{"Id":"question","description":"How will clinic bookings change?","target_date":"2027-09-20","last_ingest_date":"2026-09-20","hindcast_mode":"false"},"nodes":[
       {"Id":"e","kind":"evidence","statement":"A clinic already uses an assistant for appointment reminders.","quote":"The assistant sends appointment reminders today.","observed_at":"2026-09-19","claim_type":"observed","source_refs":["https://example.org/clinic"],"edges":"[]"},
       {"Id":"h1","kind":"scenario","statement":"Clinics automate bookings by September 2027.","edges":"[]"},
       {"Id":"h2","kind":"revision","statement":"Patients accept assistant-run bookings by September 2027.","edges":"[]"},
@@ -205,6 +205,9 @@ fn answer(snapshot: &Value) -> Value {
 }
 
 async fn prepared(engine: &WasmEngine) -> Value {
+    prepared_binding(engine, true).await
+}
+async fn prepared_binding(engine: &WasmEngine, binding: bool) -> Value {
     let full = snapshot();
     let mut s = full.clone();
     s["nodes"]
@@ -216,6 +219,8 @@ async fn prepared(engine: &WasmEngine) -> Value {
         .map(|&i| {
             let mut w = full["nodes"][i].clone();
             w["id"] = w["Id"].clone();
+            if binding { w["trajectory_binding"] = json!({"organizing_component_ids":["h1"],"organizing_branch_ids":[],"downstream_component_ids":["h3"],"counterpart_world_id":if i==4 {"w2"} else {"w1"}}); }
+
             w["trajectory_answer"] = json!(
                 "The clinic reorganizes access and staffing around patient-controlled scheduling."
             );
@@ -236,7 +241,7 @@ async fn prepared(engine: &WasmEngine) -> Value {
             w
         })
         .collect();
-    let result = json!({"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&full)["baseline"],"worlds":worlds});
+    let result = json!({"comparison_frame":{"description":"Patient access and staffing in the same clinic system","evidence_ids":["e"]},"shared_question":"How will patient control change clinic access and staffing?","baseline":answer(&full)["baseline"],"worlds":worlds});
     let fields = json!({"phase":"compose","snapshot_json":s.to_string(),"program_json":json!({"round":1,"tasks":[],"cursor":0,"results":{},"evaluations":{}}).to_string(),"reasoning_result":result.to_string()});
     let r = invoke(engine, "semantic_expand", fields).await;
     assert_eq!(r["callback_action"], "Expanded", "{r}");
@@ -435,6 +440,15 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
         assert_eq!(
             outcome["refinement"],
             p["world_refinement"][outcome["world_id"].as_str().unwrap()]
+        );
+        assert_eq!(outcome["comparison_contract"], "v1");
+        assert_eq!(
+            outcome["comparison_frame"]["original_question"],
+            current["world"]["description"]
+        );
+        assert_eq!(
+            outcome["comparison_binding_audit"],
+            p["comparison_bindings"][outcome["world_id"].as_str().unwrap()]
         );
         assert_eq!(outcome["probability"], 0.23);
     }
@@ -638,6 +652,200 @@ async fn captured_uuid_deep_batch_preserves_every_comparison() {
             );
         }
         assert_eq!(state, original["state"]);
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires saved transit snapshot and program; reconstructed recomposition, not a native run"]
+async fn captured_transit_without_trajectory_bindings_stays_unresolved() {
+    let base = std::env::var("COMPARISON_TRANSIT_PREFIX").unwrap();
+    let snapshot: Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{base}-snapshot.json")).unwrap())
+            .unwrap();
+    let p: Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{base}-checkpoint.json")).unwrap())
+            .unwrap();
+    let ids = p["active_world_ids"].as_array().unwrap();
+    let worlds: Vec<_> = snapshot["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| ids.contains(&n["Id"]))
+        .map(|n| {
+            let mut w = n.clone();
+            w["id"] = w["Id"].clone();
+            w
+        })
+        .collect();
+    let reply = json!({"shared_question":worlds[0]["shared_question"],"worlds":worlds});
+    let fields = json!({"phase":"compose","snapshot_json":snapshot.to_string(),"program_json":p.to_string(),"reasoning_result":reply.to_string()});
+    let engine = WasmEngine::new().unwrap();
+    let response = invoke(&engine, "semantic_expand", fields).await;
+    assert_eq!(response["callback_action"], "Expanded", "{response}");
+    let after = program(&response["callback_params"]);
+    assert_eq!(
+        after["comparison_bindings"].as_object().unwrap().len(),
+        ids.len()
+    );
+    assert!(
+        after["comparison_bindings"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|a| a["status"] == "unresolved")
+    );
+    let updated: Value = serde_json::from_str(
+        response["callback_params"]["snapshot_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    for old in snapshot["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["kind"] != "world")
+    {
+        assert_eq!(
+            updated["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["Id"] == old["Id"])
+                .unwrap(),
+            old
+        );
+    }
+    assert_eq!(after["baseline"], p["baseline"]);
+    assert_eq!(after["http_calls"], p["http_calls"]);
+    assert_eq!(after["transition_count"], p["transition_count"]);
+}
+
+// Synthetic native producer/consumer boundary proof, not a live quality result.
+#[tokio::test]
+async fn comparison_binding_controls_named_focal_checks_and_one_bounded_revision() {
+    let engine = WasmEngine::new().unwrap();
+    for bound in [true, false] {
+        let host = Arc::new(WorldProvider::default());
+        let mut fields = prepared_binding(&engine, bound).await;
+        let original_snapshot = fields["snapshot_json"].clone();
+        let original_clock = fields["started_at_ms"].clone();
+        let p = program(&fields);
+        if bound {
+            let snapshot: Value =
+                serde_json::from_str(fields["snapshot_json"].as_str().unwrap()).unwrap();
+            let mut worlds: Vec<_> = snapshot["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|n| n["kind"] == "world")
+                .cloned()
+                .collect();
+            for world in &mut worlds {
+                world["id"] = world["Id"].clone();
+            }
+            worlds[0]["trajectory_binding"] = json!("malformed");
+            let mut invalid = fields.clone();
+            invalid["reasoning_result"]=json!(json!({"shared_question":worlds[0]["shared_question"],"comparison_frame":worlds[0]["comparison_frame"],"worlds":worlds}).to_string());
+            let rejected = invoke(&engine, "semantic_expand", invalid).await;
+            assert_eq!(rejected["callback_action"], "CompositionRejected");
+            let rejected_p: Value = serde_json::from_str(
+                rejected["callback_params"]["program_json"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                rejected_p["composition_correction"]["validation_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("trajectory_binding must be an object or null")
+            );
+            assert!(rejected["callback_params"].get("snapshot_json").is_none());
+        }
+        let ids = p["active_world_ids"].as_array().unwrap();
+        for id in ids {
+            assert_eq!(
+                p["comparison_bindings"][id.as_str().unwrap()]["status"],
+                if bound { "supported" } else { "unresolved" }
+            );
+        }
+        let recorded = call(&engine, fields.clone(), host.clone()).await;
+        apply(&mut fields, &recorded);
+        let requests = host.requests.lock().unwrap().clone();
+        let request = &requests[0];
+        for (key, case) in request["state"]["cases"].as_object().unwrap() {
+            assert!(case["focal_comparison"].is_object());
+            if bound {
+                assert_ne!(
+                    case["focal_comparison"]["counterpart_world_id"],
+                    case["focal_world_id"]
+                );
+            }
+            assert!(
+                request["questions"][key]["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("named relationship")
+            );
+        }
+        for question in request["questions"].as_object().unwrap().values() {
+            let text = question["instructions"].as_str().unwrap();
+            assert!(!text.contains("against ALL other"));
+            assert!(!text.contains("at least one other"));
+        }
+        let decision = invoke(&engine, "semantic_step", fields.clone()).await;
+        assert_eq!(
+            decision["callback_action"],
+            if bound { "SearchPlanned" } else { "Reason" }
+        );
+        let after: Value = serde_json::from_str(
+            decision["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after["world_set_audit"]["verdict"],
+            if bound {
+                "alternative_answers"
+            } else {
+                "uncertain"
+            }
+        );
+        for finding in after["world_set_audit"]["findings"].as_array().unwrap() {
+            assert_eq!(finding["verdict"], "alternative_answers");
+            assert_eq!(finding["evaluation"]["selected"], "alternative_answers");
+        }
+        assert_eq!(fields["snapshot_json"], original_snapshot);
+        assert_eq!(fields["started_at_ms"], original_clock);
+        if !bound {
+            // Simulate another newly evaluated revision while retaining the real
+            // first correction receipt. No second binding/semantic correction loop.
+            let mut next = after.clone();
+            next["world_set_audit"] = Value::Null;
+            fields["program_json"] = json!(next.to_string());
+            let exhausted = invoke(&engine, "semantic_step", fields.clone()).await;
+            assert_eq!(exhausted["callback_action"], "SearchPlanned");
+            let ended: Value = serde_json::from_str(
+                exhausted["callback_params"]["program_json"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                ended["world_set_audit"]["correction_status"],
+                "revision_limit"
+            );
+            assert_eq!(ended["world_set_audit"]["verdict"], "uncertain");
+            if let Ok(path) = std::env::var("COMPARISON_AUDIT_OUTPUT") {
+                std::fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&ended["world_set_audit"]).unwrap(),
+                )
+                .unwrap();
+            }
+        }
     }
 }
 

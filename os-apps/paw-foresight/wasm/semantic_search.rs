@@ -484,7 +484,7 @@ pub fn world_set_tasks(world_ids: &[Value]) -> Vec<Value> {
 
 pub fn world_set_reporting(audit: &Value) -> &'static str {
     if audit["mode"] == "per_world" {
-        "Use each focal finding: complementary_slices means at least one world is a topic partition or duplicate rather than an alternative for the same situation. Do not label every world complementary when others have alternative judgments. Distinguish completed uncertain findings from missing checks using completed_checks/planned_checks. There is no global confidence value; the aggregate is an engine summary of individual model judgments, not proof of distinct futures."
+        "A binding_audit reports only declared path support. If binding_unresolved is true, alternatives remain unresolved even if a provider selected alternative_answers. Do not reinterpret a missing path as established causation. Use each focal finding: complementary_slices means at least one world is a topic partition or duplicate rather than an alternative for the same situation. Do not label every world complementary when others have alternative judgments. Distinguish completed uncertain findings from missing checks using completed_checks/planned_checks. There is no global confidence value; the aggregate is an engine summary of individual model judgments, not proof of distinct futures."
     } else {
         "If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures."
     }
@@ -517,7 +517,9 @@ pub fn pending_world_set_audit(program: &Value, stopped: bool) -> Option<Value> 
         let id = field(task,"nodeId");
         let evaluation = &program["evaluations"][id]["check_world_set"];
         let result = program["results"][id]["check_world_set"].as_str().filter(|v|matches!(*v,"alternative_answers"|"complementary_slices"|"uncertain") && evaluation["type"] == "choice" && evaluation["selected"] == *v);
-        json!({"world_id":task["focal_world_id"],"task_id":id,"verdict":result.unwrap_or("uncertain"),"completed":result.is_some(),"evaluation":if result.is_some(){evaluation.clone()}else{Value::Null}})
+        let mut finding=json!({"world_id":task["focal_world_id"],"task_id":id,"verdict":result.unwrap_or("uncertain"),"completed":result.is_some(),"evaluation":if result.is_some(){evaluation.clone()}else{Value::Null}});
+        if let Some(binding)=program["comparison_bindings"].get(field(task,"focal_world_id")) {finding["binding_audit"]=binding.clone();}
+        finding
     }).collect();
     let completed = findings.iter().filter(|f| f["completed"] == true).count();
     if program["world_set_audit"]["task_id"] == set_id
@@ -532,6 +534,9 @@ pub fn pending_world_set_audit(program: &Value, stopped: bool) -> Option<Value> 
     {
         return None;
     }
+    let binding_unresolved = findings
+        .iter()
+        .any(|f| f["binding_audit"]["status"] == "unresolved");
     let verdict = if completed < expected.len() {
         "uncertain"
     } else if findings
@@ -539,13 +544,13 @@ pub fn pending_world_set_audit(program: &Value, stopped: bool) -> Option<Value> 
         .any(|f| f["verdict"] == "complementary_slices")
     {
         "complementary_slices"
-    } else if findings.iter().any(|f| f["verdict"] == "uncertain") {
+    } else if binding_unresolved || findings.iter().any(|f| f["verdict"] == "uncertain") {
         "uncertain"
     } else {
         "alternative_answers"
     };
     Some(
-        json!({"task_id":set_id,"revision":program["world_revision"],"world_ids":worlds,"verdict":verdict,"evaluation":null,"mode":"per_world","planned_checks":expected.len(),"completed_checks":completed,"findings":findings,"correction_status":if completed < expected.len(){"unavailable"}else{"not_needed"}}),
+        json!({"task_id":set_id,"revision":program["world_revision"],"world_ids":worlds,"verdict":verdict,"evaluation":null,"mode":"per_world","binding_unresolved":binding_unresolved,"planned_checks":expected.len(),"completed_checks":completed,"findings":findings,"correction_status":if completed < expected.len(){"unavailable"}else{"not_needed"}}),
     )
 }
 
@@ -666,6 +671,9 @@ fn set_audit_projection(state: &mut Value) {
                 "narrative",
                 "shared_question",
                 "trajectory_answer",
+                "comparison_contract",
+                "comparison_frame",
+                "trajectory_binding",
                 "assumptions",
                 "facets",
                 "chain",
@@ -787,6 +795,16 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
             set_audit_projection(&mut state);
             if let Some(focal) = task.get("focal_world_id") {
                 state["focal_world_id"] = focal.clone();
+                let bound = state["proposed_worlds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|w| w["Id"] == *focal)
+                    .filter(|w| w["comparison_contract"] == "v1");
+                if let Some(world) = bound {
+                    let counterpart = world["trajectory_binding"]["counterpart_world_id"].clone();
+                    state["focal_comparison"] = json!({"counterpart_world_id":counterpart,"binding_audit":program["comparison_bindings"][focal.as_str().unwrap()],"counterpart_binding_audit":program["comparison_bindings"][counterpart.as_str().unwrap_or("")],"interpretation":"Inspect this named pair only for the alternative relationship; other worlds are context, not substitutes. The frame is not assumed true and cannot change any event scope. A supported path is an author-declared mechanism, not proof."});
+                }
                 json!({"type":"choice","instructions":"Judge only focal_world_id against ALL other supplied worlds, using their full definitions, conditions, components, scopes and the shared question. Does this focal world supply a substantively different overall trajectory for the SAME underlying situation as at least one other world? A different region, population, sector or activity alone is a complementary slice, not an alternative trajectory. A duplicate or paraphrase is not an alternative. A genuine rival pair elsewhere in the set does not qualify this focal world. Differences must follow organizing mechanisms and downstream consequences; shared events and overlap are allowed, and neither mutual exclusivity nor exhaustive opposites are required. This is structural comparison, not evidence verification, likelihood or a reward for unsupported novelty. Source qualifications and baseline limits remain supplied; full source bodies and prior scores are not inputs.","criteria":{"alternative_answers":"This focal world provides a substantive alternative trajectory to at least one other supplied world for the same underlying situation and question.","complementary_slices":"This focal world merely adds a separate topic, population or setting, or duplicates another account, without an alternative trajectory for the same situation.","uncertain":"The supplied accounts do not establish whether this focal world has such an alternative relationship."}})
             } else {
                 json!({"type":"choice","instructions":"This is a structural comparison of the supplied futures, not evidence verification or likelihood estimation. Source qualifications and baseline limits are retained, but full source bodies and prior scores are deliberately not inputs to this judgment. Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
@@ -870,6 +888,14 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
         }
         _ => return Err("Unsupported structural question".into()),
     };
+    if state["focal_comparison"].is_object() {
+        question["instructions"] = json!(
+            "Compare ONLY focal_world_id with focal_comparison.counterpart_world_id. Other supplied worlds provide context and cannot substitute for this named relationship. Inspect both comparison frames, trajectory bindings, exact component scopes and declared downstream paths. Do they concern the SAME underlying situation in the original question with substantively different organizing mechanisms and consequential downstream changes? A different region, population, sector or activity alone is a complementary slice; duplicates are not alternatives. Do not accept the author's assertion or silently specialize broad events to a chosen place. Missing or unsupported bindings mean uncertain. Path support is not established causation; the frame is not evidence or an assumed future condition. Shared events and overlap are allowed; exclusivity, exhaustive opposites and prescribed axes are not required. This is structural comparison, not evidence verification, likelihood or a reward for unsupported novelty. Source qualifications and baseline limits remain supplied; full source bodies and prior scores are not inputs."
+        );
+        question["criteria"]["alternative_answers"] = json!(
+            "This focal world and its named counterpart provide substantively different organizing mechanisms and downstream trajectories for the same comparison frame, preserving their exact event scopes."
+        );
+    }
     if state["branch_state"]["unassigned_upstream_routes"]
         .as_array()
         .is_some_and(|routes| !routes.is_empty())
@@ -2015,6 +2041,15 @@ mod world_set_tests {
             assert_eq!(audit["findings"].as_array().unwrap().len(), 3);
             assert!(audit["evaluation"].is_null());
         }
+        p["comparison_bindings"]["w1"] =
+            json!({"status":"unresolved","issues":["No declared path"],"paths":[]});
+        let unresolved = pending_world_set_audit(&p, false).unwrap();
+        assert_eq!(unresolved["verdict"], "uncertain");
+        assert_eq!(unresolved["findings"][0]["verdict"], "alternative_answers");
+        assert_eq!(
+            unresolved["findings"][0]["binding_audit"],
+            p["comparison_bindings"]["w1"]
+        );
         p["world_set_audit"] = pending_world_set_audit(&p, false).unwrap();
         assert!(pending_world_set_audit(&p, false).is_none());
         let legacy = world_set_task(&ids);

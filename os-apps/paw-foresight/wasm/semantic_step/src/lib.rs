@@ -292,7 +292,26 @@ fn step(ctx: &Context) -> Result<(), String> {
         let id = core::field(&audit, "task_id").to_owned();
         let verdict = core::field(&audit, "verdict").to_owned();
         let mut revise = false;
-        if verdict == "complementary_slices" {
+        let comparison_contract = snapshot["nodes"].as_array().unwrap().iter().any(|n| {
+            n["comparison_contract"] == "v1"
+                && program["active_world_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|id| n["Id"] == *id)
+        });
+        let correction_used = comparison_contract
+            && program["world_set_audits"]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.values())
+                .any(|a| a["correction_status"] == "revision_requested");
+        let needs_correction =
+            verdict == "complementary_slices" || audit["binding_unresolved"] == true;
+        if needs_correction && correction_used {
+            audit["correction_status"] = json!("revision_limit");
+        }
+        if needs_correction && !correction_used {
             let mut admission = core::search::refinement_admission(
                 &snapshot,
                 &program,

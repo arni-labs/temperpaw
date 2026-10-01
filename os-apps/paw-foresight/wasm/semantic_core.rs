@@ -29,6 +29,9 @@ pub fn time_limit(program: &Value) -> u64 {
         _ => MAX_MS - WORLD_TIME_RESERVE_MS,
     }
 }
+pub mod comparison {
+    include!("semantic_comparison.rs");
+}
 pub mod coherence {
     include!("semantic_coherence.rs");
 }
