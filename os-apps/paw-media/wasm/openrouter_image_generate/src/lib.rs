@@ -352,7 +352,9 @@ fn requested_mime(fields: &Value) -> String {
     }
 }
 
-/// Create the picture's PawFS File (no content yet) and return its id.
+/// Create the picture's PawFS File (no content yet) and return its id. A File
+/// a failed earlier attempt left at the same path with no content is reused,
+/// so a retry is not refused by PawFS's one-file-per-(workspace, path) rule.
 fn create_image_file(
     ctx: &Context,
     fields: &Value,
@@ -361,6 +363,23 @@ fn create_image_file(
     mime_type: &str,
 ) -> Result<String, String> {
     let temper_api_url = resolve_temper_api_url(ctx, fields);
+    if let Some(existing) = file_at(ctx, fields, &temper_api_url, workspace_id, path)? {
+        let status = existing
+            .get("status")
+            .or_else(|| existing.get("Status"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let id = entity_field_str(&existing, &["Id", "id"])
+            .or_else(|| existing.get("entity_id").and_then(Value::as_str))
+            .unwrap_or("")
+            .to_string();
+        if status == "Created" && !id.is_empty() {
+            return Ok(id);
+        }
+        return Err(format!(
+            "image_generate: a picture already exists at {path} (File {id}, {status}); give another output_path"
+        ));
+    }
     let file_name = path
         .rsplit('/')
         .next()
@@ -395,6 +414,66 @@ fn create_image_file(
         .filter(|value| !value.is_empty())
         .ok_or("image_generate: PawFS File create response did not include an id")?
         .to_string())
+}
+
+/// The File at (workspace, path), if there is one.
+fn file_at(
+    ctx: &Context,
+    fields: &Value,
+    temper_api_url: &str,
+    workspace_id: &str,
+    path: &str,
+) -> Result<Option<Value>, String> {
+    let filter = format!(
+        "Path eq '{}' and WorkspaceId eq '{}'",
+        path.replace('\'', "''"),
+        workspace_id.replace('\'', "''")
+    );
+    let headers = runtime_headers_for_workspace(
+        ctx,
+        &ctx.tenant,
+        fields,
+        workspace_id,
+        None,
+        Some("application/json"),
+    );
+    let resp = ctx.http_call(
+        "GET",
+        &format!(
+            "{temper_api_url}/tdata/Files?$filter={}&$top=1",
+            odata_query_encode(&filter)
+        ),
+        &headers,
+        "",
+    )?;
+    if !(200..300).contains(&resp.status) {
+        return Err(format!(
+            "image_generate: PawFS File lookup failed (HTTP {}): {}",
+            resp.status,
+            sanitized_body_snippet(&resp.body)
+        ));
+    }
+    let body: Value = serde_json::from_str(&resp.body)
+        .map_err(|err| format!("image_generate: parse PawFS File lookup: {err}"))?;
+    Ok(body
+        .get("value")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .cloned())
+}
+
+/// Percent-encode an OData query value (spaces, quotes and the rest; "/" stays).
+fn odata_query_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// Upload the picture's bytes to its File and return the new version's id.
@@ -695,6 +774,14 @@ mod tests {
             extract_image_output(&json!({ "data": [] }).to_string())
                 .unwrap_err()
                 .contains("data[0]")
+        );
+    }
+
+    #[test]
+    fn a_file_lookup_query_is_encoded() {
+        assert_eq!(
+            odata_query_encode("Path eq '/transfer-test/a b.png' and WorkspaceId eq 'ws'"),
+            "Path%20eq%20%27/transfer-test/a%20b.png%27%20and%20WorkspaceId%20eq%20%27ws%27"
         );
     }
 
