@@ -273,6 +273,32 @@ pub fn take_lazy_sandbox() -> Option<(String, String, String)> {
     LAZY_SANDBOX.with(|cell| cell.borrow_mut().take())
 }
 
+// The approval and completion paths keep their existing control flow. Never
+// checkpoint while either signal is pending, even if Python caught a denial.
+pub fn continuation_allowed() -> bool {
+    CEDAR_DENIAL.with(|v| v.borrow().is_none()) && DONE_RESULT.with(|v| v.borrow().is_none())
+}
+
+pub fn continuation_state() -> Value {
+    json!({"output":DISPATCH_OUTPUT.with(|v|v.borrow().clone()),
+        "images":DISPATCH_IMAGE_RESULTS.with(|v|v.borrow().clone()),
+        "sandbox":LAZY_SANDBOX.with(|v|v.borrow().clone())})
+}
+
+pub fn restore_continuation_state(state: &Value) -> Result<(), String> {
+    let output: Option<String> = serde_json::from_value(state["output"].clone())
+        .map_err(|e| format!("invalid continuation output: {e}"))?;
+    let images: Vec<Value> = serde_json::from_value(state["images"].clone())
+        .map_err(|e| format!("invalid continuation images: {e}"))?;
+    let sandbox: Option<(String, String, String)> =
+        serde_json::from_value(state["sandbox"].clone())
+            .map_err(|e| format!("invalid continuation sandbox: {e}"))?;
+    DISPATCH_OUTPUT.with(|v| *v.borrow_mut() = output);
+    DISPATCH_IMAGE_RESULTS.with(|v| *v.borrow_mut() = images);
+    LAZY_SANDBOX.with(|v| *v.borrow_mut() = sandbox);
+    Ok(())
+}
+
 /// Take the Cedar denial context (if set). Clears after reading.
 pub fn take_cedar_denial() -> Option<String> {
     CEDAR_DENIAL.with(|cell| cell.borrow_mut().take())
@@ -4308,5 +4334,26 @@ mod tests {
 
         assert_eq!(result["base64_data"], "abcd");
         assert!(result.get("content_ref").is_none());
+    }
+    #[test]
+    fn continuation_preserves_dispatch_state_and_defers_approval_or_done() {
+        super::DISPATCH_OUTPUT.with(|v| *v.borrow_mut() = Some("required output".into()));
+        super::DISPATCH_IMAGE_RESULTS.with(|v| *v.borrow_mut() = vec![json!({"path":"image.png"})]);
+        super::LAZY_SANDBOX
+            .with(|v| *v.borrow_mut() = Some(("url".into(), "id".into(), "provider".into())));
+        let saved = super::continuation_state();
+        super::restore_continuation_state(&json!({"output":null,"images":[],"sandbox":null}))
+            .unwrap();
+        super::restore_continuation_state(&saved).unwrap();
+        assert_eq!(super::continuation_state(), saved);
+        assert!(super::continuation_allowed());
+        super::CEDAR_DENIAL.with(|v| *v.borrow_mut() = Some("approval".into()));
+        assert!(!super::continuation_allowed());
+        super::CEDAR_DENIAL.with(|v| *v.borrow_mut() = None);
+        super::DONE_RESULT.with(|v| *v.borrow_mut() = Some("done".into()));
+        assert!(!super::continuation_allowed());
+        super::DONE_RESULT.with(|v| *v.borrow_mut() = None);
+        super::restore_continuation_state(&json!({"output":null,"images":[],"sandbox":null}))
+            .unwrap();
     }
 }

@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use temper_wasm_sdk::prelude::*;
 
+mod continuation;
 mod convert;
 mod datadog;
 mod dispatch;
@@ -295,7 +296,17 @@ fn batch_window_len(start_index: usize, total_calls: usize, checkpoint_every_n: 
     remaining.min(until_boundary.max(1))
 }
 
-fn batchable_run_len(tool_calls: &[Value], start_index: usize, max_batch_len: usize) -> usize {
+fn batchable_run_len(
+    tool_calls: &[Value],
+    start_index: usize,
+    max_batch_len: usize,
+    has_continuation: bool,
+) -> usize {
+    // A saved snippet may already have completed its external call. Even a
+    // literal read must resume its interpreter state rather than execute again.
+    if has_continuation {
+        return 0;
+    }
     let upper_bound = tool_calls
         .len()
         .min(start_index.saturating_add(max_batch_len));
@@ -415,6 +426,11 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             .filter(|s| !s.is_empty());
 
         let is_cedar_resume = pending_ctx_str.is_some();
+        let inner_resume = pending_ctx_str
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|e| format!("invalid pending tool context: {e}"))?
+            .is_some_and(|value| value["continuation"] == continuation::FORMAT);
         let (tool_calls, mut prior_results): (Vec<Value>, Vec<Value>) =
             if let Some(ctx_json) = pending_ctx_str {
                 ctx.log("info", "monty_repl: resuming from Cedar approval");
@@ -463,8 +479,13 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let repl_state_b64 = if !repl_file_id.is_empty() {
-            session::read_temperfs_file_safe(&ctx, &temper_api_url, tenant, repl_file_id)
-                .unwrap_or_default()
+            let saved =
+                session::read_temperfs_file_safe(&ctx, &temper_api_url, tenant, repl_file_id);
+            if inner_resume {
+                saved?
+            } else {
+                saved.unwrap_or_default()
+            }
         } else {
             // Fallback: check entity field for backward compatibility
             fields
@@ -482,11 +503,28 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             ),
         );
 
-        let mut repl = load_or_create_repl(&repl_state_b64, &ctx)?;
+        let mut continuation = if inner_resume {
+            Some(continuation::Saved::decode(
+                &repl_state_b64,
+                tool_calls.first(),
+            )?)
+        } else {
+            None
+        };
+        let mut repl = load_or_create_repl(if inner_resume { "" } else { &repl_state_b64 }, &ctx)?;
 
         // Execute each tool call
         let mut tool_results: Vec<Value> = Vec::new();
-        let mut tool_span_events: Vec<Value> = Vec::new();
+        let mut tool_span_events: Vec<Value> = continuation
+            .as_mut()
+            .map(|saved| std::mem::take(&mut saved.tool_events))
+            .unwrap_or_else(|| {
+                pending_ctx_str
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    .and_then(|context| context["tool_span_events"].as_array().cloned())
+                    .unwrap_or_default()
+            });
+        let invocation_started_ms = Context::get_time_millis();
 
         // Tool-batch checkpoint boundary (TemperPaw Track 1 Phase 3 / temperpaw#66).
         // Chunk size is fixed at 20; empirical fuel cost is ~400M per
@@ -503,7 +541,13 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             // Checkpoint check (before executing the i-th call). Skip on i=0
             // because we just entered; only fire at whole chunk boundaries and
             // only when there is actually more work after us.
-            if i > 0 && i % CHECKPOINT_EVERY_N == 0 && i < tool_calls.len() {
+            if i > 0
+                && (i.is_multiple_of(CHECKPOINT_EVERY_N)
+                    || continuation::elapsed_due(
+                        Context::get_time_millis().saturating_sub(invocation_started_ms),
+                    ))
+                && i < tool_calls.len()
+            {
                 let current_ckpt: u64 = fields
                     .get("checkpoint_count")
                     .and_then(|v| {
@@ -536,75 +580,58 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     ),
                 );
 
-                // Save REPL state to TemperFS so the re-entered invocation
-                // restarts from the same interpreter heap.
-                // Graceful: if save fails, skip this checkpoint — the agent
-                // gets a fresh REPL on resume but the session stays alive.
-                let saved_state = match save_repl_state(&repl) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        ctx.log(
-                            "warn",
-                            &format!(
-                                "monty_repl: checkpoint repl save failed, skipping checkpoint: {e}"
-                            ),
-                        );
-                        i += 1;
-                        continue;
-                    }
-                };
-                let new_repl_file_id = match session::save_repl_to_file(
-                    &ctx,
-                    &temper_api_url,
-                    tenant,
-                    workspace_id,
-                    repl_file_id,
-                    &saved_state,
+                // Failed persistence leaves the current call pending in this
+                // invocation; it must never advance the outer cursor.
+                let saved_id = save_repl_state(&repl).and_then(|saved| {
+                    session::save_repl_to_file(
+                        &ctx,
+                        &temper_api_url,
+                        tenant,
+                        workspace_id,
+                        repl_file_id,
+                        &saved,
+                    )
+                });
+                if let Some(new_repl_file_id) = continuation::saved_checkpoint_or_continue(
+                    saved_id,
+                    |error| {
+                        ctx.log("warn", &format!("monty_repl: outer checkpoint save failed, continuing current call: {error}"));
+                    },
                 ) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        ctx.log(
-                            "warn",
-                            &format!(
-                                "monty_repl: checkpoint file save failed, skipping checkpoint: {e}"
-                            ),
-                        );
-                        i += 1;
-                        continue;
-                    }
-                };
+                    // Build checkpoint context — same shape the Cedar pause path
+                    // uses, so the existing resume branch at the top of this
+                    // function reads it back transparently.
+                    let mut all_completed = prior_results.clone();
+                    all_completed.append(&mut tool_results);
+                    let remaining: Vec<Value> = tool_calls[i..].to_vec();
+                    let ckpt_ctx = json!({
+                        "completed_results": all_completed,
+                        "remaining_tool_calls": remaining,
+                        "tool_span_events": tool_span_events,
+                    });
 
-                // Build checkpoint context — same shape the Cedar pause path
-                // uses, so the existing resume branch at the top of this
-                // function reads it back transparently.
-                let mut all_completed = prior_results.clone();
-                all_completed.append(&mut tool_results);
-                let remaining: Vec<Value> = tool_calls[i..].to_vec();
-                let ckpt_ctx = json!({
-                    "completed_results": all_completed,
-                    "remaining_tool_calls": remaining,
-                });
+                    let session_leaf_id = fields
+                        .get("session_leaf_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
 
-                let session_leaf_id = fields
-                    .get("session_leaf_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    let params = json!({
+                        "pending_tool_calls": serde_json::to_string(&remaining)
+                            .unwrap_or_else(|_| "[]".to_string()),
+                        "pending_tool_context": serde_json::to_string(&ckpt_ctx)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        "repl_file_id": new_repl_file_id,
+                        "session_leaf_id": session_leaf_id,
+                    });
 
-                let params = json!({
-                    "pending_tool_calls": serde_json::to_string(&remaining)
-                        .unwrap_or_else(|_| "[]".to_string()),
-                    "pending_tool_context": serde_json::to_string(&ckpt_ctx)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                    "repl_file_id": new_repl_file_id,
-                    "session_leaf_id": session_leaf_id,
-                });
-
-                dispatch_success("CheckpointToolBatch", &params);
-                return Ok(());
+                    dispatch_success("CheckpointToolBatch", &params);
+                    return Ok(());
+                }
             }
 
             let max_batch_len = batch_window_len(i, tool_calls.len(), CHECKPOINT_EVERY_N);
-            let batch_len = batchable_run_len(&tool_calls, i, max_batch_len);
+            let batch_len =
+                batchable_run_len(&tool_calls, i, max_batch_len, continuation.is_some());
             if batch_len >= 2 {
                 let batch_calls = collect_batchable_tool_calls(&tool_calls, i, batch_len);
                 ctx.log(
@@ -668,7 +695,10 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             let input = call.get("input").cloned().unwrap_or(json!({}));
             let code = input.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let tool_arguments_json = serde_json::to_string(&input).unwrap_or_default();
-            let tool_started_ms = Context::get_time_millis();
+            let tool_started_ms = continuation
+                .as_ref()
+                .map(|saved| saved.tool_started_ms)
+                .unwrap_or_else(Context::get_time_millis);
             let mut outer_guest_span =
                 start_tool_guest_span(&ctx, tool_name, tool_id, &tool_arguments_json);
 
@@ -687,44 +717,124 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             // Execute via REPL feed_start() using a bounded collector so pathological
             // print output cannot force runaway reallocations inside the daemon.
             let mut printed = BoundedOutputCollector::new(MAX_TOOL_RESULT_BYTES);
-            let print = PrintWriter::Callback(&mut printed);
-            let progress = match repl.feed_start(snippet, vec![], print) {
-                Ok(p) => p,
-                Err(e) => {
-                    let e = *e;
-                    repl = e.repl;
-                    let mut combined = printed.into_string();
-                    let msg = format_monty_exception(&e.error);
-                    if !combined.is_empty() {
-                        combined.push('\n');
+            let resuming_inner = continuation.is_some();
+            let progress = if let Some(saved) = continuation.take() {
+                printed = saved.printed;
+                dispatch::restore_continuation_state(&saved.dispatch_state)?;
+                saved.progress
+            } else {
+                let print = PrintWriter::Callback(&mut printed);
+                match repl.feed_start(snippet, vec![], print) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let e = *e;
+                        repl = e.repl;
+                        let mut combined = printed.into_string();
+                        let msg = format_monty_exception(&e.error);
+                        if !combined.is_empty() {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&msg);
+                        tool_results.push(make_tool_result(
+                            tool_id,
+                            &truncate_output(&combined),
+                            true,
+                        ));
+                        let duration_ms =
+                            (Context::get_time_millis() - tool_started_ms).max(0) as u64;
+                        let outer_result = Err(msg);
+                        finish_tool_guest_span(
+                            &ctx,
+                            tool_name,
+                            &mut outer_guest_span,
+                            &outer_result,
+                            duration_ms,
+                        );
+                        i += 1;
+                        continue;
                     }
-                    combined.push_str(&msg);
-                    tool_results.push(make_tool_result(tool_id, &truncate_output(&combined), true));
-                    let duration_ms = (Context::get_time_millis() - tool_started_ms).max(0) as u64;
-                    let outer_result = Err(msg);
-                    finish_tool_guest_span(
-                        &ctx,
-                        tool_name,
-                        &mut outer_guest_span,
-                        &outer_result,
-                        duration_ms,
-                    );
-                    i += 1;
-                    continue;
                 }
             };
-
-            // Drive the event loop (continues collecting print output)
-            let _ = dispatch::take_dispatch_image_results();
-            let (result, returned_repl, tool_events) = drive_repl_loop(
-                &ctx,
-                &temper_api_url,
-                tenant,
-                &sandbox_url,
-                workdir,
+            // A resumed snippet owns its earlier image/output state as well.
+            if !resuming_inner {
+                let _ = dispatch::take_dispatch_image_results();
+            }
+            let mut checkpoint = |progress: &ReplProgress<LimitedTracker>,
+                                  printed: &BoundedOutputCollector,
+                                  events: &[Value]| {
+                let current_count = fields
+                    .get("checkpoint_count")
+                    .and_then(|v| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    })
+                    .unwrap_or(0);
+                if current_count >= MAX_CHECKPOINTS_PER_TURN {
+                    dispatch_success(
+                        "Fail",
+                        &json!({"error_message":"tool-call checkpoint budget exhausted"}),
+                    );
+                    return true;
+                }
+                let mut all_events = tool_span_events.clone();
+                all_events.extend_from_slice(events);
+                let saved =
+                    continuation::encode(progress, printed, tool_id, tool_started_ms, &all_events);
+                let saved_id = saved.and_then(|saved| {
+                    session::save_repl_to_file(
+                        &ctx,
+                        &temper_api_url,
+                        tenant,
+                        workspace_id,
+                        repl_file_id,
+                        &saved,
+                    )
+                });
+                let Some(saved_id) = continuation::saved_checkpoint_or_continue(
+                    saved_id,
+                    |error| {
+                        // No lifecycle transition was published. Keep the live
+                        // continuation and never restart completed external calls.
+                        ctx.log("warn", &format!("monty_repl: inner checkpoint save failed, continuing from live state: {error}"));
+                    },
+                ) else {
+                    return false;
+                };
+                let mut completed = prior_results.clone();
+                completed.extend_from_slice(&tool_results);
+                let remaining = tool_calls[i..].to_vec();
+                let context = json!({"continuation":continuation::FORMAT,
+                    "completed_results":completed,"remaining_tool_calls":remaining});
+                dispatch_success(
+                    "CheckpointToolBatch",
+                    &json!({
+                    "pending_tool_calls":serde_json::to_string(&remaining).unwrap(),
+                    "pending_tool_context":context.to_string(),"repl_file_id":saved_id,
+                    "session_leaf_id":fields["session_leaf_id"].as_str().unwrap_or("")}),
+                );
+                true
+            };
+            let driven = drive_repl_loop(
+                ReplEnvironment {
+                    ctx: &ctx,
+                    temper_api_url: &temper_api_url,
+                    tenant,
+                    sandbox_url: &sandbox_url,
+                    workdir,
+                },
                 progress,
                 &mut printed,
+                invocation_started_ms,
+                &mut checkpoint,
             );
+            let Some((result, returned_repl, tool_events)) = driven else {
+                if let Some(span) = outer_guest_span.take() {
+                    let _ = span.end_ok(
+                        &json!({"tool.execution.segment":"checkpoint","tool.call.completed":false}),
+                    );
+                }
+                return Ok(());
+            };
             repl = returned_repl;
             tool_span_events.extend(tool_events);
 
@@ -1275,29 +1385,60 @@ fn attach_llmobs_tool_spans(params: &mut Value, tool_span_events: &[Value]) {
 /// collecting `print()` output throughout execution. Returns:
 /// - expression result (Ok/Err)
 /// - the repl (for state persistence)
-fn drive_repl_loop(
-    ctx: &Context,
-    temper_api_url: &str,
-    tenant: &str,
-    sandbox_url: &str,
-    workdir: &str,
-    mut progress: ReplProgress<LimitedTracker>,
-    print_buf: &mut BoundedOutputCollector,
-) -> (
+struct ReplEnvironment<'a> {
+    ctx: &'a Context,
+    temper_api_url: &'a str,
+    tenant: &'a str,
+    sandbox_url: &'a str,
+    workdir: &'a str,
+}
+
+type ReplCompletion = (
     Result<String, String>,
     MontyRepl<LimitedTracker>,
     Vec<Value>,
-) {
+);
+
+fn drive_repl_loop(
+    environment: ReplEnvironment<'_>,
+    mut progress: ReplProgress<LimitedTracker>,
+    print_buf: &mut BoundedOutputCollector,
+    invocation_started_ms: i64,
+    checkpoint: &mut impl FnMut(
+        &ReplProgress<LimitedTracker>,
+        &BoundedOutputCollector,
+        &[Value],
+    ) -> bool,
+) -> Option<ReplCompletion> {
+    let ReplEnvironment {
+        ctx,
+        temper_api_url,
+        tenant,
+        sandbox_url,
+        workdir,
+    } = environment;
     let mut pending_results: BTreeMap<u32, ExtFunctionResult> = BTreeMap::new();
     let mut tool_span_events = Vec::new();
 
+    let mut completed_call = false;
     loop {
+        if completed_call
+            && pending_results.is_empty()
+            && dispatch::continuation_allowed()
+            && continuation::checkpoint_due(
+                &progress,
+                Context::get_time_millis().saturating_sub(invocation_started_ms),
+            )
+            && checkpoint(&progress, print_buf, &tool_span_events)
+        {
+            return None;
+        }
         match progress {
             ReplProgress::Complete { repl, value } => {
                 let json_value = convert::monty_object_to_json(&value);
                 let result = serde_json::to_string(&json_value)
                     .map_err(|e| format!("failed to serialize result: {e}"));
-                return (result, repl, tool_span_events);
+                return Some((result, repl, tool_span_events));
             }
 
             ReplProgress::FunctionCall(call) => {
@@ -1316,7 +1457,7 @@ fn drive_repl_loop(
                             progress = p;
                             continue;
                         }
-                        Err(e) => return (Err(msg), e.repl, tool_span_events),
+                        Err(e) => return Some((Err(msg), e.repl, tool_span_events)),
                     }
                 }
 
@@ -1329,7 +1470,7 @@ fn drive_repl_loop(
 
                 let json_args: Vec<Value> = user_args
                     .iter()
-                    .map(|a| convert::monty_object_to_json(a))
+                    .map(convert::monty_object_to_json)
                     .collect();
                 let json_kwargs: Vec<(Value, Value)> = kwargs
                     .iter()
@@ -1414,13 +1555,16 @@ fn drive_repl_loop(
                 // the async resume_pending() → ResolveFutures roundtrip.
                 let print = PrintWriter::Callback(print_buf);
                 match call.resume(ext_result, print) {
-                    Ok(p) => progress = p,
+                    Ok(p) => {
+                        progress = p;
+                        completed_call = true;
+                    }
                     Err(e) => {
-                        return (
+                        return Some((
                             Err(format_monty_exception(&e.error)),
                             e.repl,
                             tool_span_events,
-                        );
+                        ));
                     }
                 }
             }
@@ -1437,11 +1581,11 @@ fn drive_repl_loop(
                 match state.resume(ready, print) {
                     Ok(p) => progress = p,
                     Err(e) => {
-                        return (
+                        return Some((
                             Err(format_monty_exception(&e.error)),
                             e.repl,
                             tool_span_events,
-                        );
+                        ));
                     }
                 }
             }
@@ -1451,11 +1595,11 @@ fn drive_repl_loop(
                 match lookup.resume(monty::NameLookupResult::Undefined, print) {
                     Ok(p) => progress = p,
                     Err(e) => {
-                        return (
+                        return Some((
                             Err(format_monty_exception(&e.error)),
                             e.repl,
                             tool_span_events,
-                        );
+                        ));
                     }
                 }
             }
@@ -1471,11 +1615,11 @@ fn drive_repl_loop(
                 match os_call.resume(ext_result, print) {
                     Ok(p) => progress = p,
                     Err(e) => {
-                        return (
+                        return Some((
                             Err(format_monty_exception(&e.error)),
                             e.repl,
                             tool_span_events,
-                        );
+                        ));
                     }
                 }
             }
@@ -1921,7 +2065,10 @@ mod tests {
             json!({"input": {"code": "temper.specs()"}}),
         ];
 
-        assert_eq!(batchable_run_len(&tool_calls, 0, tool_calls.len()), 2);
+        assert_eq!(
+            batchable_run_len(&tool_calls, 0, tool_calls.len(), false),
+            2
+        );
     }
 
     #[test]
@@ -1932,6 +2079,24 @@ mod tests {
             json!({"input": {"code": "temper.specs()"}}),
         ];
 
-        assert_eq!(batchable_run_len(&tool_calls, 0, 2), 2);
+        assert_eq!(batchable_run_len(&tool_calls, 0, 2, false), 2);
+    }
+    #[test]
+    fn resumed_literal_at_old_batch_boundary_cannot_replay_through_batching() {
+        let mut calls = vec![json!({"input":{"code":"x = 1"}}); 19];
+        calls.extend([
+            json!({"id":"slow","input":{"code":"temper.web_fetch('https://example.com/a')"}}),
+            json!({"id":"next","input":{"code":"temper.web_fetch('https://example.com/b')"}}),
+        ]);
+        // The original 20-call window forces the slow literal through the REPL.
+        assert_eq!(
+            batchable_run_len(&calls, 19, batch_window_len(19, 21, 20), false),
+            1
+        );
+        let resumed = &calls[19..];
+        assert_eq!(batchable_run_len(resumed, 0, 2, false), 2);
+        // A checkpoint restarts the outer cursor at zero; only this gate keeps
+        // the now-batchable literal from replaying its completed HTTP call.
+        assert_eq!(batchable_run_len(resumed, 0, 2, true), 0);
     }
 }
