@@ -14,7 +14,7 @@ permit(
 // Reading requests (their prompts may be a member's unpublished draft) and
 // spending OpenRouter credit are for the platform's own principals only:
 // System, Admin, service principals (the WASM runtime that runs agents' image
-// tool and Katagami's bake-off), operators, and owner or curator roles. A
+// tool and Katagami's art-style transfer test), operators, and owner or curator roles. A
 // member's token or a contributor agent cannot list other people's prompts or
 // start paid OpenRouter pictures (temperpaw#543 review, 2026-10-01).
 forbid(

@@ -10,7 +10,7 @@ Proposed
 
 ## Context
 
-Katagami needs to know whether an art style's prompt carries over to a second image model before a curator accepts it: Rita decided that a submitted art style is drawn again by a second model and shown beside the contributor's pictures. Temper could draw images only through the Codex subscription (ADR 001). fal is locked for top-up. The tenant already holds an `openrouter_api_key` secret, and OpenRouter serves xAI's Grok Imagine, the second model Katagami's earlier bake-offs used.
+Katagami needs to know whether an art style's prompt carries over to a second image model before a curator accepts it: Rita decided that a submitted art style is drawn again by a second model and shown beside the contributor's pictures. Temper could draw images only through the Codex subscription (ADR 001). fal is locked for top-up. The tenant already holds an `openrouter_api_key` secret, and OpenRouter serves xAI's Grok Imagine, the second model in Katagami's earlier GPT Image and Grok gallery comparisons.
 
 ## Decision
 

@@ -5,7 +5,7 @@
 //! Temper secret, stores the image in PawFS, and records
 //! MediaGenerationRequest.RecordResult. No subscription auth gate: the key is
 //! the credential. The default model is xAI's Grok Imagine, the second model
-//! Katagami's art-style bake-offs compare against the Codex renderer.
+//! Katagami's art-style transfer test compares against the Codex renderer.
 
 use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
@@ -170,7 +170,7 @@ fn validate_request(fields: &Value) -> Result<(), String> {
 /// OpenRouter models a request may name. Every picture is paid from the
 /// tenant's OpenRouter credit, so a caller cannot pick an arbitrary (or
 /// arbitrarily expensive) model: only Grok Imagine, the second model of
-/// Katagami's GPT Image vs Grok bake-offs, or the operator's configured default.
+/// Katagami's earlier GPT Image and Grok gallery comparisons, or the operator's configured default.
 const ALLOWED_MODELS: &[&str] = &[DEFAULT_MODEL];
 
 /// The configured default (else Grok Imagine), or a requested "vendor/model"
