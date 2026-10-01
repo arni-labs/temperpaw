@@ -1416,7 +1416,7 @@ fn temper_image_generate(
         ctx,
         api_url,
         tenant,
-        &format!("/tdata/MediaGenerationRequests('{key}')/Temper.Generate?await_integration=true"),
+        &generate_action_path(&key, &input.provider),
         &json!({
             "prompt": input.prompt,
             "media_type": input.media_type,
@@ -1707,7 +1707,32 @@ fn normalize_image_provider(provider: &str) -> String {
     match provider.trim().to_ascii_lowercase().as_str() {
         "codex" | "openai-codex" => "openai_codex".to_string(),
         "" => "openai_codex".to_string(),
+        "open_router" | "open-router" | "grok" | "xai" | "x-ai" => "openrouter".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// The MediaGenerationRequest action that starts a provider: each provider is
+/// its own action and WASM module (paw-media spec). OpenRouter skips the Codex
+/// subscription auth gate; every other provider goes through Generate.
+fn generate_action_for_provider(provider: &str) -> &'static str {
+    if provider == "openrouter" {
+        "GenerateWithOpenRouter"
+    } else {
+        "Generate"
+    }
+}
+
+/// The OData path that starts a request on its provider, one literal per
+/// provider so each dispatch path reads as written.
+fn generate_action_path(key: &str, provider: &str) -> String {
+    match generate_action_for_provider(provider) {
+        "GenerateWithOpenRouter" => format!(
+            "/tdata/MediaGenerationRequests('{key}')/Temper.GenerateWithOpenRouter?await_integration=true"
+        ),
+        _ => format!(
+            "/tdata/MediaGenerationRequests('{key}')/Temper.Generate?await_integration=true"
+        ),
     }
 }
 
@@ -3871,13 +3896,13 @@ mod tests {
         BatchableToolPlan, BatchableToolPlanKind, LAZY_SANDBOX,
         MAX_INLINE_SANDBOX_IMAGE_BASE64_CHARS, ODataQueryArg, batchable_tool_plan_from_code,
         coalesce_sandbox_args, encode_odata_filter_literal, escape_odata_string_literal,
-        fallback_web_search_query, genesis_registry_tenant, has_model_csdl,
-        interpret_cached_web_query_result, interpret_web_query_entity_result, is_image_extension,
-        is_vague_web_search_query, json_dumps, json_loads, media_type_from_extension,
-        normalize_image_model_for_provider, normalize_image_provider, normalize_odata_query_arg,
-        record_dispatch_image_result, repository_id_for, sandbox_identity_from_fields,
-        sandbox_image_read_result, take_dispatch_image_results, tool_span_hint_headers_for,
-        web_query_cache_lookup_path, web_search_results_empty,
+        fallback_web_search_query, generate_action_for_provider, genesis_registry_tenant,
+        has_model_csdl, interpret_cached_web_query_result, interpret_web_query_entity_result,
+        is_image_extension, is_vague_web_search_query, json_dumps, json_loads,
+        media_type_from_extension, normalize_image_model_for_provider, normalize_image_provider,
+        normalize_odata_query_arg, record_dispatch_image_result, repository_id_for,
+        sandbox_identity_from_fields, sandbox_image_read_result, take_dispatch_image_results,
+        tool_span_hint_headers_for, web_query_cache_lookup_path, web_search_results_empty,
     };
     use serde_json::json;
 
@@ -4042,6 +4067,15 @@ mod tests {
 
     #[test]
     fn openai_codex_image_generation_drops_public_openai_image_model_names() {
+        assert_eq!(normalize_image_provider("grok"), "openrouter");
+        assert_eq!(
+            generate_action_for_provider(&normalize_image_provider("openrouter")),
+            "GenerateWithOpenRouter"
+        );
+        assert_eq!(
+            generate_action_for_provider(&normalize_image_provider("")),
+            "Generate"
+        );
         let provider = normalize_image_provider("codex");
 
         assert_eq!(provider, "openai_codex");
