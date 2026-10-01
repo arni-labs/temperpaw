@@ -328,15 +328,19 @@ fn setup(ctx: &Context) -> Result<(), String> {
     } else {
         ""
     };
-    let scope_contract = if phase == "seed" || scope_repair {
+    let scope_contract = if phase == "seed" || phase == "explore" || scope_repair {
+        let mut fields = scope::contract();
+        if !scope_repair {
+            fields.as_object_mut().unwrap().remove("scope_disposition");
+        }
+        fields["baseline"] = outlook::baseline_contract();
+        let requirement = if phase == "explore" && !scope_repair {
+            "When research_evidence adds any typed finding, return these fields at the response root alongside hypotheses/research_evidence. Incorporate what was actually learned, revise stale unknowns and limitations, and retain unresolved qualifications. Leads alone do not require a refresh."
+        } else {
+            "Return these fields at the response root. scope_review and scope_disposition, when requested, are distinct judgments."
+        };
         format!(
-            "Scope output contract (scope_review and scope_disposition are distinct judgments): {}",
-            serde_json::json!({"scope":scope::contract(),"baseline":outlook::baseline_contract()})
-        )
-    } else if phase == "explore" {
-        format!(
-            "If research_evidence adds any typed finding, also return a reconciled baseline and current scope_review under these exact contracts: {}. Incorporate what was actually learned, revise now-stale unknowns or limitations, and retain unresolved qualifications. Existing evidence uses supplied ref_ IDs; new findings may use same-response research_evidence local IDs. This is present evidence reconciliation, not proof that future hypotheses or all coverage gaps are resolved. Leads alone do not require a refresh. The engine retains prior summaries as history; do not rewrite source records.",
-            json!({"baseline":outlook::baseline_contract(),"scope":scope::contract()})
+            "Required top-level evidence summary fields: {fields}\n{requirement} Do not wrap these fields in a scope object. Copy every scope_review limitation verbatim into baseline.unknowns, as required by the shared validator. Existing evidence uses supplied ref_ IDs; new findings may use same-response research_evidence local IDs where research is allowed. This is present evidence reconciliation, not proof that future hypotheses or all coverage gaps are resolved. Preserve source records and their qualifications."
         )
     } else {
         String::new()

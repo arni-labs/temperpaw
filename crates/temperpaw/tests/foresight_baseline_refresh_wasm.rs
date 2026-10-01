@@ -8,7 +8,12 @@ use temper_wasm::{
 };
 
 fn bytes(module: &str) -> Vec<u8> {
-    let path=std::env::var("BASELINE_EXPAND_WASM").unwrap_or_else(|_|format!("{}/../../os-apps/paw-foresight/wasm/{module}/target/wasm32-unknown-unknown/release/{module}.wasm",env!("CARGO_MANIFEST_DIR")));
+    let override_key = if module == "semantic_reasoning" {
+        "BASELINE_REASONING_WASM"
+    } else {
+        "BASELINE_EXPAND_WASM"
+    };
+    let path=std::env::var(override_key).unwrap_or_else(|_|format!("{}/../../os-apps/paw-foresight/wasm/{module}/target/wasm32-unknown-unknown/release/{module}.wasm",env!("CARGO_MANIFEST_DIR")));
     std::fs::read(path).unwrap()
 }
 async fn invoke(engine: &WasmEngine, module: &str, fields: Value) -> Value {
@@ -69,6 +74,30 @@ async fn later_finding_reconciles_current_baseline_atomically() {
     let fields = fixture["fields"].clone();
     let generated = fixture["generated"].clone();
     let engine = WasmEngine::new().unwrap();
+    let launch = invoke(&engine, "semantic_reasoning", fields.clone()).await;
+    let prompt = launch["callback_params"]["system_prompt"].as_str().unwrap();
+    let contract: Value = serde_json::from_str(
+        prompt
+            .lines()
+            .find_map(|line| line.strip_prefix("Required top-level evidence summary fields: "))
+            .expect("producer must expose the exact response-root contract"),
+    )
+    .unwrap();
+    assert!(contract.get("scope").is_none());
+    assert!(contract.get("scope_disposition").is_none());
+    assert_eq!(
+        contract["scope_review"]["status"]["enum"],
+        json!(["aligned", "narrowed", "uncertain"])
+    );
+    assert!(contract["baseline"].is_object());
+    let mut generated = generated;
+    let values = generated.clone();
+    generated.as_object_mut().unwrap().remove("baseline");
+    generated.as_object_mut().unwrap().remove("scope_review");
+    for key in contract.as_object().unwrap().keys() {
+        generated[key] = values[key].clone();
+    }
+
     let mut input = fields.clone();
     input["reasoning_result"] = json!(generated.to_string());
     let out = invoke(&engine, "semantic_expand", input).await;
