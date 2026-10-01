@@ -1123,6 +1123,50 @@ mod tests {
     }
 }
 
+/// Exact semantic input identity for reusable world audits. Feedback is a prior
+/// judgment, not new evidence; every other request field remains fingerprinted.
+pub fn audit_input_fingerprint(snapshot: &Value, task: &Value, request: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut canonical = request.clone();
+    if let Some(state) = canonical["state"].as_object_mut() {
+        state.remove("previous_world_judgments");
+    }
+    let nodes = snapshot["nodes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let world = nodes.iter().find(|n| n["Id"] == task["world_id"]);
+    let defining: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            world.is_some_and(|w| {
+                ["component_ids", "counter_ids"].iter().any(|key| {
+                    w[key]
+                        .as_array()
+                        .is_some_and(|ids| ids.contains(&node["Id"]))
+                })
+            })
+        })
+        .collect();
+    let input = json!({"version":1,"request":canonical,"task":task,"world":world,"defining_events":defining,"branches":snapshot["branches"]});
+    format!("{:x}", Sha256::digest(input.to_string().as_bytes()))
+}
+
+fn reusable_audit(snapshot: &Value, program: &Value, task: &Value) -> bool {
+    let node = field(task, "nodeId");
+    let function = field(task, "function");
+    let saved = &program["evaluations"][node][function]["context"]["audit_input_fingerprint"];
+    function != "estimate_likelihood"
+        && program["results"][node][function].is_string()
+        && saved.is_string()
+        && program["evaluations"][node][function]["context"]["world_pass"]
+            .as_u64()
+            .is_some_and(|round| round > 0 && round <= program["world_pass"].as_u64().unwrap_or(1))
+        && request(snapshot, program, task).is_ok_and(|request| {
+            saved.as_str() == Some(audit_input_fingerprint(snapshot, task, &request).as_str())
+        })
+}
+
 pub const MAX_REFINEMENT_PASSES: u64 = 3;
 /// Feedback is an earlier model judgment over the same immutable proposition,
 /// never new evidence and never a target probability to reproduce.
@@ -1158,39 +1202,11 @@ pub fn previous_world_judgments(program: &Value, world: &Value) -> Value {
     let rounds:Vec<_>=record["rounds"].as_array().into_iter().flatten().map(|round| {
         let context=contexts.iter().position(|v|v==&round["evidence_ids"]).unwrap_or_else(||{contexts.push(round["evidence_ids"].clone());contexts.len()-1});
         let values:Vec<_>=tasks.iter().map(|task|round["assessments"][field(task,"nodeId")][field(task,"function")].clone()).collect();
-        json!({"round":round["round"],"probability":round["probability"],"audit_status":round["audit_status"],"probability_coherence":round["probability_coherence"],"complete":round["complete"],"evidence_context":context,"judgments":values})
+        json!({"round":round["round"],"evaluation_mode":round["evaluation_mode"],"fresh_check_count":round["fresh_check_count"],"reused_check_count":round["reused_check_count"],"probability":round["probability"],"audit_status":round["audit_status"],"probability_coherence":round["probability_coherence"],"complete":round["complete"],"evidence_context":context,"judgments":values})
     }).collect();
-    json!({"world_id":id,"definition":record["definition"],"component_ids":components,"question_legend":legend,"evidence_contexts":contexts,"rounds":rounds,"interpretation":"Each round's judgments vector corresponds by index to question_legend; component_indices are zero-based in component_ids. Prior model judgments are not observations or ground truth. Reconsider them against supplied evidence, causal conditions and structural conflicts. Keep or revise either upward or downward; do not manufacture agreement or greater confidence."})
+    json!({"world_id":id,"definition":record["definition"],"component_ids":components,"question_legend":legend,"evidence_contexts":contexts,"rounds":rounds,"interpretation":"Each round's judgments vector corresponds by index to question_legend; component_indices are zero-based in component_ids. Counts distinguish fresh judgments from unchanged audits reused by exact input fingerprint; repeated values are not independent confirmations. Prior model judgments are not observations or ground truth. Reconsider them against supplied evidence, causal conditions and structural conflicts. Keep or revise either upward or downward; do not manufacture agreement or greater confidence."})
 }
 
-fn stable_judgments(previous: &Value, current: &Value) -> bool {
-    if previous["complete"] != true
-        || current["complete"] != true
-        || previous["evidence_ids"] != current["evidence_ids"]
-    {
-        return false;
-    }
-    let Some(now) = current["assessments"].as_object() else {
-        return false;
-    };
-    if previous["assessments"].as_object().map(|v| v.len()) != Some(now.len()) {
-        return false;
-    }
-    now.iter().all(|(id, functions)| {
-        functions.as_object().is_some_and(|functions| {
-            functions.iter().all(|(function, value)| {
-                let old = &previous["assessments"][id][function];
-                match (
-                    old.as_str().and_then(|v| v.parse::<f64>().ok()),
-                    value.as_str().and_then(|v| v.parse::<f64>().ok()),
-                ) {
-                    (Some(a), Some(b)) => a.is_finite() && b.is_finite() && (a - b).abs() <= 0.02,
-                    _ => old == value,
-                }
-            })
-        })
-    })
-}
 // Size the next pass with its newly captured history and the actual packer.
 // Current judgments are sizing proxies only; no scratch request is sent or saved.
 pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) -> Value {
@@ -1255,6 +1271,29 @@ pub fn refine_worlds(
     if !program["world_refinement"].is_object() {
         program["world_refinement"] = json!({});
     }
+    // A same-ID edit is not an optional confidence pass. Invalidate its current
+    // results before any budget refusal; completed historical receipts stay intact.
+    let changed_worlds: Vec<_> = worlds
+        .iter()
+        .filter(|world| {
+            world_tasks(world).iter().any(|task| {
+                let saved = &program["evaluations"][field(task, "nodeId")][field(task, "function")]
+                    ["context"]["audit_input_fingerprint"];
+                saved.is_string() && !reusable_audit(snapshot, program, task)
+            })
+        })
+        .copied()
+        .collect();
+    for world in &changed_worlds {
+        for task in world_tasks(world) {
+            for collection in ["results", "evaluations"] {
+                if let Some(values) = program[collection][field(&task, "nodeId")].as_object_mut() {
+                    values.remove(field(&task, "function"));
+                }
+            }
+        }
+    }
+    let refresh_required = !changed_worlds.is_empty();
     let mut all_stable = true;
     let mut all_complete = true;
     let mut tasks = vec![];
@@ -1276,9 +1315,46 @@ pub fn refine_worlds(
             .as_str()
             .and_then(|v| v.parse::<f64>().ok())
             .filter(|p| p.is_finite() && (0.0..=1.0).contains(p));
-        let receipt = json!({"round":pass,"probability":probability,"audit_status":audit_world(world,program)["status"],"probability_coherence":super::coherence::audit(world,program),"complete":complete,"evidence_ids":program["evidence_ids"],"assessments":assessments,"evaluations":evaluations});
+        let reused_checks: Vec<_> = world_tasks
+            .iter()
+            .filter_map(|task| {
+                let node = field(task, "nodeId");
+                let function = field(task, "function");
+                let context = &program["evaluations"][node][function]["context"];
+                let source_round = context["world_pass"].as_u64()?;
+                (source_round < pass && reusable_audit(snapshot, program, task)).then(|| {
+                    json!({
+                        "node_id":node,"function":function,"source_round":source_round,
+                        "input_fingerprint":context["audit_input_fingerprint"]
+                    })
+                })
+            })
+            .collect();
+        let fresh_check_count = world_tasks.iter().filter(|task|
+            program["results"][field(task,"nodeId")][field(task,"function")].is_string()
+            && program["evaluations"][field(task,"nodeId")][field(task,"function")]["context"]["world_pass"].as_u64() == Some(pass)
+        ).count();
+        let mut receipt = json!({"round":pass,"probability":probability,"audit_status":audit_world(world,program)["status"],"probability_coherence":super::coherence::audit(world,program),"complete":complete,"evidence_ids":program["evidence_ids"],"assessments":assessments,"evaluations":evaluations});
         if !program["world_refinement"][id].is_object() {
             program["world_refinement"][id] = json!({"world_id":id,"definition":world["statement"],"rounds":[],"stop_reason":"in_progress","converged":false,"accuracy_verified":false});
+        }
+        let reuse = world_tasks
+            .iter()
+            .filter(|t| field(t, "function") != "estimate_likelihood")
+            .all(|task| reusable_audit(snapshot, program, task));
+        // Legacy records remain readable without inventing provenance/counts.
+        let accounted = fresh_check_count + reused_checks.len();
+        let present = world_tasks
+            .iter()
+            .filter(|task| {
+                program["results"][field(task, "nodeId")][field(task, "function")].is_string()
+            })
+            .count();
+        if accounted == present && (reuse || present == 0) {
+            receipt["evaluation_mode"] = json!("fresh_estimate_with_exact_audit_reuse");
+            receipt["fresh_check_count"] = json!(fresh_check_count);
+            receipt["reused_check_count"] = json!(reused_checks.len());
+            receipt["reused_checks"] = json!(reused_checks);
         }
         let history = program["world_refinement"][id]["rounds"]
             .as_array_mut()
@@ -1295,20 +1371,40 @@ pub fn refine_worlds(
             .iter()
             .rev()
             .find(|prior| prior["round"].as_u64().is_some_and(|round| round < pass))
-            .is_some_and(|previous| stable_judgments(previous, current));
+            .is_some_and(|previous| {
+                previous["complete"] == true
+                    && current["complete"] == true
+                    && reuse
+                    && world_tasks.iter().filter(|t| field(t, "function") != "estimate_likelihood").all(|task| {
+                        let node = field(task, "nodeId");
+                        let function = field(task, "function");
+                        let old = &previous["evaluations"][node][function]["context"]["audit_input_fingerprint"];
+                        old.is_string() && old == &current["evaluations"][node][function]["context"]["audit_input_fingerprint"]
+                    })
+                    && previous["probability"]
+                        .as_f64()
+                        .zip(current["probability"].as_f64())
+                        .is_some_and(|(old, now)| (old - now).abs() <= 0.02)
+            });
         if !history.iter().any(|prior| prior["round"] == pass) {
             history.push(receipt);
         }
         all_stable &= stable;
         all_complete &= complete;
-        tasks.extend(world_tasks);
+        // Reuse only when every audit still matches. A changed or legacy input
+        // requires a complete fresh audit, never a mixture of stale constraints.
+        tasks.extend(
+            world_tasks
+                .into_iter()
+                .filter(|t| !reuse || field(t, "function") == "estimate_likelihood"),
+        );
     }
     let mut reason = if !blocked.is_empty() {
         blocked
-    } else if !all_complete {
+    } else if !all_complete && !refresh_required {
         "incomplete_pass"
     } else if pass >= 2 && all_stable {
-        "stable_judgments"
+        "stable_world_estimates"
     } else if pass >= MAX_REFINEMENT_PASSES {
         "max_refinement_passes"
     } else if super::MAX_CALLS.saturating_sub(calls) < tasks.len() {
@@ -1328,7 +1424,7 @@ pub fn refine_worlds(
     for world in &worlds {
         let id = field(world, "Id");
         program["world_refinement"][id]["stop_reason"] = json!(reason);
-        program["world_refinement"][id]["converged"] = json!(reason == "stable_judgments");
+        program["world_refinement"][id]["converged"] = json!(reason == "stable_world_estimates");
     }
     if reason != "in_progress" {
         return false;
@@ -1356,6 +1452,74 @@ mod refinement_tests {
         let program = json!({"active_world_ids":["w"],"world_pass":1,"results":{},"evaluations":{},"evidence_ids":["source"]});
         (snapshot, program)
     }
+    #[test]
+    fn exact_audits_reuse_but_changed_inputs_invalidate_even_when_budget_declines() {
+        let (mut snapshot, mut program) = fixture();
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"source","kind":"evidence","statement":"Original source"}));
+        fill(&snapshot, &mut program, 0.4);
+        let legacy = {
+            let mut p = program.clone();
+            for functions in p["evaluations"].as_object_mut().unwrap().values_mut() {
+                for evaluation in functions.as_object_mut().unwrap().values_mut() {
+                    evaluation["context"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("audit_input_fingerprint");
+                }
+            }
+            p
+        };
+        let mut old = legacy.clone();
+        assert!(refine_worlds(&snapshot, &mut old, 20, 1000, ""));
+        assert!(
+            old["tasks"].as_array().unwrap().len() > 1,
+            "legacy cannot reuse"
+        );
+        assert!(old["world_refinement"]["w"]["rounds"][0]["evaluation_mode"].is_null());
+        let original = program.clone();
+        assert!(refine_worlds(&snapshot, &mut program, 20, 1000, ""));
+        assert_eq!(program["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(program["tasks"][0]["function"], "estimate_likelihood");
+        let history = program["world_refinement"].clone();
+        for mutation in 0..6 {
+            let mut changed = snapshot.clone();
+            match mutation {
+                0 => changed["nodes"][4]["statement"] = json!("Changed source, same ID"),
+                1 => changed["nodes"][3]["chain"][0]["mechanism"] = json!("Changed mechanism"),
+                2 => changed["nodes"][3]["chain"][0]["by"] = json!("2027-02-01"),
+                3 => changed["nodes"][3]["assumptions"] = json!(["New assumption"]),
+                4 => changed["branches"] = json!([{"id":"changed"}]),
+                _ => changed["world"]["question"] = json!("Different question"),
+            }
+            let mut p = original.clone();
+            p["world_refinement"] = history.clone();
+            p["transition_count"] = json!(435);
+            assert!(!refine_worlds(&changed, &mut p, 20, 1000, ""));
+            assert!(
+                p["results"]["w"]["estimate_likelihood"].is_null(),
+                "mutation {mutation}"
+            );
+            assert_eq!(p["world_refinement"]["w"]["rounds"], history["w"]["rounds"]);
+            assert_eq!(
+                p["world_refinement"]["w"]["stop_reason"],
+                "transition_budget"
+            );
+            let mut renewed = original.clone();
+            renewed["world_refinement"] = history.clone();
+            assert!(refine_worlds(&changed, &mut renewed, 20, 1000, ""));
+            assert!(renewed["tasks"].as_array().unwrap().len() > 1);
+            fill(&changed, &mut renewed, 0.4);
+            assert!(
+                refine_worlds(&changed, &mut renewed, 40, 2000, ""),
+                "equal odds on changed basis must not establish stability"
+            );
+            assert_eq!(renewed["world_refinement"]["w"]["converged"], false);
+        }
+    }
+
     #[test]
     fn refinement_uses_pass_contingency_without_claiming_completion() {
         let (snapshot, mut program) = fixture();
@@ -1397,6 +1561,15 @@ mod refinement_tests {
             } else {
                 json!({"selected":"compatible"})
             };
+            let mut context = json!({"world_pass":program["world_pass"]});
+            if function != "estimate_likelihood" {
+                context["audit_input_fingerprint"] = json!(audit_input_fingerprint(
+                    snapshot,
+                    &task,
+                    &request(snapshot, program, &task).unwrap()
+                ));
+            }
+            program["evaluations"][id][function]["context"] = context;
         }
     }
     #[test]
@@ -1466,7 +1639,7 @@ mod refinement_tests {
         let first = program["world_refinement"]["w"]["rounds"][0].clone();
         assert_eq!(program["world_pass"], 2);
         assert!(program["results"]["w"]["estimate_likelihood"].is_null());
-        let request = request(&snapshot, &program, &program["tasks"][0]).unwrap();
+        let request = super::super::request(&snapshot, &program).unwrap();
         assert_eq!(
             request["state"]["previous_world_judgments"]["rounds"][0]["probability"],
             0.23
@@ -1484,7 +1657,7 @@ mod refinement_tests {
         assert_eq!(program["world_refinement"]["w"]["rounds"][0], first);
         assert_eq!(
             program["world_refinement"]["w"]["stop_reason"],
-            "stable_judgments"
+            "stable_world_estimates"
         );
         assert_eq!(program["world_refinement"]["w"]["accuracy_verified"], false);
     }

@@ -329,11 +329,14 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
     );
     assert_eq!(
         trace.as_array().unwrap().len(),
-        first_trace.as_array().unwrap().len() * 2 - 1
+        first_trace.as_array().unwrap().len() + p["active_world_ids"].as_array().unwrap().len()
     );
     {
         let requests = host.requests.lock().unwrap();
-        assert_eq!(requests.len(), first_http * 2 - 1);
+        assert_eq!(
+            requests.len(),
+            first_http + p["active_world_ids"].as_array().unwrap().len()
+        );
         let second_input = requests[first_http].to_string();
         assert!(second_input.contains("previous_world_judgments"));
         assert!(second_input.contains("0.23"));
@@ -362,6 +365,9 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
         let receipt = &p["world_refinement"][id];
         assert_eq!(receipt["rounds"][0], history[id]["rounds"][0]);
         assert_eq!(receipt["rounds"].as_array().unwrap().len(), 2);
+        assert_eq!(receipt["rounds"][1]["fresh_check_count"], 1);
+        assert!(receipt["rounds"][1]["reused_check_count"].as_u64().unwrap() > 0);
+        assert_eq!(receipt["stop_reason"], "stable_world_estimates");
         assert_eq!(receipt["converged"], true);
         assert_eq!(receipt["accuracy_verified"], false);
     }
@@ -395,6 +401,9 @@ async fn prior_judgments_reenter_requests_without_reusing_cached_answers() {
     );
     let output: Value =
         serde_json::from_str(completed["callback_params"]["answer"].as_str().unwrap()).unwrap();
+    if let Ok(path) = std::env::var("FORESIGHT_REUSE_OUTPUT") {
+        std::fs::write(path, json!({"fixture_kind":"synthetic actual-WASM provider simulation","answer":output,"snapshot":current,"program":p,"trace":trace}).to_string()).unwrap();
+    }
     assert_eq!(output["world_set_audit"], p["world_set_audit"]);
     assert!(
         output["evaluation_note"]
@@ -1061,4 +1070,81 @@ async fn composition_producer_schema_matches_required_consumer_fields() {
             assert!(rejected.to_string().contains("Invalid shared_question"));
         }
     }
+}
+
+/// Captured content, deliberately simulated first pass: legacy live receipts are
+/// never stamped/migrated. Actual call WASM creates every new audit fingerprint.
+#[tokio::test]
+#[ignore = "Requires captured living checkpoint; deterministic provider simulation"]
+async fn captured_living_new_first_pass_refines_within_thirty_five_transitions() {
+    let raw: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_LIVING_FIXTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let f = &raw["fields"];
+    let mut p: Value = serde_json::from_str(f["program_json"].as_str().unwrap()).unwrap();
+    let original = p.clone();
+    let tasks: Vec<_> = p["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["function"] != "check_world_set")
+        .cloned()
+        .collect();
+    assert_eq!(tasks.len(), 95);
+    p["tasks"] = json!(tasks);
+    p["cursor"] = json!(0);
+    p["world_pass"] = json!(1);
+    p["world_refinement"] = json!({});
+    p["stop_reason"] = json!("");
+    for t in &tasks {
+        for collection in ["results", "evaluations"] {
+            if let Some(v) = p[collection][t["nodeId"].as_str().unwrap()].as_object_mut() {
+                v.remove(t["function"].as_str().unwrap());
+            }
+        }
+    }
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    let mut fields = json!({"phase":"compose","snapshot_json":f["snapshot_json"],"program_json":p.to_string(),"trace_json":"[]","transition_count":401,"started_at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string()});
+    // Old captured receipts must take the full-audit path, not the new shortcut.
+    let mut legacy = fields.clone();
+    legacy["program_json"] = json!(original.to_string());
+    let refused = invoke(&engine, "semantic_step", legacy).await;
+    assert_ne!(refused["callback_action"], "SearchPlanned");
+    let completed = complete_pass(&engine, fields.clone(), host.clone()).await;
+    apply(&mut fields, &completed);
+    let before = program(&fields);
+    let next = invoke(&engine, "semantic_step", fields.clone()).await;
+    assert_eq!(next["callback_action"], "SearchPlanned", "{next}");
+    apply(&mut fields, &next);
+    let after = program(&fields);
+    assert_eq!(after["tasks"].as_array().unwrap().len(), 4);
+    assert!(
+        after["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["function"] == "estimate_likelihood")
+    );
+    assert_eq!(after["refinement_admission"]["required_transitions"], 13);
+    assert_eq!(after["refinement_admission"]["remaining_transitions"], 35);
+    for task in tasks
+        .iter()
+        .filter(|t| t["function"] != "estimate_likelihood")
+    {
+        let id = task["nodeId"].as_str().unwrap();
+        let function = task["function"].as_str().unwrap();
+        assert_eq!(
+            after["evaluations"][id][function],
+            before["evaluations"][id][function]
+        );
+        assert!(
+            after["evaluations"][id][function]["context"]["audit_input_fingerprint"].is_string()
+        );
+    }
+    eprintln!(
+        "Simulated fresh audit over captured living content: {}",
+        after["refinement_admission"]
+    );
 }

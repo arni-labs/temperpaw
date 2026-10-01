@@ -82,3 +82,28 @@ This boundary addresses a captured singleton request rejected with
 verification compares exact retained values and record-ID sets and mutates omitted
 fields to establish invariance. Byte reduction is measured, not claimed as a token
 count or live provider acceptance; supported native continuation verifies that.
+
+### Confidence passes reuse unchanged audits
+
+The fresh living run completed 96 world tasks, but repeating all audits required
+179 transitions with only 35 available. Later confidence passes now request only
+fresh whole-world likelihoods when every structural and conditional audit has an
+exact input fingerprint. The fingerprint binds the model and question contract,
+baseline, full source records, defining events, world and branch records, and
+actual per-task request; only prior model judgments are excluded. Missing legacy
+fingerprints require a full audit. Changed inputs invalidate current odds and
+audits even when the budget prevents replacement, without altering old receipts.
+
+Each new round reports successful fresh judgments and reused audit identities,
+original round and fingerprint. Reused checks remain prior judgments, not new
+HTTP calls or independent confirmation. `stable_world_estimates` describes only
+small changes in whole-world odds; uncertainty and probability-coherence warnings
+remain. An interrupted pass has null current odds and intact prior history.
+Admission still reserves writing and two extra attempts and cannot guarantee
+completion. No time, call, transition or retry limit changes.
+
+The actual-WASM fixture exercises first-pass stamping, fresh-only subsequent
+calls, exact history preservation and interruption. A separately labelled
+simulation over captured living content creates new receipts through mocked
+provider calls and estimates 13 of 35 transitions; the original captured legacy
+receipts do not qualify for reuse. This is not a live second-pass result.

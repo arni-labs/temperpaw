@@ -209,6 +209,11 @@ fn call(ctx: &Context) -> Result<(), String> {
                 .map(|n| n["Id"].clone())
                 .collect();
             let mut context = json!({"round":p["round"],"world_revision":p["world_revision"],"world_pass":p["world_pass"],"evidence_ids":evidence_ids,"task":task,"branch_state":state["branch_state"]});
+            if task["world_id"].is_string() && function != "estimate_likelihood" {
+                context["audit_input_fingerprint"] = json!(core::search::audit_input_fingerprint(
+                    &snapshot, task, individual
+                ));
+            }
             if function == "estimate_likelihood" {
                 context["probability_comparison"] = core::coherence::receipt(state);
             }

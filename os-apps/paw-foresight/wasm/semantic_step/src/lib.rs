@@ -579,10 +579,24 @@ mod tests {
     #[test]
     fn uncertain_completed_world_keeps_its_probability_and_history_after_refinement() {
         let (snapshot, mut program) = evaluated_world("uncertain");
+        for task in program["tasks"].as_array().unwrap().clone() {
+            let id = core::field(&task, "nodeId");
+            let function = core::field(&task, "function");
+            let mut context = json!({"world_pass":1});
+            if function != "estimate_likelihood" {
+                let request = core::search::request(&snapshot, &program, &task).unwrap();
+                context["audit_input_fingerprint"] = json!(core::search::audit_input_fingerprint(
+                    &snapshot, &task, &request
+                ));
+            }
+            program["evaluations"][id][function] = json!({"context":context});
+        }
         let results = program["results"].clone();
         assert_eq!(next_phase(&snapshot, &mut program, 20, 1000), "refine");
         let first = program["world_refinement"]["w"]["rounds"][0].clone();
         program["results"] = results.clone();
+        program["evaluations"]["w"]["estimate_likelihood"] =
+            json!({"context":{"world_pass":2},"probability":0.42});
         assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "synthesize");
         assert_eq!(program["world_audits"]["w"]["status"], "uncertain");
         assert_eq!(program["stop_reason"], "world_audits_incomplete");
