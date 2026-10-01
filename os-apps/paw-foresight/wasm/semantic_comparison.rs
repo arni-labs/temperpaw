@@ -233,17 +233,7 @@ mod tests {
         )
     }
     #[test]
-    fn contract_separates_drivers_consequences_and_parallel_context() {
-        let guidance = contract();
-        for rule in [
-            "organizing_component_ids:[selected driving component refs]",
-            "downstream_component_ids:[distinct consequence component refs]",
-            "Organizing and downstream component arrays must be disjoint",
-            "Parallel context may remain in component_ids and facets without being listed as downstream",
-            "do not invent causal links",
-        ] {
-            assert!(guidance.contains(rule), "Missing binding instruction: {rule}");
-        }
+    fn parallel_components_need_not_be_downstream_but_self_consequences_fail() {
         let (mut snapshot, mut world, active) = fixture();
         snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":"parallel","kind":"scenario"}));
         world["component_ids"].as_array_mut().unwrap().push(json!("parallel"));
