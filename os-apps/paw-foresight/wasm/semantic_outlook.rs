@@ -10,10 +10,10 @@ fn text(value: &Value, limit: usize) -> Result<&str, String> {
         .ok_or_else(|| format!("Outlook text must contain 1–{limit} characters"))
 }
 fn list(value: &Value, min: usize, max: usize, limit: usize) -> Result<(), String> {
-    let values = value
-        .as_array()
-        .filter(|v| (min..=max).contains(&v.len()))
-        .ok_or("Invalid outlook list length")?;
+    let values = value.as_array().ok_or("Outlook list must be an array of strings")?;
+    if !(min..=max).contains(&values.len()) {
+        return Err(format!("Outlook list must contain {min}–{max} items; received {}", values.len()));
+    }
     for v in values {
         text(v, limit)?;
     }
@@ -114,6 +114,29 @@ fn validate_v1(answer: &Value, snapshot: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn list_errors_distinguish_type_from_count_without_relaxing_validation() {
+        let question = "How will people eat in 2030?";
+        let snapshot = json!({"world":{"description":question,"last_ingest_date":"2026-10-01"},"nodes":[]});
+        let mut baseline = json!({"as_of":"2026-10-01","observed":[],"assumptions":{"items":[question]},"unknowns":[]});
+        let error = validate_new_baseline(&baseline, &snapshot).unwrap_err();
+        assert!(error.starts_with("baseline.assumptions:"), "{error}");
+        assert!(error.contains("must be an array of strings"), "{error}");
+        baseline["assumptions"] = json!([question]);
+        assert!(validate_new_baseline(&baseline, &snapshot).is_ok());
+        for value in [Value::Null, json!("text"), json!(42), json!({"items":[]})] {
+            assert_eq!(list(&value, 0, 2, 3).unwrap_err(), "Outlook list must be an array of strings");
+        }
+        assert!(list(&json!([]), 0, 2, 3).is_ok());
+        assert!(list(&json!(["a"]), 1, 2, 3).is_ok());
+        assert!(list(&json!(["a", "abc"]), 1, 2, 3).is_ok());
+        assert_eq!(list(&json!([]), 1, 2, 3).unwrap_err(), "Outlook list must contain 1–2 items; received 0");
+        assert_eq!(list(&json!(["a", "b", "c"]), 1, 2, 3).unwrap_err(), "Outlook list must contain 1–2 items; received 3");
+        for value in [json!([""]), json!(["abcd"]), json!([1])] {
+            assert!(list(&value, 1, 2, 3).is_err());
+        }
+    }
+
     #[test]
     fn chronology_error_identifies_source_field_date_and_vantage() {
         let baseline = json!({"as_of":"2026-10-01","observed":[{"claim":"IEA projects a future outcome, not an observation","evidence_ids":["r2-ev_r2_iea_2w3w"]}],"assumptions":[],"unknowns":[]});
