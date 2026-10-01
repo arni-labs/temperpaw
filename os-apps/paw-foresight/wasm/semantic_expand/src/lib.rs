@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+mod scope {
+    include!("../../semantic_scope.rs");
+}
 use temper_wasm_sdk::prelude::*;
 // Each phase includes the shared evaluator contract but uses only its own subset.
 #[allow(dead_code, unused_imports)]
@@ -481,17 +485,14 @@ fn validate_scope(review: &Value, snapshot: &Value) -> Result<(), String> {
     if review["requested_question"] != snapshot["world"]["description"] {
         return Err("Scope requested_question must equal the original question exactly".into());
     }
-    bounded_text(&review["evidence_scope"], 800)?;
-    bounded_texts(&review["limitations"], 0, 16, 240)?;
-    if !matches!(
-        review["status"].as_str(),
-        Some("aligned" | "narrowed" | "uncertain")
-    ) || !matches!(
-        review["narrowing_basis"].as_str(),
-        Some("user_explicit" | "evidence_availability" | "none")
-    ) {
-        return Err("Invalid scope review judgment".into());
-    }
+    bounded_text(&review["evidence_scope"], scope::SCOPE_TEXT_MAX)?;
+    bounded_texts(
+        &review["limitations"],
+        0,
+        scope::LIMITATIONS_MAX,
+        scope::LIMITATION_TEXT_MAX,
+    )?;
+    scope::validate_review(review)?;
     if review["status"] != "aligned" && review["limitations"].as_array().unwrap().is_empty() {
         return Err("Limited or uncertain scope needs explicit limitations".into());
     }
@@ -520,7 +521,7 @@ fn scope_pending(program: &Value) -> bool {
 
 fn failed_scope_repair(old: &Value, error: &str) -> Value {
     let mut program = old.clone();
-    program["scope_repair"] = json!({"status":"failed","attempted":true,"coverage_certified":false,"disposition":"limited","original_baseline":old["baseline"],"original_review":old["scope_review"],"report":format!("Scope repair response rejected after bounded corrections: {error}")});
+    program["scope_repair"] = json!({"status":"failed","attempted":true,"coverage_certified":false,"disposition":"limited","original_baseline":old["baseline"],"original_review":old["scope_review"],"report":format!("Scope repair response not applied: {error}")});
     program["response_correction"] = Value::Null;
     program["continue_exploring"] = json!(true);
     program
@@ -559,17 +560,12 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
     outlook::validate_baseline(&generated["baseline"], snapshot)?;
     retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
     let report = &generated["scope_disposition"];
-    bounded_text(&report["report"], 1200)?;
-    if !matches!(
-        report["status"].as_str(),
-        Some("addressed" | "limited" | "uncertain")
-    ) {
-        return Err("Invalid scope repair disposition".into());
-    }
+    bounded_text(&report["report"], scope::REPORT_MAX)?;
+    scope::validate_disposition(report)?;
     let refs = report["evidence_ids"]
         .as_array()
         .ok_or("Missing scope disposition evidence_ids")?;
-    if refs.len() > 32
+    if refs.len() > scope::REPORT_REFS_MAX
         || refs.iter().any(|id| {
             !snapshot["nodes"].as_array().unwrap().iter().any(|n| {
                 n["Id"] == *id && matches!(core::field(n, "kind"), "evidence" | "research_evidence")
@@ -1242,7 +1238,12 @@ fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, 
     Ok(program)
 }
 
-fn exploration_correction(phase: &str, old: &Value, error: &str) -> Result<Value, String> {
+fn exploration_correction(
+    phase: &str,
+    old: &Value,
+    error: &str,
+    raw: &str,
+) -> Result<Value, String> {
     let attempt = old["response_correction"]["attempt"].as_u64().unwrap_or(0) + 1;
     if attempt > 2 {
         return Err(format!(
@@ -1257,9 +1258,18 @@ fn exploration_correction(phase: &str, old: &Value, error: &str) -> Result<Value
     } else {
         "The exploration response was not applied. Return the complete corrected exploration JSON against the unchanged visible catalog. Parent denotes hypothesis lineage and must reference a scenario/revision or a new hypothesis in this batch; source evidence is support, not a parent. Preserve the distinction between source observations and future hypotheses. Do not invent references or evaluations, and cite only research actually retrieved."
     };
-    program["response_correction"] =
-        json!({"attempt":attempt,"validation_error":error,"instruction":instruction});
+    program["response_correction"] = json!({"attempt":attempt,"validation_error":error,"instruction":instruction,"rejected_draft":bounded_rejected_draft(raw)?});
     Ok(program)
+}
+
+fn bounded_rejected_draft(raw: &str) -> Result<&str, String> {
+    if raw.len() > 256 * 1024 {
+        return Err(
+            "Rejected response exceeds 256 KiB correction context limit; no draft was applied"
+                .into(),
+        );
+    }
+    Ok(raw)
 }
 
 fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, String> {
@@ -1278,7 +1288,7 @@ fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, St
                 return Err("Reasoning returned invalid JSON after two correction attempts; saved evidence and judgments are preserved".into());
             }
             let mut program = old.clone();
-            program["response_correction"] = json!({"attempt":attempt,
+            program["response_correction"] = json!({"attempt":attempt,"rejected_draft":bounded_rejected_draft(raw)?,
                 "instruction":"The previous response was not a JSON object and was not applied. Return the complete JSON object required by this phase. Tool-call prose is not an executed tool call or a final result. Use actual tools if research is needed, then return the required JSON. Do not claim new evidence or judgments unless they were obtained."});
             Ok(Err(program))
         }
@@ -1403,10 +1413,10 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             if !matches!(phase, "challenge" | "explore") {
                 return Err(error);
             }
-            let program = match exploration_correction(phase, &old, &error) {
+            let program = match exploration_correction(phase, &old, &error, raw) {
                 Ok(program) => program,
-                Err(_) if scope_pending(&old) => {
-                    let program = failed_scope_repair(&old, &error);
+                Err(correction_error) if scope_pending(&old) => {
+                    let program = failed_scope_repair(&old, &correction_error);
                     set_success_result(
                         "Expanded",
                         &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
@@ -1480,6 +1490,18 @@ mod tests {
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
+    #[test]
+    fn rejected_draft_is_exact_or_explicitly_too_large() {
+        let raw = "{\"source\":\"retrieved text\"}";
+        assert_eq!(bounded_rejected_draft(raw).unwrap(), raw);
+        assert!(bounded_rejected_draft(&"x".repeat(256 * 1024)).is_ok());
+        assert!(
+            bounded_rejected_draft(&"x".repeat(256 * 1024 + 1))
+                .unwrap_err()
+                .contains("exceeds 256 KiB")
+        );
+    }
+
     #[test]
     fn malformed_scope_repair_exhaustion_keeps_work_and_continues() {
         let old = json!({"scope_repair":{"status":"pending"},"baseline":{"unknowns":["narrow"]},"results":{"h":{"classify_gap":"none"}},"http_calls":9,"round":0,"response_correction":{"attempt":2}});
@@ -1770,7 +1792,7 @@ mod tests {
         assert_eq!(actual, snapshot);
         assert!(error.contains("h_ai_makes_customer_service_more_scripted"));
         assert!(error.contains("evidence-id (kind: evidence)"));
-        let first = exploration_correction("explore", &old, &error).unwrap();
+        let first = exploration_correction("explore", &old, &error, "{}").unwrap();
         assert!(
             !first["response_correction"]["instruction"]
                 .as_str()
@@ -1780,9 +1802,9 @@ mod tests {
         for (key, value) in old.as_object().unwrap() {
             assert_eq!(&first[key], value);
         }
-        let second = exploration_correction("explore", &first, &error).unwrap();
+        let second = exploration_correction("explore", &first, &error, "{}").unwrap();
         assert!(
-            exploration_correction("explore", &second, &error)
+            exploration_correction("explore", &second, &error, "{}")
                 .unwrap_err()
                 .contains("after two corrective attempts")
         );
@@ -1796,7 +1818,8 @@ mod tests {
     fn challenge_correction_preserves_work_and_exhausts_without_resetting_budget() {
         let old = json!({"round":3,"http_calls":42,"transition_count":102,"results":{"h":{"estimate_likelihood":"0.3"}},"independent_challenge":{"status":"pending"}});
         let first =
-            exploration_correction("challenge", &old, "Unknown prior hypothesis: missing").unwrap();
+            exploration_correction("challenge", &old, "Unknown prior hypothesis: missing", "{}")
+                .unwrap();
         assert_eq!(first["response_correction"]["attempt"], 1);
         assert_eq!(
             first["response_correction"]["validation_error"],
@@ -1806,10 +1829,10 @@ mod tests {
             assert_eq!(&first[key], value);
         }
         let second =
-            exploration_correction("challenge", &first, "Missing alternative group").unwrap();
+            exploration_correction("challenge", &first, "Missing alternative group", "{}").unwrap();
         assert_eq!(second["response_correction"]["attempt"], 2);
         assert!(
-            exploration_correction("challenge", &second, "Still invalid")
+            exploration_correction("challenge", &second, "Still invalid", "{}")
                 .unwrap_err()
                 .contains("after two corrective attempts")
         );

@@ -113,3 +113,19 @@ with the original baseline and explicit limitations. Frozen or budget-limited ru
 skip external repair honestly. A completed repair can remain limited; only typed,
 dated findings can support an addressed disposition, and unresolved scope remains
 visible in baseline unknowns. No domain checklist or future outcome is prescribed.
+
+A live repair confused review status with disposition status, then returned 17
+observations against the existing 16-observation bound. The repair producer now
+receives the complete output contract: scope enums and limits share an owner with
+validation, and baseline bounds come from the existing baseline validator. Errors
+name the invalid field and accepted values or bound. Existing findings and new
+same-response finding IDs are distinguished in the repair contract.
+
+Corrections retain the exact rejected draft as unaccepted data in the next
+reasoner's user message, so a fresh Session can repair retrieved material without
+repeating research. Rejected drafts never enter the snapshot automatically. The
+existing 256 KiB correction-context bound applies without truncation; an oversized
+scope repair records the actual limit error and continues on the original baseline.
+Actual-WASM tests cover the observed enum/list errors, draft producer-consumer
+round-trip, and unchanged snapshot on oversized rejection; the previous producer
+artifact fails the contract test. This does not certify the model's repaired scope.

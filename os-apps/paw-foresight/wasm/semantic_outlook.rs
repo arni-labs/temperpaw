@@ -358,18 +358,26 @@ mod v2_tests {
     }
 }
 
+pub const BASELINE_LIST_MAX: usize = 16;
+pub const BASELINE_CLAIM_MAX: usize = 400;
+pub const BASELINE_NOTE_MAX: usize = 240;
+pub fn baseline_contract() -> Value {
+    serde_json::json!({"as_of":"exact world.last_ingest_date","observed":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"items":{"claim":{"minLength":1,"maxLength":BASELINE_CLAIM_MAX},"evidence_ids":{"minItems":1,"maxItems":BASELINE_LIST_MAX,"items":"actual supplied finding refs; during scope repair only, same-response research_evidence local IDs are also allowed; seed uses supplied refs only"}}},"assumptions":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"unknowns":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"empty_observations":"requires at least one assumption or unknown"})
+}
 /// Present observations remain distinct from assumptions and future hypotheses.
 pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), String> {
     if baseline["as_of"] != snapshot["world"]["last_ingest_date"] {
         return Err("Baseline vantage differs from the recorded research date".into());
     }
     text(&baseline["as_of"], 32)?;
-    list(&baseline["assumptions"], 0, 16, 240)?;
-    list(&baseline["unknowns"], 0, 16, 240)?;
+    list(&baseline["assumptions"], 0, BASELINE_LIST_MAX, BASELINE_NOTE_MAX).map_err(|e| format!("baseline.assumptions: 0–{BASELINE_LIST_MAX} items, each 1–{BASELINE_NOTE_MAX} characters: {e}"))?;
+    list(&baseline["unknowns"], 0, BASELINE_LIST_MAX, BASELINE_NOTE_MAX).map_err(|e| format!("baseline.unknowns: 0–{BASELINE_LIST_MAX} items, each 1–{BASELINE_NOTE_MAX} characters: {e}"))?;
     let observed = baseline["observed"]
         .as_array()
-        .filter(|v| v.len() <= 16)
-        .ok_or("Invalid baseline observations")?;
+        .filter(|v| v.len() <= BASELINE_LIST_MAX)
+        .ok_or_else(|| {
+            format!("baseline.observed must contain 0–{BASELINE_LIST_MAX} observations")
+        })?;
     if observed.is_empty()
         && baseline["assumptions"].as_array().is_none_or(Vec::is_empty)
         && baseline["unknowns"].as_array().is_none_or(Vec::is_empty)
@@ -378,11 +386,16 @@ pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), Strin
     }
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     for observation in observed {
-        text(&observation["claim"], 400)?;
+        text(&observation["claim"], BASELINE_CLAIM_MAX)
+            .map_err(|e| format!("baseline.observed.claim: {e}"))?;
         let refs = observation["evidence_ids"]
             .as_array()
-            .filter(|v| !v.is_empty() && v.len() <= 16)
-            .ok_or("Present claim needs evidence references")?;
+            .filter(|v| !v.is_empty() && v.len() <= BASELINE_LIST_MAX)
+            .ok_or_else(|| {
+                format!(
+                    "baseline.observed.evidence_ids must contain 1–{BASELINE_LIST_MAX} references"
+                )
+            })?;
         for id in refs {
             let node = nodes
                 .iter()

@@ -141,6 +141,36 @@ async fn scope_repair_precedes_checks_and_preserves_clock_history_and_failed_dra
             .unwrap()
             .contains("Develop layered consequences")
     );
+    let prompt = reasoning["callback_params"]["system_prompt"]
+        .as_str()
+        .unwrap();
+    let contract_text = prompt
+        .split(
+            "Scope output contract (scope_review and scope_disposition are distinct judgments): ",
+        )
+        .nth(1)
+        .expect("repair producer must supply canonical full output contract")
+        .split("\n\nTreat response_correction")
+        .next()
+        .unwrap();
+    let contract: Value = serde_json::from_str(contract_text).unwrap();
+    assert_eq!(
+        contract["scope"]["scope_review"]["status"]["enum"],
+        json!(["aligned", "narrowed", "uncertain"])
+    );
+    assert_eq!(
+        contract["scope"]["scope_review"]["narrowing_basis"]["enum"],
+        json!(["user_explicit", "evidence_availability", "none"])
+    );
+    assert_eq!(
+        contract["scope"]["scope_disposition"]["status"]["enum"],
+        json!(["addressed", "limited", "uncertain"])
+    );
+    assert_eq!(contract["baseline"]["observed"]["maxItems"], 16);
+    assert_eq!(
+        contract["baseline"]["observed"]["items"]["claim"]["maxLength"],
+        400
+    );
     let mut refreshed = baseline.clone();
     refreshed["observed"] =
         json!([{"claim":"Corrected historical observation","evidence_ids":["source"]}]);
@@ -172,6 +202,130 @@ async fn scope_repair_precedes_checks_and_preserves_clock_history_and_failed_dra
             baseline
         );
     }
+    for (field, bad_value, expected) in [
+        (
+            "status",
+            "limited",
+            "Invalid scope_review.status; accepted values: aligned, narrowed, uncertain",
+        ),
+        (
+            "narrowing_basis",
+            "original_question_retained_with_limited_source_repair",
+            "Invalid scope_review.narrowing_basis; accepted values: user_explicit, evidence_availability, none",
+        ),
+    ] {
+        let mut bad = fields.clone();
+        let mut v = draft.clone();
+        v["scope_review"][field] = json!(bad_value);
+        bad["reasoning_result"] = json!(v.to_string());
+        let rejected = run(
+            &engine,
+            "semantic_expand",
+            bad,
+            Arc::new(SimWasmHost::new()),
+        )
+        .await;
+        assert_eq!(rejected["callback_action"], "CompositionRejected");
+        let correction = parsed(&rejected["callback_params"], "program_json");
+        assert_eq!(
+            correction["response_correction"]["validation_error"],
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                correction["response_correction"]["rejected_draft"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap(),
+            v
+        );
+        let mut retry = fields.clone();
+        retry["program_json"] = rejected["callback_params"]["program_json"].clone();
+        let producer = run(
+            &engine,
+            "semantic_reasoning",
+            retry,
+            Arc::new(SimWasmHost::new()),
+        )
+        .await;
+        let input: Value = serde_json::from_str(
+            producer["callback_params"]["user_message"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let data = &input["response_correction"];
+        assert!(
+            !producer["callback_params"]["system_prompt"]
+                .as_str()
+                .unwrap()
+                .contains("Historical source text")
+        );
+        assert_eq!(
+            data["rejected_draft"],
+            correction["response_correction"]["rejected_draft"]
+        );
+    }
+    let mut too_many = fields.clone();
+    let mut draft17 = draft.clone();
+    draft17["baseline"]["observed"] = json!(vec![draft["baseline"]["observed"][0].clone(); 17]);
+    too_many["reasoning_result"] = json!(draft17.to_string());
+    let rejected = run(
+        &engine,
+        "semantic_expand",
+        too_many,
+        Arc::new(SimWasmHost::new()),
+    )
+    .await;
+    assert_eq!(rejected["callback_action"], "CompositionRejected");
+    assert_eq!(
+        parsed(&rejected["callback_params"], "program_json")["response_correction"]["validation_error"],
+        "baseline.observed must contain 0–16 observations"
+    );
+    let mut malformed = fields.clone();
+    malformed["reasoning_result"] = json!("{invalid source data");
+    let rejected = run(
+        &engine,
+        "semantic_expand",
+        malformed,
+        Arc::new(SimWasmHost::new()),
+    )
+    .await;
+    assert_eq!(
+        parsed(&rejected["callback_params"], "program_json")["response_correction"]["rejected_draft"],
+        "{invalid source data"
+    );
+    let mut oversized = fields.clone();
+    let mut large = draft.clone();
+    large["scope_review"]["status"] = json!("limited");
+    large["unused_source_payload"] = json!("x".repeat(256 * 1024));
+    oversized["reasoning_result"] = json!(large.to_string());
+    let refused = run(
+        &engine,
+        "semantic_expand",
+        oversized,
+        Arc::new(SimWasmHost::new()),
+    )
+    .await;
+    assert_eq!(refused["callback_action"], "Expanded");
+    assert_eq!(
+        parsed(&refused["callback_params"], "snapshot_json"),
+        snapshot
+    );
+    let receipt = parsed(&refused["callback_params"], "program_json");
+    assert!(
+        receipt["scope_repair"]["report"]
+            .as_str()
+            .unwrap()
+            .contains("exceeds 256 KiB correction context limit")
+    );
+    assert!(
+        !receipt["scope_repair"]["report"]
+            .as_str()
+            .unwrap()
+            .contains("after bounded corrections")
+    );
     let expanded = run(
         &engine,
         "semantic_expand",
