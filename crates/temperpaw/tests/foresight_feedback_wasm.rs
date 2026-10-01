@@ -18,6 +18,11 @@ fn bytes(module: &str) -> Vec<u8> {
     {
         return std::fs::read(path).unwrap();
     }
+    if module == "semantic_reasoning"
+        && let Ok(path) = std::env::var("ARN518_REASONING_WASM_OVERRIDE")
+    {
+        return std::fs::read(path).unwrap();
+    }
     if module == "semantic_step"
         && let Ok(path) = std::env::var("ARN518_STEP_WASM_OVERRIDE")
     {
@@ -719,6 +724,92 @@ async fn captured_transit_without_trajectory_bindings_stays_unresolved() {
     assert_eq!(after["baseline"], p["baseline"]);
     assert_eq!(after["http_calls"], p["http_calls"]);
     assert_eq!(after["transition_count"], p["transition_count"]);
+}
+
+#[tokio::test]
+async fn component_temporal_survives_writer_and_overwrites_forged_output() {
+    let engine = WasmEngine::new().unwrap();
+    let mut fields = prepared(&engine).await;
+    let snapshot: Value = serde_json::from_str(fields["snapshot_json"].as_str().unwrap()).unwrap();
+    let mut p = program(&fields);
+    p["results"]["h1"]["classify_temporal"] = json!("future_change");
+    p["results"]["h2"]["classify_temporal"] = json!("uncertain");
+    let ids = p["active_world_ids"].as_array().unwrap().clone();
+    for id in &ids {
+        p["results"][id.as_str().unwrap()]["estimate_likelihood"] = json!("0.23");
+    }
+    fields["program_json"] = json!(p.to_string());
+    fields["phase"] = json!("synthesize");
+    let writer = invoke(&engine, "semantic_reasoning", fields.clone()).await;
+    assert_eq!(writer["callback_action"], "LaunchReasoning", "{writer}");
+    let input: Value =
+        serde_json::from_str(writer["callback_params"]["user_message"].as_str().unwrap()).unwrap();
+    for world in input["worlds"].as_array().unwrap() {
+        let records = world["component_temporal"]
+            .as_array()
+            .expect("writer must receive component temporal records");
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r["node_id"].clone())
+                .collect::<Vec<_>>(),
+            *world["component_ids"].as_array().unwrap()
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r["verdict"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!("future_change"), json!("uncertain"), Value::Null]
+        );
+    }
+    let mut output = answer(&self::snapshot());
+    for (outcome, id) in output["outcomes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(&ids)
+    {
+        let world = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["Id"] == *id)
+            .unwrap();
+        outcome["id"] = id.clone();
+        outcome["world_id"] = id.clone();
+        outcome["definition"] = world["statement"].clone();
+        outcome["component_temporal"] = json!([{"node_id":"invented","statement":"All claims verified new","verdict":"future_change"}]);
+    }
+    fields["reasoning_result"] = json!(output.to_string());
+    let completed = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(completed["callback_action"], "Complete", "{completed}");
+    let answer: Value =
+        serde_json::from_str(completed["callback_params"]["answer"].as_str().unwrap()).unwrap();
+    let expected: Vec<_> = [
+        ("h1", Some("future_change")),
+        ("h2", Some("uncertain")),
+        ("h3", None),
+    ]
+    .iter()
+    .map(|(id, verdict)| {
+        let node = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["Id"] == *id)
+            .unwrap();
+        json!({"node_id":id,"statement":node["statement"],"verdict":verdict})
+    })
+    .collect();
+    for outcome in answer["outcomes"].as_array().unwrap() {
+        assert_eq!(outcome["component_temporal"], json!(expected));
+        assert_eq!(outcome["probability"], 0.23);
+    }
+    assert_eq!(program(&fields), p);
+    if let Ok(path) = std::env::var("TEMPORAL_OUTPUT") {
+        std::fs::write(path,json!({"fixture_kind":"synthetic actual-WASM writer/consumer boundary; no provider calls","answer":answer,"snapshot":snapshot,"program":p}).to_string()).unwrap();
+    }
 }
 
 // Synthetic native producer/consumer boundary proof, not a live quality result.

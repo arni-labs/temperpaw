@@ -71,6 +71,7 @@ impl References {
                 if matches!(
                     field,
                     "Id" | "nodeId"
+                        | "node_id"
                         | "to_id"
                         | "target"
                         | "parent"

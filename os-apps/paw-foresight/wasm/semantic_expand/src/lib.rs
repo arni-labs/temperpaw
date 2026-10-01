@@ -1030,6 +1030,7 @@ fn attach_world_probabilities(
             .iter()
             .find(|n| core::field(n, "Id") == id && n["kind"] == "world")
             .ok_or("Outcome must reference a composed world")?;
+        outcome["component_temporal"] = core::component_temporal(snapshot, program, node)?;
         let raw = &program["results"][&id]["estimate_likelihood"];
         let probability = if raw.is_null() {
             None

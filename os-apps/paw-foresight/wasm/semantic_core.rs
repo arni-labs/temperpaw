@@ -319,6 +319,38 @@ pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
     program["cursor"] = json!(cursor);
     Ok(())
 }
+/// Current normalized classifications, not proof of novelty or future occurrence.
+/// Missing legacy classifications remain unknown rather than inferred continuations.
+pub fn component_temporal(
+    snapshot: &Value,
+    program: &Value,
+    world: &Value,
+) -> Result<Value, String> {
+    let mut records = Vec::new();
+    for id in world["component_ids"].as_array().into_iter().flatten() {
+        let id = id
+            .as_str()
+            .ok_or("Invalid component identity for temporal record")?;
+        let node = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|n| n["Id"] == id)
+            .ok_or("Missing component for temporal record")?;
+        let statement = node["statement"]
+            .as_str()
+            .ok_or("Missing component statement for temporal record")?;
+        let verdict = match program["results"][id]["classify_temporal"].as_str() {
+            Some(value @ ("future_change" | "already_observed" | "mixed" | "uncertain")) => {
+                json!(value)
+            }
+            _ => Value::Null,
+        };
+        records.push(json!({"node_id":id,"statement":statement,"verdict":verdict}));
+    }
+    Ok(json!(records))
+}
+
 pub fn temporal_criteria() -> Value {
     json!({"already_observed":"The full scoped claim is already observed at the evidence vantage; a future date alone does not make it a new change.","future_change":"The claim specifies a change beyond what the supplied dated baseline establishes.","mixed":"The claim conflates already observed conditions and distinct future changes and needs decomposition.","uncertain":"The supplied evidence cannot establish whether this scoped claim is already observed or a future change."})
 }
@@ -328,6 +360,27 @@ pub fn gap_criteria() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn component_temporal_keeps_exact_normalized_judgments_without_inference() {
+        let snapshot = json!({"nodes":[{"Id":"a","statement":"Exact scoped event"}]});
+        let world = json!({"component_ids":["a"]});
+        for verdict in ["future_change", "already_observed", "mixed", "uncertain"] {
+            let program = json!({"results":{"a":{"classify_temporal":verdict}}});
+            assert_eq!(
+                component_temporal(&snapshot, &program, &world).unwrap(),
+                json!([{"node_id":"a","statement":"Exact scoped event","verdict":verdict}])
+            );
+        }
+        for program in [
+            json!({}),
+            json!({"results":{"a":{"classify_temporal":"continuation"}}}),
+        ] {
+            assert!(
+                component_temporal(&snapshot, &program, &world).unwrap()[0]["verdict"].is_null()
+            );
+        }
+    }
+
     fn node(id: &str, kind: &str, refs: &[&str]) -> Value {
         json!({"Id":id,"kind":kind,"statement":id,"edges":refs.iter().map(|id|json!({"kind":"requires","to_id":id})).collect::<Vec<_>>().pipe()})
     }
