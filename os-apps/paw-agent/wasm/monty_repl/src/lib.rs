@@ -862,7 +862,8 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     .unwrap_or("unknown");
 
                 // Save REPL state before pausing.
-                // Graceful: if save fails, agent gets a fresh REPL on resume.
+                // A continuation file cannot be reused as an ordinary REPL file.
+                // Fail before pausing if its normal-state replacement fails.
                 let repl_file_id = match save_repl_state(&repl).and_then(|saved_state| {
                     session::save_repl_to_file(
                         &ctx,
@@ -875,10 +876,11 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 }) {
                     Ok(id) => id,
                     Err(e) => {
-                        ctx.log("warn", &format!(
-                            "monty_repl: Cedar pause repl save failed (agent gets fresh REPL on resume): {e}"
-                        ));
-                        repl_file_id.to_string()
+                        ctx.log(
+                            "warn",
+                            &format!("monty_repl: Cedar pause repl save failed: {e}"),
+                        );
+                        continuation::fallback_repl_file_id(repl_file_id, inner_resume, &e)?
                     }
                 };
 
@@ -1040,7 +1042,8 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         // normal hot path through a large versioned TemperFS rewrite. Checkpoint
         // and approval pauses still persist state above because they need exact
         // mid-batch recovery.
-        // Graceful: REPL state save failure should not kill the session.
+        // Normal REPL save failures retain the existing fallback. A restored
+        // continuation must not outlive its marker after completion.
         let repl_file_id = match save_repl_state(&repl) {
             Ok(saved_state) => {
                 ctx.log(
@@ -1069,7 +1072,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                                 "warn",
                                 &format!("monty_repl: end-of-batch file save failed: {e}"),
                             );
-                            repl_file_id.to_string()
+                            continuation::fallback_repl_file_id(repl_file_id, inner_resume, &e)?
                         }
                     }
                 } else {
@@ -1089,7 +1092,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     "warn",
                     &format!("monty_repl: end-of-batch repl save failed: {e}"),
                 );
-                repl_file_id.to_string()
+                continuation::fallback_repl_file_id(repl_file_id, inner_resume, &e)?
             }
         };
 

@@ -38,6 +38,22 @@ pub fn saved_checkpoint_or_continue(
     }
 }
 
+/// A failed normal-state save may reuse only a normal REPL file. Returning a
+/// continuation file without its pending-tool marker would corrupt the next
+/// invocation. Propagate the failure before publishing completion or approval.
+pub fn fallback_repl_file_id(
+    existing_file_id: &str,
+    resumed_continuation: bool,
+    save_error: &str,
+) -> Result<String, String> {
+    if resumed_continuation {
+        return Err(format!(
+            "cannot replace resumed continuation with REPL state: {save_error}"
+        ));
+    }
+    Ok(existing_file_id.to_owned())
+}
+
 pub struct Saved {
     pub progress: ReplProgress<LimitedTracker>,
     pub printed: BoundedOutputCollector,
@@ -239,6 +255,68 @@ mod tests {
         assert_eq!(calls, vec![0, 1, 2, 3, 4, 5]);
         assert_eq!(output.matches("after").count(), 6);
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn completed_continuation_cannot_fall_back_to_its_checkpoint_file() {
+        let mut printed = BoundedOutputCollector::new(MAX_TOOL_RESULT_BYTES);
+        let progress = start("value=fetch(0)\nprint(value)\nvalue", &mut printed);
+        let call = progress.into_function_call().unwrap();
+        // The external effect has happened once before the durable boundary.
+        let progress = call
+            .resume(MontyObject::Int(7), PrintWriter::Callback(&mut printed))
+            .unwrap();
+        let file = encode(&progress, &printed, "outer", 0, &[]).unwrap();
+        let restored = Saved::decode(&file, Some(&json!({"id":"outer"}))).unwrap();
+        assert!(matches!(
+            restored.progress,
+            ReplProgress::Complete {
+                value: MontyObject::Int(7),
+                ..
+            }
+        ));
+        assert_eq!(restored.printed.into_string(), "7\n");
+        // Reproduce the old control: reusing this file after clearing the
+        // continuation marker routes JSON to the ordinary base64 decoder.
+        assert!(base64_decode(&file).is_err());
+        for error in ["final file write failed", "final REPL serialization failed"] {
+            assert!(fallback_repl_file_id("fl-checkpoint", true, error).is_err());
+        }
+    }
+
+    #[test]
+    fn cedar_pause_after_continuation_cannot_publish_a_mixed_format_fallback() {
+        let mut printed = BoundedOutputCollector::new(MAX_TOOL_RESULT_BYTES);
+        let progress = start("value=fetch(0)\nfetch(1)", &mut printed);
+        let progress = progress
+            .into_function_call()
+            .unwrap()
+            .resume(MontyObject::Int(7), PrintWriter::Callback(&mut printed))
+            .unwrap();
+        let file = encode(&progress, &printed, "outer", 0, &[]).unwrap();
+        let restored = Saved::decode(&file, Some(&json!({"id":"outer"}))).unwrap();
+        let denied = restored.progress.into_function_call().unwrap();
+        assert_eq!(denied.args, vec![MontyObject::Int(1)]);
+        let result = denied.resume(
+            ExtFunctionResult::Error(MontyException::new(
+                ExcType::RuntimeError,
+                Some("Cedar denied".into()),
+            )),
+            PrintWriter::Callback(&mut printed),
+        );
+        assert!(result.is_err());
+        assert!(
+            fallback_repl_file_id("fl-checkpoint", true, "approval REPL write failed").is_err()
+        );
+        // Existing ordinary-state/no-file fallback semantics remain intact.
+        assert_eq!(
+            fallback_repl_file_id("fl-normal", false, "write failed").unwrap(),
+            "fl-normal"
+        );
+        assert_eq!(
+            fallback_repl_file_id("", false, "write failed").unwrap(),
+            ""
+        );
     }
 
     #[test]
