@@ -115,6 +115,37 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn baseline_array_contract_matches_validator_boundaries() {
+        let contract = baseline_contract();
+        for key in ["assumptions", "unknowns", "observed"] {
+            assert_eq!(contract[key]["type"], "array");
+            assert_eq!(contract[key]["minItems"], 0);
+            assert_eq!(contract[key]["maxItems"], BASELINE_LIST_MAX);
+        }
+        let observation = &contract["observed"]["items"];
+        assert_eq!(observation["type"], "object");
+        assert_eq!(observation["properties"]["claim"]["type"], "string");
+        assert_eq!(observation["properties"]["evidence_ids"]["type"], "array");
+        assert_eq!(observation["properties"]["evidence_ids"]["items"]["type"], "string");
+        for key in ["assumptions", "unknowns"] {
+            let descriptor = &contract[key];
+            assert_eq!(descriptor["items"]["type"], "string");
+            let count = descriptor["maxItems"].as_u64().unwrap() as usize;
+            let length = descriptor["items"]["maxLength"].as_u64().unwrap() as usize;
+            let snapshot = json!({"world":{"last_ingest_date":"2026-10-01"},"nodes":[]});
+            let mut baseline = json!({"as_of":"2026-10-01","observed":[],"assumptions":[],"unknowns":["Unknown"]});
+            baseline[key] = json!(vec!["x".repeat(length); count]);
+            assert!(validate_baseline(&baseline, &snapshot).is_ok());
+            baseline[key].as_array_mut().unwrap().push(json!("extra"));
+            assert!(validate_baseline(&baseline, &snapshot).is_err());
+            baseline[key] = json!(["x".repeat(length + 1)]);
+            assert!(validate_baseline(&baseline, &snapshot).is_err());
+            baseline[key] = descriptor.clone();
+            assert!(validate_baseline(&baseline, &snapshot).is_err());
+        }
+    }
+
+    #[test]
     fn list_errors_distinguish_type_from_count_without_relaxing_validation() {
         let question = "How will people eat in 2030?";
         let snapshot = json!({"world":{"description":question,"last_ingest_date":"2026-10-01"},"nodes":[]});
@@ -410,7 +441,55 @@ pub const BASELINE_LIST_MAX: usize = 16;
 pub const BASELINE_CLAIM_MAX: usize = 400;
 pub const BASELINE_NOTE_MAX: usize = 240;
 pub fn baseline_contract() -> Value {
-    serde_json::json!({"as_of":"exact world.last_ingest_date","observed":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"items":{"claim":{"minLength":1,"maxLength":BASELINE_CLAIM_MAX},"evidence_ids":{"minItems":1,"maxItems":BASELINE_LIST_MAX,"items":"actual supplied finding refs; during scope repair only, same-response research_evidence local IDs are also allowed; seed uses supplied refs only"}}},"assumptions":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX,"items":"exact verbatim quote of an explicit user constraint from world.description; no model-invented limits"},"unknowns":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"empty_observations":"requires at least one assumption or unknown"})
+    serde_json::json!({
+        "as_of": "exact world.last_ingest_date",
+        "assumptions": {
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": BASELINE_NOTE_MAX,
+                "description": "exact verbatim quote of an explicit user constraint from world.description; no model-invented limits"
+            },
+            "maxItems": BASELINE_LIST_MAX,
+            "minItems": 0,
+            "type": "array"
+        },
+        "empty_observations": "requires at least one assumption or unknown",
+        "observed": {
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "maxLength": BASELINE_CLAIM_MAX,
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "evidence_ids": {
+                        "items": {
+                            "type": "string",
+                            "description": "actual supplied finding refs; during scope repair only, same-response research_evidence local IDs are also allowed; seed uses supplied refs only"
+                        },
+                        "maxItems": BASELINE_LIST_MAX,
+                        "minItems": 1,
+                        "type": "array"
+                    }
+                }
+            },
+            "maxItems": BASELINE_LIST_MAX,
+            "minItems": 0,
+            "type": "array"
+        },
+        "unknowns": {
+            "maxItems": BASELINE_LIST_MAX,
+            "minItems": 0,
+            "type": "array",
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": BASELINE_NOTE_MAX
+            }
+        }
+    })
 }
 /// Accept a new baseline without allowing model assumptions to narrow the question.
 /// Historical baselines remain readable through `validate_baseline`.

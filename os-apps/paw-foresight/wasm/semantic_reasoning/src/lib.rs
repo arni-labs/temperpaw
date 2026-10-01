@@ -362,7 +362,7 @@ fn setup(ctx: &Context) -> Result<(), String> {
             "Return these fields at the response root. scope_review and scope_disposition, when requested, are distinct judgments."
         };
         format!(
-            "Required top-level evidence summary fields: {fields}\n{requirement} Do not wrap these fields in a scope object. Copy every scope_review limitation verbatim into baseline.unknowns, as required by the shared validator. Existing evidence uses supplied ref_ IDs; new findings may use same-response research_evidence local IDs where research is allowed. This is present evidence reconciliation, not proof that future hypotheses or all coverage gaps are resolved. Preserve source records and their qualifications."
+            "Field constraints for the top-level evidence summary (schema metadata, not response values; return arrays themselves, never objects containing items/minItems/maxItems): {fields}\n{requirement} Do not wrap these fields in a scope object. Copy every scope_review limitation verbatim into baseline.unknowns, as required by the shared validator. Existing evidence uses supplied ref_ IDs; new findings may use same-response research_evidence local IDs where research is allowed. This is present evidence reconciliation, not proof that future hypotheses or all coverage gaps are resolved. Preserve source records and their qualifications."
         )
     } else {
         String::new()
