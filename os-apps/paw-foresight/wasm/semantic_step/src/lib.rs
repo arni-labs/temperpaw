@@ -89,7 +89,7 @@ fn next_phase(
                 .filter(|n| active.contains(&n["Id"]))
                 .flat_map(core::search::world_tasks)
                 .collect();
-            tasks.insert(0, core::search::world_set_task(&active));
+            tasks.splice(0..0, core::search::world_set_tasks(&active));
             let mut admission = core::search::refinement_admission(snapshot, program, &tasks);
             let required = admission["required_transitions"]
                 .as_u64()
@@ -283,68 +283,66 @@ fn step(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
-    if program["stage"] == "worlds" && program["tasks"][0]["function"] == "check_world_set" {
-        let task = program["tasks"][0].clone();
-        let id = core::field(&task, "nodeId").to_owned();
-        if program["world_set_audit"]["task_id"] != id
-            && let Some(verdict) = program["results"][&id]["check_world_set"]
-                .as_str()
-                .map(str::to_owned)
-        {
-            let mut audit = json!({"task_id":id,"revision":program["world_revision"],"world_ids":task["world_ids"],"verdict":verdict,"evaluation":program["evaluations"][&id]["check_world_set"],"correction_status":"not_needed"});
-            let mut revise = false;
-            if verdict == "complementary_slices" {
-                let mut admission = core::search::refinement_admission(
-                    &snapshot,
-                    &program,
-                    program["tasks"].as_array().unwrap(),
-                );
-                // This is correction of an untested draft, not optional replacement
-                // of completed probabilities. Reserve expected packed work plus two
-                // extra HTTP attempts overall; do not promise every batch can retry.
-                let required = admission["estimated_batches"]
-                    .as_u64()
-                    .unwrap_or(u64::MAX)
-                    .saturating_mul(2)
-                    .saturating_add(core::REASONING_TRANSITION_RESERVE + 2 + 4);
-                admission["retry_attempts_total"] = json!(2);
-                admission
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("retry_attempts_per_batch");
-                revise = !stopped
-                    && program["world_revision"].as_u64().unwrap_or(1) < 3
-                    && admission["estimated_batches"].is_u64()
-                    && required <= admission["remaining_transitions"].as_u64().unwrap_or(0)
-                    && calls + program["tasks"].as_array().unwrap().len() < core::MAX_CALLS
-                    && elapsed < core::time_limit(&program).saturating_sub(120_000);
-                admission["required_transitions"] = json!(required);
-                admission["admitted"] = json!(revise);
-                program["world_set_admission"] = admission;
-                audit["correction_status"] = json!(if revise {
-                    "revision_requested"
-                } else if program["world_revision"].as_u64().unwrap_or(1) >= 3 {
-                    "revision_limit"
-                } else {
-                    "transition_budget"
-                });
-            }
-            program["world_set_audits"][&id] = audit.clone();
-            program["world_set_audit"] = audit;
-            if revise {
-                program["stop_reason"] = json!("world_set_revision_needed");
-                set_success_result(
-                    "Reason",
-                    &json!({"phase":"compose","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
-                );
-                return Ok(());
-            }
+    if program["stage"] == "worlds"
+        && let Some(mut audit) = core::search::pending_world_set_audit(
+            &program,
+            stopped || calls >= core::call_limit(&program) || elapsed >= core::time_limit(&program),
+        )
+    {
+        let id = core::field(&audit, "task_id").to_owned();
+        let verdict = core::field(&audit, "verdict").to_owned();
+        let mut revise = false;
+        if verdict == "complementary_slices" {
+            let mut admission = core::search::refinement_admission(
+                &snapshot,
+                &program,
+                program["tasks"].as_array().unwrap(),
+            );
+            // This is correction of an untested draft, not optional replacement
+            // of completed probabilities. Reserve expected packed work plus two
+            // extra HTTP attempts overall; do not promise every batch can retry.
+            let required = admission["estimated_batches"]
+                .as_u64()
+                .unwrap_or(u64::MAX)
+                .saturating_mul(2)
+                .saturating_add(core::REASONING_TRANSITION_RESERVE + 2 + 4);
+            admission["retry_attempts_total"] = json!(2);
+            admission
+                .as_object_mut()
+                .unwrap()
+                .remove("retry_attempts_per_batch");
+            revise = !stopped
+                && program["world_revision"].as_u64().unwrap_or(1) < 3
+                && admission["estimated_batches"].is_u64()
+                && required <= admission["remaining_transitions"].as_u64().unwrap_or(0)
+                && calls + program["tasks"].as_array().unwrap().len() < core::MAX_CALLS
+                && elapsed < core::time_limit(&program).saturating_sub(120_000);
+            admission["required_transitions"] = json!(required);
+            admission["admitted"] = json!(revise);
+            program["world_set_admission"] = admission;
+            audit["correction_status"] = json!(if revise {
+                "revision_requested"
+            } else if program["world_revision"].as_u64().unwrap_or(1) >= 3 {
+                "revision_limit"
+            } else {
+                "transition_budget"
+            });
+        }
+        program["world_set_audits"][&id] = audit.clone();
+        program["world_set_audit"] = audit;
+        if revise {
+            program["stop_reason"] = json!("world_set_revision_needed");
             set_success_result(
-                "SearchPlanned",
-                &json!({"program_json":program.to_string()}),
+                "Reason",
+                &json!({"phase":"compose","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
             );
             return Ok(());
         }
+        set_success_result(
+            "SearchPlanned",
+            &json!({"program_json":program.to_string()}),
+        );
+        return Ok(());
     }
     if !stopped
         && calls < core::call_limit(&program)

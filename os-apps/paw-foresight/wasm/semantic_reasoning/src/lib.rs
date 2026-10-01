@@ -253,7 +253,7 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         "baseline_correction":program["baseline_correction"], "temporal_semantics":core::temporal_criteria(),
         "issues":program["issues"], "stop_reason":program["stop_reason"], "exploration_admission":program["exploration_admission"],
         "remaining_calls":program["remaining_calls"], "round":program["round"],
-        "combination_search":program["combination_search"], "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":"If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures.",
+        "combination_search":program["combination_search"], "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":core::search::world_set_reporting(&program["world_set_audit"]),
         "active_world_ids":program["active_world_ids"], "world_revision":program["world_revision"], "world_refinement":compact_world_refinement(program)
     });
     let input = references::References::new(snapshot)?.project(&input);
@@ -287,7 +287,7 @@ fn world_writing_input(snapshot: &Value, program: &Value) -> Result<Value, Strin
     references::References::new(snapshot).map(|refs| {
         refs.project(&json!({
             "world":snapshot["world"], "baseline":program["baseline"], "scope_review":program["scope_review"], "scope_repair":program["scope_repair"], "worlds":worlds,
-            "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":"If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures.", "world_refinement":compact_world_refinement(program),
+            "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":core::search::world_set_reporting(&program["world_set_audit"]), "world_refinement":compact_world_refinement(program),
             "evaluations":evaluations, "stop_reason":program["stop_reason"], "exploration_admission":program["exploration_admission"],
             "evaluation_error":if program["stop_reason"] == "provider_error" {program["last_error"].clone()} else {Value::Null}, "exploration_note":program["exploration_note"]
         }))

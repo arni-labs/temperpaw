@@ -48,7 +48,8 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         .skip(cursor)
     {
         if (!batch.tasks.is_empty()
-            && (first["function"] == "check_world_set" || task["function"] == "check_world_set"))
+            && ((first["function"] == "check_world_set" || task["function"] == "check_world_set")
+                && !(first["focal_world_id"].is_string() && task["focal_world_id"].is_string())))
             || structural != super::search::is_structural(task)
             || (!structural
                 && (task["function"] != first["function"]
@@ -84,6 +85,9 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
             "baseline",
             "world",
             "previous_world_judgments",
+            "proposed_worlds",
+            "components",
+            "shared_question",
         ] {
             if let Some(value) = state.as_object_mut().and_then(|s| s.remove(field)) {
                 common[field] = value;

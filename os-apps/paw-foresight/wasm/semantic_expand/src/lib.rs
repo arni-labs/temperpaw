@@ -847,9 +847,9 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         .iter()
         .flat_map(|n| core::search::world_tasks(n))
         .collect();
-    tasks.insert(
-        0,
-        core::search::world_set_task(&identities.iter().map(|s| json!(s)).collect::<Vec<_>>()),
+    tasks.splice(
+        0..0,
+        core::search::world_set_tasks(&identities.iter().map(|s| json!(s)).collect::<Vec<_>>()),
     );
     let mut program = core::plan(updated["nodes"].as_array().unwrap())?;
     for key in [
@@ -1057,6 +1057,9 @@ fn attach_world_probabilities(
         format!("{evaluated} of {count} worlds were evaluated separately by Jev. {reason}")
     });
     let set_note = match answer["world_set_audit"]["verdict"].as_str() {
+        Some("complementary_slices") if answer["world_set_audit"]["mode"] == "per_world" => {
+            " At least one world was judged a complementary slice or duplicate rather than an alternative trajectory for the same situation; consult the individual findings."
+        }
         Some("complementary_slices") => {
             " These are complementary views of a shared direction; distinct alternative answers remain unresolved."
         }

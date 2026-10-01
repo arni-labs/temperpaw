@@ -95,6 +95,7 @@ struct WorldProvider {
     fail: AtomicBool,
     drift: AtomicBool,
     slices: AtomicBool,
+    focal_verdicts: Mutex<BTreeMap<String, String>>,
 }
 #[async_trait::async_trait]
 impl WasmHost for WorldProvider {
@@ -127,7 +128,16 @@ impl WasmHost for WorldProvider {
                 } else {
                     let options = q["criteria"].as_object().unwrap();
                     let choice = if options.contains_key("alternative_answers") {
-                        if self.slices.load(Ordering::SeqCst) {
+                        let focal = request["state"]["cases"][key]["focal_world_id"]
+                            .as_str()
+                            .unwrap_or("");
+                        if let Some(verdict) = self.focal_verdicts.lock().unwrap().get(focal) {
+                            match verdict.as_str() {
+                                "complementary_slices" => "complementary_slices",
+                                "uncertain" => "uncertain",
+                                _ => "alternative_answers",
+                            }
+                        } else if self.slices.load(Ordering::SeqCst) {
                             "complementary_slices"
                         } else {
                             "alternative_answers"
@@ -269,7 +279,17 @@ async fn complete_pass(engine: &WasmEngine, mut fields: Value, host: Arc<WorldPr
         assert_eq!(result["callback_action"], "Recorded");
         apply(&mut fields, &result);
         let mut p = program(&fields);
-        if p["tasks"][0]["function"] == "check_world_set" && p["cursor"] == 1 {
+        if p["tasks"][0]["function"] == "check_world_set"
+            && p["cursor"].as_u64()
+                == Some(
+                    p["tasks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .take_while(|t| t["function"] == "check_world_set")
+                        .count() as u64,
+                )
+        {
             let audit = invoke(engine, "semantic_step", fields.clone()).await;
             assert_eq!(audit["callback_action"], "SearchPlanned");
             apply(&mut fields, &audit);
@@ -622,6 +642,100 @@ async fn captured_uuid_deep_batch_preserves_every_comparison() {
 }
 
 #[tokio::test]
+async fn every_focal_world_is_checked_before_revision_and_uncertainty_stays_visible() {
+    let engine = WasmEngine::new().unwrap();
+    for verdict in ["alternative_answers", "complementary_slices", "uncertain"] {
+        let host = Arc::new(WorldProvider::default());
+        let mut fields = prepared(&engine).await;
+        let mut p = program(&fields);
+        let tasks = p["tasks"].as_array().unwrap();
+        let focal: Vec<_> = tasks
+            .iter()
+            .take_while(|t| t["function"] == "check_world_set")
+            .cloned()
+            .collect();
+        assert_eq!(focal.len(), 2);
+        assert_ne!(focal[0]["nodeId"], focal[1]["nodeId"]);
+        host.focal_verdicts.lock().unwrap().insert(
+            focal[1]["focal_world_id"].as_str().unwrap().into(),
+            verdict.into(),
+        );
+        // Force two requests to prove one completed rival cannot cover a missing focal check.
+        p["batch_byte_cap"] = json!(1);
+        fields["program_json"] = json!(p.to_string());
+        let first = call(&engine, fields.clone(), host.clone()).await;
+        apply(&mut fields, &first);
+        assert_eq!(program(&fields)["cursor"], 1);
+        let waiting = invoke(&engine, "semantic_step", fields.clone()).await;
+        assert_eq!(waiting["callback_action"], "Evaluate");
+        assert!(program(&fields)["world_set_audit"].is_null());
+        let mut interrupted = fields.clone();
+        let mut interrupted_p = program(&interrupted);
+        interrupted_p["stop_reason"] = json!("provider_error");
+        interrupted["program_json"] = json!(interrupted_p.to_string());
+        let partial = invoke(&engine, "semantic_step", interrupted).await;
+        let partial_p: Value =
+            serde_json::from_str(partial["callback_params"]["program_json"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(partial_p["world_set_audit"]["verdict"], "uncertain");
+        assert_eq!(partial_p["world_set_audit"]["completed_checks"], 1);
+        let second = call(&engine, fields.clone(), host.clone()).await;
+        apply(&mut fields, &second);
+        let before = program(&fields);
+        // Restore ordinary packing for actual correction-admission estimation.
+        let mut p = before.clone();
+        p["batch_byte_cap"] = json!(128 * 1024);
+        fields["program_json"] = json!(p.to_string());
+        let decision = invoke(&engine, "semantic_step", fields.clone()).await;
+        assert_eq!(
+            decision["callback_action"],
+            if verdict == "complementary_slices" {
+                "Reason"
+            } else {
+                "SearchPlanned"
+            }
+        );
+        let after: Value = serde_json::from_str(
+            decision["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after["world_set_audit"]["verdict"], verdict);
+        assert_eq!(after["world_set_audit"]["completed_checks"], 2);
+        assert!(after["world_set_audit"]["evaluation"].is_null());
+        assert_eq!(after["results"], before["results"]);
+        for finding in after["world_set_audit"]["findings"].as_array().unwrap() {
+            assert_eq!(
+                finding["evaluation"]["context"]["task"]["focal_world_id"],
+                finding["world_id"]
+            );
+            assert_eq!(
+                finding["evaluation"]["context"]["task"]["world_ids"],
+                after["active_world_ids"]
+            );
+            assert_eq!(
+                finding["evaluation"]["context"]["evidence_ids"],
+                after["evidence_ids"]
+            );
+        }
+        assert_eq!(
+            after["world_set_audit"]["findings"][1]["evaluation"],
+            before["evaluations"][focal[1]["nodeId"].as_str().unwrap()]["check_world_set"]
+        );
+        if verdict == "uncertain"
+            && let Ok(path) = std::env::var("FOCAL_AUDIT_OUTPUT")
+        {
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&after["world_set_audit"]).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn world_set_review_precedes_world_checks_and_preserves_rejected_revision() {
     let engine = WasmEngine::new().unwrap();
     let host = Arc::new(WorldProvider::default());
@@ -633,18 +747,18 @@ async fn world_set_review_precedes_world_checks_and_preserves_rejected_revision(
     assert_eq!(recorded["callback_action"], "Recorded");
     apply(&mut fields, &recorded);
     let p = program(&fields);
-    assert_eq!(p["cursor"], 1);
+    assert_eq!(p["cursor"], 2);
     assert_eq!(host.requests.lock().unwrap().len(), 1);
     assert_eq!(
         host.requests.lock().unwrap()[0]["questions"]
             .as_object()
             .unwrap()
             .len(),
-        1
+        2
     );
     let request = host.requests.lock().unwrap()[0].clone();
     assert_eq!(
-        request["state"]["cases"]["q0"]["proposed_worlds"]
+        request["state"]["common"]["proposed_worlds"]
             .as_array()
             .unwrap()
             .len(),

@@ -78,6 +78,8 @@ impl References {
                         | "scenario_ids"
                         | "requires"
                         | "world_id"
+                        | "world_ids"
+                        | "focal_world_id"
                         | "event_ids"
                         | "component_ids"
                         | "counter_ids"
@@ -168,6 +170,23 @@ impl References {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn focal_audit_projects_world_identity_consistently_without_rewriting_prose() {
+        let refs = References::new(&json!({"nodes":[{"Id":"world-a"},{"Id":"world-b"}]})).unwrap();
+        let audit = json!({"world_ids":["world-a","world-b"],"findings":[{"world_id":"world-b","evaluation":{"context":{"task":{"world_ids":["world-a","world-b"],"focal_world_id":"world-b"}}}}],"statement":"world-b is a literal source phrase, not an ID field"});
+        let projected = refs.project(&audit);
+        assert_eq!(projected["world_ids"], json!(["ref_0001", "ref_0002"]));
+        assert_eq!(projected["findings"][0]["world_id"], "ref_0002");
+        let task = &projected["findings"][0]["evaluation"]["context"]["task"];
+        assert_eq!(task["world_ids"], projected["world_ids"]);
+        assert_eq!(task["focal_world_id"], projected["findings"][0]["world_id"]);
+        assert_eq!(
+            refs.resolve(task["focal_world_id"].as_str().unwrap()),
+            "world-b"
+        );
+        assert_eq!(projected["statement"], audit["statement"]);
+    }
+
     #[test]
     fn aliases_remain_stable_after_append_and_preserve_claim_text() {
         let a = "en-01a0ba3d-11c5-79f1-b578-741b76950dee";

@@ -464,6 +464,91 @@ pub fn world_set_task(world_ids: &[Value]) -> Value {
     json!({"nodeId":format!("world-set:{key}"),"function":"check_world_set","world_ids":world_ids,"depth":0})
 }
 
+// Historical global tasks retain their exact identity. New sets review every focal world.
+pub fn world_set_tasks(world_ids: &[Value]) -> Vec<Value> {
+    world_ids
+        .iter()
+        .map(|world_id| {
+            let mut task = world_set_task(world_ids);
+            let id = world_id.as_str().unwrap_or("");
+            task["nodeId"] = json!(format!(
+                "{}:focal:{}:{id}",
+                field(&task, "nodeId"),
+                id.len()
+            ));
+            task["focal_world_id"] = world_id.clone();
+            task
+        })
+        .collect()
+}
+
+pub fn world_set_reporting(audit: &Value) -> &'static str {
+    if audit["mode"] == "per_world" {
+        "Use each focal finding: complementary_slices means at least one world is a topic partition or duplicate rather than an alternative for the same situation. Do not label every world complementary when others have alternative judgments. Distinguish completed uncertain findings from missing checks using completed_checks/planned_checks. There is no global confidence value; the aggregate is an engine summary of individual model judgments, not proof of distinct futures."
+    } else {
+        "If verdict is complementary_slices, explicitly label these complementary views of a shared direction; distinct alternatives remain unresolved. If uncertain/unavailable, say set-level distinction is unverified. Do not claim a choice judgment proves distinct futures."
+    }
+}
+
+pub fn pending_world_set_audit(program: &Value, stopped: bool) -> Option<Value> {
+    let first = program["tasks"].as_array()?.first()?;
+    if first["function"] != "check_world_set" {
+        return None;
+    }
+    let worlds = first["world_ids"].as_array()?;
+    let set_id = world_set_task(worlds)["nodeId"].as_str()?.to_owned();
+    if first.get("focal_world_id").is_none() {
+        if program["world_set_audit"]["task_id"] == set_id {
+            return None;
+        }
+        let id = field(first, "nodeId");
+        let verdict = program["results"][id]["check_world_set"].as_str()?;
+        return Some(
+            json!({"task_id":id,"revision":program["world_revision"],"world_ids":worlds,"verdict":verdict,"evaluation":program["evaluations"][id]["check_world_set"],"correction_status":"not_needed"}),
+        );
+    }
+    let expected = world_set_tasks(worlds);
+    if program["active_world_ids"] != first["world_ids"]
+        || program["tasks"].as_array()?.get(..expected.len())? != expected.as_slice()
+    {
+        return None;
+    }
+    let findings: Vec<_> = expected.iter().map(|task| {
+        let id = field(task,"nodeId");
+        let evaluation = &program["evaluations"][id]["check_world_set"];
+        let result = program["results"][id]["check_world_set"].as_str().filter(|v|matches!(*v,"alternative_answers"|"complementary_slices"|"uncertain") && evaluation["type"] == "choice" && evaluation["selected"] == *v);
+        json!({"world_id":task["focal_world_id"],"task_id":id,"verdict":result.unwrap_or("uncertain"),"completed":result.is_some(),"evaluation":if result.is_some(){evaluation.clone()}else{Value::Null}})
+    }).collect();
+    let completed = findings.iter().filter(|f| f["completed"] == true).count();
+    if program["world_set_audit"]["task_id"] == set_id
+        && (program["world_set_audit"]["completed_checks"] == json!(expected.len())
+            || program["world_set_audit"]["findings"] == json!(findings))
+    {
+        return None;
+    }
+    if completed < expected.len()
+        && !stopped
+        && program["cursor"].as_u64().unwrap_or(0) < expected.len() as u64
+    {
+        return None;
+    }
+    let verdict = if completed < expected.len() {
+        "uncertain"
+    } else if findings
+        .iter()
+        .any(|f| f["verdict"] == "complementary_slices")
+    {
+        "complementary_slices"
+    } else if findings.iter().any(|f| f["verdict"] == "uncertain") {
+        "uncertain"
+    } else {
+        "alternative_answers"
+    };
+    Some(
+        json!({"task_id":set_id,"revision":program["world_revision"],"world_ids":worlds,"verdict":verdict,"evaluation":null,"mode":"per_world","planned_checks":expected.len(),"completed_checks":completed,"findings":findings,"correction_status":if completed < expected.len(){"unavailable"}else{"not_needed"}}),
+    )
+}
+
 pub fn is_structural(task: &Value) -> bool {
     matches!(
         field(task, "function"),
@@ -482,7 +567,14 @@ pub fn validate_task(snapshot: &Value, task: &Value) -> Result<(), String> {
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     if task["function"] == "check_world_set" {
         let subjects = task["world_ids"].as_array().ok_or("Missing world set")?;
-        if !(2..=6).contains(&subjects.len()) || world_set_task(subjects) != *task {
+        let canonical = if task.get("focal_world_id").is_some() {
+            world_set_tasks(subjects)
+                .into_iter()
+                .find(|t| t["focal_world_id"] == task["focal_world_id"])
+        } else {
+            Some(world_set_task(subjects))
+        };
+        if !(2..=6).contains(&subjects.len()) || canonical.as_ref() != Some(task) {
             return Err("Invalid world-set identity".into());
         }
         let mut unique = std::collections::BTreeSet::new();
@@ -693,7 +785,12 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .collect::<Vec<_>>()
             );
             set_audit_projection(&mut state);
-            json!({"type":"choice","instructions":"This is a structural comparison of the supplied futures, not evidence verification or likelihood estimation. Source qualifications and baseline limits are retained, but full source bodies and prior scores are deliberately not inputs to this judgment. Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
+            if let Some(focal) = task.get("focal_world_id") {
+                state["focal_world_id"] = focal.clone();
+                json!({"type":"choice","instructions":"Judge only focal_world_id against ALL other supplied worlds, using their full definitions, conditions, components, scopes and the shared question. Does this focal world supply a substantively different overall trajectory for the SAME underlying situation as at least one other world? A different region, population, sector or activity alone is a complementary slice, not an alternative trajectory. A duplicate or paraphrase is not an alternative. A genuine rival pair elsewhere in the set does not qualify this focal world. Differences must follow organizing mechanisms and downstream consequences; shared events and overlap are allowed, and neither mutual exclusivity nor exhaustive opposites are required. This is structural comparison, not evidence verification, likelihood or a reward for unsupported novelty. Source qualifications and baseline limits remain supplied; full source bodies and prior scores are not inputs.","criteria":{"alternative_answers":"This focal world provides a substantive alternative trajectory to at least one other supplied world for the same underlying situation and question.","complementary_slices":"This focal world merely adds a separate topic, population or setting, or duplicates another account, without an alternative trajectory for the same situation.","uncertain":"The supplied accounts do not establish whether this focal world has such an alternative relationship."}})
+            } else {
+                json!({"type":"choice","instructions":"This is a structural comparison of the supplied futures, not evidence verification or likelihood estimation. Source qualifications and baseline limits are retained, but full source bodies and prior scores are deliberately not inputs to this judgment. Assess this SET against the original question and its shared central question, which may involve interacting uncertainties. Compare each trajectory_answer with its actual definition and components: does it change the overall outcome through a different organizing mechanism, with consequential downstream differences? Different subject areas, stakeholders or mechanisms confined to separate subtopics are complementary slices even if each is coherent. Do not accept the author's assertion of difference when the defining events merely distribute a common account across topics. Shared events or simultaneous possibilities do not by themselves make worlds slices; the test is substantive alternative answers to the same question. Overlap is allowed; mutual exclusivity, prescribed axes, symmetry and artificial opposites are NOT required. Judge full definitions, assumptions and components, not different titles. Do not reward unsupported novelty or demand contradictions merely to create variety.","criteria":{"alternative_answers":"The set offers meaningfully different overall answers or trajectories to the question, though they may overlap.","complementary_slices":"The worlds mostly partition topics, sectors or use cases within the same overall answer or trajectory.","uncertain":"The supplied definitions and evidence do not establish whether the set offers materially different answers."}})
+            }
         }
         "check_pair" => {
             let pair = ids(&task["pair_ids"])?;
@@ -1886,6 +1983,72 @@ mod world_set_tests {
         set_audit_projection(&mut changed);
         assert_eq!(state, changed);
         assert!(state["components"][0].get("branch_state").is_none());
+    }
+
+    #[test]
+    fn every_focal_world_is_required_and_mixed_or_uncertain_findings_survive() {
+        let ids = vec![json!("w1"), json!("w2"), json!("w3")];
+        let tasks = world_set_tasks(&ids);
+        let mut p = json!({"tasks":tasks,"active_world_ids":ids,"world_revision":1,"results":{},"evaluations":{}});
+        for task in tasks.iter().take(2) {
+            p["results"][field(task, "nodeId")]["check_world_set"] = json!("alternative_answers");
+            p["evaluations"][field(task, "nodeId")]["check_world_set"] =
+                json!({"type":"choice","selected":"alternative_answers"});
+        }
+        assert!(pending_world_set_audit(&p, false).is_none());
+        let partial = pending_world_set_audit(&p, true).unwrap();
+        assert_eq!(partial["verdict"], "uncertain");
+        assert_eq!(partial["completed_checks"], 2);
+        p["world_set_audit"] = partial;
+        assert!(pending_world_set_audit(&p, true).is_none());
+        let last = field(&tasks[2], "nodeId");
+        for (result, expected) in [
+            ("complementary_slices", "complementary_slices"),
+            ("uncertain", "uncertain"),
+            ("alternative_answers", "alternative_answers"),
+        ] {
+            p["results"][last]["check_world_set"] = json!(result);
+            p["evaluations"][last]["check_world_set"] = json!({"type":"choice","selected":result});
+            let audit = pending_world_set_audit(&p, false).unwrap();
+            assert_eq!(audit["verdict"], expected);
+            assert_eq!(audit["completed_checks"], 3);
+            assert_eq!(audit["findings"].as_array().unwrap().len(), 3);
+            assert!(audit["evaluation"].is_null());
+        }
+        p["world_set_audit"] = pending_world_set_audit(&p, false).unwrap();
+        assert!(pending_world_set_audit(&p, false).is_none());
+        let legacy = world_set_task(&ids);
+        let historical = json!({"type":"choice","selected":"alternative_answers"});
+        let old = json!({"tasks":[legacy],"world_revision":1,"results":{field(&legacy,"nodeId"):{"check_world_set":"alternative_answers"}},"evaluations":{field(&legacy,"nodeId"):{"check_world_set":historical}}});
+        let audit = pending_world_set_audit(&old, false).unwrap();
+        assert_eq!(audit["evaluation"], historical);
+        assert!(audit.get("mode").is_none());
+    }
+
+    #[test]
+    fn focal_requests_share_full_context_without_subject_substitution() {
+        let ids = vec![json!("w1"), json!("w2"), json!("w3")];
+        let snapshot = json!({"world":{"description":"How will travel change?"},"nodes":ids.iter().map(|id|json!({"Id":id,"kind":"world","statement":format!("Exact definition {id}"),"assumptions":["Qualified scope"],"component_ids":[],"counter_ids":[]})).collect::<Vec<_>>()});
+        let tasks = world_set_tasks(&ids);
+        let program = json!({"active_world_ids":ids,"tasks":tasks,"cursor":0});
+        let batch = super::super::batch::prepare(&snapshot, &program, 10).unwrap();
+        assert_eq!(batch.tasks.len(), 3);
+        for (i, task) in tasks.iter().enumerate() {
+            let req = request(&snapshot, &program, task).unwrap();
+            assert_eq!(req["state"]["focal_world_id"], ids[i]);
+            assert_eq!(req["state"]["proposed_worlds"], snapshot["nodes"]);
+            let mut restored = batch.request["state"]["common"].clone();
+            restored.as_object_mut().unwrap().extend(
+                batch.request["state"]["cases"][format!("q{i}")]
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            assert_eq!(restored, req["state"]);
+        }
+        let mut forged = tasks[0].clone();
+        forged["focal_world_id"] = json!("outside");
+        assert!(validate_task(&snapshot, &forged).is_err());
     }
 
     #[test]
