@@ -11,6 +11,27 @@ permit(
   resource is MediaGenerationRequest
 );
 
+// Reading requests (their prompts may be a member's unpublished draft) and
+// spending OpenRouter credit are for the platform's own principals only:
+// System, Admin, service principals (the WASM runtime that runs agents' image
+// tool and Katagami's bake-off), operators, and owner or curator roles. A
+// member's token or a contributor agent cannot list other people's prompts or
+// start paid OpenRouter pictures (temperpaw#543 review, 2026-10-01).
+forbid(
+  principal,
+  action in [
+    Action::"read",
+    Action::"list",
+    Action::"GenerateWithOpenRouter"
+  ],
+  resource is MediaGenerationRequest
+) unless {
+  principal is System ||
+  principal is Admin ||
+  (principal has role && ["service", "owner", "curator"].contains(principal.role)) ||
+  (principal has agent_type && ["wasm-runtime", "wasm-module", "service:wasm-runtime", "curation-service", "operator", "system"].contains(principal.agent_type))
+};
+
 // Provider auth can only report auth readiness or auth failure from its WASM module.
 permit(
   principal is Agent,

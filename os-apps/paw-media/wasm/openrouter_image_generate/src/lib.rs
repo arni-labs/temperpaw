@@ -82,12 +82,13 @@ fn generate_and_store(ctx: &Context, fields: &Value) -> Result<StoredImageResult
         return Err("image_generate: workspace_id is required".to_string());
     }
 
-    let model = openrouter_model(fields, ctx);
+    let model = openrouter_model(fields, ctx)?;
     let request = build_openrouter_image_request(fields, prompt, &model);
     let api_key = config_value(ctx, "openrouter_api_key").ok_or(
         "OpenRouter API key is missing: set the tenant secret openrouter_api_key".to_string(),
     )?;
-    let url = config_value(ctx, "openrouter_images_url").unwrap_or_else(|| OPENROUTER_IMAGES_URL.to_string());
+    let url = config_value(ctx, "openrouter_images_url")
+        .unwrap_or_else(|| OPENROUTER_IMAGES_URL.to_string());
     let headers = vec![
         ("Authorization".to_string(), format!("Bearer {api_key}")),
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -95,7 +96,10 @@ fn generate_and_store(ctx: &Context, fields: &Value) -> Result<StoredImageResult
         ("X-Title".to_string(), "TemperPaw media".to_string()),
     ];
 
-    ctx.log("info", &format!("openrouter_image_generate: calling OpenRouter images model={model}"));
+    ctx.log(
+        "info",
+        &format!("openrouter_image_generate: calling OpenRouter images model={model}"),
+    );
     let resp = call_openrouter(ctx, &url, &headers, &request)?;
     if !(200..300).contains(&resp.status) {
         return Err(format!(
@@ -113,7 +117,14 @@ fn generate_and_store(ctx: &Context, fields: &Value) -> Result<StoredImageResult
     let output_path = resolve_output_path(fields, ctx, mime_extension(&mime_type));
 
     record_storing(ctx, fields, &model, &output)?;
-    let stored = store_image_file(ctx, fields, workspace_id, &output_path, &mime_type, &image_bytes)?;
+    let stored = store_image_file(
+        ctx,
+        fields,
+        workspace_id,
+        &output_path,
+        &mime_type,
+        &image_bytes,
+    )?;
 
     Ok(StoredImageResult {
         file_id: stored.file_id,
@@ -144,22 +155,45 @@ fn validate_request(fields: &Value) -> Result<(), String> {
     let media_type = field_or_default(fields, &["media_type", "MediaType"], DEFAULT_MEDIA_TYPE);
     let operation = field_or_default(fields, &["operation", "Operation"], DEFAULT_OPERATION);
     if !media_type.eq_ignore_ascii_case(DEFAULT_MEDIA_TYPE) {
-        return Err(format!("unsupported media_type for OpenRouter: {media_type}"));
+        return Err(format!(
+            "unsupported media_type for OpenRouter: {media_type}"
+        ));
     }
     if !operation.eq_ignore_ascii_case(DEFAULT_OPERATION) {
-        return Err(format!("unsupported media generation operation for OpenRouter: {operation}"));
+        return Err(format!(
+            "unsupported media generation operation for OpenRouter: {operation}"
+        ));
     }
     Ok(())
 }
 
-/// The requested model when it names an OpenRouter model ("vendor/model"),
-/// else the configured default, else Grok Imagine.
-fn openrouter_model(fields: &Value, ctx: &Context) -> String {
-    let asked = field_or_default(fields, &["model", "Model"], "");
-    if asked.contains('/') {
-        return asked.to_string();
+/// OpenRouter models a request may name. Every picture is paid from the
+/// tenant's OpenRouter credit, so a caller cannot pick an arbitrary (or
+/// arbitrarily expensive) model: only Grok Imagine, the second model of
+/// Katagami's GPT Image vs Grok bake-offs, or the operator's configured default.
+const ALLOWED_MODELS: &[&str] = &[DEFAULT_MODEL];
+
+/// The configured default (else Grok Imagine), or a requested "vendor/model"
+/// when it is allowed.
+fn openrouter_model(fields: &Value, ctx: &Context) -> Result<String, String> {
+    let configured =
+        config_value(ctx, "default_model").unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    choose_model(
+        field_or_default(fields, &["model", "Model"], ""),
+        &configured,
+    )
+}
+
+fn choose_model(asked: &str, configured: &str) -> Result<String, String> {
+    if !asked.contains('/') || asked == configured {
+        return Ok(configured.to_string());
     }
-    config_value(ctx, "default_model").unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    if ALLOWED_MODELS.contains(&asked) {
+        return Ok(asked.to_string());
+    }
+    Err(format!(
+        "OpenRouter model {asked} is not allowed here; use {configured} (or leave model empty)"
+    ))
 }
 
 /// Only what every OpenRouter image model takes: model, prompt and one image.
@@ -181,10 +215,19 @@ fn aspect_ratio_for_size(size: &str) -> Option<&'static str> {
     }
     let ratio = w / h;
     // The nearest of the ratios OpenRouter documents; square sends nothing.
-    let options: [(&str, f64); 5] = [("1:1", 1.0), ("16:9", 16.0 / 9.0), ("9:16", 9.0 / 16.0), ("4:3", 4.0 / 3.0), ("3:4", 3.0 / 4.0)];
-    let nearest = options
-        .iter()
-        .min_by(|a, b| (a.1 - ratio).abs().partial_cmp(&(b.1 - ratio).abs()).unwrap())?;
+    let options: [(&str, f64); 5] = [
+        ("1:1", 1.0),
+        ("16:9", 16.0 / 9.0),
+        ("9:16", 9.0 / 16.0),
+        ("4:3", 4.0 / 3.0),
+        ("3:4", 3.0 / 4.0),
+    ];
+    let nearest = options.iter().min_by(|a, b| {
+        (a.1 - ratio)
+            .abs()
+            .partial_cmp(&(b.1 - ratio).abs())
+            .unwrap()
+    })?;
     (nearest.0 != "1:1").then_some(nearest.0)
 }
 
@@ -207,14 +250,24 @@ fn extract_image_output(body: &str) -> Result<ImageOutput, String> {
         .to_string();
     Ok(ImageOutput {
         base64_data,
-        media_type: first.get("media_type").and_then(Value::as_str).unwrap_or("").to_string(),
+        media_type: first
+            .get("media_type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         usage_json: value.get("usage").map(Value::to_string).unwrap_or_default(),
     })
 }
 
 fn decode_image_base64(base64_data: &str) -> Result<Vec<u8>, String> {
-    let payload = base64_data.split_once("base64,").map(|(_, rest)| rest).unwrap_or(base64_data);
-    let compact: String = payload.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+    let payload = base64_data
+        .split_once("base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(base64_data);
+    let compact: String = payload
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
     general_purpose::STANDARD
         .decode(compact.as_bytes())
         .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(compact.as_bytes()))
@@ -260,7 +313,10 @@ fn resolve_output_path(fields: &Value, ctx: &Context, ext: &str) -> String {
 
 fn ensure_path_extension(path: &str, ext: &str) -> String {
     let lower = path.to_ascii_lowercase();
-    if [".png", ".jpg", ".jpeg", ".webp"].iter().any(|suffix| lower.ends_with(suffix)) {
+    if [".png", ".jpg", ".jpeg", ".webp"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+    {
         path.to_string()
     } else {
         format!("{path}.{ext}")
@@ -290,10 +346,26 @@ fn store_image_file(
     bytes: &[u8],
 ) -> Result<StoredFile, String> {
     let temper_api_url = resolve_temper_api_url(ctx, fields);
-    let file_name = path.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("generated-image.png");
+    let file_name = path
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("generated-image.png");
     let file_body = json!({ "Name": file_name, "Path": path, "WorkspaceId": workspace_id, "MimeType": mime_type });
-    let headers = runtime_headers_for_workspace(ctx, &ctx.tenant, fields, workspace_id, Some("application/json"), Some("application/json"));
-    let create_resp = ctx.http_call("POST", &format!("{temper_api_url}/tdata/Files"), &headers, &file_body.to_string())?;
+    let headers = runtime_headers_for_workspace(
+        ctx,
+        &ctx.tenant,
+        fields,
+        workspace_id,
+        Some("application/json"),
+        Some("application/json"),
+    );
+    let create_resp = ctx.http_call(
+        "POST",
+        &format!("{temper_api_url}/tdata/Files"),
+        &headers,
+        &file_body.to_string(),
+    )?;
     if !(200..300).contains(&create_resp.status) {
         return Err(format!(
             "image_generate: PawFS File create failed (HTTP {}): {}",
@@ -309,11 +381,34 @@ fn store_image_file(
         .ok_or("image_generate: PawFS File create response did not include an id")?
         .to_string();
 
-    let value_headers = runtime_headers_for_workspace(ctx, &ctx.tenant, fields, workspace_id, Some(mime_type), None);
-    put_file_value_stream(&format!("{temper_api_url}/tdata/Files('{file_id}')/$value"), &value_headers, bytes)?;
+    let value_headers = runtime_headers_for_workspace(
+        ctx,
+        &ctx.tenant,
+        fields,
+        workspace_id,
+        Some(mime_type),
+        None,
+    );
+    put_file_value_stream(
+        &format!("{temper_api_url}/tdata/Files('{file_id}')/$value"),
+        &value_headers,
+        bytes,
+    )?;
 
-    let head_headers = runtime_headers_for_workspace(ctx, &ctx.tenant, fields, workspace_id, None, Some("application/json"));
-    let head_resp = ctx.http_call("GET", &format!("{temper_api_url}/tdata/Files('{file_id}')"), &head_headers, "")?;
+    let head_headers = runtime_headers_for_workspace(
+        ctx,
+        &ctx.tenant,
+        fields,
+        workspace_id,
+        None,
+        Some("application/json"),
+    );
+    let head_resp = ctx.http_call(
+        "GET",
+        &format!("{temper_api_url}/tdata/Files('{file_id}')"),
+        &head_headers,
+        "",
+    )?;
     if !(200..300).contains(&head_resp.status) {
         return Err(format!(
             "image_generate: PawFS File read-after-write failed (HTTP {}): {}",
@@ -323,17 +418,34 @@ fn store_image_file(
     }
     let head_value: Value = serde_json::from_str(&head_resp.body)
         .map_err(|err| format!("image_generate: parse PawFS File head response: {err}"))?;
-    let file_version_id = entity_field_str(&head_value, &["LastVersionId", "last_version_id"]).unwrap_or("").to_string();
-    Ok(StoredFile { file_id, file_version_id })
+    let file_version_id = entity_field_str(&head_value, &["LastVersionId", "last_version_id"])
+        .unwrap_or("")
+        .to_string();
+    Ok(StoredFile {
+        file_id,
+        file_version_id,
+    })
 }
 
-fn record_storing(ctx: &Context, fields: &Value, model: &str, output: &ImageOutput) -> Result<(), String> {
+fn record_storing(
+    ctx: &Context,
+    fields: &Value,
+    model: &str,
+    output: &ImageOutput,
+) -> Result<(), String> {
     let temper_api_url = resolve_temper_api_url(ctx, fields);
     let url = format!(
         "{temper_api_url}/tdata/MediaGenerationRequests('{}')/Temper.RecordStoring",
         entity_id(ctx).replace('\'', "''")
     );
-    let headers = runtime_headers_as(ctx, &ctx.tenant, fields, "system", Some("application/json"), Some("application/json"));
+    let headers = runtime_headers_as(
+        ctx,
+        &ctx.tenant,
+        fields,
+        "system",
+        Some("application/json"),
+        Some("application/json"),
+    );
     let body = json!({
         "provider_response_id": format!("openrouter:{model}"),
         "revised_prompt": "",
@@ -363,7 +475,10 @@ fn call_openrouter(
     headers: &[(String, String)],
     request: &Value,
 ) -> Result<HttpTextResponse, String> {
-    let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let header_refs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     let (mut request_body, mut response_body, response_head) =
         temper_wasm_sdk::http_stream::streaming_call("POST", url, &header_refs)
             .map_err(|error| format!("OpenRouter request failed to start: {error}"))?;
@@ -373,8 +488,11 @@ fn call_openrouter(
             .write_all_chunk(chunk)
             .map_err(|error| format!("OpenRouter request write failed: {error}"))?;
     }
-    request_body.finish().map_err(|error| format!("OpenRouter request close failed: {error}"))?;
-    let head = response_head().map_err(|error| format!("OpenRouter response head failed: {error}"))?;
+    request_body
+        .finish()
+        .map_err(|error| format!("OpenRouter request close failed: {error}"))?;
+    let head =
+        response_head().map_err(|error| format!("OpenRouter response head failed: {error}"))?;
     let mut body_bytes = Vec::new();
     let mut buffer = vec![0u8; RESPONSE_STREAM_CHUNK_BYTES];
     while let Some(read) = response_body
@@ -384,12 +502,20 @@ fn call_openrouter(
         body_bytes.extend_from_slice(&buffer[..read]);
         if body_bytes.len() > RESPONSE_MAX_BYTES {
             let _ = response_body.close();
-            return Err(format!("OpenRouter image response exceeded {RESPONSE_MAX_BYTES} bytes"));
+            return Err(format!(
+                "OpenRouter image response exceeded {RESPONSE_MAX_BYTES} bytes"
+            ));
         }
     }
-    response_body.close().map_err(|error| format!("OpenRouter response close failed: {error}"))?;
-    let body = String::from_utf8(body_bytes).map_err(|error| format!("OpenRouter response was not UTF-8: {error}"))?;
-    Ok(HttpTextResponse { status: head.status, body })
+    response_body
+        .close()
+        .map_err(|error| format!("OpenRouter response close failed: {error}"))?;
+    let body = String::from_utf8(body_bytes)
+        .map_err(|error| format!("OpenRouter response was not UTF-8: {error}"))?;
+    Ok(HttpTextResponse {
+        status: head.status,
+        body,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -400,24 +526,35 @@ fn call_openrouter(
     request: &Value,
 ) -> Result<HttpTextResponse, String> {
     let resp = ctx.http_call("POST", url, headers, &request.to_string())?;
-    Ok(HttpTextResponse { status: resp.status, body: resp.body })
+    Ok(HttpTextResponse {
+        status: resp.status,
+        body: resp.body,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
-fn put_file_value_stream(url: &str, headers: &[(String, String)], bytes: &[u8]) -> Result<(), String> {
-    let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+fn put_file_value_stream(
+    url: &str,
+    headers: &[(String, String)],
+    bytes: &[u8],
+) -> Result<(), String> {
+    let header_refs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     let (mut request_body, response_body, response_head) =
         temper_wasm_sdk::http_stream::streaming_call("PUT", url, &header_refs)
             .map_err(|error| format!("streaming PawFS image upload failed to start: {error}"))?;
     for chunk in bytes.chunks(FILE_UPLOAD_STREAM_CHUNK_BYTES) {
-        request_body
-            .write_all_chunk(chunk)
-            .map_err(|error| format!("streaming PawFS image upload failed while writing body: {error}"))?;
+        request_body.write_all_chunk(chunk).map_err(|error| {
+            format!("streaming PawFS image upload failed while writing body: {error}")
+        })?;
     }
-    request_body
-        .finish()
-        .map_err(|error| format!("streaming PawFS image upload failed while closing body: {error}"))?;
-    let head = response_head().map_err(|error| format!("streaming PawFS image upload failed before response: {error}"))?;
+    request_body.finish().map_err(|error| {
+        format!("streaming PawFS image upload failed while closing body: {error}")
+    })?;
+    let head = response_head()
+        .map_err(|error| format!("streaming PawFS image upload failed before response: {error}"))?;
     let _ = response_body.close();
     if head.status >= 400 || head.status == 0 {
         let stream_error = head
@@ -426,13 +563,20 @@ fn put_file_value_stream(url: &str, headers: &[(String, String)], bytes: &[u8]) 
             .find(|(key, _)| key.eq_ignore_ascii_case("x-temper-stream-error"))
             .map(|(_, value)| format!(": {value}"))
             .unwrap_or_default();
-        return Err(format!("PawFS image upload failed (HTTP {}{stream_error})", head.status));
+        return Err(format!(
+            "PawFS image upload failed (HTTP {}{stream_error})",
+            head.status
+        ));
     }
     Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn put_file_value_stream(_url: &str, _headers: &[(String, String)], _bytes: &[u8]) -> Result<(), String> {
+fn put_file_value_stream(
+    _url: &str,
+    _headers: &[(String, String)],
+    _bytes: &[u8],
+) -> Result<(), String> {
     Err("streaming PawFS image uploads require the Temper WASM host".to_string())
 }
 
@@ -445,13 +589,22 @@ fn config_value(ctx: &Context, key: &str) -> Option<String> {
 }
 
 fn field_or_default<'a>(value: &'a Value, keys: &[&str], default: &'a str) -> &'a str {
-    entity_field_str(value, keys).map(str::trim).filter(|value| !value.is_empty()).unwrap_or(default)
+    entity_field_str(value, keys)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
 }
 
 fn sanitized_body_snippet(body: &str) -> String {
     body.chars()
         .take(500)
-        .map(|ch| if ch.is_control() && ch != '\n' && ch != '\t' { ' ' } else { ch })
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                ' '
+            } else {
+                ch
+            }
+        })
         .collect()
 }
 
@@ -463,9 +616,20 @@ mod tests {
 
     #[test]
     fn request_sends_only_what_every_model_takes() {
-        let square = build_openrouter_image_request(&json!({ "size": "1024x1024", "quality": "high", "background": "opaque" }), "a teapot", DEFAULT_MODEL);
-        assert_eq!(square, json!({ "model": DEFAULT_MODEL, "prompt": "a teapot", "n": 1 }));
-        let wide = build_openrouter_image_request(&json!({ "size": "1536x1024" }), "a harbour", "google/gemini-3.1-flash-image");
+        let square = build_openrouter_image_request(
+            &json!({ "size": "1024x1024", "quality": "high", "background": "opaque" }),
+            "a teapot",
+            DEFAULT_MODEL,
+        );
+        assert_eq!(
+            square,
+            json!({ "model": DEFAULT_MODEL, "prompt": "a teapot", "n": 1 })
+        );
+        let wide = build_openrouter_image_request(
+            &json!({ "size": "1536x1024" }),
+            "a harbour",
+            "google/gemini-3.1-flash-image",
+        );
         assert_eq!(wide["aspect_ratio"], "4:3");
         assert_eq!(wide["model"], "google/gemini-3.1-flash-image");
         assert!(wide.get("quality").is_none() && wide.get("size").is_none());
@@ -491,20 +655,51 @@ mod tests {
 
     #[test]
     fn a_data_url_decodes_too() {
-        let bytes = decode_image_base64(&format!("data:image/png;base64,{PNG_1X1_BASE64}")).expect("decoded");
+        let bytes = decode_image_base64(&format!("data:image/png;base64,{PNG_1X1_BASE64}"))
+            .expect("decoded");
         assert_eq!(detect_image_mime(&bytes).as_deref(), Some("image/png"));
     }
 
     #[test]
     fn provider_errors_are_reported_not_stored() {
-        let err = extract_image_output(&json!({ "error": { "message": "model not found", "code": 404 } }).to_string()).unwrap_err();
+        let err = extract_image_output(
+            &json!({ "error": { "message": "model not found", "code": 404 } }).to_string(),
+        )
+        .unwrap_err();
         assert!(err.contains("model not found"));
-        assert!(extract_image_output(&json!({ "data": [] }).to_string()).unwrap_err().contains("data[0]"));
+        assert!(
+            extract_image_output(&json!({ "data": [] }).to_string())
+                .unwrap_err()
+                .contains("data[0]")
+        );
+    }
+
+    #[test]
+    fn only_allowed_models_are_used() {
+        assert_eq!(choose_model("", DEFAULT_MODEL).unwrap(), DEFAULT_MODEL);
+        assert_eq!(
+            choose_model("gpt-image-2", DEFAULT_MODEL).unwrap(),
+            DEFAULT_MODEL
+        );
+        assert_eq!(
+            choose_model(DEFAULT_MODEL, "vendor/configured").unwrap(),
+            DEFAULT_MODEL
+        );
+        assert_eq!(
+            choose_model("vendor/configured", "vendor/configured").unwrap(),
+            "vendor/configured"
+        );
+        assert!(choose_model("openai/some-expensive-model", DEFAULT_MODEL).is_err());
     }
 
     #[test]
     fn only_image_generation_is_accepted() {
-        assert!(validate_request(&json!({ "media_type": "image", "operation": "generate", "provider": "openrouter" })).is_ok());
+        assert!(
+            validate_request(
+                &json!({ "media_type": "image", "operation": "generate", "provider": "openrouter" })
+            )
+            .is_ok()
+        );
         assert!(validate_request(&json!({ "media_type": "video" })).is_err());
         assert!(validate_request(&json!({ "operation": "edit" })).is_err());
     }

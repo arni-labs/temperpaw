@@ -143,6 +143,7 @@ fn image_generation_tool_is_exposed_through_default_agent_tools() {
         "\"image_generate\" => temper_image_generate",
         "/tdata/MediaGenerationRequests",
         "Temper.Generate?await_integration=true",
+        "Temper.GenerateWithOpenRouter?await_integration=true",
         "__temperpaw_image",
         "unwrap_or_else(|| \"low\".to_string())",
     ] {
@@ -410,6 +411,32 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
     assert!(
         app.contains("name = \"openrouter_image_generate\""),
         "app.toml must declare the OpenRouter module"
+    );
+
+    // Reading requests (they may hold a member's draft prompt) and spending
+    // OpenRouter credit are for the platform's own principals only, and only
+    // allow-listed models are drawn.
+    let policy = read(root.join("os-apps/paw-media/policies/media_generation.cedar"));
+    let forbid = policy
+        .split("forbid(")
+        .nth(1)
+        .expect("media policy must forbid reads and OpenRouter spending for other principals");
+    for needle in [
+        "Action::\"read\"",
+        "Action::\"list\"",
+        "Action::\"GenerateWithOpenRouter\"",
+        ") unless {",
+        "\"service\", \"owner\", \"curator\"",
+        "\"wasm-runtime\"",
+    ] {
+        assert!(
+            forbid.contains(needle),
+            "media policy forbid should contain {needle}"
+        );
+    }
+    assert!(
+        wasm.contains("const ALLOWED_MODELS"),
+        "OpenRouter renderer must allow-list models"
     );
     assert!(
         build_script.contains("openrouter_image_generate"),
