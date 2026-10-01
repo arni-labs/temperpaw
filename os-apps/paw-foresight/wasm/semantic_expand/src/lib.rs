@@ -65,9 +65,17 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
     if premises.len() > 32 {
         return Err("Too many challenged premises".into());
     }
-    for premise in premises {
-        bounded_text(&premise["assumption"], 600)?;
-        bounded_text(&premise["alternative"], 1200)?;
+    for (index, premise) in premises.iter().enumerate() {
+        bounded_text(
+            &premise["assumption"],
+            600,
+            &format!("premises_challenged[{index}].assumption"),
+        )?;
+        bounded_text(
+            &premise["alternative"],
+            1200,
+            &format!("premises_challenged[{index}].alternative"),
+        )?;
     }
     if generated["research_evidence"]
         .as_array()
@@ -490,12 +498,17 @@ fn validate_scope(review: &Value, snapshot: &Value) -> Result<(), String> {
     if review["requested_question"] != snapshot["world"]["description"] {
         return Err("Scope requested_question must equal the original question exactly".into());
     }
-    bounded_text(&review["evidence_scope"], scope::SCOPE_TEXT_MAX)?;
+    bounded_text(
+        &review["evidence_scope"],
+        scope::SCOPE_TEXT_MAX,
+        "scope_review.evidence_scope",
+    )?;
     bounded_texts(
         &review["limitations"],
         0,
         scope::LIMITATIONS_MAX,
         scope::LIMITATION_TEXT_MAX,
+        "scope_review.limitations",
     )?;
     scope::validate_review(review)?;
     if review["status"] != "aligned" && review["limitations"].as_array().unwrap().is_empty() {
@@ -565,7 +578,11 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
     outlook::validate_baseline(&generated["baseline"], snapshot)?;
     retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
     let report = &generated["scope_disposition"];
-    bounded_text(&report["report"], scope::REPORT_MAX)?;
+    bounded_text(
+        &report["report"],
+        scope::REPORT_MAX,
+        "scope_disposition.report",
+    )?;
     scope::validate_disposition(report)?;
     let refs = report["evidence_ids"]
         .as_array()
@@ -687,7 +704,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     let by_id: std::collections::BTreeMap<_, _> =
         nodes.iter().map(|n| (core::field(n, "Id"), n)).collect();
-    bounded_text(&generated["shared_question"], 800)
+    bounded_text(&generated["shared_question"], 800, "shared_question")
         .map_err(|error| format!("Invalid shared_question: {error}"))?;
     let worlds = generated["worlds"]
         .as_array()
@@ -706,7 +723,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     ) + 1;
     let mut added = vec![];
     let mut identities = std::collections::BTreeSet::new();
-    for world in worlds {
+    for (index, world) in worlds.iter().enumerate() {
         let local = identifier(&world["id"])?;
         if local.starts_with(references::PREFIX) {
             return Err("Reserved world identity".into());
@@ -723,13 +740,19 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             ("scene", 600),
             ("narrative", 1200),
         ] {
-            bounded_text(&world[key], max)
+            bounded_text(&world[key], max, &format!("worlds[{index}].{key}"))
                 .map_err(|error| format!("World {local}: invalid {key}: {error}"))?;
         }
         for key in ["signals", "falsifiers"] {
-            bounded_texts(&world[key], 1, 8, 240)?;
+            bounded_texts(&world[key], 1, 8, 240, &format!("worlds[{index}].{key}"))?;
         }
-        bounded_texts(&world["what_you_can_do"], 0, 4, 240)?;
+        bounded_texts(
+            &world["what_you_can_do"],
+            0,
+            4,
+            240,
+            &format!("worlds[{index}].what_you_can_do"),
+        )?;
         let mut components = std::collections::BTreeSet::new();
         for reference in world["component_ids"]
             .as_array()
@@ -908,20 +931,38 @@ impl JsonEncode for Vec<Value> {
         serde_json::to_string(&self).unwrap()
     }
 }
-fn bounded_text(value: &Value, max: usize) -> Result<(), String> {
-    value
-        .as_str()
-        .filter(|s| !s.trim().is_empty() && s.chars().count() <= max)
-        .map(|_| ())
-        .ok_or("Missing or oversized world text".into())
+fn bounded_text(value: &Value, max: usize, path: &str) -> Result<(), String> {
+    let text = value.as_str().ok_or_else(|| {
+        format!(
+            "{path} must be a string containing 1–{max} characters; received a non-string value"
+        )
+    })?;
+    let actual = text.chars().count();
+    if text.trim().is_empty() || actual > max {
+        return Err(format!(
+            "{path} must contain nonblank text of 1–{max} characters; received {actual} characters (maximum {max})"
+        ));
+    }
+    Ok(())
 }
-fn bounded_texts(value: &Value, min: usize, max: usize, chars: usize) -> Result<(), String> {
-    let values = value
-        .as_array()
-        .filter(|v| (min..=max).contains(&v.len()))
-        .ok_or("Invalid world text list")?;
-    for value in values {
-        bounded_text(value, chars)?;
+fn bounded_texts(
+    value: &Value,
+    min: usize,
+    max: usize,
+    chars: usize,
+    path: &str,
+) -> Result<(), String> {
+    let values = value.as_array().ok_or_else(|| {
+        format!("{path} must be an array containing {min}–{max} items; received a non-array value")
+    })?;
+    if !(min..=max).contains(&values.len()) {
+        return Err(format!(
+            "{path} must contain {min}–{max} items; received {} items (maximum {max})",
+            values.len()
+        ));
+    }
+    for (index, value) in values.iter().enumerate() {
+        bounded_text(value, chars, &format!("{path}[{index}]"))?;
     }
     Ok(())
 }
@@ -1556,6 +1597,43 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn text_diagnostics_name_field_and_unicode_counts_without_changing_bounds() {
+        let mut review = json!({"requested_question":"Question","evidence_scope":"é".repeat(838),"status":"narrowed","narrowing_basis":"evidence_availability","limitations":["Unknown"]});
+        let snapshot = json!({"world":{"description":"Question"}});
+        let error = validate_scope(&review, &snapshot).unwrap_err();
+        for detail in ["scope_review.evidence_scope", "838", "800"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        review["evidence_scope"] = json!("é".repeat(800));
+        assert!(validate_scope(&review, &snapshot).is_ok());
+        review["limitations"] = json!(["é".repeat(241)]);
+        let error = validate_scope(&review, &snapshot).unwrap_err();
+        for detail in ["scope_review.limitations[0]", "241", "240"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        review["limitations"] = json!(vec!["Unknown"; 17]);
+        let error = validate_scope(&review, &snapshot).unwrap_err();
+        for detail in ["scope_review.limitations", "17", "16"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert!(
+            bounded_text(&Value::Null, 800, "scope_review.evidence_scope")
+                .unwrap_err()
+                .contains("non-string")
+        );
+        assert!(
+            bounded_text(&json!("   "), 800, "scope_review.evidence_scope")
+                .unwrap_err()
+                .contains("3 characters")
+        );
+        assert!(
+            bounded_texts(&Value::Null, 0, 4, 240, "worlds[0].what_you_can_do")
+                .unwrap_err()
+                .contains("non-array")
+        );
+    }
+
     #[test]
     fn researched_baseline_maps_new_sources_and_rejects_unaccepted_summaries() {
         let before = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[]});
