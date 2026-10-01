@@ -21,6 +21,24 @@ use wasm_helpers::sandbox::{self, SandboxConfig, SandboxHandle};
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     let result = (|| -> Result<(), String> {
         let ctx = Context::from_host()?;
+        // Tear down the session's sandbox on terminal transitions so compute
+        // is never leaked (sessions provision lazily and previously nothing
+        // ever deleted the sandbox). Decided by SESSION STATUS, not trigger
+        // config — trigger config resolution proved unreliable across
+        // actions, and provisioning at a terminal state is never correct.
+        // Best-effort — a destroy failure must not fail the transition.
+        let session_status = ctx
+            .entity_state
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if matches!(session_status, "Completed" | "Failed" | "Cancelled")
+            || ctx.config.get("mode").map(String::as_str) == Some("release")
+        {
+            release_sandbox(&ctx);
+            return Ok(());
+        }
+
         ctx.log("info", "sandbox_provisioner: starting (Resume flow)");
 
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
@@ -75,6 +93,60 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 enum ProvisionStatus {
     Pending(SandboxHandle),
     Ready(SandboxHandle),
+}
+
+/// Release the session's sandbox on a terminal transition. Reads the sandbox
+/// handle from entity fields; a session that never provisioned one (or used a
+/// static URL) is a no-op. Never propagates errors — logs and reports status.
+fn release_sandbox(ctx: &Context) {
+    let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
+    let sandbox_id = fields
+        .get("sandbox_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let provider = fields
+        .get("sandbox_provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if sandbox_id.is_empty() || sandbox_id == "static-sandbox" || provider == "static" {
+        set_success_result("", &json!({"status": "noop", "reason": "no provisioned sandbox"}));
+        return;
+    }
+    let handle = SandboxHandle {
+        sandbox_url: fields
+            .get("sandbox_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        sandbox_id: sandbox_id.to_string(),
+        provider: if provider.is_empty() {
+            "tensorlake".to_string()
+        } else {
+            provider.to_string()
+        },
+    };
+    match sandbox::sandbox_destroy(ctx, &handle) {
+        Ok(()) => {
+            ctx.log(
+                "info",
+                &format!(
+                    "sandbox_provisioner: released sandbox {} ({})",
+                    handle.sandbox_id, handle.provider
+                ),
+            );
+            set_success_result("", &json!({"status": "released", "sandbox_id": handle.sandbox_id}));
+        }
+        Err(error) => {
+            ctx.log(
+                "warn",
+                &format!(
+                    "sandbox_provisioner: failed to release sandbox {} ({}): {error}",
+                    handle.sandbox_id, handle.provider
+                ),
+            );
+            set_success_result("", &json!({"status": "release_failed", "sandbox_id": handle.sandbox_id, "error": error}));
+        }
+    }
 }
 
 /// Provision a sandbox. Priority order:

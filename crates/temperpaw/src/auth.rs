@@ -21,6 +21,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use serde::{Deserialize, Serialize};
 use temper_authz::{AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext};
 use temper_runtime::tenant::TenantId;
+use temper_server::internal_invocation::InternalInvocationCredentialStore;
 #[cfg(test)]
 use temper_store_turso::TursoEventStore;
 
@@ -148,9 +149,11 @@ pub async fn middleware(
             agent_type: None,
             attributes: Default::default(),
         };
+        let authenticated = authenticated_context(state.tenant(), principal);
         request
             .extensions_mut()
-            .insert(authenticated_context(state.tenant(), principal));
+            .insert(VerifiedSessionContext(authenticated.clone()));
+        request.extensions_mut().insert(authenticated);
         return next.run(request).await;
     }
 
@@ -195,6 +198,50 @@ pub async fn middleware(
     }
 
     StatusCode::UNAUTHORIZED.into_response()
+}
+
+/// Set only after a Paw session cookie has been cryptographically verified.
+/// The principal-header path must never create this marker.
+#[derive(Clone)]
+struct VerifiedSessionContext(AuthenticatedRequestContext);
+
+/// Bridge verified Paw sessions through the platform's normal bearer edge.
+/// Install on platform routes only; dashboard/static requests do not allocate
+/// unused credentials. The inner edge consumes each capability once.
+pub async fn platform_session_credentials(
+    State(credentials): State<InternalInvocationCredentialStore>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(VerifiedSessionContext(authenticated)) =
+        request.extensions_mut().remove::<VerifiedSessionContext>()
+    else {
+        return next.run(request).await;
+    };
+    let target = request
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    let credential = match credentials.issue_for_url(
+        authenticated,
+        request.method().as_str(),
+        &format!("http://127.0.0.1{target}"),
+    ) {
+        Ok(credential) => credential,
+        Err(error) => {
+            tracing::error!(%error, "Could not authorize verified dashboard session request");
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    let authorization = match HeaderValue::from_str(&format!("Bearer {credential}")) {
+        Ok(value) => value,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    request
+        .headers_mut()
+        .insert(axum::http::header::AUTHORIZATION, authorization);
+    next.run(request).await
 }
 
 async fn is_safe_setup_path_public_during_bootstrap(
@@ -271,7 +318,7 @@ fn is_dashboard_public_path(path: &str) -> bool {
 }
 
 fn claims_from_headers(state: &AuthState, headers: &HeaderMap) -> Option<SessionClaims> {
-    let cookies = headers.get(COOKIE)?.to_str().ok()?;
+    headers.get(COOKIE)?.to_str().ok()?;
     let jar = CookieJar::from_headers(headers);
     let cookie = jar.get(SESSION_COOKIE)?;
     decode::<SessionClaims>(
@@ -282,7 +329,7 @@ fn claims_from_headers(state: &AuthState, headers: &HeaderMap) -> Option<Session
     .ok()
     .map(|token| token.claims)
     .or_else(|| {
-        tracing::warn!(cookies, "Invalid paw session cookie");
+        tracing::warn!("Invalid paw session cookie");
         None
     })
 }
@@ -802,6 +849,190 @@ mod tests {
         let claims = claims_from_headers(&state, &headers).expect("cookie should decode");
         assert_eq!(claims.email, "bootstrap@temperpaw.local");
         assert_eq!(claims.provider, "local");
+    }
+
+    fn verified_cookie_fixture(state: &AuthState) -> String {
+        let cookie =
+            issue_session_cookie_value(state.jwt_secret.as_slice(), "owner@example.com").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", cookie.parse().unwrap());
+        let claims = claims_from_headers(state, &headers)
+            .expect("session fixture must decode before testing the inner router");
+        assert_eq!(claims.email, "owner@example.com");
+        cookie
+    }
+
+    // The real bearer edge must admit the verified session, not just an echo handler.
+    #[tokio::test]
+    async fn verified_cookie_reaches_the_platform_router() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = AuthState::for_tests(tempdir.path()).await;
+        let platform = temper_platform::state::PlatformState::new(None);
+        platform
+            .server
+            .authz
+            .reload_tenant_policies(
+                "default",
+                r#"permit(principal == Admin::"owner@example.com",
+                action == Action::"read_app_catalog", resource == AppCatalog::"all");"#,
+            )
+            .unwrap();
+        let credentials = platform.server.internal_invocation_credentials.clone();
+        let app = temper_platform::router::build_platform_router(platform)
+            .layer(from_fn_with_state(
+                credentials,
+                super::platform_session_credentials,
+            ))
+            .layer(from_fn_with_state(state.clone(), middleware));
+        let cookie = verified_cookie_fixture(&state);
+        let response = app
+            .oneshot(
+                Request::get("/observe/os-apps")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn platform_session_adapter_rejects_missing_invalid_and_cross_tenant_cookies() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = AuthState::for_tests(tempdir.path()).await;
+        let platform = temper_platform::state::PlatformState::new(None);
+        let credentials = platform.server.internal_invocation_credentials.clone();
+        let app = temper_platform::router::build_platform_router(platform)
+            .layer(from_fn_with_state(
+                credentials,
+                super::platform_session_credentials,
+            ))
+            .layer(from_fn_with_state(state.clone(), middleware));
+
+        for cookie in [None, Some("paw_session=not-a-signed-session")] {
+            let mut request = Request::get("/observe/os-apps")
+                .header("x-temper-principal-kind", "admin")
+                .header("x-temper-principal-id", "owner@example.com");
+            if let Some(cookie) = cookie {
+                request = request.header("cookie", cookie);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "caller-controlled principal headers must never mint a session capability"
+            );
+        }
+        let cookie = verified_cookie_fixture(&state);
+        let response = app
+            .oneshot(
+                Request::get("/observe/os-apps")
+                    .header("cookie", &cookie)
+                    .header("x-tenant-id", "another-tenant")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_capability_is_single_use_and_bound_to_method_uri_and_tenant() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = AuthState::for_tests(tempdir.path()).await;
+        let platform = temper_platform::state::PlatformState::new(None);
+        platform
+            .server
+            .authz
+            .reload_tenant_policies(
+                "default",
+                r#"permit(principal == Admin::"owner@example.com",
+                action == Action::"read_app_catalog", resource == AppCatalog::"all");"#,
+            )
+            .unwrap();
+        // Capture before the platform edge, then present under altered bindings.
+        let capture = Router::new()
+            .route(
+                "/observe/os-apps",
+                get(|headers: HeaderMap| async move {
+                    headers
+                        .get("authorization")
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned()
+                }),
+            )
+            .layer(from_fn_with_state(
+                platform.server.internal_invocation_credentials.clone(),
+                super::platform_session_credentials,
+            ))
+            .layer(from_fn_with_state(state.clone(), middleware));
+        let real = temper_platform::router::build_platform_router(platform);
+        let cookie = verified_cookie_fixture(&state);
+        let target = "/observe/os-apps?view=full";
+        for (method, uri, tenant, expected) in [
+            ("GET", target, "default", StatusCode::OK),
+            ("POST", target, "default", StatusCode::UNAUTHORIZED),
+            (
+                "GET",
+                "/observe/os-apps?view=changed",
+                "default",
+                StatusCode::UNAUTHORIZED,
+            ),
+            ("GET", target, "another-tenant", StatusCode::UNAUTHORIZED),
+        ] {
+            let captured = capture
+                .clone()
+                .oneshot(
+                    Request::get(target)
+                        .header("cookie", &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(captured.status(), StatusCode::OK);
+            let authorization =
+                String::from_utf8(to_bytes(captured.into_body(), 4096).await.unwrap().to_vec())
+                    .unwrap();
+            let response = real
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("x-tenant-id", tenant)
+                        .header("authorization", &authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            let replay = real
+                .clone()
+                .oneshot(
+                    Request::get(target)
+                        .header("x-tenant-id", "default")
+                        .header("authorization", &authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                replay.status(),
+                StatusCode::UNAUTHORIZED,
+                "capability must be consumed even when its first request binding is wrong"
+            );
+        }
     }
 
     #[tokio::test]

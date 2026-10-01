@@ -220,15 +220,17 @@ fn forecast_is_immutable_once_registered() {
     let path = spec_path("forecast.ioa.toml");
     let spec = parse_spec(&path);
 
-    // The only legal transitions are resolution and scoring. No action may
-    // alter the registered question or probability, and nothing leaves Scored.
-    let allowed: BTreeSet<&str> = ["Resolve", "Score", "Void"].into_iter().collect();
+    // Registration is the sole writer, and it is unavailable after Created.
     for act in actions(&spec) {
         let name = act.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(
-            allowed.contains(name),
-            "Forecast declares unexpected action {name}; registration is immutable"
-        );
+        if name == "Register" {
+            assert_eq!(action_from(act), BTreeSet::from(["Created".to_string()]));
+            assert_eq!(
+                act.get("to").and_then(|v| v.as_str()),
+                Some("Preregistered")
+            );
+            continue;
+        }
         let params = action_params(act);
         for frozen in ["probability", "question", "resolve_by"] {
             assert!(
@@ -701,14 +703,14 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
         .unwrap_or_else(|| panic!("{} missing state_timeout for Seeding", path.display()));
     assert_eq!(
         seeding.get("on_timeout").and_then(|v| v.as_str()),
-        Some("ResumeSeed"),
-        "Seeding timeout must re-spawn the surveyor via ResumeSeed"
+        Some("CheckResearchSession"),
+        "Seeding timeout must inspect the current session before retrying"
     );
 
     let resume = action(&spec, "ResumeSeed", &path);
     assert!(
-        action_from(resume).contains("Seeding"),
-        "ResumeSeed must fire from Seeding"
+        action_from(resume).contains("Seeding") && action_from(resume).contains("Failed"),
+        "Manual ResumeSeed must recover Seeding or Failed"
     );
     assert_eq!(
         resume.get("to").and_then(|v| v.as_str()),
@@ -718,7 +720,10 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
     let trigger = resume
         .get("effect")
         .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|effect| effect.get("type").and_then(|v| v.as_str()) == Some("trigger"))
+        })
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
     assert_eq!(
         trigger,

@@ -1,0 +1,114 @@
+# One independent immutable shadow result per path challenge.
+[automaton]
+name = "SemanticEvaluation"
+states = ["Created", "Running", "Recorded", "Skipped", "Failed"]
+initial = "Created"
+
+[[state_timeout]]
+state = "Running"
+after_seconds = 120
+on_timeout = "Timeout"
+
+[[state]]
+name = "parent_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "world_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "endpoint_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repair_log_file_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "required_node_ids"
+type = "string"
+initial = ""
+
+[[state]]
+name = "round_count"
+type = "string"
+initial = ""
+
+[[state]]
+name = "result_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[action]]
+name = "Evaluate"
+kind = "input"
+from = ["Created"]
+to = "Running"
+params = ["world_id","endpoint_id","repair_log_file_id","required_node_ids","round_count","challenge_packet_json","challenge_packet_sha256"]
+[[action.triggers]]
+name = "evaluate_semantics"
+kind = "wasm"
+module = "evaluate_semantics"
+on_failure = "Fail"
+[action.triggers.config]
+typesafe_api_key = "{secret:foresight_typesafe_api_key}"
+
+[[action]]
+name = "Record"
+kind = "input"
+from = ["Running"]
+to = "Recorded"
+params = ["result_json"]
+constraints = [{kind="param_nonempty",param="result_json"}]
+
+[[action]]
+name = "Skip"
+kind = "input"
+from = ["Running"]
+to = "Skipped"
+
+[[action]]
+name = "Fail"
+kind = "input"
+from = ["Running"]
+to = "Failed"
+params = ["error_message"]
+
+[[action]]
+name = "Timeout"
+kind = "input"
+from = ["Running"]
+to = "Failed"
+
+[[invariant]]
+name = "RecordedIsFinal"
+when = ["Recorded"]
+assert = "no_further_transitions"
+[[invariant]]
+name = "SkippedIsFinal"
+when = ["Skipped"]
+assert = "no_further_transitions"
+[[invariant]]
+name = "FailedIsFinal"
+when = ["Failed"]
+assert = "no_further_transitions"
+
+[[state]]
+name = "challenge_packet_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "challenge_packet_sha256"
+type = "string"
+initial = ""

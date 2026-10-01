@@ -273,6 +273,32 @@ pub fn take_lazy_sandbox() -> Option<(String, String, String)> {
     LAZY_SANDBOX.with(|cell| cell.borrow_mut().take())
 }
 
+// The approval and completion paths keep their existing control flow. Never
+// checkpoint while either signal is pending, even if Python caught a denial.
+pub fn continuation_allowed() -> bool {
+    CEDAR_DENIAL.with(|v| v.borrow().is_none()) && DONE_RESULT.with(|v| v.borrow().is_none())
+}
+
+pub fn continuation_state() -> Value {
+    json!({"output":DISPATCH_OUTPUT.with(|v|v.borrow().clone()),
+        "images":DISPATCH_IMAGE_RESULTS.with(|v|v.borrow().clone()),
+        "sandbox":LAZY_SANDBOX.with(|v|v.borrow().clone())})
+}
+
+pub fn restore_continuation_state(state: &Value) -> Result<(), String> {
+    let output: Option<String> = serde_json::from_value(state["output"].clone())
+        .map_err(|e| format!("invalid continuation output: {e}"))?;
+    let images: Vec<Value> = serde_json::from_value(state["images"].clone())
+        .map_err(|e| format!("invalid continuation images: {e}"))?;
+    let sandbox: Option<(String, String, String)> =
+        serde_json::from_value(state["sandbox"].clone())
+            .map_err(|e| format!("invalid continuation sandbox: {e}"))?;
+    DISPATCH_OUTPUT.with(|v| *v.borrow_mut() = output);
+    DISPATCH_IMAGE_RESULTS.with(|v| *v.borrow_mut() = images);
+    LAZY_SANDBOX.with(|v| *v.borrow_mut() = sandbox);
+    Ok(())
+}
+
 /// Take the Cedar denial context (if set). Clears after reading.
 pub fn take_cedar_denial() -> Option<String> {
     CEDAR_DENIAL.with(|cell| cell.borrow_mut().take())
@@ -3727,13 +3753,20 @@ fn escape_odata_string_literal(value: &str) -> String {
 }
 
 fn encode_odata_filter_literal(value: &str) -> String {
-    escape_odata_string_literal(value)
-        .replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('&', "%26")
-        .replace('?', "%3F")
-        .replace('#', "%23")
-        .replace('+', "%2B")
+    // OData escaping and URL encoding are separate layers. Reserved bytes in
+    // source URLs or search text must not become URL syntax in this request.
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in escape_odata_string_literal(value).bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+    encoded
 }
 
 /// Minimal headers for internal Temper API calls.
@@ -4037,7 +4070,61 @@ mod tests {
 
         assert!(path.contains("Status%20eq%20'Complete'"));
         assert!(path.contains("QueryType%20eq%20'fetch'"));
-        assert!(path.contains("Url%20eq%20'https://example.com/that''s-all'"));
+        assert!(path.contains("Url%20eq%20'https%3A%2F%2Fexample.com%2Fthat%27%27s-all'"));
+    }
+
+    #[test]
+    fn cache_lookup_literals_cannot_change_the_authorization_domain() {
+        for (query_type, value) in [
+            ("fetch", "https://cdn.jsdelivr.net/npm/game-engine@latest"),
+            ("search", "games @latest \"creator\"\nupdates"),
+        ] {
+            let path = if query_type == "fetch" {
+                web_query_cache_lookup_path(query_type, "", value)
+            } else {
+                web_query_cache_lookup_path(query_type, value, "")
+            };
+            assert!(
+                !path.contains('@'),
+                "query userinfo delimiter must be encoded"
+            );
+            assert!(!path.contains('\n'));
+            let url = format!("http://127.0.0.1:3467{path}");
+            // Same extraction as the pinned host: a raw query @ was interpreted
+            // as userinfo and yielded latest'&$top=1 instead of the API host.
+            let after_scheme = url.split_once("://").unwrap().1;
+            let after_auth = after_scheme
+                .split_once('@')
+                .map_or(after_scheme, |(_, rest)| rest);
+            let domain = after_auth.split(['/', '?', ':']).next().unwrap();
+            assert_eq!(domain, "127.0.0.1");
+        }
+    }
+
+    #[test]
+    fn filter_literal_encoding_preserves_unicode_and_odata_quotes() {
+        let value = "https://example.test/@latest?q=that's +50%&next=/a#café\n\"x\"";
+        let encoded = encode_odata_filter_literal(value);
+        assert!(
+            encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~%".contains(&byte))
+        );
+        let mut decoded = Vec::new();
+        let mut bytes = encoded.bytes();
+        while let Some(byte) = bytes.next() {
+            if byte == b'%' {
+                let hi = char::from(bytes.next().unwrap()).to_digit(16).unwrap();
+                let lo = char::from(bytes.next().unwrap()).to_digit(16).unwrap();
+                decoded.push((hi * 16 + lo) as u8);
+            } else {
+                decoded.push(byte);
+            }
+        }
+        assert_eq!(
+            String::from_utf8(decoded).unwrap(),
+            escape_odata_string_literal(value)
+        );
     }
 
     #[test]
@@ -4342,5 +4429,26 @@ mod tests {
 
         assert_eq!(result["base64_data"], "abcd");
         assert!(result.get("content_ref").is_none());
+    }
+    #[test]
+    fn continuation_preserves_dispatch_state_and_defers_approval_or_done() {
+        super::DISPATCH_OUTPUT.with(|v| *v.borrow_mut() = Some("required output".into()));
+        super::DISPATCH_IMAGE_RESULTS.with(|v| *v.borrow_mut() = vec![json!({"path":"image.png"})]);
+        super::LAZY_SANDBOX
+            .with(|v| *v.borrow_mut() = Some(("url".into(), "id".into(), "provider".into())));
+        let saved = super::continuation_state();
+        super::restore_continuation_state(&json!({"output":null,"images":[],"sandbox":null}))
+            .unwrap();
+        super::restore_continuation_state(&saved).unwrap();
+        assert_eq!(super::continuation_state(), saved);
+        assert!(super::continuation_allowed());
+        super::CEDAR_DENIAL.with(|v| *v.borrow_mut() = Some("approval".into()));
+        assert!(!super::continuation_allowed());
+        super::CEDAR_DENIAL.with(|v| *v.borrow_mut() = None);
+        super::DONE_RESULT.with(|v| *v.borrow_mut() = Some("done".into()));
+        assert!(!super::continuation_allowed());
+        super::DONE_RESULT.with(|v| *v.borrow_mut() = None);
+        super::restore_continuation_state(&json!({"output":null,"images":[],"sandbox":null}))
+            .unwrap();
     }
 }

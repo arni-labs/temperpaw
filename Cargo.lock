@@ -6833,6 +6833,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "async-trait",
  "axum",
  "axum-extra",
  "base64 0.22.1",

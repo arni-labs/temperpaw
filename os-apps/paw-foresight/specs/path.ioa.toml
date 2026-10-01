@@ -147,20 +147,17 @@ from = ["Solving"]
 to = "Solving"
 params = []
 hint = "Repairer session died or the server restarted; re-spawn for this route. System principals only."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
 
 [[action.triggers]]
-name = "spawn_repairers"
-kind = "wasm"
-module = "spawn_repairers"
-on_failure = "Fail"
+name = "enter_StartRepair"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "StartRepair"
+[action.triggers.resolve_target]
+type = "same_id"
 
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
 
-
-# Self-heal (ADR-007): the adversary reported but aggregate_costs never ran
-# (crash between ChallengeComplete and costing). Re-run the deterministic cost.
 [[action]]
 name = "ResumeCosting"
 kind = "input"
@@ -168,16 +165,15 @@ from = ["Challenged"]
 to = "Challenged"
 params = []
 hint = "Costing did not run after the challenge; re-trigger it. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
-name = "aggregate_costs"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_EvaluateChallenge"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "EvaluateChallenge"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -187,16 +183,15 @@ from = ["Solving"]
 to = "Repaired"
 params = ["repair_log_file_id", "required_node_ids", "cost_flags"]
 hint = "Repairer self-reports the backward route with its flags. Triggers the prune gate: routes already too expensive are cut before any adversary session is spent (ADR-004)."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
-name = "aggregate_costs"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_evaluaterepair"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "EvaluateRepair"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -205,16 +200,15 @@ kind = "input"
 from = ["Repaired"]
 params = []
 hint = "Prune gate passed: spawn the adversary. System principals only."
-effect = [{ type = "trigger", name = "spawn_adversaries" }]
 
 [[action.triggers]]
-name = "spawn_adversaries"
-kind = "wasm"
-module = "spawn_adversaries"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_startchallenge"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "StartChallenge"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -224,16 +218,15 @@ from = ["Repaired"]
 to = "Pruned"
 params = ["classification_note"]
 hint = "Repairer-phase cost already exceeds what the claim's best route allows; cut before adversary spend. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
-name = "aggregate_costs"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_relayprunedroute"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "RelayPrunedRoute"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -243,16 +236,15 @@ from = ["Challenged"]
 to = "Solving"
 params = ["revision_brief", "round_count"]
 hint = "An adversary objection was expensive and the round budget allows a revision: the repairer answers the specific objections on this same route. System principals only."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
 
 [[action.triggers]]
-name = "spawn_repairers"
-kind = "wasm"
-module = "spawn_repairers"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_resumerepair"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "ResumeRepair"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -262,16 +254,15 @@ from = ["Repaired"]
 to = "Challenged"
 params = ["challenge_log_file_id", "challenge_flags"]
 hint = "Adversary self-reports its attack flags. Triggers deterministic costing over the union of both sides' flags."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
-name = "aggregate_costs"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "enter_evaluatechallenge"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "EvaluateChallenge"
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -281,37 +272,59 @@ from = ["Challenged"]
 to = "Scored"
 params = ["repair_cost"]
 hint = "Deterministic cost from aggregate_costs. System principals only (Cedar). Triggers the world-wide classification check."
-effect = [{ type = "trigger", name = "aggregate_costs_classify" }]
 
 [[action.triggers]]
-name = "aggregate_costs_classify"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
+name = "enter_relayscoredroute"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "RelayScoredRoute"
+[action.triggers.resolve_target]
+type = "same_id"
 
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
 
 [[action]]
 name = "ClassifyCanonical"
 kind = "input"
-from = ["Scored"]
+from = ["Scored", "Canonical", "Tail"]
 to = "Canonical"
 params = ["classification_note"]
 hint = "Path carries the world's main probability mass. System principals only."
 
+
+[[action.triggers]]
+name = "publish_evaluated_path"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "RequestForecastRegistration"
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+
 [[action]]
 name = "ClassifyTail"
 kind = "input"
-from = ["Scored"]
+from = ["Scored", "Canonical", "Tail"]
 to = "Tail"
 params = ["classification_note"]
 hint = "Coherent but improbable — fiction territory, with the receipts attached. System principals only."
 
+
+[[action.triggers]]
+name = "publish_evaluated_path"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "RequestForecastRegistration"
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+
 [[action]]
 name = "Reject"
 kind = "input"
-from = ["Scored"]
+from = ["Scored", "Canonical", "Tail"]
 to = "Rejected"
 params = ["classification_note"]
 hint = "Repair cost beyond the world's tolerance. The endpoint loses this path."
@@ -339,12 +352,155 @@ name = "RejectedIsFinal"
 when = ["Rejected"]
 assert = "no_further_transitions"
 
-[[invariant]]
-name = "PrunedIsFinal"
-when = ["Pruned"]
-assert = "no_further_transitions"
+# Pruned is a terminal route decision, but its protected RelayPrunedRoute
+# action must still report that decision to the claim. That action preserves
+# Pruned. The corridor contract test rejects any outgoing state change here;
+# no_further_transitions would incorrectly forbid the required report itself.
 
 [[invariant]]
 name = "FailedIsFinal"
 when = ["Failed"]
 assert = "no_further_transitions"
+
+# Entered only by the declared system trigger after its recorded predecessor.
+[[action]]
+name = "EvaluateRepair"
+kind = "input"
+from = ["Repaired"]
+params = []
+hint = "Evaluate the reported repair under the declared system principal."
+effect = [{ type = "trigger", name = "aggregate_costs" }]
+
+[[action.triggers]]
+name = "aggregate_costs"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# Entered only by the declared system trigger after its recorded predecessor.
+[[action]]
+name = "EvaluateChallenge"
+kind = "input"
+from = ["Challenged"]
+params = []
+hint = "Price the reported challenge under the declared system principal."
+effect = [{ type = "trigger", name = "aggregate_costs" }]
+
+[[action.triggers]]
+name = "aggregate_costs"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# Entered only by the declared system trigger after its recorded predecessor.
+[[action]]
+name = "RelayScoredRoute"
+kind = "input"
+from = ["Scored"]
+params = []
+hint = "Report the scored route to its claim under the declared system principal."
+effect = [{ type = "trigger", name = "aggregate_costs" }]
+
+[[action.triggers]]
+name = "aggregate_costs"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# Entered only by the declared system trigger after its recorded predecessor.
+[[action]]
+name = "RelayPrunedRoute"
+kind = "input"
+from = ["Pruned"]
+params = []
+hint = "Report the pruned route to its claim under the declared system principal."
+effect = [{ type = "trigger", name = "aggregate_costs" }]
+
+[[action.triggers]]
+name = "aggregate_costs"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+# Entered only by the declared system trigger after its recorded predecessor.
+[[action]]
+name = "StartChallenge"
+kind = "input"
+from = ["Repaired"]
+params = []
+hint = "Freeze complete evidence before starting either evaluator."
+[[action.triggers]]
+name = "prepare_challenge"
+kind = "wasm"
+module = "prepare_challenge"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ChallengePrepared"
+kind = "input"
+from = ["Repaired"]
+params = ["challenge_packet_json","challenge_packet_sha256","expected_repair_log_file_id"]
+constraints = [{kind="param_equals_field",param="expected_repair_log_file_id",field="repair_log_file_id"},{kind="param_nonempty",param="challenge_packet_json"},{kind="param_nonempty",param="challenge_packet_sha256"}]
+[[action.triggers]]
+name = "enter_launchchallenge"
+kind = "entity"
+principal = "system"
+target_entity = "Path"
+target_action = "LaunchChallenge"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "LaunchChallenge"
+kind = "input"
+from = ["Repaired"]
+params = []
+effect = [
+  { type = "trigger", name = "spawn_adversaries" },
+  { type = "spawn", entity_type = "SemanticEvaluation", entity_id_source = "{uuid}", initial_action = "Evaluate", copy_fields = "world_id,endpoint_id,repair_log_file_id,required_node_ids,round_count,challenge_packet_json,challenge_packet_sha256" },
+]
+[[action.triggers]]
+name = "spawn_adversaries"
+kind = "wasm"
+module = "spawn_adversaries"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "StartRepair"
+kind = "input"
+from = ["Solving"]
+to = "Solving"
+params = []
+[[action.triggers]]
+name = "spawn_repairers"
+kind = "wasm"
+module = "spawn_repairers"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[state]]
+name = "challenge_packet_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "challenge_packet_sha256"
+type = "string"
+initial = ""

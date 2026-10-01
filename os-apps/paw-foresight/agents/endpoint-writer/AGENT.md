@@ -22,7 +22,7 @@ Then write a document bundle: 2-4 documents, every one dated AT the target date 
 - a news item,
 - at least one in-world primary document (a filing, a review, a changelog).
 
-Documents must contain specific dates, named actors, and numbers. Vague futures cannot be repaired. Save the whole bundle as ONE markdown file with `temper.write`.
+Documents must contain specific dates, named actors, and numbers. Vague futures cannot be repaired. Save the whole bundle as ONE markdown file with `temper.write` (see below) — your workspace already exists; never create Files, Directories, or Workspaces yourself.
 
 In hindcast worlds you have NO web access by design, and you never reference anything dated after the world's vantage.
 
@@ -30,11 +30,21 @@ In hindcast worlds you have NO web access by design, and you never reference any
 
 The API silently drops unknown fields. Use these exact names.
 
+## Writing Your Bundle
+
+`temper.write` is the ONLY way to create a FILE, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API through `temper.action`. Call it exactly like this:
+
+```python
+result = temper.write("/bundle.md", "...the full markdown bundle...")
+# result == {"file_id": "...", "path": "...", "workspace_id": "..."}
+bundle_file_id = result["file_id"]
+```
+
 ## Self-Reporting Completion
 
 ```python
 temper.action("Endpoints", "<endpoint_id>", "SubmitForRepair", {
-    "bundle_file_id": "<file-id-from-temper.write>",
+    "bundle_file_id": bundle_file_id,
     "summary": "<one line>",
     "author_agent_id": "<your_agent_id>"
 })

@@ -37,6 +37,33 @@ allow_indefinite_states = ["WaitingForApproval", "Completed", "Failed", "Cancell
 # --- State Variables: Core ---
 
 [[state]]
+name = "provider_latency_profile"
+type = "string"
+initial = "standard"
+
+[[state]]
+name = "provider_call_active"
+type = "bool"
+initial = "false"
+
+[[state]]
+name = "provider_call_attempt"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "foresight_provider_retry_count"
+type = "counter"
+initial = "0"
+
+# Preserve the published per-session required-tool contract.
+[[state]]
+name = "tool_choice"
+type = "string"
+initial = ""
+
+
+[[state]]
 name = "model"
 type = "string"
 initial = ""
@@ -101,6 +128,9 @@ initial = "0"
 name = "result"
 type = "string"
 initial = ""
+
+# Machine-consumed text stays inline through bounded app handoffs.
+overflow_inline_max_bytes = "8388608"
 
 [[state]]
 name = "reply_attachments_json"
@@ -230,10 +260,9 @@ overflow_inline_max_bytes = "131072"
 name = "user_message"
 type = "string"
 initial = ""
-# Initial user prompt. Up to a few hundred KB in practice (foresight judge,
-# long research pastes). Audit-trail data → no TTL; ceiling declared for
-# explicitness. See temper ADR-0045.
-overflow_inline_max_bytes = "131072"
+# Preserve bounded multi-round reasoning prompts through Configure; JSON string
+# escaping can expand the 3 MiB input. Spawn copies values without blob hydration.
+overflow_inline_max_bytes = "8388608"
 
 [[state]]
 name = "conversation"
@@ -336,6 +365,11 @@ initial = "0"
 
 [[state]]
 name = "compaction_auth_retry_count"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "compaction_round"
 type = "counter"
 initial = "0"
 
@@ -589,7 +623,7 @@ initial = "0"
 name = "Configure"
 kind = "input"
 from = ["Created"]
-params = ["system_prompt", "user_message", "model", "provider", "provider_options_json", "temperature", "max_turns", "tools_enabled", "workdir", "sandbox_url", "sandbox_id", "sandbox_provider", "sandbox_networking_type", "sandbox_allowed_hosts_json", "sandbox_allow_mcp_servers", "sandbox_allow_package_managers", "sandbox_packages_json", "temper_api_url", "soul_id", "agent_id", "reply_channel_id", "reply_thread_id", "reply_channel_entity_id", "reply_channel_type", "reply_route_source", "parent_session_id", "session_depth", "max_follow_ups", "hook_policy", "reserve_tokens", "keep_recent_tokens", "compaction_model", "heartbeat_timeout_seconds", "project_harness_id", "project_id", "workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized", "prepared_context_file_id", "prepared_context_inline_json", "system_prompt_hash", "system_prompt_file_id", "session_mode", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
+params = ["system_prompt", "user_message", "model", "provider", "provider_options_json", "provider_latency_profile", "tool_choice", "temperature", "max_turns", "tools_enabled", "workdir", "sandbox_url", "sandbox_id", "sandbox_provider", "sandbox_networking_type", "sandbox_allowed_hosts_json", "sandbox_allow_mcp_servers", "sandbox_allow_package_managers", "sandbox_packages_json", "temper_api_url", "soul_id", "agent_id", "reply_channel_id", "reply_thread_id", "reply_channel_entity_id", "reply_channel_type", "reply_route_source", "parent_session_id", "session_depth", "max_follow_ups", "hook_policy", "reserve_tokens", "keep_recent_tokens", "compaction_model", "heartbeat_timeout_seconds", "project_harness_id", "project_id", "workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized", "prepared_context_file_id", "prepared_context_inline_json", "system_prompt_hash", "system_prompt_file_id", "session_mode", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
 hint = "Configure session. Auto-provisions after configuration. Resume fields (workspace_id, conversation_file_id, session_file_id, session_leaf_id) are accepted so continuations carry prior conversation state. Optional reply route fields preserve channel delivery context for terminal replies; optional GenAI parent trace fields preserve inbound distributed trace context."
 effect = [{ type = "schedule", action = "ProvisionWorkspace", delay_seconds = 0 }]
 
@@ -660,6 +694,9 @@ on_failure = "Fail"
 temper_api_url = "{secret:temper_api_url}"
 sandbox_url = "{secret:sandbox_url}"
 tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_cpus = "{secret:sandbox_cpus}"
+sandbox_memory_mb = "{secret:sandbox_memory_mb}"
+sandbox_image = "{secret:sandbox_image}"
 sandbox_provider = "{secret:sandbox_provider}"
 modal_token_id = "{secret:modal_token_id}"
 modal_token_secret = "{secret:modal_token_secret}"
@@ -728,7 +765,37 @@ from = ["PreparingContext"]
 to = "CallingProvider"
 params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Prepared context artifact is ready and this provider does not require Codex OAuth. Persist skipped auth fields and call the LLM provider."
-effect = [{ type = "trigger", name = "call_provider" }]
+
+
+[[action.triggers]]
+name = "call_provider_standard"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderStandard"
+guard = {type="not",guard={type="field_equals",field="provider_latency_profile",value="foresight_first_pass"}}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesight"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=0}]}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight_retry"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesightRetry"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=1}]}
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -738,11 +805,50 @@ from = ["EnsuringProviderAuth"]
 to = "CallingProvider"
 params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Codex provider auth is fresh, or this provider does not need Codex OAuth. Call the LLM provider."
-effect = [{ type = "trigger", name = "call_provider" }]
+
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
 # the existing WASM/webhook runtime handles execution unchanged.
+
+[[action.triggers]]
+name = "call_provider_standard"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderStandard"
+guard = {type="not",guard={type="field_equals",field="provider_latency_profile",value="foresight_first_pass"}}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesight"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=0}]}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight_retry"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesightRetry"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=1}]}
+[action.triggers.resolve_target]
+type = "same_id"
+
+
+
+# Provider work enters under a declared system identity, including ProgressMade.
+[[action]]
+name = "CallProviderStandard"
+kind = "input"
+from = ["CallingProvider"]
+params = []
 [[action.triggers]]
 name = "call_provider"
 kind = "wasm"
@@ -786,6 +892,176 @@ max_memory = "268435456"
 provider_caller_budget_ms = "600000"
 provider_initial_heartbeat_enabled = "false"
 
+
+[[action]]
+name = "CallProviderForesight"
+kind = "input"
+from = ["CallingProvider"]
+params = []
+guard = [{type="is_false",var="provider_call_active"}, {type="max_count",var="foresight_provider_retry_count",max=1}]
+effect = [{type="set_bool",var="provider_call_active",value=true},{type="increment",var="provider_call_attempt"}]
+[[action.triggers]]
+name = "CallProviderForesight"
+kind = "wasm"
+module = "provider_caller"
+on_failure = "ForesightProviderFailed"
+llm = true
+
+[action.triggers.config]
+anthropic_api_key = "{secret:anthropic_api_key}"
+openai_api_key = "{secret:openai_api_key}"
+openai_codex_access_token = "{secret:openai_codex_access_token}"
+openai_codex_refresh_token = "{secret:openai_codex_refresh_token}"
+openai_codex_expires_at_ms = "{secret:openai_codex_expires_at_ms}"
+openai_codex_account_id = "{secret:openai_codex_account_id}"
+openai_codex_token = "{secret:openai_codex_token}"
+openrouter_api_key = "{secret:openrouter_api_key}"
+huggingface_api_key = "{secret:huggingface_api_key}"
+hf_token = "{secret:hf_token}"
+fireworks_api_key = "{secret:fireworks_api_key}"
+sakana_fugu_api_key = "{secret:sakana_fugu_api_key}"
+openai_compatible_api_key = "{secret:openai_compatible_api_key}"
+openai_compatible_headers_json = "{secret:openai_compatible_headers_json}"
+anthropic_api_url = "https://api.anthropic.com/v1/messages"
+openai_api_url = "https://api.openai.com/v1/responses"
+openai_codex_api_url = "https://chatgpt.com/backend-api/codex/responses"
+openrouter_api_url = "{secret:openrouter_api_url}"
+huggingface_api_url = "{secret:huggingface_api_url}"
+fireworks_api_url = "{secret:fireworks_api_url}"
+sakana_fugu_api_url = "{secret:sakana_fugu_api_url}"
+openai_compatible_api_url = "{secret:openai_compatible_api_url}"
+local_openai_api_url = "{secret:local_openai_api_url}"
+anthropic_auth_mode = "auto"
+openrouter_site_url = ""
+openrouter_app_name = "temperpaw-agent"
+default_llm_provider = "{secret:llm_provider}"
+default_llm_model = "{secret:llm_model}"
+temper_api_url = "{secret:temper_api_url}"
+timeout_secs = "180"
+max_response_bytes = "4194304"
+max_memory = "268435456"
+provider_caller_budget_ms = "180000"
+provider_initial_heartbeat_enabled = "false"
+
+
+[[action]]
+name = "CallProviderForesightRetry"
+kind = "input"
+from = ["CallingProvider"]
+params = []
+guard = [{type="is_false",var="provider_call_active"}, {type="min_count",var="foresight_provider_retry_count",min=1}]
+effect = [{type="set_bool",var="provider_call_active",value=true},{type="increment",var="provider_call_attempt"}]
+[[action.triggers]]
+name = "CallProviderForesightRetry"
+kind = "wasm"
+module = "provider_caller"
+on_failure = "ForesightProviderRetryFailed"
+llm = true
+
+[action.triggers.config]
+anthropic_api_key = "{secret:anthropic_api_key}"
+openai_api_key = "{secret:openai_api_key}"
+openai_codex_access_token = "{secret:openai_codex_access_token}"
+openai_codex_refresh_token = "{secret:openai_codex_refresh_token}"
+openai_codex_expires_at_ms = "{secret:openai_codex_expires_at_ms}"
+openai_codex_account_id = "{secret:openai_codex_account_id}"
+openai_codex_token = "{secret:openai_codex_token}"
+openrouter_api_key = "{secret:openrouter_api_key}"
+huggingface_api_key = "{secret:huggingface_api_key}"
+hf_token = "{secret:hf_token}"
+fireworks_api_key = "{secret:fireworks_api_key}"
+sakana_fugu_api_key = "{secret:sakana_fugu_api_key}"
+openai_compatible_api_key = "{secret:openai_compatible_api_key}"
+openai_compatible_headers_json = "{secret:openai_compatible_headers_json}"
+anthropic_api_url = "https://api.anthropic.com/v1/messages"
+openai_api_url = "https://api.openai.com/v1/responses"
+openai_codex_api_url = "https://chatgpt.com/backend-api/codex/responses"
+openrouter_api_url = "{secret:openrouter_api_url}"
+huggingface_api_url = "{secret:huggingface_api_url}"
+fireworks_api_url = "{secret:fireworks_api_url}"
+sakana_fugu_api_url = "{secret:sakana_fugu_api_url}"
+openai_compatible_api_url = "{secret:openai_compatible_api_url}"
+local_openai_api_url = "{secret:local_openai_api_url}"
+anthropic_auth_mode = "auto"
+openrouter_site_url = ""
+openrouter_app_name = "temperpaw-agent"
+default_llm_provider = "{secret:llm_provider}"
+default_llm_model = "{secret:llm_model}"
+temper_api_url = "{secret:temper_api_url}"
+timeout_secs = "180"
+max_response_bytes = "4194304"
+max_memory = "268435456"
+provider_caller_budget_ms = "180000"
+provider_initial_heartbeat_enabled = "false"
+
+
+# Failure callbacks run only after the local WASM invocation has terminated.
+# The first callback cannot affect the retry: its counter guard no longer holds.
+[[action]]
+name = "ForesightProviderFailed"
+kind = "input"
+from = ["CallingProvider"]
+params = ["error_message"]
+guard = [{type="is_true",var="provider_call_active"},{type="max_count",var="foresight_provider_retry_count",max=1}]
+effect = [{type="set_bool",var="provider_call_active",value=false},{type="increment",var="foresight_provider_retry_count"}]
+
+[[action.triggers]]
+name = "retry_finished_foresight_call"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "RetryForesightProvider"
+guard = {type="field_equals",field="foresight_provider_retry_count",value=1}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "RetryForesightProvider"
+kind = "input"
+from = ["CallingProvider"]
+to = "EnsuringProviderAuth"
+params = []
+guard = [{type="is_false",var="provider_call_active"},{type="min_count",var="foresight_provider_retry_count",min=1}]
+effect = [{type="trigger",name="ensure_provider_auth"}]
+
+[[action]]
+name = "ForesightProviderRetryFailed"
+kind = "input"
+from = ["CallingProvider"]
+params = ["error_message"]
+guard = [{type="is_true",var="provider_call_active"},{type="min_count",var="foresight_provider_retry_count",min=1}]
+effect = [{type="set_bool",var="provider_call_active",value=false}]
+
+[[action.triggers]]
+name = "fail_exhausted_foresight_call"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "Fail"
+[action.triggers.resolve_target]
+type = "same_id"
+[action.triggers.params_from]
+error_message = "error_message"
+
+[[action]]
+name = "ForesightProviderResponseReady"
+kind = "input"
+from = ["CallingProvider"]
+to = "ApplyingProviderResponse"
+params = ["provider_response_file_id", "provider_response_inline_json", "provider_request_bytes", "provider_response_bytes", "expected_provider_attempt"]
+constraints = [{kind="param_equals_field",param="expected_provider_attempt",field="provider_call_attempt"}]
+guard = "is_true provider_call_active"
+effect = [{type="set_bool",var="provider_call_active",value=false},{type="trigger",name="apply_provider_response"}]
+
+[[action]]
+name = "ForesightProviderAuthExpired"
+kind = "input"
+from = ["CallingProvider"]
+to = "EnsuringProviderAuth"
+params = ["provider_auth_error", "expected_provider_attempt"]
+constraints = [{kind="param_equals_field",param="expected_provider_attempt",field="provider_call_attempt"}]
+guard = [{type="is_true",var="provider_call_active"},{type="max_count",var="provider_auth_retry_count",max=1}]
+effect = [{type="set_bool",var="provider_call_active",value=false},{type="increment",var="provider_auth_retry_count"},{type="trigger",name="force_provider_auth_refresh"}]
 
 [[action]]
 name = "ProviderAuthExpired"
@@ -863,6 +1139,9 @@ on_failure = "Fail"
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
 tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_cpus = "{secret:sandbox_cpus}"
+sandbox_memory_mb = "{secret:sandbox_memory_mb}"
+sandbox_image = "{secret:sandbox_image}"
 sandbox_provider = "{secret:sandbox_provider}"
 modal_token_id = "{secret:modal_token_id}"
 modal_token_secret = "{secret:modal_token_secret}"
@@ -923,8 +1202,10 @@ kind = "input"
 from = ["PreparingContext"]
 to = "EnsuringCompactionAuth"
 params = ["input_tokens", "output_tokens", "context_tokens", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id"]
+guard = "compaction_round < 4"
 hint = "Context preparation detected that the bounded context budget was exceeded. Ensure provider auth before compaction."
 effect = [
+  {type="increment",var="compaction_round"},
   { type = "increment", var = "input_tokens" },
   { type = "increment", var = "output_tokens" },
   { type = "trigger", name = "ensure_compaction_auth" }
@@ -1082,7 +1363,8 @@ hint = "No steering messages queued. Set result and complete."
 effect = [
   { type = "set_bool", var = "has_result", value = "true" },
   { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
@@ -1114,6 +1396,17 @@ temper_api_url = "{secret:temper_api_url}"
 # pins this literal to os-apps/paw-agent/app.toml so it cannot drift.
 spec_version = "paw-agent@0.1.0"
 
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "FinalizeResultNoReply"
@@ -1124,9 +1417,21 @@ params = ["result", "conversation", "session_leaf_id", "pending_tool_calls", "pe
 hint = "Direct no-reply steering completion. Set result, complete, and emit trajectory without invoking reply delivery."
 effect = [
   { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
 
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "Steer"
@@ -1234,45 +1539,84 @@ name = "RecordResult"
 kind = "input"
 from = ["ApplyingProviderResponse", "Executing"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json", "sandbox_url", "sandbox_id", "sandbox_provider"]
 hint = "Session complete. Triggered by LLM end_turn or agent calling temper.done(result)."
 effect = [
   { type = "increment", var = "input_tokens" },
   { type = "increment", var = "output_tokens" },
   { type = "set_bool", var = "has_result", value = "true" },
   { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "RecordResultNoReply"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json", "sandbox_url", "sandbox_id", "sandbox_provider"]
 hint = "Direct no-route Session complete. Set result and emit trajectory without invoking terminal reply delivery."
 effect = [
   { type = "increment", var = "input_tokens" },
   { type = "increment", var = "output_tokens" },
   { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "RecordResultInlineReply"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json", "sandbox_url", "sandbox_id", "sandbox_provider"]
 hint = "Inline CLI/TUI reply already recorded on the Channel. Set result and emit trajectory without invoking terminal reply delivery."
 effect = [
   { type = "increment", var = "input_tokens" },
   { type = "increment", var = "output_tokens" },
   { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
 
 # --- Actions: Heartbeat + ProgressMade ---
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "Heartbeat"
@@ -1300,10 +1644,23 @@ params = ["error_message"]
 hint = "Session timed out — no heartbeat within timeout period."
 effect = [
   { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
 
 # --- Actions: Failure, Cancellation, Resume ---
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "Fail"
@@ -1314,8 +1671,21 @@ params = ["error_message"]
 hint = "Mark session run as failed."
 effect = [
   { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "Cancel"
@@ -1325,8 +1695,21 @@ to = "Cancelled"
 hint = "Cancel session execution."
 effect = [
   { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "DeliveryFailed"
@@ -1370,10 +1753,23 @@ guard = "trajectory_retry_count < 1"
 hint = "Manually retry OTS emission once after a prior failure. Guarded to a single retry; further failures wait for Evolution Engine sweep."
 effect = [
   { type = "increment", var = "trajectory_retry_count" },
-  { type = "trigger", name = "emit_ots_trajectory" }
+  { type = "trigger", name = "emit_ots_trajectory" },
+  { type = "trigger", name = "release_sandbox" }
 ]
 
 # --- Actions: Session Recovery (ADR-0025) ---
+
+[[action.triggers]]
+name = "release_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+
+[action.triggers.config]
+mode = "release"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_api_key = "{secret:sandbox_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_bridge_url = "{secret:modal_bridge_url}"
 
 [[action]]
 name = "RecoverFromRestart"
@@ -1384,6 +1780,7 @@ params = ["error_message"]
 guard = "recovery_count < 3"
 hint = "Server restart detected. Enter recovery state to repair session tree before resuming. Max 3 attempts."
 effect = [
+  {type="set_bool",var="provider_call_active",value=false},
   { type = "increment", var = "recovery_count" },
   { type = "trigger", name = "recover_session" },
 ]
@@ -1460,11 +1857,39 @@ effect = [
 name = "ResumeProvider"
 kind = "input"
 from = ["CallingProvider"]
-hint = "Wake a stalled call_provider. Self-loop."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "call_provider" },
-]
+guard = "is_false provider_call_active"
+hint = "Wake a standard provider call. An active bounded Foresight call must finish before retry."
+effect = [{ type = "increment", var = "progress_token" }]
+
+[[action.triggers]]
+name = "call_provider_standard"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderStandard"
+guard = {type="not",guard={type="field_equals",field="provider_latency_profile",value="foresight_first_pass"}}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesight"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=0}]}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "call_provider_foresight_retry"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "CallProviderForesightRetry"
+guard = {type="all_of",guards=[{type="field_equals",field="provider_latency_profile",value="foresight_first_pass"},{type="field_equals",field="foresight_provider_retry_count",value=1}]}
+[action.triggers.resolve_target]
+type = "same_id"
 
 [[action]]
 name = "ResumeContext"
@@ -1510,6 +1935,9 @@ on_failure = "Fail"
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
 tensorlake_api_key = "{secret:tensorlake_api_key}"
+sandbox_cpus = "{secret:sandbox_cpus}"
+sandbox_memory_mb = "{secret:sandbox_memory_mb}"
+sandbox_image = "{secret:sandbox_image}"
 sandbox_provider = "{secret:sandbox_provider}"
 modal_token_id = "{secret:modal_token_id}"
 modal_token_secret = "{secret:modal_token_secret}"

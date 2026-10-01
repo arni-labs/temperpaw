@@ -38,6 +38,34 @@ const MAX_ROUNDS: usize = 2;
 /// Routes (Paths) allowed per claim.
 const MAX_ROUTES: usize = 3;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SearchBudget {
+    revision_rounds: usize,
+    routes: usize,
+}
+
+const FIRST_PASS_BUDGET: SearchBudget = SearchBudget {
+    revision_rounds: 0,
+    routes: 1,
+};
+const DEEP_BUDGET: SearchBudget = SearchBudget {
+    revision_rounds: MAX_ROUNDS,
+    routes: MAX_ROUTES,
+};
+
+fn search_budget(world_fields: &Value) -> SearchBudget {
+    if world_fields
+        .get("exploration_phase")
+        .and_then(Value::as_str)
+        == Some("first_pass")
+    {
+        FIRST_PASS_BUDGET
+    } else {
+        // Worlds created before progressive exploration retain their search policy.
+        DEEP_BUDGET
+    }
+}
+
 /// A single flag at or above this many points triggers a revision round —
 /// miracle/medium (40) and above. Calibrated against run 1 (2026-06-12):
 /// at 20, nearly every route revised and session spend tripled for little
@@ -90,6 +118,16 @@ fn row_str<'a>(row: &'a Value, pascal: &str) -> &'a str {
     }
     // List rows also carry lowercase top-level keys (status, entity_id).
     row.get(s.as_str()).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+fn row_bool(row: &Value, snake: &str, pascal: &str) -> bool {
+    row.get("booleans")
+        .and_then(|b| b.get(snake))
+        .or_else(|| row.get("fields").and_then(|f| f.get(snake)))
+        .or_else(|| row.get(pascal))
+        .or_else(|| row.get(snake))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn row_status(row: &Value) -> &str {
@@ -163,7 +201,10 @@ fn repair_cost(cost_flags: &Value, challenge_flags: &Value) -> f64 {
 
 /// The most expensive single flag in a set — the revision trigger signal.
 fn max_flag_points(flags: &Value) -> f64 {
-    parse_flags(flags).iter().map(flag_points).fold(0.0, f64::max)
+    parse_flags(flags)
+        .iter()
+        .map(flag_points)
+        .fold(0.0, f64::max)
 }
 
 /// Human-readable brief of the expensive objections a revision (or an
@@ -212,8 +253,12 @@ enum RouteDecision {
 /// After a challenge: revise when an objection is expensive and the round
 /// budget allows it. Revision answers the ADVERSARY's flags — the repairer
 /// already had its say.
-fn route_decision(round_count: usize, max_challenge_flag: f64) -> RouteDecision {
-    if round_count < MAX_ROUNDS && max_challenge_flag >= REVISION_FLAG_THRESHOLD {
+fn route_decision(
+    round_count: usize,
+    max_challenge_flag: f64,
+    budget: SearchBudget,
+) -> RouteDecision {
+    if round_count < budget.revision_rounds && max_challenge_flag >= REVISION_FLAG_THRESHOLD {
         RouteDecision::Revise
     } else {
         RouteDecision::Score
@@ -241,7 +286,12 @@ enum ClaimDecision {
 /// The claim-level decision once a route settles. `scored` carries every
 /// Scored route (id, cost); `in_flight` is true while any route is still
 /// being repaired or challenged.
-fn claim_decision(route_count: usize, in_flight: bool, scored: &[(String, f64)]) -> ClaimDecision {
+fn claim_decision(
+    route_count: usize,
+    in_flight: bool,
+    scored: &[(String, f64)],
+    budget: SearchBudget,
+) -> ClaimDecision {
     let best = scored
         .iter()
         .min_by(|a, b| {
@@ -262,7 +312,7 @@ fn claim_decision(route_count: usize, in_flight: bool, scored: &[(String, f64)])
     // still change the outcome, so we wait (Path self-heal re-drives a dead
     // session in that case).
     if in_flight {
-        let budget_spent = route_count >= MAX_ROUTES;
+        let budget_spent = route_count >= budget.routes;
         let settleable = matches!(&best, Some((_, cost)) if *cost <= ACCEPTABLE_CLAIM_COST);
         if !(budget_spent && settleable) {
             return ClaimDecision::Wait;
@@ -271,7 +321,7 @@ fn claim_decision(route_count: usize, in_flight: bool, scored: &[(String, f64)])
 
     match best {
         None => {
-            if route_count < MAX_ROUTES {
+            if route_count < budget.routes {
                 ClaimDecision::Alternate
             } else {
                 ClaimDecision::Unreachable {
@@ -281,7 +331,7 @@ fn claim_decision(route_count: usize, in_flight: bool, scored: &[(String, f64)])
         }
         Some((route_id, cost)) => {
             if cost > ACCEPTABLE_CLAIM_COST {
-                if route_count < MAX_ROUTES {
+                if route_count < budget.routes {
                     ClaimDecision::Alternate
                 } else {
                     ClaimDecision::Unreachable {
@@ -471,13 +521,19 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let ctx = Context::from_host()?;
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
         match ctx.trigger_action.as_str() {
-            "RepairComplete" => prune_gate(&ctx, &fields),
-            "ChallengeComplete" | "ResumeCosting" => cost_phase(&ctx, &fields),
-            "Score" => route_settled_relay(&ctx, &fields, false),
-            "Prune" => route_settled_relay(&ctx, &fields, true),
-            "RouteSettled" | "ResumeBridge" => claim_phase(&ctx, &fields),
-            "ResumeWorldCascade" => world_cascade_self_heal(&ctx, &fields),
-            "ResumeEndpointScoring" => endpoint_scoring_self_heal(&ctx, &fields),
+            "RepairComplete" | "EvaluateRepair" => prune_gate(&ctx, &fields),
+            "ChallengeComplete" | "EvaluateChallenge" | "ResumeCosting" => {
+                cost_phase(&ctx, &fields)
+            }
+            "Score" | "RelayScoredRoute" => route_settled_relay(&ctx, &fields, false),
+            "Prune" | "RelayPrunedRoute" => route_settled_relay(&ctx, &fields, true),
+            "RouteSettled" | "ResumeBridge" | "EvaluateRoutes" => claim_phase(&ctx, &fields),
+            "ResumeWorldCascade" | "EvaluateWorldCascade" => world_cascade_self_heal(&ctx, &fields),
+            "MaybeDeepen" => prepare_deepening(&ctx, &fields),
+            "ContinueDeepening" => continue_deepening(&fields),
+            "ResumeEndpointScoring" | "EvaluateEndpointScoring" => {
+                endpoint_scoring_self_heal(&ctx, &fields)
+            }
             other => {
                 ctx.log(
                     "warn",
@@ -503,6 +559,15 @@ fn get_str(fields: &Value, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+fn world_search_budget(ctx: &Context, world_id: &str) -> Result<SearchBudget, String> {
+    if world_id.is_empty() {
+        return Ok(DEEP_BUDGET);
+    }
+    let world = fetch(ctx, &api_url(ctx), &system_headers(ctx), "Worlds", world_id)
+        .ok_or_else(|| format!("cannot read search policy for world {world_id}"))?;
+    Ok(search_budget(world.get("fields").unwrap_or(&world)))
 }
 
 /// Path.RepairComplete: prune the route before adversary spend, or request
@@ -577,8 +642,11 @@ fn cost_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
 
     // Revision is a search step — claim-era routes only (legacy 0.2 paths
     // keep the single-round behavior).
+    let budget = world_search_budget(ctx, &get_str(fields, "world_id"))?;
     let max_objection = max_flag_points(&challenge_flags);
-    if !claim_id.is_empty() && route_decision(round_count, max_objection) == RouteDecision::Revise {
+    if !claim_id.is_empty()
+        && route_decision(round_count, max_objection, budget) == RouteDecision::Revise
+    {
         ctx.log(
             "info",
             &format!(
@@ -657,6 +725,7 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
 
     let world_id = get_str(fields, "world_id");
     let route_count = get_str(fields, "route_count").parse::<usize>().unwrap_or(0);
+    let budget = world_search_budget(ctx, &world_id)?;
 
     // Single-writer guard: if this claim already settled, another relay got
     // here first.
@@ -718,7 +787,7 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
         }
     }
 
-    match claim_decision(route_count, in_flight, &scored) {
+    match claim_decision(route_count, in_flight, &scored, budget) {
         ClaimDecision::Wait => {
             ctx.log(
                 "info",
@@ -731,30 +800,13 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
             // Brief the next repairer on the standing objections, then open
             // the next route.
             let brief = brief_from_flags(&last_flags);
-            let patch = json!({ "revision_brief": brief });
-            if let Ok(resp) = ctx.http_call(
-                "PATCH",
-                &format!("{api}/tdata/Claims('{claim_id}')"),
-                &headers,
-                &patch.to_string(),
-            ) {
-                if resp.status >= 400 {
-                    ctx.log(
-                        "warn",
-                        &format!(
-                            "aggregate_costs: PATCH revision_brief on claim {claim_id} failed (HTTP {})",
-                            resp.status
-                        ),
-                    );
-                }
-            }
             ctx.log(
                 "info",
                 &format!(
                     "aggregate_costs: claim {claim_id} opening alternate route (route_count {route_count})"
                 ),
             );
-            set_success_result("SubmitForBridge", &json!({}));
+            set_success_result("SubmitForBridge", &json!({"revision_brief": brief}));
             Ok(())
         }
         ClaimDecision::Unreachable { reason } => {
@@ -762,10 +814,6 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
                 "info",
                 &format!("aggregate_costs: claim {claim_id} unreachable: {reason}"),
             );
-            // Run the cascade first (own-trust marks this claim terminal):
-            // set_success_result is the last word, and MarkUnreachable has no
-            // trigger of its own.
-            world_cascade(ctx, &api, &headers, &world_id, &claim_id, None)?;
             set_success_result("MarkUnreachable", &json!({ "unreachable_reason": reason }));
             Ok(())
         }
@@ -810,14 +858,6 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
                     fmt_cost(cost)
                 ),
             );
-            world_cascade(
-                ctx,
-                &api,
-                &headers,
-                &world_id,
-                &claim_id,
-                Some((route_id, cost)),
-            )?;
             // Terminalize any in-flight straggler routes: the claim has its
             // answer and its route budget is spent (claim_decision only
             // settles past an in-flight route when route_count >= MAX_ROUTES),
@@ -858,14 +898,89 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
 /// canonical_path_id still empty — re-run the world aggregate. No-ops when
 /// canonical is already set or any claim is still in flight.
 fn world_cascade_self_heal(ctx: &Context, fields: &Value) -> Result<(), String> {
-    if !get_str(fields, "canonical_path_id").is_empty() {
+    if !get_str(fields, "canonical_path_id").is_empty()
+        && get_str(fields, "exploration_phase") != "deepening"
+    {
         set_success_result("", &json!({}));
         return Ok(());
     }
     let world_id = ctx.entity_id.clone();
     let api = api_url(ctx);
     let headers = system_headers(ctx);
-    world_cascade(ctx, &api, &headers, &world_id, "", None)
+    world_cascade(ctx, &api, &headers, &world_id)?;
+    // No-op paths inside world_cascade (claims still Bridging, canonical already
+    // set, etc.) must still report success: the host treats an empty WASM result
+    // as an integration failure.
+    set_success_result("", &json!({}));
+    Ok(())
+}
+
+/// Prepare one bounded background pass after the first forecast batch is usable.
+fn prepare_deepening(ctx: &Context, fields: &Value) -> Result<(), String> {
+    if get_str(fields, "exploration_phase") != "first_pass" {
+        set_success_result("", &json!({}));
+        return Ok(());
+    }
+    let api = api_url(ctx);
+    let headers = system_headers(ctx);
+    let rows = list(
+        ctx,
+        &api,
+        &headers,
+        "Claims",
+        &format!("world_id eq '{}'", ctx.entity_id),
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let id = row_id(&row);
+        let fresh = fetch(ctx, &api, &headers, "Claims", id)
+            .ok_or("cannot read claim before background exploration")?;
+        if matches!(row_status(&fresh), "Proposed" | "Bridging") {
+            return Err("first pass contains an unfinished claim".into());
+        }
+        if matches!(row_status(&fresh), "Settled" | "Unreachable") {
+            ids.push(id.to_owned());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.len() > 9 {
+        return Err("first pass exceeded nine claims".into());
+    }
+    set_success_result(
+        "BeginDeepening",
+        &json!({
+            "deepening_claim_ids": serde_json::to_string(&ids).map_err(|e| e.to_string())?,
+            "deepening_cursor": "0", "exploration_phase": "deepening"
+        }),
+    );
+    Ok(())
+}
+
+fn deepening_step(fields: &Value) -> Result<Option<Value>, String> {
+    let ids: Vec<String> = serde_json::from_str(&get_str(fields, "deepening_claim_ids"))
+        .map_err(|e| format!("invalid background claim list: {e}"))?;
+    if ids.len() > 9 {
+        return Err("background exploration exceeded nine claims".into());
+    }
+    let cursor = get_str(fields, "deepening_cursor")
+        .parse::<usize>()
+        .map_err(|e| format!("invalid background cursor: {e}"))?;
+    Ok(ids.get(cursor).map(|id| {
+        json!({
+            "deepening_claim_id": id,
+            "expected_deepening_cursor": cursor.to_string(),
+            "deepening_cursor": (cursor + 1).to_string()
+        })
+    }))
+}
+
+fn continue_deepening(fields: &Value) -> Result<(), String> {
+    match deepening_step(fields)? {
+        Some(params) => set_success_result("DeepeningClaimPrepared", &params),
+        None => set_success_result("", &json!({})),
+    }
+    Ok(())
 }
 
 /// Endpoint.ResumeEndpointScoring (UnderRepair state_timeout): every claim on
@@ -904,7 +1019,9 @@ fn endpoint_scoring_self_heal(ctx: &Context, _fields: &Value) -> Result<(), Stri
                 return Ok(());
             }
             "Settled" => {
-                let cost = row_str(c, "BestRouteCost").parse::<f64>().unwrap_or(f64::MAX);
+                let cost = row_str(c, "BestRouteCost")
+                    .parse::<f64>()
+                    .unwrap_or(f64::MAX);
                 settled_costs.push(cost);
             }
             "Unreachable" => unreachable_count += 1,
@@ -938,9 +1055,7 @@ fn endpoint_scoring_self_heal(ctx: &Context, _fields: &Value) -> Result<(), Stri
     );
     ctx.log(
         "info",
-        &format!(
-            "aggregate_costs: endpoint {endpoint_id} self-heal scored at weight {weight:.4}"
-        ),
+        &format!("aggregate_costs: endpoint {endpoint_id} self-heal scored at weight {weight:.4}"),
     );
     set_success_result("", &json!({}));
     Ok(())
@@ -954,15 +1069,12 @@ fn world_cascade(
     api: &str,
     headers: &[(String, String)],
     world_id: &str,
-    own_claim_id: &str,
-    own_settle: Option<(String, f64)>,
 ) -> Result<(), String> {
     if world_id.is_empty() {
         return Ok(());
     }
 
-    // 1. Every claim in the world must be terminal. The triggering claim's
-    // transition may not be visible yet — trust our own dispatch.
+    // Every claim must be durably terminal; post-commit entity triggers request this pass.
     let claims = list(
         ctx,
         api,
@@ -983,16 +1095,7 @@ fn world_cascade(
         let mut status = row_status(c).to_string();
         let mut best_cost = row_str(c, "BestRouteCost").to_string();
         let mut route_id = row_str(c, "SettledRouteId").to_string();
-        if id == own_claim_id {
-            match &own_settle {
-                Some((rid, cost)) => {
-                    status = "Settled".to_string();
-                    best_cost = fmt_cost(*cost);
-                    route_id = rid.clone();
-                }
-                None => status = "Unreachable".to_string(),
-            }
-        } else if matches!(status.as_str(), "Proposed" | "Bridging") {
+        if matches!(status.as_str(), "Proposed" | "Bridging") {
             if let Some(fresh) = fetch(ctx, api, headers, "Claims", &id) {
                 status = row_status(&fresh).to_string();
                 best_cost = row_str(&fresh, "BestRouteCost").to_string();
@@ -1036,25 +1139,93 @@ fn world_cascade(
         .map(|(eid, (settled, unreachable))| (eid.clone(), endpoint_cost(settled, *unreachable)))
         .collect();
 
-    // 3. Single-writer guard before reporting.
-    if let Some(world) = fetch(ctx, api, headers, "Worlds", world_id) {
-        if !row_str(&world, "CanonicalPathId").is_empty() {
-            ctx.log(
-                "info",
-                "aggregate_costs: pass already reported (canonical set); skipping duplicate PathsScored",
-            );
+    // Each pass reports once. Do not finish deepening while claims are still being opened.
+    let world = fetch(ctx, api, headers, "Worlds", world_id)
+        .ok_or("cannot read world before reporting settled paths")?;
+    let phase = row_str(&world, "ExplorationPhase");
+    let complete = row_bool(&world, "first_pass_complete", "FirstPassComplete");
+    if phase == "complete"
+        || (phase == "first_pass" && complete)
+        || (phase.is_empty() && !row_str(&world, "CanonicalPathId").is_empty())
+    {
+        return Ok(());
+    }
+    if phase == "first_pass" {
+        // Fast claims may settle before another endpoint finishes decomposition.
+        // Only a complete attached claim set can close the pass. Individual
+        // accepted paths publish their predictions independently of this barrier.
+        let endpoints = list(
+            ctx,
+            api,
+            headers,
+            "Endpoints",
+            &format!("world_id eq '{world_id}'"),
+        )?;
+        let expected_endpoints = row_str(&world, "EndpointBudget")
+            .parse::<usize>()
+            .unwrap_or(3)
+            .clamp(1, 3);
+        if endpoints.len() < expected_endpoints {
             return Ok(());
         }
+        let listed_claims: std::collections::BTreeSet<&str> = claims.iter().map(row_id).collect();
+        for row in endpoints {
+            let endpoint = fetch(ctx, api, headers, "Endpoints", row_id(&row))
+                .ok_or("cannot read endpoint decomposition progress")?;
+            if matches!(row_status(&endpoint), "Failed" | "Discarded") {
+                continue;
+            }
+            let attached: Vec<String> = serde_json::from_str(row_str(&endpoint, "ClaimIds"))
+                .map_err(|e| format!("invalid endpoint claim list: {e}"))?;
+            if attached.is_empty()
+                || attached
+                    .iter()
+                    .any(|id| !listed_claims.contains(id.as_str()))
+            {
+                return Ok(());
+            }
+        }
     }
+    if phase == "deepening" {
+        let ids: Vec<String> = serde_json::from_str(row_str(&world, "DeepeningClaimIds"))
+            .map_err(|e| format!("invalid deepening claim list: {e}"))?;
+        let cursor = row_str(&world, "DeepeningCursor")
+            .parse::<usize>()
+            .unwrap_or(0);
+        if cursor < ids.len() {
+            return Ok(());
+        }
+        for id in ids {
+            let claim = fetch(ctx, api, headers, "Claims", &id)
+                .ok_or("cannot read background claim progress")?;
+            if !row_bool(&claim, "deepening_started", "DeepeningStarted")
+                || matches!(row_status(&claim), "Proposed" | "Bridging")
+            {
+                return Ok(());
+            }
+        }
+    }
+    let reported_phase = if phase == "first_pass" {
+        "first_pass"
+    } else {
+        "complete"
+    };
 
     for (endpoint_id, weight) in endpoint_weights(&costs) {
+        let endpoint = fetch(ctx, api, headers, "Endpoints", &endpoint_id)
+            .ok_or("cannot read endpoint for weighting")?;
+        let weight_action = if row_status(&endpoint) == "Weighted" {
+            "Reweigh"
+        } else {
+            "ScoreComplete"
+        };
         if let Err(e) = dispatch(
             ctx,
             api,
             headers,
             "Endpoints",
             &endpoint_id,
-            "ScoreComplete",
+            weight_action,
             &json!({ "weight": format!("{:.4}", weight) }),
         ) {
             ctx.log("warn", &format!("aggregate_costs: {e}"));
@@ -1094,7 +1265,7 @@ fn world_cascade(
         "Worlds",
         world_id,
         "PathsScored",
-        &json!({ "canonical_path_id": canonical_path_id }),
+        &json!({ "canonical_path_id": canonical_path_id, "exploration_phase": reported_phase, "expected_exploration_phase": phase }),
     )?;
     ctx.log(
         "info",
@@ -1240,7 +1411,9 @@ fn legacy_classify_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
     }
 
     // 5. Report the settled pass to the world — once.
+    let mut expected_phase = String::new();
     if let Some(world) = fetch(ctx, &temper_api_url, &headers, "Worlds", &world_id) {
+        expected_phase = row_str(&world, "ExplorationPhase").to_owned();
         if !row_str(&world, "CanonicalPathId").is_empty() {
             ctx.log(
                 "info",
@@ -1257,7 +1430,7 @@ fn legacy_classify_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
         "Worlds",
         &world_id,
         "PathsScored",
-        &json!({ "canonical_path_id": canonical_path_id }),
+        &json!({ "canonical_path_id": canonical_path_id, "exploration_phase": "complete", "expected_exploration_phase": expected_phase }),
     )?;
     ctx.log(
         "info",
@@ -1275,6 +1448,51 @@ mod tests {
 
     fn flag(kind: &str, severity: &str) -> Value {
         json!({"kind": kind, "severity": severity, "note": "t"})
+    }
+
+    #[test]
+    fn first_pass_publishes_after_one_challenged_route_without_extra_search() {
+        let budget = search_budget(&json!({"exploration_phase":"first_pass"}));
+        assert_eq!(route_decision(0, 80.0, budget), RouteDecision::Score);
+        assert_eq!(
+            claim_decision(1, false, &[("p".into(), 202.5)], budget),
+            ClaimDecision::Settle {
+                route_id: "p".into(),
+                cost: 202.5
+            }
+        );
+        assert!(matches!(
+            claim_decision(1, false, &[("p".into(), 300.0)], budget),
+            ClaimDecision::Unreachable { .. }
+        ));
+        assert_eq!(claim_decision(1, true, &[], budget), ClaimDecision::Wait);
+        assert_eq!(search_budget(&json!({})), DEEP_BUDGET);
+        assert_eq!(
+            search_budget(&json!({"exploration_phase":"deepening"})),
+            DEEP_BUDGET
+        );
+    }
+
+    #[test]
+    fn background_cursor_visits_each_claim_once_and_carries_its_fence() {
+        for count in 0..=9 {
+            let ids: Vec<String> = (0..count).map(|i| format!("c-{i}")).collect();
+            let mut fields = json!({"deepening_claim_ids":serde_json::to_string(&ids).unwrap(),
+                "deepening_cursor":"0"});
+            let mut visited = Vec::new();
+            while let Some(step) = deepening_step(&fields).unwrap() {
+                assert_eq!(
+                    step["expected_deepening_cursor"],
+                    fields["deepening_cursor"]
+                );
+                visited.push(step["deepening_claim_id"].as_str().unwrap().to_owned());
+                fields["deepening_cursor"] = step["deepening_cursor"].clone();
+            }
+            assert_eq!(visited, ids);
+        }
+        assert!(
+            deepening_step(&json!({"deepening_claim_ids":"[]", "deepening_cursor":"bad"})).is_err()
+        );
     }
 
     #[test]
@@ -1346,12 +1564,15 @@ mod tests {
     #[test]
     fn routes_revise_only_on_expensive_objections_within_round_budget() {
         // 20-point objection (miracle/low) at round 0: revise.
-        assert_eq!(route_decision(0, 40.0), RouteDecision::Revise);
+        assert_eq!(route_decision(0, 40.0, DEEP_BUDGET), RouteDecision::Revise);
         // Cheap objections never trigger revision.
-        assert_eq!(route_decision(0, 30.0), RouteDecision::Score);
+        assert_eq!(route_decision(0, 30.0, DEEP_BUDGET), RouteDecision::Score);
         // Round budget spent: score regardless.
-        assert_eq!(route_decision(MAX_ROUNDS, 80.0), RouteDecision::Score);
-        assert_eq!(route_decision(1, 50.0), RouteDecision::Revise);
+        assert_eq!(
+            route_decision(MAX_ROUNDS, 80.0, DEEP_BUDGET),
+            RouteDecision::Score
+        );
+        assert_eq!(route_decision(1, 50.0, DEEP_BUDGET), RouteDecision::Revise);
     }
 
     #[test]
@@ -1369,29 +1590,37 @@ mod tests {
         };
         // In-flight routes always wait.
         assert_eq!(
-            claim_decision(1, true, &scored(&[("p-1", 10.0)])),
+            claim_decision(1, true, &scored(&[("p-1", 10.0)]), DEEP_BUDGET),
             ClaimDecision::Wait
         );
         // Nothing scored, budget left: alternate.
-        assert_eq!(claim_decision(1, false, &[]), ClaimDecision::Alternate);
+        assert_eq!(
+            claim_decision(1, false, &[], DEEP_BUDGET),
+            ClaimDecision::Alternate
+        );
         // Nothing scored, budget spent: unreachable.
         assert!(matches!(
-            claim_decision(MAX_ROUTES, false, &[]),
+            claim_decision(MAX_ROUTES, false, &[], DEEP_BUDGET),
             ClaimDecision::Unreachable { .. }
         ));
         // Best above the bound, budget left: alternate.
         assert_eq!(
-            claim_decision(1, false, &scored(&[("p-1", 241.0)])),
+            claim_decision(1, false, &scored(&[("p-1", 241.0)]), DEEP_BUDGET),
             ClaimDecision::Alternate
         );
         // Best above the bound, budget spent: unreachable, honestly.
         assert!(matches!(
-            claim_decision(MAX_ROUTES, false, &scored(&[("p-1", 241.0)])),
+            claim_decision(MAX_ROUTES, false, &scored(&[("p-1", 241.0)]), DEEP_BUDGET),
             ClaimDecision::Unreachable { .. }
         ));
         // Acceptable best settles on the cheapest with id tiebreak.
         assert_eq!(
-            claim_decision(2, false, &scored(&[("p-b", 25.0), ("p-a", 25.0)])),
+            claim_decision(
+                2,
+                false,
+                &scored(&[("p-b", 25.0), ("p-a", 25.0)]),
+                DEEP_BUDGET
+            ),
             ClaimDecision::Settle {
                 route_id: "p-a".to_string(),
                 cost: 25.0
@@ -1404,7 +1633,12 @@ mod tests {
         // instead of waiting forever (this is what bounds the ADR-007
         // self-heal — the budget caps it).
         assert_eq!(
-            claim_decision(MAX_ROUTES, true, &scored(&[("p-2", 142.5), ("p-1", 300.0)])),
+            claim_decision(
+                MAX_ROUTES,
+                true,
+                &scored(&[("p-2", 142.5), ("p-1", 300.0)]),
+                DEEP_BUDGET
+            ),
             ClaimDecision::Settle {
                 route_id: "p-2".to_string(),
                 cost: 142.5
@@ -1414,13 +1648,13 @@ mod tests {
         // the stuck-route case here; we don't settle early while a fresh
         // alternate could still open.
         assert_eq!(
-            claim_decision(1, true, &scored(&[("p-1", 142.5)])),
+            claim_decision(1, true, &scored(&[("p-1", 142.5)]), DEEP_BUDGET),
             ClaimDecision::Wait
         );
         // Budget spent and in flight, but no acceptable route yet: keep
         // waiting on the only route that could still make the claim reachable.
         assert_eq!(
-            claim_decision(MAX_ROUTES, true, &scored(&[("p-1", 300.0)])),
+            claim_decision(MAX_ROUTES, true, &scored(&[("p-1", 300.0)]), DEEP_BUDGET),
             ClaimDecision::Wait
         );
     }

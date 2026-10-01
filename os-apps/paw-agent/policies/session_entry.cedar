@@ -17,3 +17,11 @@ permit(
 ) when {
   ["agent", "system", "supervisor", "human", "admin"].contains(principal.agent_type)
 };
+
+// Transition callbacks use the authenticated runtime identity. The runtime
+// appends and reads transcript entries; it cannot rewrite or delete history.
+permit(
+  principal == Agent::"service:wasm-runtime",
+  action in [Action::"create", Action::"read", Action::"list"],
+  resource is SessionEntry
+);

@@ -352,6 +352,7 @@ fn spawn_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",

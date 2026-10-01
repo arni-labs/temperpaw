@@ -66,9 +66,7 @@ jobs:
           for script in \
             os-apps/paw-agent/wasm/build.sh \
             os-apps/paw-channels/wasm/build.sh \
-            os-apps/paw-fs/wasm/artifact_batch_apply/build.sh \
-            os-apps/paw-fs/wasm/blob_adapter/build.sh \
-            os-apps/paw-fs/wasm/workspace_fs/build.sh \
+            os-apps/paw-fs/wasm/build.sh \
             os-apps/paw-ingest/wasm/build.sh \
             os-apps/paw-managed-agents/wasm/build.sh \
             os-apps/paw-media/wasm/build.sh \

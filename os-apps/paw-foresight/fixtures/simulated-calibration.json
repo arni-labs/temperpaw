@@ -1,0 +1,398 @@
+[
+  {
+    "event_id": "sim-calibration-0",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-01T00:00:00Z",
+    "resolved_at": "2025-01-01T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-1",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-02T00:00:00Z",
+    "resolved_at": "2025-01-02T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-2",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-03T00:00:00Z",
+    "resolved_at": "2025-01-03T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-3",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-04T00:00:00Z",
+    "resolved_at": "2025-01-04T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-4",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-05T00:00:00Z",
+    "resolved_at": "2025-01-05T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-5",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-06T00:00:00Z",
+    "resolved_at": "2025-01-06T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-6",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-07T00:00:00Z",
+    "resolved_at": "2025-01-07T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-7",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-08T00:00:00Z",
+    "resolved_at": "2025-01-08T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-8",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-09T00:00:00Z",
+    "resolved_at": "2025-01-09T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-9",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-10T00:00:00Z",
+    "resolved_at": "2025-01-10T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-10",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-11T00:00:00Z",
+    "resolved_at": "2025-01-11T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-11",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-12T00:00:00Z",
+    "resolved_at": "2025-01-12T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-12",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-13T00:00:00Z",
+    "resolved_at": "2025-01-13T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-13",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-14T00:00:00Z",
+    "resolved_at": "2025-01-14T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-14",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-15T00:00:00Z",
+    "resolved_at": "2025-01-15T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-15",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-16T00:00:00Z",
+    "resolved_at": "2025-01-16T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-16",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-17T00:00:00Z",
+    "resolved_at": "2025-01-17T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-17",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-18T00:00:00Z",
+    "resolved_at": "2025-01-18T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-18",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-01-19T00:00:00Z",
+    "resolved_at": "2025-01-19T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-19",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-01-20T00:00:00Z",
+    "resolved_at": "2025-01-20T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-20",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-01T00:00:00Z",
+    "resolved_at": "2025-02-01T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-21",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-02T00:00:00Z",
+    "resolved_at": "2025-02-02T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-22",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-03T00:00:00Z",
+    "resolved_at": "2025-02-03T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-23",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-04T00:00:00Z",
+    "resolved_at": "2025-02-04T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-24",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-05T00:00:00Z",
+    "resolved_at": "2025-02-05T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-25",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-06T00:00:00Z",
+    "resolved_at": "2025-02-06T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-26",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-07T00:00:00Z",
+    "resolved_at": "2025-02-07T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-27",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-08T00:00:00Z",
+    "resolved_at": "2025-02-08T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-28",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-09T00:00:00Z",
+    "resolved_at": "2025-02-09T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-29",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-10T00:00:00Z",
+    "resolved_at": "2025-02-10T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-30",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-11T00:00:00Z",
+    "resolved_at": "2025-02-11T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-31",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-12T00:00:00Z",
+    "resolved_at": "2025-02-12T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-32",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-13T00:00:00Z",
+    "resolved_at": "2025-02-13T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-33",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-14T00:00:00Z",
+    "resolved_at": "2025-02-14T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-34",
+    "base_probability": 0.55,
+    "outcome": 1,
+    "registered_at": "2025-02-15T00:00:00Z",
+    "resolved_at": "2025-02-15T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  },
+  {
+    "event_id": "sim-calibration-35",
+    "base_probability": 0.45,
+    "outcome": 0,
+    "registered_at": "2025-02-16T00:00:00Z",
+    "resolved_at": "2025-02-16T01:00:00Z",
+    "evidence_kind": "simulated",
+    "source_refs": [
+      "fixture:foresight-calibration-mechanics-v1"
+    ]
+  }
+]

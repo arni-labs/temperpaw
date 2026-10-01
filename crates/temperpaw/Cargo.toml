@@ -79,6 +79,7 @@ clap = { version = "4", features = ["derive"] }
 cliclack = "0.3"
 
 [dev-dependencies]
+async-trait = "0.1"
 dsf-resource-collect = { path = "../../os-apps/dsf-twin/wasm/dsf_resource_collect" }
 temper-wasm = { git = "https://github.com/nerdsane/temper.git", rev = "4518a5597c3d6d9e53feda275b093476b0e46b10" }
 tempfile = "3"

@@ -10,10 +10,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "foresight-learning-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "grade-hindcast"
 version = "0.1.0"
 dependencies = [
  "corridor-embed",
+ "foresight-learning-core",
  "serde_json",
  "temper-wasm-sdk",
 ]

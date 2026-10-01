@@ -1,8 +1,8 @@
 name = "paw-foresight"
 description = "Corridor world engine — scored worlds: skeleton forward, endpoints backward, adversarial repair, reality-graded forecasts"
-version = "0.2.1"
+version = "0.3.0"
 startup_install = "core"
-dependencies = ["paw-agent"]
+dependencies = ["temperpaw/paw-agent@1fe41a7a5efd4b71bb72c349cab94b28b211f4ff"]
 
 # Corridor engine modules (ADR-002). The legacy 0.1 projection surface was
 # removed in the ADR-003 retirement commit; its specs persist in installed
@@ -70,5 +70,75 @@ startup_loading = "lazy"
 
 [[wasm_modules]]
 name = "adjudicate_nodes"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "learning_prepare"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "learning_train"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "learning_evaluate"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "forecast_outcome"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "replay_open"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "evaluate_semantics"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "prepare_challenge"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_prepare"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_step"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_call"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_reasoning"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_session"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "semantic_expand"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "seed_session"
 criticality = "app-required"
 startup_loading = "lazy"

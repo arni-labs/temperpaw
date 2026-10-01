@@ -232,10 +232,16 @@ fn repairer_prompt(
          - \"deformation\": you amended the claim to make it bridgeable\n\
          Severity: \"low\" | \"medium\" | \"high\". You flag costs; you NEVER compute scores — \
          costing is deterministic and runs elsewhere.\n\n\
-         Write a repair log with temper.write (markdown: the backward chain with your \
-         reasoning), then self-report:\n\
+         Write your repair log (markdown: the backward chain with your reasoning) with the \
+         temper.write tool — this is the ONLY way to create a FILE, and your workspace already \
+         exists. Do NOT create Files, Directories, or Workspaces yourself, and do NOT invent a \
+         file-creation API: temper.create is for EventNodes only, never for files. Call \
+         temper.write exactly like this:\n\
+         result = temper.write(\"/repair-log-{path_id}.md\", \"<your markdown repair log>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as repair_log_file_id below, then self-report:\n\
          temper.action(\"Paths\", \"{path_id}\", \"RepairComplete\", {{\"repair_log_file_id\": \
-         \"<file-id-from-temper.write>\", \"required_node_ids\": \"[\\\"<event-node-id>\\\", \
+         \"<result file_id>\", \"required_node_ids\": \"[\\\"<event-node-id>\\\", \
          ...]\", \"cost_flags\": \"[{{\\\"kind\\\": \\\"...\\\", \\\"severity\\\": \\\"...\\\", \
          \\\"note\\\": \\\"...\\\"}}]\"}})\n\
          Then call temper.done(\"complete\")."
@@ -249,6 +255,19 @@ fn workspace_name(world_id: &str) -> String {
     format!("world-{world_id}")
 }
 
+fn odata_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+fn workspace_id_from_entity(entity: &Value) -> Option<String> {
+    entity
+        .get("entity_id")
+        .or_else(|| entity.get("Id"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Resolve (or create) the per-world PawFS workspace and return its id.
 /// Sessions are Configured with this id so temper.write lands inside a
 /// workspace PawFS Cedar accepts — without it, File create is denied
@@ -260,31 +279,66 @@ fn ensure_world_workspace(
     world_id: &str,
 ) -> Result<String, String> {
     let name = workspace_name(world_id);
-    // Workspace rows are not readable by agent principals (paw-fs Cedar has
-    // no read/list permit on Workspace), so idempotent lookup is impossible:
-    // create one per spawn batch. Correctness needs only that each session's
-    // Configure workspace matches the files it writes; file READS are
-    // unrestricted, so cross-session reads work across workspaces.
-    let create_resp = ctx.http_call(
-        "POST",
-        &format!("{api}/tdata/Workspaces"),
-        headers,
-        &json!({ "name": name, "quota_limit": "104857600" }).to_string(),
-    )?;
-    if create_resp.status < 200 || create_resp.status >= 300 {
+    let lookup = || -> Option<String> {
+        let find_resp = ctx
+            .http_call(
+                "GET",
+                &format!(
+                    "{api}/tdata/Workspaces?$filter=Name%20eq%20'{}'",
+                    odata_escape(&name)
+                ),
+                headers,
+                "",
+            )
+            .ok()?;
+        if !(200..300).contains(&find_resp.status) {
+            return None;
+        }
+        let existing: Value = serde_json::from_str(&find_resp.body).ok()?;
+        existing
+            .get("value")
+            .and_then(|a| a.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(workspace_id_from_entity)
+    };
+    if let Some(id) = lookup() {
+        return Ok(id);
+    }
+
+    for attempt in 1..=3u8 {
+        let create_resp = ctx.http_call(
+            "POST",
+            &format!("{api}/tdata/Workspaces"),
+            headers,
+            &json!({ "name": name, "quota_limit": "104857600" }).to_string(),
+        )?;
+        if (200..300).contains(&create_resp.status) {
+            return serde_json::from_str::<Value>(&create_resp.body)
+                .ok()
+                .and_then(|v| workspace_id_from_entity(&v))
+                .ok_or_else(|| format!("Workspace {name} create returned no entity_id"));
+        }
+        if create_resp.status == 409 {
+            if let Some(id) = lookup() {
+                return Ok(id);
+            }
+        }
+        if create_resp.status >= 500 && attempt < 3 {
+            ctx.log(
+                "warn",
+                &format!(
+                    "create Workspace {name} failed (HTTP {}), retry {attempt}/3",
+                    create_resp.status
+                ),
+            );
+            continue;
+        }
         return Err(format!(
             "create Workspace {name} failed (HTTP {})",
             create_resp.status
         ));
     }
-    serde_json::from_str::<Value>(&create_resp.body)
-        .ok()
-        .and_then(|v| {
-            v.get("entity_id")
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-        })
-        .ok_or_else(|| format!("Workspace {name} create returned no entity_id"))
+    Err(format!("create Workspace {name} failed after retries"))
 }
 
 fn create_agent(
@@ -330,6 +384,7 @@ fn start_session(
     max_turns: &str,
     user_message: &str,
     workspace_id: &str,
+    latency_profile: &str,
 ) -> Result<String, String> {
     let session_resp = ctx.http_call(
         "POST",
@@ -359,6 +414,8 @@ fn start_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
+        "provider_latency_profile": latency_profile,
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",
@@ -399,7 +456,10 @@ fn revise_route(
     let world_id = get("world_id");
     let revision_brief = get("revision_brief");
     if claim_id.is_empty() {
-        return Err("RevisionRequested on a path without claim_id (legacy routes do not revise)".to_string());
+        return Err(
+            "RevisionRequested on a path without claim_id (legacy routes do not revise)"
+                .to_string(),
+        );
     }
 
     let api = ctx
@@ -483,6 +543,11 @@ fn revise_route(
         "50",
         &repairer_msg,
         &workspace_id,
+        if entity_field(&world, "exploration_phase", "ExplorationPhase") == "first_pass" {
+            "foresight_first_pass"
+        } else {
+            "standard"
+        },
     )?;
     ctx.log(
         "info",
@@ -512,7 +577,10 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         // - Path.RevisionRequested: the triggering entity is the Path itself;
         //   spawn a repairer against the SAME route, briefed on the
         //   objections it must answer.
-        if ctx.trigger_action == "RevisionRequested" || ctx.trigger_action == "ResumeRepair" {
+        if matches!(
+            ctx.trigger_action.as_str(),
+            "RevisionRequested" | "ResumeRepair" | "StartRepair"
+        ) {
             // ResumeRepair (self-heal): re-spawn a repairer for this same route
             // after its session died; same path as a revision, just no new brief.
             return revise_route(&ctx, &fields, &get);
@@ -539,6 +607,15 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         }
         let revision_brief = get("revision_brief");
         let route_index = get("route_count").trim().parse::<usize>().unwrap_or(0);
+        // Initial string fields can be absent from the invocation snapshot.
+        // Validate retained routes before creating a Path or starting its worker.
+        let prior_path_ids = get("path_ids");
+        let mut path_ids: Vec<String> = if prior_path_ids.trim().is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&prior_path_ids)
+                .map_err(|e| format!("invalid claim path ids: {e}"))?
+        };
 
         let api = ctx
             .config
@@ -713,13 +790,20 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             "50",
             &repairer_msg,
             &workspace_id,
+            if entity_field(&world, "exploration_phase", "ExplorationPhase") == "first_pass" {
+                "foresight_first_pass"
+            } else {
+                "standard"
+            },
         )?;
 
+        // Retain prior routes when background exploration opens another alternative.
+        path_ids.push(path_id.clone());
         // 4. Record the attached route on the claim.
         set_success_result(
             "RoutesAttached",
             &json!({
-                "path_ids": format!("[\"{path_id}\"]"),
+                "path_ids": serde_json::to_string(&path_ids).map_err(|e| e.to_string())?,
                 "route_count": (route_index + 1).to_string(),
             }),
         );
@@ -742,6 +826,50 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_paths_are_owned_and_retry_stable() {
+        let output_paths = |id: &str| {
+            let prompt = repairer_prompt(
+                id,
+                "c-1",
+                "claim",
+                "w-1",
+                "a-1",
+                "bundle",
+                "lags",
+                "2026-12-31",
+                "",
+                false,
+            );
+            prompt
+                .split('"')
+                .filter(|part| part.starts_with('/') && part.ends_with(".md"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let first = output_paths("owner-a");
+        let second = output_paths("owner-b");
+        assert_eq!(first.len(), 1, "each saved artifact needs an explicit path");
+        assert_eq!(
+            first,
+            output_paths("owner-a"),
+            "a retry reuses its own files"
+        );
+        assert_eq!(second.len(), first.len());
+        assert!(first.iter().all(|path| path.contains("owner-a")));
+        assert!(second.iter().all(|path| path.contains("owner-b")));
+        assert!(
+            first.iter().all(|path| !second.contains(path)),
+            "workers sharing a workspace must never overwrite another worker's file"
+        );
+        let distinct: std::collections::BTreeSet<_> = first.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            first.len(),
+            "one worker's artifacts have different purposes"
+        );
+    }
 
     // Prompt-contract tests: the generated prompts must reference the exact
     // entity sets, action names, and parameter names the specs declare.
@@ -773,6 +901,35 @@ mod tests {
         ] {
             assert!(p.contains(needle), "repairer prompt missing: {needle}");
         }
+    }
+
+    #[test]
+    fn repairer_prompt_gives_explicit_file_write_recipe() {
+        // Same class of bug as the adversary wedge: an under-specified file-write
+        // instruction lets a session reverse-engineer file creation through
+        // temper.action against Directories, trip a Cedar gate, and loop in
+        // WaitingForApproval. The prompt must show the exact temper.write call,
+        // name the file_id return field, forbid improvising file/dir creation,
+        // and never leave the bare placeholder behind. (The repairer DOES create
+        // EventNodes via temper.create — the prohibition is scoped to
+        // Files/Directories/Workspaces only.)
+        let p = prompt(false);
+        assert!(
+            p.contains("temper.write(\"/repair-log-p-1.md\""),
+            "repairer prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "repairer prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "repairer prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone — the recipe captures result[\"file_id\"]"
+        );
     }
 
     #[test]
@@ -811,7 +968,10 @@ mod tests {
         ] {
             assert!(p.contains(needle), "repairer prompt missing: {needle}");
         }
-        assert!(!p.contains("temper.read("), "bundles are inlined, never temper.read");
+        assert!(
+            !p.contains("temper.read("),
+            "bundles are inlined, never temper.read"
+        );
     }
 
     #[test]
@@ -893,7 +1053,16 @@ mod tests {
         // No lag table for the world: the repairer is told so explicitly and
         // still must justify dates from cited durations — never a silent pass.
         let p = repairer_prompt(
-            "p-1", "c-1", "claim", "w-1", "a-1", "bundle", "", "2026-12-13", "", false,
+            "p-1",
+            "c-1",
+            "claim",
+            "w-1",
+            "a-1",
+            "bundle",
+            "",
+            "2026-12-13",
+            "",
+            false,
         );
         assert!(p.contains("No lag table was provided"));
         assert!(p.contains("DATE DISCIPLINE"));
@@ -945,7 +1114,10 @@ mod tests {
 
         // An empty snake_case value falls through to PascalCase.
         let empty_snake = json!({ "AgentModel": "m2", "fields": { "agent_model": "" } });
-        assert_eq!(entity_field(&empty_snake, "agent_model", "AgentModel"), "m2");
+        assert_eq!(
+            entity_field(&empty_snake, "agent_model", "AgentModel"),
+            "m2"
+        );
 
         let neither = json!({});
         assert_eq!(entity_field(&neither, "agent_model", "AgentModel"), "");

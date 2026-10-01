@@ -50,7 +50,10 @@ fn fetch_embeddings(ctx: &Context, texts: &[String]) -> Option<Vec<Vec<f32>>> {
     if !(200..300).contains(&r.status) {
         ctx.log(
             "warn",
-            &format!("grade_hindcast: embedding endpoint {endpoint} HTTP {}; substring fallback", r.status),
+            &format!(
+                "grade_hindcast: embedding endpoint {endpoint} HTTP {}; substring fallback",
+                r.status
+            ),
         );
         return None;
     }
@@ -116,6 +119,8 @@ struct Actual {
     event_node_id: String,
     question_contains: String,
     outcome: String, // "yes" | "no"
+    resolved_at: String,
+    source_refs: Vec<String>,
 }
 
 /// One of the world's forecasts, reduced to what grading needs.
@@ -125,18 +130,86 @@ struct ForecastRow {
     event_node_id: String,
     question: String,
     probability: String,
+    base_probability: String,
+    registered_at: String,
+    evidence_kind: String,
     status: String,
+}
+
+/// Only an exact, dated event match is eligible as historical learning evidence.
+fn resolution_params(actual: &Actual, forecast: &ForecastRow, actuals_file_id: &str) -> Value {
+    let exact = !actual.event_node_id.is_empty() && actual.event_node_id == forecast.event_node_id;
+    let mut refs = actual.source_refs.clone();
+    refs.push(format!("file:{actuals_file_id}"));
+    json!({"outcome":actual.outcome,"outcome_source_refs":serde_json::to_string(&refs).unwrap_or_default(),
+        "resolved_at":actual.resolved_at,"outcome_evidence_kind":if exact {"historical"} else {"unverified_match"}})
+}
+/// Use the same evidence boundary as fitting before scheduling a batch run.
+fn eligible_feedback_time<'a>(
+    actual: &'a Actual,
+    forecast: &ForecastRow,
+    file_id: &str,
+) -> Option<&'a str> {
+    use foresight_learning_core::{Example, Model, prepare};
+    if actual.event_node_id.is_empty()
+        || actual.event_node_id != forecast.event_node_id
+        || forecast.evidence_kind != "historical"
+    {
+        return None;
+    }
+    let mut refs = actual.source_refs.clone();
+    refs.push(format!("file:{file_id}"));
+    let event = Example {
+        event_id: forecast.event_node_id.clone(),
+        base_probability: forecast.base_probability.parse().ok()?,
+        outcome: match actual.outcome.as_str() {
+            "yes" => 1,
+            "no" => 0,
+            _ => return None,
+        },
+        registered_at: forecast.registered_at.clone(),
+        resolved_at: actual.resolved_at.clone(),
+        evidence_kind: "historical".into(),
+        source_refs: refs,
+    };
+    let prepared = prepare(
+        vec![event],
+        "historical",
+        &actual.resolved_at,
+        &Model::identity("historical"),
+    )
+    .ok()?;
+    (prepared.validation.len() == 1).then_some(actual.resolved_at.as_str())
+}
+
+fn matched_revisions<'a>(
+    matched: &ForecastRow,
+    forecasts: &'a [ForecastRow],
+) -> Vec<&'a ForecastRow> {
+    forecasts
+        .iter()
+        .filter(|f| {
+            if matched.event_node_id.is_empty() {
+                f.id == matched.id
+            } else {
+                f.event_node_id == matched.event_node_id
+            }
+        })
+        .collect()
 }
 
 /// Parse the actuals file: a JSON array of objects with an optional
 /// "event_node_id", an optional "question_contains", and a required
 /// "outcome" of "yes" or "no". Entries without a valid outcome are dropped.
 fn parse_actuals(body: &str) -> Result<Vec<Actual>, String> {
-    let parsed: Value = serde_json::from_str(body)
-        .map_err(|e| format!("actuals file is not valid JSON: {e}"))?;
+    let parsed: Value =
+        serde_json::from_str(body).map_err(|e| format!("actuals file is not valid JSON: {e}"))?;
     let arr = parsed
         .as_array()
         .ok_or("actuals file must be a JSON array")?;
+    if arr.len() > 512 || body.len() > 1_000_000 {
+        return Err("Actuals exceed the bounded 512-entry / 1MB input".into());
+    }
     Ok(arr
         .iter()
         .filter_map(|entry| {
@@ -155,6 +228,17 @@ fn parse_actuals(body: &str) -> Result<Vec<Actual>, String> {
                 event_node_id: str_of("event_node_id"),
                 question_contains: str_of("question_contains"),
                 outcome,
+                resolved_at: str_of("resolved_at"),
+                source_refs: entry
+                    .get("source_refs")
+                    .and_then(Value::as_array)
+                    .map(|refs| {
+                        refs.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         })
         .collect())
@@ -181,6 +265,9 @@ fn parse_forecast_rows(fbody: &Value) -> Vec<ForecastRow> {
                 event_node_id: row_str(f, "EventNodeId").to_string(),
                 question: row_str(f, "Question").to_string(),
                 probability: row_str(f, "Probability").to_string(),
+                base_probability: row_str(f, "BaseProbability").to_string(),
+                registered_at: row_str(f, "RegisteredAt").to_string(),
+                evidence_kind: row_str(f, "EvidenceKind").to_string(),
                 status: row_status(f).to_string(),
             })
         })
@@ -218,7 +305,9 @@ fn resolve_matches(
     let mut need: Vec<usize> = Vec::new();
     for (i, a) in actuals.iter().enumerate() {
         if !a.event_node_id.is_empty() {
-            out[i] = forecasts.iter().position(|f| f.event_node_id == a.event_node_id);
+            out[i] = forecasts
+                .iter()
+                .position(|f| f.event_node_id == a.event_node_id);
         } else if !a.question_contains.is_empty() {
             need.push(i);
         }
@@ -228,7 +317,10 @@ fn resolve_matches(
     }
 
     let questions: Vec<String> = forecasts.iter().map(|f| f.question.clone()).collect();
-    let needles: Vec<String> = need.iter().map(|&i| actuals[i].question_contains.clone()).collect();
+    let needles: Vec<String> = need
+        .iter()
+        .map(|&i| actuals[i].question_contains.clone())
+        .collect();
     let mut all = questions.clone();
     all.extend(needles);
     match fetch_embeddings(ctx, &all) {
@@ -279,9 +371,7 @@ fn mean(xs: &[f64]) -> Option<f64> {
 /// The ScoreComplete params, honest about coverage. graded 0/n is a valid
 /// score report, not an error — silence would hide the gap.
 fn score_complete_params(briers: &[f64], total_forecasts: usize, actuals_file_id: &str) -> Value {
-    let mean_brier = mean(briers)
-        .map(|m| format!("{m:.4}"))
-        .unwrap_or_default();
+    let mean_brier = mean(briers).map(|m| format!("{m:.4}")).unwrap_or_default();
     json!({
         "mean_brier": mean_brier,
         "graded_count": briers.len().to_string(),
@@ -356,21 +446,24 @@ fn grade(ctx: &Context) -> Result<(), String> {
     let actuals = parse_actuals(&actuals_resp.body)?;
 
     // 2. The hindcast world's forecasts.
-    let forecasts_url = format!("{api}/tdata/Forecasts?$filter=world_id eq '{world_id}'");
+    let forecasts_url = format!("{api}/tdata/Forecasts?$filter=world_id eq '{world_id}'&$top=513");
     let fresp = ctx.http_call("GET", &forecasts_url, &headers, "")?;
     if fresp.status < 200 || fresp.status >= 300 {
         return Err(format!("failed to list Forecasts (HTTP {})", fresp.status));
     }
     let fbody: Value = serde_json::from_str(&fresp.body).unwrap_or(json!({}));
     let forecasts = parse_forecast_rows(&fbody);
+    if forecasts.len() > 512 || fbody.get("@odata.nextLink").is_some() {
+        return Err("Forecast history exceeds 512 rows; refusing partial grading".into());
+    }
 
     // 3. Match (D4: id-exact -> nearest-embedding -> substring), resolve, score.
     let matches = resolve_matches(ctx, &actuals, &forecasts);
-    let outcome_refs = json!([format!("file:{actuals_file_id}")]).to_string();
     let mut briers: Vec<f64> = Vec::new();
     let mut graded_ids: Vec<String> = Vec::new();
+    let mut learning_as_of = String::new();
     for (ai, actual) in actuals.iter().enumerate() {
-        let Some(forecast) = matches[ai].map(|idx| &forecasts[idx]) else {
+        let Some(matched) = matches[ai].map(|idx| &forecasts[idx]) else {
             ctx.log(
                 "info",
                 &format!(
@@ -380,98 +473,113 @@ fn grade(ctx: &Context) -> Result<(), String> {
             );
             continue;
         };
-        if graded_ids.contains(&forecast.id) {
-            ctx.log(
+        for forecast in matched_revisions(matched, &forecasts) {
+            if graded_ids.contains(&forecast.id) {
+                ctx.log(
                 "info",
                 &format!(
                     "grade_hindcast: forecast {} already graded this run; skipping duplicate actual",
                     forecast.id
                 ),
             );
-            continue;
-        }
-        if forecast.status != "Preregistered" {
-            ctx.log(
-                "info",
-                &format!(
-                    "grade_hindcast: forecast {} is {} (not Preregistered); skipping",
-                    forecast.id, forecast.status
-                ),
-            );
-            continue;
-        }
-        let Ok(probability) = forecast.probability.trim().parse::<f64>() else {
-            ctx.log(
+                continue;
+            }
+            if forecast.status != "Preregistered" {
+                ctx.log(
+                    "info",
+                    &format!(
+                        "grade_hindcast: forecast {} is {} (not Preregistered); skipping",
+                        forecast.id, forecast.status
+                    ),
+                );
+                continue;
+            }
+            let Ok(probability) = forecast.probability.trim().parse::<f64>() else {
+                ctx.log(
                 "warn",
                 &format!(
                     "grade_hindcast: forecast {} has unparseable probability {:?}; cannot grade",
                     forecast.id, forecast.probability
                 ),
             );
-            continue;
-        };
+                continue;
+            };
 
-        let resolve_url = format!("{api}/tdata/Forecasts('{}')/TemperPaw.Resolve", forecast.id);
-        let resolve_body = json!({
-            "outcome": actual.outcome,
-            "outcome_source_refs": outcome_refs,
-        });
-        match ctx.http_call("POST", &resolve_url, &headers, &resolve_body.to_string()) {
-            Ok(r) if (200..300).contains(&r.status) => {}
-            Ok(r) => {
-                ctx.log(
+            let resolve_url = format!("{api}/tdata/Forecasts('{}')/TemperPaw.Resolve", forecast.id);
+            let resolve_body = resolution_params(actual, forecast, &actuals_file_id);
+            match ctx.http_call("POST", &resolve_url, &headers, &resolve_body.to_string()) {
+                Ok(r) if (200..300).contains(&r.status) => {}
+                Ok(r) => {
+                    ctx.log(
+                        "warn",
+                        &format!(
+                            "grade_hindcast: Forecast.Resolve on {} failed (HTTP {})",
+                            forecast.id, r.status
+                        ),
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    ctx.log(
+                        "warn",
+                        &format!(
+                            "grade_hindcast: Forecast.Resolve on {} failed: {e}",
+                            forecast.id
+                        ),
+                    );
+                    continue;
+                }
+            }
+
+            let score = brier(probability, actual.outcome == "yes");
+            let score_url = format!(
+                "{api}/tdata/Forecasts('{}')/TemperPaw.ScoreBatch",
+                forecast.id
+            );
+            match ctx.http_call(
+                "POST",
+                &score_url,
+                &headers,
+                &json!({ "brier": format!("{score:.4}") }).to_string(),
+            ) {
+                Ok(r) if (200..300).contains(&r.status) => {
+                    ctx.log(
+                        "info",
+                        &format!(
+                            "grade_hindcast: forecast {} graded — outcome {}, brier {score:.4}",
+                            forecast.id, actual.outcome
+                        ),
+                    );
+                    briers.push(score);
+                    graded_ids.push(forecast.id.clone());
+                    if let Some(resolved) =
+                        eligible_feedback_time(actual, forecast, &actuals_file_id)
+                        && resolved > learning_as_of.as_str()
+                    {
+                        learning_as_of = resolved.to_string();
+                    }
+                }
+                Ok(r) => ctx.log(
                     "warn",
                     &format!(
-                        "grade_hindcast: Forecast.Resolve on {} failed (HTTP {})",
+                        "grade_hindcast: Forecast.Score on {} failed (HTTP {})",
                         forecast.id, r.status
                     ),
-                );
-                continue;
-            }
-            Err(e) => {
-                ctx.log(
-                    "warn",
-                    &format!("grade_hindcast: Forecast.Resolve on {} failed: {e}", forecast.id),
-                );
-                continue;
-            }
-        }
-
-        let score = brier(probability, actual.outcome == "yes");
-        let score_url = format!("{api}/tdata/Forecasts('{}')/TemperPaw.Score", forecast.id);
-        match ctx.http_call(
-            "POST",
-            &score_url,
-            &headers,
-            &json!({ "brier": format!("{score:.4}") }).to_string(),
-        ) {
-            Ok(r) if (200..300).contains(&r.status) => {
-                ctx.log(
-                    "info",
-                    &format!(
-                        "grade_hindcast: forecast {} graded — outcome {}, brier {score:.4}",
-                        forecast.id, actual.outcome
-                    ),
-                );
-                briers.push(score);
-                graded_ids.push(forecast.id.clone());
-            }
-            Ok(r) => ctx.log(
-                "warn",
-                &format!(
-                    "grade_hindcast: Forecast.Score on {} failed (HTTP {})",
-                    forecast.id, r.status
                 ),
-            ),
-            Err(e) => ctx.log(
-                "warn",
-                &format!("grade_hindcast: Forecast.Score on {} failed: {e}", forecast.id),
-            ),
+                Err(e) => ctx.log(
+                    "warn",
+                    &format!(
+                        "grade_hindcast: Forecast.Score on {} failed: {e}",
+                        forecast.id
+                    ),
+                ),
+            }
         }
     }
 
     // 4. Report the score, honest about coverage.
-    let params = score_complete_params(&briers, forecasts.len(), &actuals_file_id);
+    let mut params = score_complete_params(&briers, forecasts.len(), &actuals_file_id);
+    params["learning_as_of"] = json!(learning_as_of);
     ctx.log(
         "info",
         &format!(
@@ -496,6 +604,9 @@ mod tests {
             event_node_id: node.to_string(),
             question: question.to_string(),
             probability: p.to_string(),
+            base_probability: String::new(),
+            registered_at: String::new(),
+            evidence_kind: String::new(),
             status: status.to_string(),
         }
     }
@@ -505,7 +616,46 @@ mod tests {
             event_node_id: node.to_string(),
             question_contains: contains.to_string(),
             outcome: outcome.to_string(),
+            resolved_at: String::new(),
+            source_refs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn learning_metadata_preserves_dated_exact_actuals_and_rejects_approximate_matches() {
+        let mut actual = actual("event", "", "yes");
+        actual.resolved_at = "2025-03-01T12:00:00Z".into();
+        actual.source_refs = vec!["https://example.org/outcome".into()];
+        let forecast = forecast("f1", "event", "question", "0.3", "Preregistered");
+        let params = resolution_params(&actual, &forecast, "actual-file");
+        assert_eq!(params["resolved_at"], actual.resolved_at);
+        assert_eq!(params["outcome_evidence_kind"], "historical");
+        assert!(
+            params["outcome_source_refs"]
+                .as_str()
+                .unwrap()
+                .contains("https://example.org/outcome")
+        );
+        actual.event_node_id.clear();
+        assert_eq!(
+            resolution_params(&actual, &forecast, "actual-file")["outcome_evidence_kind"],
+            "unverified_match"
+        );
+    }
+    #[test]
+    fn every_revision_of_matched_event_is_graded() {
+        let forecasts = vec![
+            forecast("f1", "event", "q", "0.3", "Preregistered"),
+            forecast("f2", "event", "q", "0.6", "Preregistered"),
+            forecast("f3", "other", "q", "0.3", "Preregistered"),
+        ];
+        assert_eq!(
+            matched_revisions(&forecasts[0], &forecasts)
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f1", "f2"]
+        );
     }
 
     #[test]
@@ -517,23 +667,37 @@ mod tests {
         let m = &forecasts[match_index_substring(&actual("n-2", "", "yes"), &forecasts).unwrap()];
         assert_eq!(m.id, "f-2");
         // An id match is exact even when a substring would hit another row.
-        let m = &forecasts[match_index_substring(&actual("n-1", "rates rise", "yes"), &forecasts).unwrap()];
+        let m = &forecasts
+            [match_index_substring(&actual("n-1", "rates rise", "yes"), &forecasts).unwrap()];
         assert_eq!(m.id, "f-1");
     }
 
     #[test]
     fn matching_falls_back_to_case_insensitive_substring() {
         let forecasts = vec![
-            forecast("f-1", "n-1", "Will GPT-6 ship before July?", "0.7", "Preregistered"),
+            forecast(
+                "f-1",
+                "n-1",
+                "Will GPT-6 ship before July?",
+                "0.7",
+                "Preregistered",
+            ),
             forecast("f-2", "n-2", "Will rates rise?", "0.4", "Preregistered"),
         ];
-        let m = &forecasts[match_index_substring(&actual("", "gpt-6 SHIP", "yes"), &forecasts).unwrap()];
+        let m = &forecasts
+            [match_index_substring(&actual("", "gpt-6 SHIP", "yes"), &forecasts).unwrap()];
         assert_eq!(m.id, "f-1");
     }
 
     #[test]
     fn unmatched_actuals_match_nothing() {
-        let forecasts = vec![forecast("f-1", "n-1", "Will rates fall?", "0.6", "Preregistered")];
+        let forecasts = vec![forecast(
+            "f-1",
+            "n-1",
+            "Will rates fall?",
+            "0.6",
+            "Preregistered",
+        )];
         assert!(match_index_substring(&actual("n-9", "", "yes"), &forecasts).is_none());
         assert!(match_index_substring(&actual("", "quantum", "no"), &forecasts).is_none());
         // Neither key given: nothing to match on.
@@ -609,7 +773,10 @@ mod tests {
         }]});
         let rows = parse_forecast_rows(&body);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].question, "By 2025-09-30, Cursor converts its spring momentum");
+        assert_eq!(
+            rows[0].question,
+            "By 2025-09-30, Cursor converts its spring momentum"
+        );
         assert_eq!(rows[0].event_node_id, "n-7");
         assert_eq!(rows[0].probability, "0.64");
         assert_eq!(rows[0].status, "Registered");
@@ -630,5 +797,4 @@ mod tests {
         assert_eq!(row_status(&pascal), "Tail");
         assert_eq!(row_str(&pascal, "RepairCost"), "50.00");
     }
-
 }

@@ -94,13 +94,22 @@ fn author_prompt(
          it rests on.\n\
          (b) kind \"document\" — the single best in-world document from the bundle, polished, \
          dated at the target date ({target_date}).\n\n\
+         temper.write is the ONLY way to create a FILE, and your workspace already exists. Do \
+         NOT create Files, Directories, or Workspaces yourself, and do NOT invent a \
+         file-creation API via temper.action: temper.create is for Artifacts only, never for \
+         files. temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \
+         \"workspace_id\": \"...\"}}.\n\n\
          For each artifact, in order:\n\
          1. temper.create(\"Artifacts\", {{\"world_id\": \"{world_id}\", \"path_id\": \
          \"{path_id}\", \"kind\": \"brief|document\", \"title\": \"...\", \
          \"author_agent_id\": \"{{AGENT_ID}}\"}}) — capture the returned artifact id.\n\
-         2. temper.write the full content (markdown) — capture the returned file id.\n\
+         2. Set kind to the created artifact's kind, either \"brief\" or \"document\". Write \
+         its full markdown content using that kind's path:\n\
+         output_paths = {{\"brief\": \"/brief-{path_id}.md\", \"document\": \"/document-{path_id}.md\"}}\n\
+         result = temper.write(output_paths[kind], \"<the full markdown content>\")\n\
+         Use result[\"file_id\"] as content_file_id below.\n\
          3. temper.action(\"Artifacts\", \"<artifact-id>\", \"SubmitForCheck\", \
-         {{\"content_file_id\": \"<file-id>\", \"cited_node_ids\": \"[\\\"...\\\"]\"}})\n\n\
+         {{\"content_file_id\": \"<result file_id>\", \"cited_node_ids\": \"[\\\"...\\\"]\"}})\n\n\
          Every factual sentence should trace to a cited node — the consistency gate will \
          check every citation. Do not publish; submission is where your authority ends.\n\n\
          Then call temper.done(\"complete\")."
@@ -216,6 +225,7 @@ fn spawn_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",
@@ -398,6 +408,39 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn output_paths_are_owned_and_retry_stable() {
+        let output_paths = |id: &str| {
+            let prompt = author_prompt("w-1", id, "file-log", "file-bundle", "2026-12-31");
+            prompt
+                .split('"')
+                .filter(|part| part.starts_with('/') && part.ends_with(".md"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let first = output_paths("owner-a");
+        let second = output_paths("owner-b");
+        assert_eq!(first.len(), 2, "each saved artifact needs an explicit path");
+        assert_eq!(
+            first,
+            output_paths("owner-a"),
+            "a retry reuses its own files"
+        );
+        assert_eq!(second.len(), first.len());
+        assert!(first.iter().all(|path| path.contains("owner-a")));
+        assert!(second.iter().all(|path| path.contains("owner-b")));
+        assert!(
+            first.iter().all(|path| !second.contains(path)),
+            "workers sharing a workspace must never overwrite another worker's file"
+        );
+        let distinct: std::collections::BTreeSet<_> = first.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            first.len(),
+            "one worker's artifacts have different purposes"
+        );
+    }
+
     // Prompt-contract tests: the generated prompt must reference the exact
     // entity sets, action names, and parameter names the specs declare.
     // The API silently drops unknown fields — drift here is a silent failure.
@@ -442,7 +485,39 @@ mod tests {
         assert!(p.contains("TWO artifacts"));
         assert!(p.contains("temper.read(\"file-log\")"));
         assert!(p.contains("temper.read(\"file-bundle\")"));
-        assert!(p.contains("2027-06-30"), "document is dated at the target date");
+        assert!(
+            p.contains("2027-06-30"),
+            "document is dated at the target date"
+        );
+    }
+
+    #[test]
+    fn author_prompt_gives_explicit_file_write_recipe() {
+        // Same class of bug as the adversary wedge: an under-specified file-write
+        // instruction lets a session reverse-engineer file creation through
+        // temper.action against Directories, trip a Cedar gate, and loop in
+        // WaitingForApproval. The prompt must show the exact temper.write call,
+        // name the file_id return field, forbid improvising file/dir creation,
+        // and never leave a bare temper.write placeholder behind. (The author DOES
+        // create Artifacts via temper.create, and DOES temper.read the inputs —
+        // the prohibition is scoped to Files/Directories/Workspaces only.)
+        let p = author_prompt("w-1", "p-9", "file-log", "file-bundle", "2027-06-30");
+        assert!(
+            p.contains("temper.write(output_paths[kind],"),
+            "author prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "author prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "author prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "no bare temper.write placeholder — the recipe captures result[\"file_id\"]"
+        );
     }
 
     #[test]
@@ -474,5 +549,4 @@ mod tests {
         assert_eq!(row_status(&pascal), "Tail");
         assert_eq!(row_str(&pascal, "RepairCost"), "50.00");
     }
-
 }

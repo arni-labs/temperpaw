@@ -8,14 +8,15 @@
 
 [automaton]
 name = "Forecast"
-states = ["Preregistered", "Resolved", "Scored"]
-initial = "Preregistered"
+states = ["Created", "Preregistered", "Resolved", "Resolving", "Revising", "Scored"]
+initial = "Created"
+strict_action_params = true
 
 # ADR-0050: Preregistered lives until its resolve_by date passes; resolution
 # is driven by evidence_ingest reading the deadline as domain data, not by a
 # state timeout. Resolved is transient (scored in the same ingest pass, but
 # kept distinct so the outcome and its grading are separately auditable).
-allow_indefinite_states = ["Preregistered", "Resolved"]
+allow_indefinite_states = ["Created", "Preregistered", "Resolved"]
 
 # --- State Variables ---
 
@@ -78,12 +79,34 @@ initial = ""
 
 # --- Actions ---
 
+# Registration commits once; only this transition accepts prediction inputs.
+[[action]]
+name = "Register"
+kind = "input"
+from = ["Created"]
+to = "Preregistered"
+params = ["registration_key", "world_id", "event_node_id", "question", "probability", "base_probability", "model_version", "learning_run_id", "previous_forecast_id", "evidence_kind", "resolve_by", "market_ref", "engine_version", "registered_at"]
+constraints = [{kind="param_nonempty",param="registration_key"},{kind="param_nonempty",param="world_id"},{kind="param_nonempty",param="event_node_id"}]
+
+[[action.triggers]]
+name = "continue_forecast_registration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "ForecastRegistered"
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+[action.triggers.params_from]
+registration_key = "registration_key"
+
+
 [[action]]
 name = "Resolve"
 kind = "input"
 from = ["Preregistered"]
 to = "Resolved"
-params = ["outcome", "outcome_source_refs"]
+params = ["outcome", "outcome_source_refs", "resolved_at", "outcome_evidence_kind"]
 hint = "Reality settled it. Dispatched by evidence_ingest with sources. System principals only (Cedar)."
 
 [[action]]
@@ -93,6 +116,22 @@ from = ["Resolved"]
 to = "Scored"
 params = ["brier"]
 hint = "Grade the registered probability against the outcome. System principals only (Cedar)."
+
+[[action.triggers]]
+name = "learn_from_scored_outcome"
+kind = "entity"
+principal = "system"
+target_entity = "LearningRun"
+target_action = "Start"
+params = {dataset_json = ""}
+guard = {type = "all_of", guards = [{type = "field_in", field = "evidence_kind", values = ["observed","historical","simulated"]}, {type = "field_in", field = "outcome_evidence_kind", values = ["observed","historical","simulated"]}, {type = "not", guard = {type = "field_equals", field = "resolved_at", value = ""}}]}
+[action.triggers.resolve_target]
+type = "create"
+[action.triggers.params_from]
+world_id = "world_id"
+mode = "evidence_kind"
+as_of = "resolved_at"
+
 
 [[action]]
 name = "Void"
@@ -108,3 +147,167 @@ hint = "Question became unresolvable (ambiguous, superseded). Recorded, not grad
 name = "ScoredIsFinal"
 when = ["Scored"]
 assert = "no_further_transitions"
+
+[[state]]
+name = "base_probability"
+type = "string"
+initial = ""
+
+[[state]]
+name = "model_version"
+type = "string"
+initial = ""
+
+[[state]]
+name = "learning_run_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "previous_forecast_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "evidence_kind"
+type = "string"
+initial = ""
+
+[[state]]
+name = "resolved_at"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[state]]
+name = "registration_key"
+type = "string"
+initial = ""
+
+[[action]]
+name = "RecordOutcome"
+kind = "input"
+from = ["Preregistered"]
+to = "Resolving"
+params = ["outcome","outcome_source_refs","resolved_at"]
+
+[[action.triggers]]
+name = "verify_forecast_outcome"
+kind = "wasm"
+module = "forecast_outcome"
+on_failure = "OutcomeFailed"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ResolveRevision"
+kind = "input"
+from = ["Preregistered"]
+to = "Revising"
+params = ["outcome","outcome_source_refs","resolved_at"]
+
+[[action.triggers]]
+name = "verify_revision_outcome"
+kind = "wasm"
+module = "forecast_outcome"
+on_failure = "OutcomeFailed"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "OutcomeVerified"
+kind = "input"
+from = ["Resolving"]
+to = "Scored"
+params = ["brier","error_message","outcome_evidence_kind"]
+
+[[action.triggers]]
+name = "score_older_forecast_revision"
+kind = "entity"
+principal = "system"
+target_entity = "Forecast"
+target_action = "ResolveRevision"
+guard = { type = "not", guard = {type = "field_equals", field = "previous_forecast_id", value = ""} }
+
+[action.triggers.resolve_target]
+type = "field"
+field = "previous_forecast_id"
+[action.triggers.params_from]
+outcome = "outcome"
+outcome_source_refs = "outcome_source_refs"
+resolved_at = "resolved_at"
+
+[[action.triggers]]
+name = "learn_from_verified_outcome"
+kind = "entity"
+params = {dataset_json = ""}
+principal = "system"
+target_entity = "LearningRun"
+target_action = "Start"
+
+[action.triggers.resolve_target]
+type = "create"
+
+[action.triggers.params_from]
+world_id = "world_id"
+mode = "evidence_kind"
+as_of = "resolved_at"
+
+[[action]]
+name = "RevisionVerified"
+kind = "input"
+from = ["Revising"]
+to = "Scored"
+params = ["brier","error_message","outcome_evidence_kind"]
+
+[[action.triggers]]
+name = "score_previous_forecast_revision"
+kind = "entity"
+principal = "system"
+target_entity = "Forecast"
+target_action = "ResolveRevision"
+guard = { type = "not", guard = {type = "field_equals", field = "previous_forecast_id", value = ""} }
+
+[action.triggers.resolve_target]
+type = "field"
+field = "previous_forecast_id"
+[action.triggers.params_from]
+outcome = "outcome"
+outcome_source_refs = "outcome_source_refs"
+resolved_at = "resolved_at"
+
+[[action]]
+name = "OutcomeFailed"
+kind = "input"
+from = ["Resolving","Revising"]
+to = "Preregistered"
+params = ["error_message"]
+
+[[state_timeout]]
+state="Resolving"
+after_seconds=120
+on_timeout="OutcomeFailed"
+params={error_message="Outcome validation did not complete within 120 seconds."}
+
+[[state_timeout]]
+state="Revising"
+after_seconds=120
+on_timeout="OutcomeFailed"
+params={error_message="Outcome validation did not complete within 120 seconds."}
+
+[[state]]
+name="outcome_evidence_kind"
+type="string"
+initial=""
+
+# Historical grading emits one batch-completion learning trigger after all scores.
+[[action]]
+name = "ScoreBatch"
+kind = "input"
+from = ["Resolved"]
+to = "Scored"
+params = ["brier"]

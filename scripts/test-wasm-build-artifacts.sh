@@ -52,9 +52,7 @@ builders=(
     paw-channels/wasm/build.sh
     paw-compute/wasm/build.sh
     paw-foresight/wasm/build.sh
-    paw-fs/wasm/artifact_batch_apply/build.sh
-    paw-fs/wasm/blob_adapter/build.sh
-    paw-fs/wasm/workspace_fs/build.sh
+    paw-fs/wasm/build.sh
     paw-ingest/wasm/build.sh
     paw-managed-agents/wasm/build.sh
     paw-media/wasm/build.sh
@@ -102,6 +100,29 @@ for mode in default absolute relative missing fail; do
                 fi
             done < "$TEST_ARTIFACT_LOG"
             test -s "$TEST_ARTIFACT_LOG"
+            if [[ "$builder" == "$TMP/repo/os-apps/paw-agent/wasm/build.sh" || "$builder" == "$TMP/repo/os-apps/paw-foresight/wasm/build.sh" || "$builder" == "$TMP/repo/os-apps/paw-fs/wasm/build.sh" ]]; then
+                app="$(basename "$(dirname "$(dirname "$builder")")")"
+                python3 - "$ROOT/os-apps/$app/app.toml" "$TMP/repo/os-apps/$app/wasm" <<'PY_MANIFEST'
+from pathlib import Path
+import sys, tomllib
+
+manifest_path = Path(sys.argv[1])
+manifest = tomllib.loads(manifest_path.read_text())
+modules = [item["name"] for item in manifest["wasm_modules"]]
+assert modules, f"{manifest['name']} must declare its runtime modules"
+if manifest["name"] == "paw-agent":
+    session = tomllib.loads((manifest_path.parent / "specs/session.ioa.toml").read_text())
+    pause = next(action for action in session["action"] if action["name"] == "PauseForApproval")
+    approval_modules = [trigger["module"] for trigger in pause["triggers"] if trigger["kind"] == "wasm"]
+    assert approval_modules, "PauseForApproval must route the original decision for human approval"
+    required = {item["name"] for item in manifest["wasm_modules"] if item.get("criticality") == "app-required"}
+    for name in approval_modules:
+        assert name in required, f"paw-agent approval trigger module {name} must be declared app-required; undeclared artifacts are not installed"
+missing = [name for name in modules if not (Path(sys.argv[2]) / name / (name + ".wasm")).is_file()]
+if missing:
+    raise SystemExit(f"FAIL: {manifest['name']} builder omitted declared modules: " + ", ".join(missing))
+PY_MANIFEST
+            fi
         fi
     done
     echo "PASS: $mode (${#builders[@]} builders)"

@@ -22,6 +22,83 @@ fn engine() -> AuthzEngine {
     AuthzEngine::new(&policy).expect("foresight.cedar should parse")
 }
 
+#[test]
+fn progressive_registration_and_deepening_entries_keep_their_trusted_principals() {
+    let engine = engine();
+    let system = ctx("declared-entity-trigger", "system");
+    let wasm = temper_server::request_context::AgentContext::for_service("wasm-runtime")
+        .security_ctx
+        .unwrap();
+    let admin = SecurityContext::from_verified_jwt(
+        "dashboard-owner",
+        temper_authz::PrincipalKind::Admin,
+        None,
+        None,
+        None,
+        None,
+    );
+    let session = ctx("repairer-session", "agent");
+    let resource = attrs(&[("id", serde_json::json!("progressive-world"))]);
+    for (entity, action, allowed) in [
+        ("World", "RequestForecastRegistration", &system),
+        ("World", "StartForecastRegistration", &system),
+        ("World", "MaybeDeepen", &system),
+        ("World", "ContinueDeepening", &system),
+        ("World", "BeginDeepening", &wasm),
+        ("World", "DeepeningClaimPrepared", &wasm),
+        ("Claim", "BeginDeepening", &system),
+        ("Path", "StartRepair", &system),
+        ("Claim", "EvaluateRoutes", &system),
+        ("World", "EvaluateWorldCascade", &system),
+        ("Endpoint", "StartWriter", &system),
+        ("Endpoint", "EvaluateEndpointScoring", &system),
+        ("World", "CommitForecastSnapshot", &system),
+        ("World", "RegistrationSnapshotPrepared", &wasm),
+    ] {
+        assert!(
+            engine
+                .authorize(allowed, action, entity, &resource)
+                .is_allowed(),
+            "{entity}.{action}"
+        );
+        for denied in [&admin, &session] {
+            assert!(
+                !engine
+                    .authorize(denied, action, entity, &resource)
+                    .is_allowed(),
+                "forged {entity}.{action}"
+            );
+        }
+    }
+    assert!(
+        !engine
+            .authorize(&wasm, "StartForecastRegistration", "World", &resource)
+            .is_allowed()
+    );
+    assert!(
+        !engine
+            .authorize(&system, "DeepeningClaimPrepared", "World", &resource)
+            .is_allowed()
+    );
+    let manual = attrs(&[("AuthorAgentId", serde_json::json!("dashboard"))]);
+    assert!(
+        engine
+            .authorize(&admin, "create", "EventNode", &manual)
+            .is_allowed()
+    );
+    assert!(
+        !engine
+            .authorize(&session, "create", "EventNode", &manual)
+            .is_allowed()
+    );
+    let worker = attrs(&[("AuthorAgentId", serde_json::json!("repairer-session"))]);
+    assert!(
+        engine
+            .authorize(&session, "create", "EventNode", &worker)
+            .is_allowed()
+    );
+}
+
 fn ctx(id: &str, agent_type: &str) -> SecurityContext {
     SecurityContext::from_resolved_identity(id, agent_type, None)
 }
@@ -39,7 +116,7 @@ fn forecasts_are_created_and_graded_only_by_system() {
     let a = attrs(&[("id", serde_json::json!("f-1"))]);
 
     let system = ctx("evidence-wasm", "system");
-    for action in ["create", "Resolve", "Score", "Void"] {
+    for action in ["create", "Resolve", "Score", "ScoreBatch", "Void"] {
         assert!(
             engine
                 .authorize(&system, action, "Forecast", &a)
@@ -49,7 +126,7 @@ fn forecasts_are_created_and_graded_only_by_system() {
     }
 
     let agent = ctx("some-session-agent", "agent");
-    for action in ["create", "Resolve", "Score", "Void"] {
+    for action in ["create", "Resolve", "Score", "ScoreBatch", "Void"] {
         assert!(
             !engine
                 .authorize(&agent, action, "Forecast", &a)
@@ -402,6 +479,332 @@ fn legacy_entity_types_are_retired_read_only_except_for_system() {
                 .authorize(&ctx("rollback-wasm", "system"), "create", entity, &a)
                 .is_allowed(),
             "system retains {entity} mutation for rollback symmetry"
+        );
+    }
+}
+
+#[test]
+fn learning_callbacks_accept_only_the_platform_wasm_service() {
+    let engine = engine();
+    let actual_service = temper_server::request_context::AgentContext::for_service("wasm-runtime")
+        .security_ctx
+        .expect("service must carry typed authority");
+    let unrelated_service =
+        temper_server::request_context::AgentContext::for_service("other-service")
+            .security_ctx
+            .expect("service must carry typed authority");
+    let session = ctx("ordinary-session", "agent");
+    let a = attrs(&[("id", serde_json::json!("learning-test"))]);
+    for (entity, actions) in [
+        (
+            "LearningRun",
+            &["Prepared", "Trained", "CandidatePassed", "Reject", "Fail"][..],
+        ),
+        (
+            "World",
+            &[
+                "ReplayOpened",
+                "ForecastPrepared",
+                "ForecastRegistrationComplete",
+                "ForecastRegistrationFailed",
+            ][..],
+        ),
+        (
+            "Forecast",
+            &["OutcomeVerified", "RevisionVerified", "OutcomeFailed"][..],
+        ),
+    ] {
+        for action in actions {
+            assert!(
+                engine
+                    .authorize(&actual_service, action, entity, &a)
+                    .is_allowed(),
+                "actual WASM callback must reach {entity}.{action}"
+            );
+            for denied in [&session, &unrelated_service] {
+                assert!(
+                    !engine.authorize(denied, action, entity, &a).is_allowed(),
+                    "unrelated caller must not reach {entity}.{action}"
+                );
+            }
+        }
+    }
+    for (entity, action) in [("World", "OpenReplay"), ("Forecast", "RecordOutcome")] {
+        assert!(
+            !engine
+                .authorize(&actual_service, action, entity, &a)
+                .is_allowed(),
+            "callback permit must not grant operator action {entity}.{action}"
+        );
+    }
+}
+
+#[test]
+fn dashboard_admin_can_subscribe_to_tenant_events() {
+    let engine = engine();
+    let admin = SecurityContext::from_verified_jwt(
+        "dashboard-owner",
+        temper_authz::PrincipalKind::Admin,
+        None,
+        None,
+        None,
+        None,
+    );
+    let attributes = HashMap::new();
+    assert!(
+        engine
+            .authorize(&admin, "read_events", "Entity", &attributes)
+            .is_allowed(),
+        "authenticated dashboard admin must receive tenant-scoped live updates"
+    );
+    for action in ["create", "update", "delete", "read"] {
+        assert!(
+            !engine
+                .authorize(&admin, action, "Entity", &attributes)
+                .is_allowed(),
+            "event subscription must not grant generic Entity action {action}"
+        );
+    }
+    for caller in [
+        SecurityContext::anonymous(),
+        ctx("ordinary-session", "agent"),
+        ctx("human-agent", "human"),
+    ] {
+        assert!(
+            !engine
+                .authorize(&caller, "read_events", "Entity", &attributes)
+                .is_allowed(),
+            "non-admin caller must not gain the dashboard event subscription"
+        );
+    }
+}
+
+#[test]
+fn dashboard_admin_cannot_forge_learning_or_prediction_callbacks() {
+    let engine = engine();
+    let admin = SecurityContext::from_verified_jwt(
+        "dashboard-owner",
+        temper_authz::PrincipalKind::Admin,
+        None,
+        None,
+        None,
+        None,
+    );
+    let system = ctx("entity-trigger", "system");
+    let a = attrs(&[("id", serde_json::json!("protected-record"))]);
+    for (entity, actions) in [
+        (
+            "LearningRun",
+            &[
+                "Prepared",
+                "Trained",
+                "CandidatePassed",
+                "ConfirmAdoption",
+                "Reject",
+                "Fail",
+            ][..],
+        ),
+        (
+            "World",
+            &[
+                "ReplayOpened",
+                "AdoptModel",
+                "ForecastPrepared",
+                "ForecastRegistered",
+                "ForecastRegistrationComplete",
+                "ForecastRegistrationFailed",
+            ][..],
+        ),
+        (
+            "Forecast",
+            &[
+                "Register",
+                "Resolve",
+                "Score",
+                "ScoreBatch",
+                "Void",
+                "ResolveRevision",
+                "OutcomeVerified",
+                "RevisionVerified",
+                "OutcomeFailed",
+            ][..],
+        ),
+    ] {
+        for action in actions {
+            for caller in [
+                &admin,
+                &ctx("human-operator", "human"),
+                &ctx("supervisor", "supervisor"),
+                &SecurityContext::anonymous(),
+            ] {
+                assert!(
+                    !engine.authorize(caller, action, entity, &a).is_allowed(),
+                    "operator must not forge {entity}.{action}"
+                );
+            }
+            // Entity-trigger callbacks must continue to work. World registration
+            // preparation/completion are exclusively WASM-service callbacks.
+            if !["ForecastPrepared", "ForecastRegistrationComplete"].contains(action) {
+                assert!(
+                    engine.authorize(&system, action, entity, &a).is_allowed(),
+                    "declared system transition must reach {entity}.{action}"
+                );
+            }
+        }
+    }
+    for (entity, actions) in [
+        ("LearningRun", &["create", "read", "list", "Start"][..]),
+        (
+            "World",
+            &["ConfigureLearning", "OpenReplay", "RegisterForecasts"][..],
+        ),
+        ("Forecast", &["read", "list", "RecordOutcome"][..]),
+    ] {
+        for action in actions {
+            assert!(
+                engine.authorize(&admin, action, entity, &a).is_allowed(),
+                "dashboard operator must retain {entity}.{action}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dashboard_research_can_create_workspace_without_workspace_management_access() {
+    let engine = engine();
+    let admin = SecurityContext::from_verified_jwt(
+        "dashboard-owner",
+        temper_authz::PrincipalKind::Admin,
+        None,
+        None,
+        None,
+        None,
+    );
+    let resource = attrs(&[("id", serde_json::json!("research-workspace"))]);
+    for action in ["create", "Create"] {
+        assert!(
+            engine
+                .authorize(&admin, action, "Workspace", &resource)
+                .is_allowed(),
+            "dashboard research must be able to create its workspace"
+        );
+    }
+    for action in [
+        "read",
+        "list",
+        "update",
+        "delete",
+        "Freeze",
+        "Thaw",
+        "WorkspaceArchive",
+    ] {
+        assert!(
+            !engine
+                .authorize(&admin, action, "Workspace", &resource)
+                .is_allowed(),
+            "research creation must not grant workspace {action}"
+        );
+    }
+    assert!(
+        !engine
+            .authorize(
+                &SecurityContext::anonymous(),
+                "create",
+                "Workspace",
+                &resource
+            )
+            .is_allowed()
+    );
+}
+
+#[test]
+fn research_session_callback_cannot_be_forged_by_operators_or_plain_agents() {
+    let engine = engine();
+    let resource = attrs(&[("id", serde_json::json!("world-1"))]);
+    let admin = SecurityContext::from_verified_jwt(
+        "dashboard-owner",
+        temper_authz::PrincipalKind::Admin,
+        None,
+        None,
+        None,
+        None,
+    );
+    for caller in [
+        admin.clone(),
+        ctx("ordinary-session", "agent"),
+        ctx("human-operator", "human"),
+        ctx("unrelated-system", "system"),
+        SecurityContext::anonymous(),
+    ] {
+        assert!(
+            !engine
+                .authorize(&caller, "ResearchSessionStarted", "World", &resource)
+                .is_allowed(),
+            "Only the named WASM callback may record the research session"
+        );
+    }
+    assert!(
+        engine
+            .authorize(
+                &ctx("service:wasm-runtime", "agent"),
+                "ResearchSessionStarted",
+                "World",
+                &resource
+            )
+            .is_allowed()
+    );
+    let forged = attrs(&[
+        ("id", serde_json::json!("world-1")),
+        ("ResearchSessionId", serde_json::json!("unrelated-session")),
+    ]);
+    assert!(
+        !engine
+            .authorize(&admin, "create", "World", &forged)
+            .is_allowed()
+    );
+    assert!(
+        engine
+            .authorize(&admin, "create", "World", &resource)
+            .is_allowed()
+    );
+}
+
+#[test]
+fn trusted_corridor_workers_reuse_workspaces_without_granting_session_browse() {
+    let engine = engine();
+    let workspace = attrs(&[("id", serde_json::json!("world-workspace"))]);
+    for action in ["read", "list"] {
+        assert!(
+            engine
+                .authorize(
+                    &ctx("service:system", "system"),
+                    action,
+                    "Workspace",
+                    &workspace
+                )
+                .is_allowed()
+        );
+        for principal in [
+            ctx("repairer", "agent"),
+            ctx("service:wasm-runtime", "wasm-runtime"),
+        ] {
+            assert!(
+                !engine
+                    .authorize(&principal, action, "Workspace", &workspace)
+                    .is_allowed()
+            );
+        }
+    }
+    for action in ["update", "delete", "Freeze", "WorkspaceArchive"] {
+        assert!(
+            !engine
+                .authorize(
+                    &ctx("service:system", "system"),
+                    action,
+                    "Workspace",
+                    &workspace
+                )
+                .is_allowed()
         );
     }
 }

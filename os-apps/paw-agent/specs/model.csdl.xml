@@ -10,6 +10,12 @@
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
         <Property Name="ProviderOptionsJson" Type="Edm.String"/>
+        <Property Name="ProviderLatencyProfile" Type="Edm.String"/>
+        <Property Name="ProviderCallActive" Type="Edm.Boolean"/>
+        <Property Name="ProviderCallAttempt" Type="Edm.Int64"/>
+        <Property Name="ForesightProviderRetryCount" Type="Edm.Int64"/>
+        <Property Name="ToolChoice" Type="Edm.String"/>
+
         <Property Name="ConversationFileId" Type="Edm.String"/>
         <Property Name="WorkspaceId" Type="Edm.String"/>
         <Property Name="PendingToolCalls" Type="Edm.String"/>
@@ -59,6 +65,7 @@
         <Property Name="CompactionAuthRetryCount" Type="Edm.Int64"/>
         <Property Name="ReserveTokens" Type="Edm.String"/>
         <Property Name="KeepRecentTokens" Type="Edm.String"/>
+        <Property Name="CompactionRound" Type="Edm.Int64"/>
         <Property Name="CompactionCount" Type="Edm.Int64"/>
         <Property Name="CompactionModel" Type="Edm.String"/>
         <Property Name="CompactionSkippedReason" Type="Edm.String"/>
@@ -215,6 +222,8 @@
         <Parameter Name="user_message" Type="Edm.String" Nullable="false"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_latency_profile" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_choice" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="max_turns" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tools_enabled" Type="Edm.String" Nullable="true"/>
@@ -309,6 +318,55 @@
         <Parameter Name="provider_auth_error" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_auth_retry_count" Type="Edm.Int64" Nullable="true"/>
         <Parameter Name="compaction_auth_retry_count" Type="Edm.Int64" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="CallProviderStandard" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="CallProviderForesight" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="CallProviderForesightRetry" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="RetryForesightProvider" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="ForesightProviderFailed" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="ForesightProviderRetryFailed" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <Parameter Name="error_message" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="ForesightProviderResponseReady" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_response_inline_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_request_bytes" Type="Edm.Int64" Nullable="true"/>
+        <Parameter Name="provider_response_bytes" Type="Edm.Int64" Nullable="true"/>
+        <Parameter Name="expected_provider_attempt" Type="Edm.Int64" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Session"/>
+      </Action>
+
+      <Action Name="ForesightProviderAuthExpired" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
+        <Parameter Name="provider_auth_error" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="expected_provider_attempt" Type="Edm.Int64" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -548,6 +606,9 @@
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_url" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -570,6 +631,9 @@
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_url" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -592,6 +656,9 @@
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_url" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 

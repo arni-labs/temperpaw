@@ -1,9 +1,9 @@
 //! seed_world — spawns the skeleton builders for a world (ADR-002).
 //!
-//! On World.Seed: spawn a surveyor session (determined facts only — the
-//! skeleton) and a bookmaker session (market-priced marginals — enrichment
-//! that must never block the world). The surveyor self-reports
-//! World.SeedComplete; the bookmaker just adds EventNodes while it can.
+//! On World.Seed: spawn an open researcher for semantic exploration, or
+//! a determined-fact surveyor for legacy corridor sampling. The surveyor self-reports World.SeedComplete. Bookmaker
+//! (market-priced marginals) is disabled — it wasted eval time searching
+//! prediction markets the user did not ask for.
 //!
 //! Hindcast worlds (hindcast_mode = "true") get web tools stripped at
 //! Configure time: evidence comes only from the frozen corpus.
@@ -15,6 +15,41 @@ use temper_wasm_sdk::prelude::*;
 const SURVEYOR_TOOLS: &str =
     "temper_get,temper_list,temper_create,temper_action,temper_read,temper_write";
 const WEB_TOOLS: &str = ",temper_web_search,temper_web_fetch";
+
+// Keep native diagnostic fields only; never serialize response headers or the request.
+fn session_create_error(name: &str, status: u16, body: &str) -> String {
+    let prefix = format!("create Session for {name} failed (HTTP {status})");
+    if body.len() > 64 * 1024 {
+        return format!("{prefix}: response detail exceeds 64KiB bound");
+    }
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return prefix;
+    };
+    let mut details = Vec::new();
+    for path in [
+        "/error/code",
+        "/error/message",
+        "/error",
+        "/message",
+        "/denial_reason",
+        "/decision_id",
+        "/pending_decision_id",
+        "/error/decision_id",
+        "/error/pending_decision_id",
+    ] {
+        if let Some(text) = value.pointer(path).and_then(Value::as_str) {
+            let bounded: String = text.chars().filter(|c| !c.is_control()).take(512).collect();
+            if !bounded.is_empty() {
+                details.push(format!("{}={bounded}", path.trim_start_matches('/')));
+            }
+        }
+    }
+    if details.is_empty() {
+        prefix
+    } else {
+        format!("{prefix}: {}", details.join("; "))
+    }
+}
 
 fn tools_enabled(hindcast: bool) -> String {
     if hindcast {
@@ -94,8 +129,7 @@ fn surveyor_prompt(
          Never state anything dated after the world's vantage."
             .to_string()
     } else {
-        "Use temper.web_search / temper.web_fetch to verify what is already determined."
-            .to_string()
+        "Use temper.web_search / temper.web_fetch to verify what is already determined.".to_string()
     };
     format!(
         "You are the Surveyor for world {world_id} (\"{name}\", domain: {domain}).\n\
@@ -107,6 +141,17 @@ fn surveyor_prompt(
          contract cliffs), regulations already enacted with future effect. If a claim \
          needs a probability, it is not yours to record.\n\n\
          {corpus_line}\n{research_line}\n\n\
+         EXECUTION RULES (Monty REPL — you only have the execute tool; each call is one Python \
+         script that runs to completion before the next turn):\n\
+         - NEVER put the whole job in one execute() call. A monolithic script on turn 1 is a \
+         known failure mode: the session can mark complete without running it.\n\
+         - Use MANY SMALL execute() calls across turns. Each script should do ONE step only: \
+         create 1-2 EventNodes, OR temper.list to verify, OR temper.write the skeleton, OR \
+         temper.action SeedComplete, OR temper.done — never combine these in one script.\n\
+         - After every create batch, run a separate execute() that only calls \
+         temper.list(\"EventNodes\", \"world_id eq '{world_id}'\") and prints the count.\n\
+         - Only call temper.done(\"complete\") in its own final execute(), after SeedComplete \
+         returns successfully.\n\n\
          For each determined fact, create an EventNode:\n\
          temper.create(\"EventNodes\", {{\"world_id\": \"{world_id}\", \"statement\": \"...\", \
          \"layer\": \"slow|mid\", \"probability\": \"1.0\", \"provenance\": \"determined\", \
@@ -119,13 +164,139 @@ fn surveyor_prompt(
          CONSENSUS POLE (what most informed observers currently expect). These are the \
          dimensions the engine will sample diverse futures across, so make them orthogonal \
          and genuinely contested — not restatements of one another.\n\n\
-         Then write a one-page skeleton summary with temper.write (markdown), and finish by \
-         self-reporting (uncertainty_axes is a JSON array of {{\"axis\": \"...\", \"consensus_pole\": \"...\"}}):\n\
-         temper.action(\"Worlds\", \"{world_id}\", \"SeedComplete\", \
-         {{\"skeleton_node_count\": \"<n>\", \"graph_snapshot_file_id\": \"<file-id-from-temper.write>\", \
-         \"uncertainty_axes\": \"[{{\\\"axis\\\": \\\"...\\\", \\\"consensus_pole\\\": \\\"...\\\"}}, ...]\"}})\n\
-         Then call temper.done(\"complete\")."
+         Then temper.write(\"/skeleton.md\", \"<markdown summary>\") — the ONLY way to create \
+         a file. Do NOT create Files, Directories, or Workspaces yourself.\n\
+         temper.write returns {{\"file_id\": \"...\"}}. In a separate execute(), call \
+         temper.action(\"Worlds\", \"{world_id}\", \"SeedComplete\", {{\"skeleton_node_count\": \
+         \"<n>\", \"graph_snapshot_file_id\": \"<file_id>\", \"uncertainty_axes\": \
+         \"[{{\\\"axis\\\": \\\"...\\\", \\\"consensus_pole\\\": \\\"...\\\"}}, ...]\"}}).\n\
+         Then temper.done(\"complete\") in its own execute()."
     )
+}
+
+/// Open exploration starts with a research map, not a set of fixed commitments.
+/// Keep the legacy corridor prompt separate: its sampler requires a skeleton.
+fn open_research_prompt(
+    world_id: &str,
+    agent_id: &str,
+    question: &str,
+    target_date: &str,
+    as_of_date: &str,
+    corpus_inline: &str,
+    hindcast: bool,
+) -> String {
+    let research = if hindcast {
+        "HINDCAST: NO web access. Use only the frozen corpus, respecting its vantage date.          Later knowledge is inadmissible, even if you remember it. Record missing evidence."
+    } else {
+        "Use temper.web_search and temper.web_fetch to investigate the question with current          evidence. Follow surprising findings and competing explanations. Inspect source          content before citing it; search snippets alone are leads, not verified findings.          Seek evidence that could overturn your emerging account, not just confirm it. Prefer direct temper.web_fetch(url). If direct fetch fails, temper.web_search(query) returns bounded source-extracted text in each result's text field. A focused title or site query may retrieve a useful excerpt. Use only a claim and quotation actually contained in that returned text; never infer source contents from the title, URL or a search summary. Explicitly label indexed-excerpt evidence, direct-fetch failure and date or context limitations in the statement/evidence_note; use weak_signal when context remains unverified. A truncated excerpt does not establish that the whole source was inspected. Smaller article or text-version URLs may be fetched only when actually discovered, never invented. web_fetch accepts only a URL; do not invent size, range or encoding parameters."
+    };
+    let chronology = if hindcast {
+        "The frozen corpus vantage date is authoritative. The live ingestion date does not move that boundary.".to_string()
+    } else if as_of_date.trim().is_empty() {
+        "Research as-of date is unavailable. Establish and report source publication and observation dates; do not invent a current date.".to_string()
+    } else {
+        format!(
+            "Research as-of date: {as_of_date}. This is the evidence vantage, distinct from the forecast horizon. Seek the most recent available relevant evidence and check whether newer findings change older accounts, without an arbitrary lookback window. Older sources may establish historical baselines; label them historical rather than current. State when the latest evidence is unavailable or could not be verified, and distinguish publication dates from dates of the events observed."
+        )
+    };
+    format!(
+        r#"You are investigating this question for world {world_id}:
+{question}
+Horizon: {target_date}
+{chronology}
+
+Establish what is ALREADY happening at the research as-of date, in the setting the user
+actually means. Check recent first-hand demonstrations, current product behavior, and
+observed practice, as well as research. Separate current observations from user-supplied
+assumptions and unknowns. Do not mistake an older study or an adoption average for the
+present at the frontier. Do not universalize a user's own workflow to everyone. If a tool
+or habit already exists in this setting, investigate its NEXT consequences rather than
+predicting its arrival. State the additional change a future hypothesis would entail.
+
+Build an open research map that can support genuinely different causal futures. Let the
+question and discovered evidence determine what to investigate. There is no prescribed
+topic checklist, axis count, branch count, consensus pole, or required narrative. Revise
+your framing when evidence points somewhere unexpected. A dated commitment is one kind
+of evidence, not the boundary of the research. Explore observed changes, contested claims,
+weak signals, counterexamples and emerging mechanisms when they bear on this question.
+Distinguish an observation from its interpretation and from a hypothesis about the future.
+A source's prediction is evidence that the source made that prediction, not that it is true.
+Identify competing causal explanations and novel hypotheses worth testing. Preserve
+contradictions, uncertainty, missing evidence and the reasons a finding could mislead us.
+Do not turn a disagreement or an unsourced possibility into an established fact.
+
+Look beyond announcements and company talking points. When relevant, seek what people
+actually do, pay for, struggle with or stop needing, alongside studies and direct evidence.
+Do not assume today's jobs, tools and habits survive unchanged. Follow evidence that could
+make something disappear or become ordinary, and look for reasons that change might fail.
+Those are questions to investigate, not required conclusions or a fixed list of futures.
+Write findings in plain language with concrete people, actions, dates and limits. Translate
+necessary technical terms. Avoid corporate jargon and news-digest summaries. For each
+inferred future, explain what a person would notice in daily life and why it could happen;
+keep this imagined possibility separate from the observations that motivated it.
+
+{research}
+--- BEGIN CORPUS ---
+{corpus_inline}
+--- END CORPUS ---
+
+Persist useful research as it emerges so the person can watch it build. Use the exact API:
+temper.create("EventNodes", {{"world_id": "{world_id}", "statement": "<what the source actually establishes, with its date, scope and limits>", "layer": "mid", "probability": "", "provenance": "observed", "source_refs": "[\"<URL or corpus reference with a short supporting quotation and source date>\"]", "resolve_by": "{target_date}", "author_agent_id": "{agent_id}"}})
+For each sourced node also pass evidence_json, a JSON-encoded object with exactly:
+{{"kind":"finding","publication_date":null,"observation_period":{{"start":null,"end":null}},"retrieved_at":null}}.
+Each typed record has exactly one source_refs entry; split different sources into separate
+records so publication chronology has an unambiguous source.
+A finding contains substantive content actually read in a source or returned extracted
+excerpt. A title, source existence, report contents list or missing result is a lead,
+retained for further research but cannot establish the substantive present baseline.
+Publication and observation dates accept YYYY, YYYY-Q1 through YYYY-Q4 for calendar
+quarters, YYYY-MM or YYYY-MM-DD at the precision actually supported. Do not treat a
+fiscal quarter as a calendar quarter; preserve its wording in the statement and use
+null dates unless its calendar bounds are known. Retrieval accepts YYYY-MM-DD. Unknown dates are null, never guessed
+from the current vantage or URL. These are different dates: a paper retrieved today can
+report a study from years ago. Search published_at is provider-reported metadata; check
+against the source before treating it as its publication date. No dated metadata makes a
+source true or a forecast observed. Hypothesis nodes need no evidence_json.
+Use provenance observed, contested, weak_signal, or hypothesis to identify the claim's
+status. Use determined only for an actually fixed fact. Leave probability empty for research
+claims: unknown does not mean 0.5 and sourced does not mean 1.0. A genuinely quoted,
+quantified forecast may use provenance market or authored with its stated probability;
+identify whose estimate it is, its horizon and its conditions in the statement.
+Keep the source claim and your future interpretation in separate nodes. An observed,
+contested or weak_signal statement must not append what this could mean for future work,
+income or behavior. Save that inference separately with provenance hypothesis, even when
+it feels obvious. The later search must be able to reject your interpretation without
+rejecting the source observation that prompted it.
+Hypotheses may cite their motivating evidence, but explicitly say they are inferred and
+unverified; never fabricate a source for the hypothesis. If no source was available, say so
+and use an empty source_refs array. Preserve enough actual source content to let subsequent
+evaluations assess what was observed. Across all findings, quote no more than25 words total
+from any one source URL; additional findings can paraphrase with the source reference. Do not pad the map to a target count or collapse
+conflicting observations to one consensus. Group only genuinely redundant findings.
+
+The session uses a Monty execute REPL. Work in incremental execute calls: research, persist
+findings, inspect the saved EventNodes, then continue investigating. Avoid one monolithic
+script; check action results before moving on. You have an operational turn budget, so leave
+time to save partial findings and report remaining research questions honestly.
+Verify saved nodes with temper.list("EventNodes", "world_id eq '{world_id}'").
+Write the research map, competing explanations, new hypotheses, evidence limitations and
+unanswered questions using temper.write("/skeleton.md", "<research map markdown>").
+This legacy filename is storage only; it does not constrain the substance of the research.
+Do NOT create Files, Directories, or Workspaces yourself. Save the returned file_id.
+Then in a separate execute call use:
+temper.action("Worlds", "{world_id}", "SeedComplete", {{"skeleton_node_count": "<actual saved count>", "graph_snapshot_file_id": "<returned file_id>", "uncertainty_axes": "[]"}})
+The empty legacy uncertainty_axes field deliberately does not preselect the futures.
+Only after SeedComplete succeeds, call temper.done("complete") in its own execute call.
+"#
+    )
+}
+
+fn open_exploration_requested(state: &Value) -> bool {
+    state
+        .get("booleans")
+        .and_then(|fields| fields.get("semantic_exploration_requested"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The bookmaker's working contract: import live market-priced questions as
@@ -260,9 +431,10 @@ fn spawn_session(
         &json!({ "agent_id": agent_id }).to_string(),
     )?;
     if session_resp.status < 200 || session_resp.status >= 300 {
-        return Err(format!(
-            "create Session for {name} failed (HTTP {})",
-            session_resp.status
+        return Err(session_create_error(
+            name,
+            session_resp.status,
+            &session_resp.body,
         ));
     }
     let session_id = serde_json::from_str::<Value>(&session_resp.body)
@@ -281,6 +453,7 @@ fn spawn_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",
@@ -304,7 +477,16 @@ fn spawn_session(
         "info",
         &format!("seed_world: spawned {role} agent {agent_id} session {session_id}"),
     );
-    Ok(agent_id)
+    Ok(session_id)
+}
+
+fn continuation_prompt(prompt: String, world_id: &str, attempt: u64) -> String {
+    if attempt <= 1 {
+        return prompt;
+    }
+    format!(
+        "This is research recovery attempt {attempt} for the SAME world. A previous researcher stopped without the application's SeedComplete callback. First inspect temper.list(\"EventNodes\", \"world_id eq '{world_id}'\") and try temper.read(\"/skeleton.md\") in the existing workspace. Preserve useful saved findings; do not recreate them or repeat completed searches. If the file is absent, reconstruct the map from saved nodes. Continue genuinely missing research only, then verify saved nodes, write the map and invoke SeedComplete exactly as specified below. Text describing a tool call is not an executed tool call. Check the actual action result before declaring completion. Never infer completion from node count.\n\n{prompt}"
+    )
 }
 
 /// Entry point.
@@ -312,6 +494,13 @@ fn spawn_session(
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     let result = (|| -> Result<(), String> {
         let ctx = Context::from_host()?;
+        let research_attempt = ctx
+            .entity_state
+            .get("counters")
+            .and_then(|counters| counters.get("research_attempt"))
+            .and_then(Value::as_u64)
+            .filter(|attempt| *attempt > 0)
+            .ok_or("World research attempt is missing")?;
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
         let get = |k: &str| -> String {
             fields
@@ -350,17 +539,31 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         let corpus_inline = fetch_corpus(&ctx, &api, &headers, &get("corpus_file_id"))?;
 
-        let surveyor_msg = surveyor_prompt(
-            &world_id,
-            "{AGENT_ID}",
-            &get("name"),
-            &get("domain"),
-            &get("description"),
-            &get("target_date"),
-            &corpus_inline,
-            hindcast,
-        );
-        spawn_session(
+        let open_exploration = open_exploration_requested(&ctx.entity_state);
+        let surveyor_msg = if open_exploration {
+            open_research_prompt(
+                &world_id,
+                "{AGENT_ID}",
+                &get("description"),
+                &get("target_date"),
+                &get("last_ingest_date"),
+                &corpus_inline,
+                hindcast,
+            )
+        } else {
+            surveyor_prompt(
+                &world_id,
+                "{AGENT_ID}",
+                &get("name"),
+                &get("domain"),
+                &get("description"),
+                &get("target_date"),
+                &corpus_inline,
+                hindcast,
+            )
+        };
+        let surveyor_msg = continuation_prompt(surveyor_msg, &world_id, research_attempt);
+        let research_session_id = spawn_session(
             &ctx,
             &api,
             &headers,
@@ -369,40 +572,23 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             &model,
             &provider,
             &tools,
-            "40",
+            if open_exploration { "64" } else { "40" },
             &surveyor_msg,
             &workspace_id,
         )?;
 
-        // Bookmaker is enrichment: a spawn failure is logged, never fatal.
-        let bookmaker_msg = bookmaker_prompt(
-            &world_id,
-            "{AGENT_ID}",
-            &get("domain"),
-            &get("target_date"),
-            &corpus_inline,
-            hindcast,
+        ctx.log(
+            "info",
+            "seed_world: done (surveyor will report SeedComplete; bookmaker disabled)",
         );
-        if let Err(e) = spawn_session(
-            &ctx,
-            &api,
-            &headers,
-            &format!("Bookmaker-{world_id}"),
-            "bookmaker",
-            &model,
-            &provider,
-            &tools,
-            "30",
-            &bookmaker_msg,
-            &workspace_id,
-        ) {
-            ctx.log("warn", &format!("seed_world: bookmaker spawn failed: {e}"));
-        }
-
-        ctx.log("info", "seed_world: done (surveyor will report SeedComplete)");
-        // A successful run with nothing to dispatch must still set a
-        // result: the host treats an empty result as failure.
-        set_success_result("", &json!({}));
+        set_success_result(
+            "ResearchSessionStarted",
+            &json!({
+                "research_session_id": research_session_id,
+                "research_session_attempt": research_attempt.to_string(),
+                "expected_research_attempt": research_attempt,
+            }),
+        );
         Ok(())
     })();
 
@@ -414,11 +600,144 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_denial_retains_bounded_reason_and_decision_not_headers() {
+        let body = serde_json::json!({"error":{"code":"Forbidden","message":"no matching permit","decision_id":"PD-123"},"headers":{"authorization":"secret-not-for-output"},"request":{"token":"secret-not-for-output"}}).to_string();
+        let error = super::session_create_error("surveyor", 403, &body);
+        assert!(error.contains("HTTP 403"));
+        assert!(error.contains("no matching permit"));
+        assert!(error.contains("PD-123"));
+        assert!(!error.contains("secret-not-for-output"));
+        let long = serde_json::json!({"message":"é".repeat(2000)}).to_string();
+        assert!(
+            super::session_create_error("surveyor", 500, &long)
+                .chars()
+                .count()
+                < 600
+        );
+        assert_eq!(
+            super::session_create_error("surveyor", 502, "private non-JSON body"),
+            "create Session for surveyor failed (HTTP 502)"
+        );
+    }
+
     use super::*;
 
     // Prompt-contract tests: the generated prompts must reference the exact
     // entity sets, action names, and parameter names the specs declare.
     // The API silently drops unknown fields — drift here is a silent failure.
+
+    #[test]
+    fn research_recovery_preserves_saved_work_before_requesting_completion() {
+        assert_eq!(continuation_prompt("original".into(), "w", 1), "original");
+        let resumed = continuation_prompt("original".into(), "w", 2);
+        assert!(resumed.contains("world_id eq 'w'"));
+        assert!(resumed.contains("/skeleton.md"));
+        assert!(resumed.contains("do not recreate"));
+        assert!(resumed.contains("SeedComplete"));
+    }
+    #[test]
+    fn open_research_keeps_uncertain_findings_without_fixed_axes_or_certainty() {
+        let prompt = open_research_prompt(
+            "world-a",
+            "agent-a",
+            "What changes?",
+            "2027-01-01",
+            "2026-09-19",
+            "",
+            false,
+        );
+        for required in [
+            "temper.web_search",
+            "temper.web_fetch",
+            "competing causal explanations",
+            "observed, contested, weak_signal, or hypothesis",
+            "Leave probability empty",
+            "\"uncertainty_axes\": \"[]\"",
+            "SeedComplete",
+        ] {
+            assert!(prompt.contains(required), "missing {required}");
+        }
+        for obsolete in [
+            "ALREADY DETERMINED",
+            "forbidden from predicting",
+            "Aim for 8-20",
+            "3-5 load-bearing",
+            "\"probability\": \"1.0\"",
+        ] {
+            assert!(
+                !prompt.contains(obsolete),
+                "research regressed to {obsolete}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_research_has_bounded_excerpt_fallback_without_invented_fetch_parameters() {
+        let prompt = open_research_prompt("w", "a", "question", "2027", "2026", "", false);
+        for required in [
+            "result's text field",
+            "actually contained in that returned text",
+            "indexed-excerpt evidence",
+            "weak_signal",
+            "only when actually discovered",
+            "no more than25 words total",
+        ] {
+            assert!(prompt.contains(required), "missing {required}");
+        }
+        let frozen = open_research_prompt("w", "a", "question", "2020", "2026", "corpus", true);
+        assert!(!frozen.contains("focused title or site query"));
+    }
+
+    #[test]
+    fn live_research_distinguishes_evidence_vantage_from_forecast_horizon() {
+        let prompt =
+            open_research_prompt("w", "a", "question", "2027-09-19", "2026-09-19", "", false);
+        assert!(prompt.contains("Horizon: 2027-09-19"));
+        assert!(prompt.contains("Research as-of date: 2026-09-19"));
+        assert!(prompt.contains("label them historical rather than current"));
+        assert!(prompt.contains("latest evidence is unavailable"));
+        let frozen = open_research_prompt(
+            "w",
+            "a",
+            "question",
+            "2020-01-01",
+            "2026-09-19",
+            "corpus vantage 2019-01-01",
+            true,
+        );
+        assert!(!frozen.contains("2026-09-19"));
+        assert!(frozen.contains("corpus vantage 2019-01-01"));
+        assert!(frozen.contains("frozen corpus vantage date is authoritative"));
+    }
+
+    #[test]
+    fn open_hindcast_never_offers_live_web_and_preserves_corpus() {
+        let prompt = open_research_prompt(
+            "w",
+            "a",
+            "question",
+            "2020-01-01",
+            "2026-09-19",
+            "frozen evidence",
+            true,
+        );
+        assert!(prompt.contains("NO web access"));
+        assert!(prompt.contains("frozen evidence"));
+        assert!(!prompt.contains("temper.web_search"));
+        assert!(!prompt.contains("temper.web_fetch"));
+    }
+
+    #[test]
+    fn semantic_request_selects_open_research_without_changing_corridors() {
+        assert!(open_exploration_requested(
+            &json!({"booleans": {"semantic_exploration_requested": true}})
+        ));
+        assert!(!open_exploration_requested(
+            &json!({"booleans": {"semantic_exploration_requested": false}})
+        ));
+        assert!(!open_exploration_requested(&json!({})));
+    }
 
     #[test]
     fn surveyor_prompt_carries_the_event_node_and_seed_complete_contract() {
@@ -456,6 +775,52 @@ mod tests {
         assert!(
             !p.contains("temper.read("),
             "surveyor prompt must not ask the session to read the corpus"
+        );
+        assert!(
+            p.contains("NEVER put the whole job in one execute()"),
+            "surveyor prompt must forbid monolithic execute() scripts"
+        );
+        assert!(
+            p.contains("MANY SMALL execute()"),
+            "surveyor prompt must require incremental execute() calls"
+        );
+    }
+
+    #[test]
+    fn surveyor_prompt_gives_explicit_file_write_recipe() {
+        // Same class of bug as the adversary wedge: an under-specified file-write
+        // instruction lets a session reverse-engineer file creation through
+        // temper.action against Directories, trip a Cedar gate, and loop in
+        // WaitingForApproval. The prompt must show the exact temper.write call,
+        // name the file_id return field, forbid improvising file/dir creation,
+        // and never leave the bare placeholder behind. (The surveyor DOES create
+        // EventNodes via temper.create — the prohibition is scoped to
+        // Files/Directories/Workspaces only.)
+        let p = surveyor_prompt(
+            "w-1",
+            "a-1",
+            "Test",
+            "ai coding tools",
+            "desc",
+            "2026-12-11",
+            "corpus",
+            false,
+        );
+        assert!(
+            p.contains("temper.write(\"/skeleton.md\""),
+            "surveyor prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "surveyor prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "surveyor prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone — the recipe captures result[\"file_id\"]"
         );
     }
 

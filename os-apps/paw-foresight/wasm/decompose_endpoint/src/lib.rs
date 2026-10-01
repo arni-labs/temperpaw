@@ -6,7 +6,7 @@
 //!
 //! - Endpoint.SubmitForRepair: fetch the bundle, inline it, spawn ONE
 //!   decomposer session. The decomposer self-reports DecompositionComplete
-//!   with 3-8 claims.
+//!   with 3 claims.
 //! - Endpoint.DecompositionComplete: create one Claim entity per extracted
 //!   claim (original_text frozen here), then dispatch ClaimsAttached with
 //!   the created ids.
@@ -26,10 +26,10 @@ use temper_wasm_sdk::prelude::*;
 const CHUNK: usize = 2;
 
 /// Hard stop for the self-loop: ceil(MAX_CLAIMS / CHUNK) + 1.
-const MAX_CHECKS: usize = 5;
+const MAX_CHECKS: usize = 3;
 
 const MIN_CLAIMS: usize = 3;
-const MAX_CLAIMS: usize = 8;
+const MAX_CLAIMS: usize = 3;
 
 const DECOMPOSER_TOOLS: &str = "temper_get,temper_list,temper_action";
 
@@ -141,7 +141,7 @@ fn decomposer_prompt(
          Extract the future's separable, load-bearing claims: the distinct assertions this \
          future stands on, each one checkable in principle, none restating another. A good \
          claim names who/what changed and by roughly when. Do NOT list details that merely \
-         decorate a load-bearing claim — fold them into it. Extract between 3 and 8 claims; \
+         decorate a load-bearing claim — fold them into it. Extract exactly 3 load-bearing claims, ranked by importance; \
          if the bundle genuinely contains fewer than 3 separable claims, report the ones \
          that exist.\n\n\
          Then self-report exactly once:\n\
@@ -207,6 +207,7 @@ fn spawn_session(
     max_turns: &str,
     user_message: &str,
     workspace_id: &str,
+    latency_profile: &str,
 ) -> Result<String, String> {
     let agent_body = json!({ "Name": name, "Role": role });
     let agent_resp = ctx.http_call(
@@ -257,6 +258,8 @@ fn spawn_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
+        "provider_latency_profile": latency_profile,
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",
@@ -408,6 +411,11 @@ fn phase_spawn_decomposer(ctx: &Context, fields: &Value) -> Result<(), String> {
         "12",
         &prompt,
         &workspace_id,
+        if row_str(&world, "ExplorationPhase") == "first_pass" {
+            "foresight_first_pass"
+        } else {
+            "standard"
+        },
     )?;
     // No follow-up dispatch: the decomposer self-reports
     // DecompositionComplete, which re-enters this module.
@@ -463,7 +471,12 @@ fn phase_create_claims(ctx: &Context, fields: &Value) -> Result<(), String> {
             "original_text": text,
             "current_text": text,
         });
-        let resp = ctx.http_call("POST", &format!("{api}/tdata/Claims"), &headers, &body.to_string())?;
+        let resp = ctx.http_call(
+            "POST",
+            &format!("{api}/tdata/Claims"),
+            &headers,
+            &body.to_string(),
+        )?;
         if resp.status < 200 || resp.status >= 300 {
             return Err(format!("create Claim failed (HTTP {})", resp.status));
         }
@@ -522,7 +535,7 @@ fn phase_fan_out(ctx: &Context, fields: &Value, cursor: usize) -> Result<(), Str
             "Claims",
             claim_id,
             "SubmitForBridge",
-            &json!({}),
+            &json!({"revision_brief":""}),
         )?;
     }
     ctx.log(
@@ -556,7 +569,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
         match ctx.trigger_action.as_str() {
             "SubmitForRepair" => phase_spawn_decomposer(&ctx, &fields),
-            "DecompositionComplete" => phase_create_claims(&ctx, &fields),
+            "DecompositionComplete" | "PrepareClaims" => phase_create_claims(&ctx, &fields),
             "ClaimsAttached" => phase_fan_out(&ctx, &fields, 0),
             "SpawnNextBridge" => {
                 let cursor = fields
@@ -566,7 +579,9 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     .unwrap_or(0);
                 phase_fan_out(&ctx, &fields, cursor)
             }
-            other => Err(format!("decompose_endpoint: unexpected trigger action {other:?}")),
+            other => Err(format!(
+                "decompose_endpoint: unexpected trigger action {other:?}"
+            )),
         }
     })();
 
@@ -598,7 +613,7 @@ mod tests {
             "\"claims_json\"",
             "BEGIN BUNDLE",
             "bundle body text",
-            "between 3 and 8 claims",
+            "exactly 3 load-bearing claims, ranked by importance",
             "load-bearing",
         ] {
             assert!(p.contains(needle), "decomposer prompt missing: {needle}");

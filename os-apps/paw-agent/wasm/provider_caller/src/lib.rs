@@ -12,8 +12,8 @@
 
 use openai_chat_wire::{
     ChatCompletionStreamAccumulator, ChatStreamDelta, ChatStreamParseFailure,
-    build_chat_completion_body, convert_messages_to_chat, event_token_signals,
-    merge_token_signals, parse_headers_json, synthetic_tool_call_id,
+    build_chat_completion_body, convert_messages_to_chat, event_token_signals, merge_token_signals,
+    parse_headers_json, synthetic_tool_call_id,
 };
 #[cfg(test)]
 use openai_codex_wire::base64_url_no_pad;
@@ -330,16 +330,66 @@ fn format_openai_codex_host_http_failure_log(attempt: u32, total: u32, err: &str
     )
 }
 
-fn format_openai_codex_exhausted_error(attempts: u32, last_err: &str) -> String {
-    format!(
-        "OpenAI Codex host HTTP call failed after {attempts} attempts before a provider HTTP response was returned \
-         (host HTTP timeout or transport error): {last_err}"
-    )
+fn format_openai_codex_exhausted_error(
+    attempts: u32,
+    last_http_status: Option<u16>,
+    last_err: &str,
+) -> String {
+    match last_http_status {
+        Some(status) => format!(
+            "OpenAI Codex failed after {attempts} attempts; last attempt received HTTP {status}: {last_err}"
+        ),
+        None => format!(
+            "OpenAI Codex failed after {attempts} attempts; last attempt failed before a provider HTTP response was returned \
+             (host HTTP timeout or transport error): {last_err}"
+        ),
+    }
+}
+
+struct CodexRateLimitError {
+    terminal_usage_limit: bool,
+    details: Value,
+}
+
+/// Keep actionable provider fields without copying arbitrary response metadata.
+fn codex_rate_limit_error(body: &str) -> CodexRateLimitError {
+    const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+    const MAX_MESSAGE_CHARS: usize = 512;
+    const MAX_IDENTIFIER_CHARS: usize = 64;
+    let parsed: Option<Value> = (body.len() <= MAX_ERROR_BODY_BYTES)
+        .then(|| serde_json::from_str(body).ok())
+        .flatten();
+    let error = parsed.as_ref().and_then(|v| v.get("error"));
+    let terminal_usage_limit = ["type", "code"].iter().any(|key| {
+        error.and_then(|v| v.get(key)).and_then(Value::as_str) == Some("usage_limit_reached")
+    });
+    let mut details = serde_json::Map::new();
+    for (key, max_chars) in [
+        ("type", MAX_IDENTIFIER_CHARS),
+        ("code", MAX_IDENTIFIER_CHARS),
+        ("message", MAX_MESSAGE_CHARS),
+    ] {
+        if let Some(value) = error.and_then(|v| v.get(key)).and_then(Value::as_str) {
+            details.insert(
+                key.into(),
+                Value::String(value.chars().take(max_chars).collect()),
+            );
+        }
+    }
+    for key in ["resets_at", "resets_in_seconds"] {
+        if let Some(value) = error.and_then(|v| v.get(key)).and_then(Value::as_u64) {
+            details.insert(key.into(), json!(value));
+        }
+    }
+    CodexRateLimitError {
+        terminal_usage_limit,
+        details: Value::Object(details),
+    }
 }
 
 const LLM_STREAM_PROGRESS_INTERVAL_MS: i64 = 15_000;
 const LLM_STREAM_PROGRESS_BYTES: usize = 16 * 1024;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 const LLM_STREAM_READ_BUFFER_BYTES: usize = 16 * 1024;
 #[cfg(target_arch = "wasm32")]
 const LLM_STREAM_REQUEST_CHUNK_BYTES: usize = 16 * 1024;
@@ -436,6 +486,7 @@ impl ParsedProviderStream {
 struct StreamParseFailure {
     message: String,
     semantic_output_seen: bool,
+    http_status: Option<u16>,
 }
 
 impl StreamParseFailure {
@@ -443,6 +494,7 @@ impl StreamParseFailure {
         Self {
             message: message.into(),
             semantic_output_seen,
+            http_status: None,
         }
     }
 }
@@ -467,12 +519,12 @@ fn should_retry_stream_failure(
 
 #[derive(Default)]
 struct SseDataDecoder {
-    pending: String,
+    pending: Vec<u8>,
 }
 
 impl SseDataDecoder {
     fn push_chunk(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.pending.push_str(&String::from_utf8_lossy(chunk));
+        self.pending.extend_from_slice(chunk);
         self.drain_complete_lines(false)
     }
 
@@ -482,17 +534,22 @@ impl SseDataDecoder {
 
     fn drain_complete_lines(&mut self, include_partial: bool) -> Vec<String> {
         let mut events = Vec::new();
-        loop {
-            let Some(newline) = self.pending.find('\n') else {
-                break;
-            };
-            let line = self.pending[..newline].trim_end_matches('\r').to_string();
-            self.pending = self.pending[newline + 1..].to_string();
-            push_sse_data_line(&line, &mut events);
+        let mut consumed = 0;
+        while let Some(offset) = self.pending[consumed..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let newline = consumed + offset;
+            let line = String::from_utf8_lossy(&self.pending[consumed..newline]);
+            push_sse_data_line(line.trim_end_matches('\r'), &mut events);
+            consumed = newline + 1;
         }
+        self.pending.drain(..consumed);
 
         if include_partial {
-            let line = self.pending.trim_end_matches('\r').to_string();
+            let line = String::from_utf8_lossy(&self.pending)
+                .trim_end_matches('\r')
+                .to_string();
             self.pending.clear();
             push_sse_data_line(&line, &mut events);
         }
@@ -559,6 +616,7 @@ struct OpenAiStreamAccumulator {
     output_items: Vec<Value>,
     usage: Value,
     streamed_text: String,
+    streamed_text_chars: usize,
     saw_completed: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
     token_signals: Option<Value>,
@@ -587,10 +645,8 @@ impl OpenAiStreamAccumulator {
                     .unwrap_or("");
                 if !delta.is_empty() {
                     self.streamed_text.push_str(delta);
-                    deltas.push(LlmStreamDelta::text(
-                        delta,
-                        self.streamed_text.chars().count(),
-                    ));
+                    self.streamed_text_chars += delta.chars().count();
+                    deltas.push(LlmStreamDelta::text(delta, self.streamed_text_chars));
                 }
             }
             "response.output_text.done" => {
@@ -599,10 +655,8 @@ impl OpenAiStreamAccumulator {
                     && !text.is_empty()
                 {
                     self.streamed_text.push_str(text);
-                    deltas.push(LlmStreamDelta::text(
-                        text,
-                        self.streamed_text.chars().count(),
-                    ));
+                    self.streamed_text_chars += text.chars().count();
+                    deltas.push(LlmStreamDelta::text(text, self.streamed_text_chars));
                 }
             }
             "response.output_item.done" => {
@@ -616,7 +670,7 @@ impl OpenAiStreamAccumulator {
                             item.get("arguments")
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
-                            self.streamed_text.chars().count(),
+                            self.streamed_text_chars,
                         ));
                     }
                     self.output_items.push(item.clone());
@@ -640,6 +694,15 @@ impl OpenAiStreamAccumulator {
                         merge_openai_completed_output_items(&mut self.output_items, out);
                     }
                 }
+            }
+            "response.failed" | "response.incomplete" => {
+                return Err(StreamParseFailure::new(
+                    format!(
+                        "OpenAI stream ended with {event_type}: {}",
+                        event["response"]
+                    ),
+                    self.semantic_output_seen(),
+                ));
             }
             "error" => {
                 return Err(StreamParseFailure::new(
@@ -788,6 +851,7 @@ fn parse_openai_stream_events(
 
 #[derive(Default)]
 struct AnthropicBlockAccum {
+    text_chars: usize,
     block_type: String,
     id: String,
     name: String,
@@ -797,6 +861,7 @@ struct AnthropicBlockAccum {
 
 #[derive(Default)]
 struct AnthropicStreamAccumulator {
+    text_chars: usize,
     blocks: BTreeMap<usize, AnthropicBlockAccum>,
     stop_reason: String,
     input_tokens: i64,
@@ -848,6 +913,12 @@ impl AnthropicStreamAccumulator {
                     .unwrap_or("")
                     .to_string();
                 let mut block = AnthropicBlockAccum {
+                    text_chars: content_block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .count(),
                     block_type,
                     id: content_block
                         .get("id")
@@ -879,6 +950,9 @@ impl AnthropicStreamAccumulator {
                         self.accumulated_text_chars(),
                     ));
                 }
+                self.text_chars = self.text_chars
+                    - self.blocks.get(&index).map_or(0, |old| old.text_chars)
+                    + block.text_chars;
                 self.blocks.insert(index, block);
             }
             "content_block_delta" => {
@@ -891,6 +965,9 @@ impl AnthropicStreamAccumulator {
                         if !text.is_empty() {
                             block.block_type = "text".to_string();
                             block.text.push_str(text);
+                            let added = text.chars().count();
+                            block.text_chars += added;
+                            self.text_chars += added;
                             let accumulated = self.accumulated_text_chars();
                             deltas.push(LlmStreamDelta::text(text, accumulated));
                         }
@@ -946,10 +1023,7 @@ impl AnthropicStreamAccumulator {
     }
 
     fn accumulated_text_chars(&self) -> usize {
-        self.blocks
-            .values()
-            .map(|block| block.text.chars().count())
-            .sum()
+        self.text_chars
     }
 
     fn semantic_output_seen(&self) -> bool {
@@ -1055,6 +1129,7 @@ struct OpenRouterToolCallAccum {
 #[derive(Default)]
 struct OpenRouterStreamAccumulator {
     text: String,
+    text_chars: usize,
     tool_calls: BTreeMap<usize, OpenRouterToolCallAccum>,
     finish_reason: String,
     input_tokens: i64,
@@ -1124,7 +1199,8 @@ impl OpenRouterStreamAccumulator {
                     && !text.is_empty()
                 {
                     self.text.push_str(text);
-                    deltas.push(LlmStreamDelta::text(text, self.text.chars().count()));
+                    self.text_chars += text.chars().count();
+                    deltas.push(LlmStreamDelta::text(text, self.text_chars));
                 }
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for tool_call in tool_calls {
@@ -1153,7 +1229,7 @@ impl OpenRouterStreamAccumulator {
                             (!accum.id.is_empty()).then(|| accum.id.clone()),
                             (!accum.name.is_empty()).then(|| accum.name.clone()),
                             (!args_delta.is_empty()).then(|| args_delta.to_string()),
-                            self.text.chars().count(),
+                            self.text_chars,
                         ));
                     }
                 }
@@ -1234,6 +1310,12 @@ fn parse_openrouter_stream_events(
     acc.finalize(response_bytes)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamControl {
+    Continue,
+    Complete,
+}
+
 struct StreamingHttpResponse {
     status: u16,
     body: String,
@@ -1251,7 +1333,7 @@ fn response_header_value<'a>(headers: &'a [(String, String)], name: &str) -> Opt
 #[cfg(not(target_arch = "wasm32"))]
 fn feed_sse_or_json_lines<F>(body: &str, mut on_data: F) -> Result<(), StreamParseFailure>
 where
-    F: FnMut(&str) -> Result<(), StreamParseFailure>,
+    F: FnMut(&str) -> Result<StreamControl, StreamParseFailure>,
 {
     if body
         .lines()
@@ -1260,7 +1342,9 @@ where
         let events = collect_sse_data_events(&[body.as_bytes()])
             .map_err(|err| StreamParseFailure::new(err, false))?;
         for event in events {
-            on_data(&event)?;
+            if on_data(&event)? == StreamControl::Complete {
+                break;
+            }
         }
         return Ok(());
     }
@@ -1270,9 +1354,50 @@ where
         if line.is_empty() {
             continue;
         }
-        on_data(line)?;
+        if on_data(line)? == StreamControl::Complete {
+            break;
+        }
     }
     Ok(())
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn read_stream_body<R, F>(
+    status: u16,
+    mut read: R,
+    mut on_data: F,
+) -> Result<(usize, String), StreamParseFailure>
+where
+    R: FnMut(&mut [u8]) -> Result<Option<usize>, String>,
+    F: FnMut(&str) -> Result<StreamControl, StreamParseFailure>,
+{
+    let success = (200..300).contains(&status);
+    let mut response_bytes = 0;
+    let mut body = String::new();
+    let mut decoder = SseDataDecoder::default();
+    let mut buffer = vec![0; LLM_STREAM_READ_BUFFER_BYTES];
+    while let Some(n) = read(&mut buffer).map_err(|error| {
+        StreamParseFailure::new(format!("streaming response read: {error}"), false)
+    })? {
+        response_bytes += n;
+        if success {
+            for event in decoder.push_chunk(&buffer[..n]) {
+                if on_data(&event)? == StreamControl::Complete {
+                    return Ok((response_bytes, body));
+                }
+            }
+        } else {
+            body.push_str(&String::from_utf8_lossy(&buffer[..n]));
+        }
+    }
+    if success {
+        for event in decoder.finish() {
+            if on_data(&event)? == StreamControl::Complete {
+                break;
+            }
+        }
+    }
+    Ok((response_bytes, body))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1284,7 +1409,7 @@ fn post_sse_streaming<F>(
     mut on_data: F,
 ) -> Result<StreamingHttpResponse, StreamParseFailure>
 where
-    F: FnMut(&str) -> Result<(), StreamParseFailure>,
+    F: FnMut(&str) -> Result<StreamControl, StreamParseFailure>,
 {
     let header_refs: Vec<(&str, &str)> = headers
         .iter()
@@ -1306,45 +1431,26 @@ where
 
     let head = fetch_head()
         .map_err(|err| StreamParseFailure::new(format!("streaming response head: {err}"), false))?;
-    let success = (200..300).contains(&head.status);
-    let mut response_bytes = 0usize;
-    let mut body_text = String::new();
-    let mut decoder = SseDataDecoder::default();
-    let mut buf = vec![0u8; LLM_STREAM_READ_BUFFER_BYTES];
-
-    loop {
-        let n = match response_body.read_next_chunk(&mut buf) {
-            Ok(Some(n)) => n,
-            Ok(None) => break,
-            Err(err) => {
-                return Err(StreamParseFailure::new(
-                    format!("streaming response read: {err}"),
-                    false,
-                ));
-            }
-        };
-        response_bytes += n;
-        if success {
-            for event in decoder.push_chunk(&buf[..n]) {
-                on_data(&event)?;
-            }
-        } else {
-            body_text.push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
-    }
-
-    if success {
-        for event in decoder.finish() {
-            on_data(&event)?;
-        }
-    } else if head.status == 0
-        && let Some(stream_error) = response_header_value(&head.headers, "x-temper-stream-error")
-        && body_text.is_empty()
-    {
-        body_text.push_str(stream_error);
-    }
-
+    let result = read_stream_body(
+        head.status,
+        |buf| {
+            response_body
+                .read_next_chunk(buf)
+                .map_err(|error| error.to_string())
+        },
+        &mut on_data,
+    );
     let _ = response_body.close();
+    let (response_bytes, mut body_text) = result.map_err(|mut error| {
+        error.http_status = Some(head.status);
+        error
+    })?;
+    if head.status == 0
+        && body_text.is_empty()
+        && let Some(error) = response_header_value(&head.headers, "x-temper-stream-error")
+    {
+        body_text.push_str(error);
+    }
     Ok(StreamingHttpResponse {
         status: head.status,
         body: body_text,
@@ -1361,13 +1467,16 @@ fn post_sse_streaming<F>(
     on_data: F,
 ) -> Result<StreamingHttpResponse, StreamParseFailure>
 where
-    F: FnMut(&str) -> Result<(), StreamParseFailure>,
+    F: FnMut(&str) -> Result<StreamControl, StreamParseFailure>,
 {
     let resp = ctx
         .http_call("POST", api_url, headers, body)
         .map_err(|err| StreamParseFailure::new(err, false))?;
     if (200..300).contains(&resp.status) {
-        feed_sse_or_json_lines(&resp.body, on_data)?;
+        feed_sse_or_json_lines(&resp.body, on_data).map_err(|mut error| {
+            error.http_status = Some(resp.status);
+            error
+        })?;
     }
     Ok(StreamingHttpResponse {
         status: resp.status,
@@ -1965,7 +2074,7 @@ fn call_anthropic(
         let stream_result = post_sse_streaming(ctx, api_url, &headers, &body_str, |data| {
             let deltas = accumulator.ingest_data(data)?;
             live_progress.emit_deltas(&deltas);
-            Ok(())
+            Ok(StreamControl::Continue)
         });
         match stream_result {
             Ok(r) if r.status == 200 => {
@@ -2205,7 +2314,50 @@ fn call_openai_compatible_chat(
     temperature: f64,
     provider_options_json: &str,
 ) -> Result<LlmResponse, String> {
-    let body = build_chat_completion_body(
+    call_openai_compatible_chat_with_depth(
+        ctx,
+        temper_api_url,
+        tenant,
+        provider,
+        api_key,
+        api_url,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        site_url,
+        app_name,
+        extra_headers,
+        temperature,
+        provider_options_json,
+        0,
+    )
+}
+
+/// Maximum tool-less turns tolerated (and nudged) per provider call when the
+/// session demands tool_choice=required. Some OpenRouter upstreams silently
+/// ignore the flag, so enforcement cannot rely on the provider alone.
+const TOOL_CHOICE_NUDGE_MAX: u32 = 2;
+
+fn call_openai_compatible_chat_with_depth(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    provider: &str,
+    api_key: &str,
+    api_url: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[Value],
+    tools: &[Value],
+    site_url: &str,
+    app_name: &str,
+    extra_headers: &[(String, String)],
+    temperature: f64,
+    provider_options_json: &str,
+    nudge_depth: u32,
+) -> Result<LlmResponse, String> {
+    let mut body = build_chat_completion_body(
         model,
         system_prompt,
         messages,
@@ -2216,6 +2368,9 @@ fn call_openai_compatible_chat(
         true,
         provider_options_json,
     )?;
+    if !tools.is_empty() && tool_choice_required(ctx) {
+        body["tool_choice"] = json!("required");
+    }
     let body_str =
         serde_json::to_string(&body).map_err(|e| format!("JSON serialize error: {e}"))?;
 
@@ -2288,7 +2443,7 @@ fn call_openai_compatible_chat(
             let deltas = accumulator.ingest_data(data).map_err(chat_stream_error)?;
             let llm_deltas = chat_deltas_to_llm(deltas);
             live_progress.emit_deltas(&llm_deltas);
-            Ok(())
+            Ok(StreamControl::Continue)
         });
         match stream_result {
             Ok(r) if r.status == 200 => {
@@ -2482,6 +2637,47 @@ fn call_openai_compatible_chat(
         &content,
     );
 
+    // Enforce tool_choice=required client-side: some upstreams ignore the
+    // flag and return a plain-text end_turn, which would silently complete a
+    // typed-completion session. Re-call with the reply plus a correction
+    // appended, bounded by TOOL_CHOICE_NUDGE_MAX.
+    if tool_choice_required(ctx)
+        && parsed.stop_reason != "tool_use"
+        && nudge_depth < TOOL_CHOICE_NUDGE_MAX
+    {
+        ctx.log(
+            "warn",
+            &format!(
+                "session_turn: {provider} returned a tool-less turn despite tool_choice=required; nudging (round {}/{TOOL_CHOICE_NUDGE_MAX})",
+                nudge_depth + 1
+            ),
+        );
+        let mut nudged = messages.to_vec();
+        nudged.push(json!({ "role": "assistant", "content": content }));
+        nudged.push(json!({
+            "role": "user",
+            "content": "This session accepts only tool calls. Your previous reply contained no tool call, so it cannot advance the session. Continue the task now by invoking exactly one of the provided tools; when the work is finished, finish through the completion action tool, never with plain text."
+        }));
+        return call_openai_compatible_chat_with_depth(
+            ctx,
+            temper_api_url,
+            tenant,
+            provider,
+            api_key,
+            api_url,
+            model,
+            system_prompt,
+            &nudged,
+            tools,
+            site_url,
+            app_name,
+            extra_headers,
+            temperature,
+            provider_options_json,
+            nudge_depth + 1,
+        );
+    }
+
     Ok(LlmResponse {
         content,
         stop_reason: parsed.stop_reason,
@@ -2600,7 +2796,7 @@ fn call_openrouter(
         let stream_result = post_sse_streaming(ctx, api_url, &headers, &body_str, |data| {
             let deltas = accumulator.ingest_data(data)?;
             live_progress.emit_deltas(&deltas);
-            Ok(())
+            Ok(StreamControl::Continue)
         });
         match stream_result {
             Ok(r) if r.status == 200 => {
@@ -2792,6 +2988,23 @@ fn call_openrouter(
     Ok(parsed.into_llm_response(body_str.len()))
 }
 
+/// Per-session tool_choice policy (ARN-269). Sessions whose work must only end
+/// via a typed completion action (curation jobs) set the session field
+/// tool_choice = "required" so the provider cannot return a tool-less turn and
+/// silently complete the session. Default "auto" — chat sessions keep text replies.
+fn tool_choice_required(ctx: &Context) -> bool {
+    let fields = ctx
+        .entity_state
+        .get("fields")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    wasm_helpers::entity_field_str(&fields, &["tool_choice", "ToolChoice"])
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .map(|v| v == "required")
+        .unwrap_or(false)
+}
+
 /// Extract text and image content from a tool_result content field.
 /// Returns (text_output, Vec<(media_type, base64_data)>).
 fn extract_text_and_images_from_tool_content(
@@ -2887,12 +3100,57 @@ fn push_openai_assistant_text(input: &mut Vec<Value>, text: &str) {
     }));
 }
 
+/// Recovered/compacted histories can contain orphan or duplicated ids. Only
+/// a unique call followed by its unique result is safe to replay as a protocol pair.
+fn paired_openai_tool_ids(messages: &[Value]) -> std::collections::BTreeSet<String> {
+    let mut calls = BTreeMap::<String, Vec<usize>>::new();
+    let mut results = BTreeMap::<String, Vec<usize>>::new();
+    let mut position = 0;
+    for message in messages {
+        let role = message["role"].as_str().unwrap_or("");
+        if role == "tool_result" {
+            if let Some(id) = message["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+                results.entry(id.to_string()).or_default().push(position);
+            }
+            position += 1;
+        }
+        for block in message["content"].as_array().into_iter().flatten() {
+            match (role, block["type"].as_str().unwrap_or("")) {
+                ("assistant", "tool_use")
+                    if block["name"].as_str().is_some_and(|name| !name.is_empty()) =>
+                {
+                    if let Some(id) = block["id"].as_str().filter(|id| !id.is_empty()) {
+                        calls.entry(id.to_string()).or_default().push(position);
+                    }
+                }
+                ("user", "tool_result") => {
+                    if let Some(id) = block["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+                        results.entry(id.to_string()).or_default().push(position);
+                    }
+                }
+                _ => {}
+            }
+            position += 1;
+        }
+    }
+    calls
+        .into_iter()
+        .filter_map(|(id, call_positions)| {
+            let result_positions = results.get(&id)?;
+            (call_positions.len() == 1
+                && result_positions.len() == 1
+                && call_positions[0] < result_positions[0])
+                .then_some(id)
+        })
+        .collect()
+}
+
 fn push_openai_tool_call_context(
     input: &mut Vec<Value>,
     tool_calls_as_context: &mut usize,
+    paired_ids: &std::collections::BTreeSet<String>,
     block: &Value,
 ) {
-    *tool_calls_as_context += 1;
     let call_id = block
         .get("id")
         .and_then(Value::as_str)
@@ -2906,12 +3164,20 @@ fn push_openai_tool_call_context(
     let arguments = serde_json::to_string(block.get("input").unwrap_or(&json!({})))
         .unwrap_or_else(|_| "{}".to_string());
 
-    push_openai_assistant_text(input, &format!("Tool call {call_id}: {name}({arguments})"));
+    if paired_ids.contains(call_id) {
+        input.push(
+            json!({"type":"function_call", "call_id":call_id, "name":name, "arguments":arguments}),
+        );
+    } else {
+        *tool_calls_as_context += 1;
+        push_openai_assistant_text(input, &format!("Tool call {call_id}: {name}({arguments})"));
+    }
 }
 
 fn push_openai_tool_result(
     input: &mut Vec<Value>,
     tool_outputs_as_context: &mut usize,
+    paired_ids: &std::collections::BTreeSet<String>,
     call_id: &str,
     content: Option<&Value>,
 ) {
@@ -2922,6 +3188,13 @@ fn push_openai_tool_result(
         }
     }
 
+    if paired_ids.contains(call_id) {
+        input.push(json!({"type":"function_call_output", "call_id":call_id, "output":output}));
+        if !images.is_empty() {
+            push_openai_user_text_with_images(input, "", &images);
+        }
+        return;
+    }
     *tool_outputs_as_context += 1;
     let display_call_id = if call_id.trim().is_empty() {
         "unknown"
@@ -2937,6 +3210,7 @@ fn push_openai_tool_result(
 }
 
 fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
+    let paired_ids = paired_openai_tool_ids(messages);
     let mut input = Vec::<Value>::new();
     let mut tool_calls_as_context = 0usize;
     let mut tool_outputs_as_context = 0usize;
@@ -2960,6 +3234,7 @@ fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
                                 push_openai_tool_result(
                                     &mut input,
                                     &mut tool_outputs_as_context,
+                                    &paired_ids,
                                     call_id,
                                     block.get("content"),
                                 );
@@ -2991,6 +3266,7 @@ fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
                                 push_openai_tool_call_context(
                                     &mut input,
                                     &mut tool_calls_as_context,
+                                    &paired_ids,
                                     block,
                                 );
                             }
@@ -3004,6 +3280,7 @@ fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
                 push_openai_tool_result(
                     &mut input,
                     &mut tool_outputs_as_context,
+                    &paired_ids,
                     tool_use_id,
                     msg.get("content"),
                 );
@@ -3053,6 +3330,73 @@ fn call_openai(
     provider: &str,
     provider_options_json: &str,
 ) -> Result<LlmResponse, String> {
+    call_openai_with_depth(
+        ctx,
+        temper_api_url,
+        tenant,
+        api_key,
+        api_url,
+        codex_account_id,
+        model,
+        system_prompt,
+        messages,
+        tools,
+        temperature,
+        provider,
+        provider_options_json,
+        0,
+    )
+}
+
+/// Assistant prose is never converted to executable calls, even if it resembles one.
+fn required_tool_nudge(
+    required: bool,
+    tools: &[Value],
+    content: &Value,
+    depth: u32,
+) -> Result<bool, String> {
+    if !required {
+        return Ok(false);
+    }
+    if tools.is_empty() {
+        return Err("Required-tool session has no available tools".into());
+    }
+    if content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|block| block["type"] == "tool_use")
+    {
+        return Ok(false);
+    }
+    if depth >= TOOL_CHOICE_NUDGE_MAX {
+        return Err(format!(
+            "Provider violated required tool use after {} corrective attempts: no structured tool call; assistant prose was not executed",
+            TOOL_CHOICE_NUDGE_MAX
+        ));
+    }
+    Ok(true)
+}
+
+fn call_openai_with_depth(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    api_key: &str,
+    api_url: &str,
+    codex_account_id: Option<&str>,
+    model: &str,
+    system_prompt: &str,
+    messages: &[Value],
+    tools: &[Value],
+    temperature: f64,
+    provider: &str,
+    provider_options_json: &str,
+    nudge_depth: u32,
+) -> Result<LlmResponse, String> {
+    if tool_choice_required(ctx) && tools.is_empty() {
+        return Err("Required-tool session has no available tools".into());
+    }
     // Convert Anthropic-format messages to Responses API input format
     let pre_convert_types: Vec<String> = messages
         .iter()
@@ -3130,10 +3474,11 @@ fn call_openai(
     }
     if !codex_tools.is_empty() {
         body["tools"] = json!(codex_tools);
-        // "auto" lets the model choose text or tool calls. "required" forces
-        // a tool call every turn, which creates an infinite loop when the model
-        // wants to respond with text (e.g., "hello").
-        body["tool_choice"] = json!("auto");
+        body["tool_choice"] = json!(if tool_choice_required(ctx) {
+            "required"
+        } else {
+            "auto"
+        });
     }
 
     let body_str =
@@ -3184,6 +3529,7 @@ fn call_openai(
     );
 
     let mut last_err = String::new();
+    let mut last_http_status = None;
     let mut parsed_stream = None;
     let mut live_progress = LlmLiveProgress::new(ctx, temper_api_url, tenant, provider, model);
 
@@ -3199,7 +3545,11 @@ fn call_openai(
         let stream_result = post_sse_streaming(ctx, api_url, &headers, &body_str, |data| {
             let deltas = accumulator.ingest_data(data)?;
             live_progress.emit_deltas(&deltas);
-            Ok(())
+            Ok(if accumulator.saw_completed {
+                StreamControl::Complete
+            } else {
+                StreamControl::Continue
+            })
         });
 
         match stream_result {
@@ -3229,14 +3579,17 @@ fn call_openai(
                 }
             }
             Ok(r) if r.status == 429 => {
-                last_err = format!("OpenAI Codex API rate limited (429)");
-                if live_progress.saw_semantic_output() {
-                    let error = format!(
-                        "OpenAI Codex stream was rate limited after visible output: {}",
-                        &r.body[..r.body.len().min(300)]
-                    );
-                    finish_llm_guest_span_error(&mut llm_span, "rate_limited", &error);
-                    return Err(error);
+                let rate_limit = codex_rate_limit_error(&r.body);
+                last_http_status = Some(r.status);
+                last_err = format!("OpenAI Codex API returned HTTP 429: {}", rate_limit.details);
+                if rate_limit.terminal_usage_limit || live_progress.saw_semantic_output() {
+                    let kind = if rate_limit.terminal_usage_limit {
+                        "usage_limit_reached"
+                    } else {
+                        "rate_limited"
+                    };
+                    finish_llm_guest_span_error(&mut llm_span, kind, &last_err);
+                    return Err(last_err);
                 }
                 continue;
             }
@@ -3266,19 +3619,24 @@ fn call_openai(
             }
             Err(e) => {
                 last_err = e.to_string();
-                ctx.log(
-                    "warn",
-                    &format_openai_codex_host_http_failure_log(
+                let boundary_log = match e.http_status {
+                    Some(status) => format!(
+                        "session_turn: OpenAI Codex stream failed after HTTP {status} attempt={attempt_num}/{LLM_MAX_ATTEMPTS} error={last_err}"
+                    ),
+                    None => format_openai_codex_host_http_failure_log(
                         attempt_num,
                         LLM_MAX_ATTEMPTS,
                         &last_err,
                     ),
-                );
+                };
+                ctx.log("warn", &boundary_log);
                 let visible = e.semantic_output_seen || live_progress.saw_semantic_output();
                 if !should_retry_stream_failure(attempt_num, LLM_MAX_ATTEMPTS, visible) {
-                    let error = format!(
-                        "OpenAI Codex stream failed after visible output or final attempt: {last_err}"
-                    );
+                    let error = if visible {
+                        format!("OpenAI Codex stream failed after visible output: {last_err}")
+                    } else {
+                        format_openai_codex_exhausted_error(attempt_num, e.http_status, &last_err)
+                    };
                     finish_llm_guest_span_error(&mut llm_span, "stream_error", &error);
                     return Err(error);
                 }
@@ -3290,7 +3648,8 @@ fn call_openai(
     let parsed = match parsed_stream {
         Some(parsed) => parsed,
         None => {
-            let error = format_openai_codex_exhausted_error(LLM_MAX_ATTEMPTS, &last_err);
+            let error =
+                format_openai_codex_exhausted_error(LLM_MAX_ATTEMPTS, last_http_status, &last_err);
             finish_llm_guest_span_error(&mut llm_span, "exhausted_retries", &error);
             return Err(error);
         }
@@ -3319,6 +3678,33 @@ fn call_openai(
         &parsed.content,
     );
 
+    if required_tool_nudge(
+        tool_choice_required(ctx),
+        tools,
+        &parsed.content,
+        nudge_depth,
+    )? {
+        ctx.log("warn", &format!("session_turn: {provider} returned no structured tool call despite required tool use; corrective attempt {}/{}",nudge_depth+1,TOOL_CHOICE_NUDGE_MAX));
+        let mut nudged = messages.to_vec();
+        nudged.push(json!({"role":"assistant","content":parsed.content}));
+        nudged.push(json!({"role":"user","content":"Your previous reply contained no actual tool call. Text describing a tool call is not executable and did not advance this session. Continue the task by invoking an available tool through its structured tool interface. When finished, use the required completion action tool; do not finish with plain text."}));
+        return call_openai_with_depth(
+            ctx,
+            temper_api_url,
+            tenant,
+            api_key,
+            api_url,
+            codex_account_id,
+            model,
+            system_prompt,
+            &nudged,
+            tools,
+            temperature,
+            provider,
+            provider_options_json,
+            nudge_depth + 1,
+        );
+    }
     Ok(parsed.into_llm_response(body_str.len()))
 }
 
@@ -4064,12 +4450,9 @@ pub fn run_provider_caller() -> Result<(), String> {
     if let Err(err) = &response_result
         && let Some(reason) = provider_auth_expired_reason(err)
     {
-        set_success_result(
-            "ProviderAuthExpired",
-            &json!({
-                "provider_auth_error": reason,
-            }),
-        );
+        let mut params = json!({"provider_auth_error":reason});
+        let callback = provider_callback(&fields, "ProviderAuthExpired", &mut params);
+        set_success_result(callback, &params);
         emit_phase_total_duration(&ctx, "provider_caller", started_at, "provider_auth_expired");
         return Ok(());
     }
@@ -4130,9 +4513,10 @@ pub fn run_provider_caller() -> Result<(), String> {
         "write_provider_response_artifact",
     )?;
 
-    let params =
+    let mut params =
         build_provider_response_ready_params_with_inline("", &artifact_json, &prepared, &artifact);
-    set_success_result("ProviderResponseReady", &params);
+    let callback = provider_callback(&fields, "ProviderResponseReady", &mut params);
+    set_success_result(callback, &params);
     emit_phase_total_duration(
         &ctx,
         "provider_caller",
@@ -4140,6 +4524,18 @@ pub fn run_provider_caller() -> Result<(), String> {
         "provider_response_ready",
     );
     Ok(())
+}
+
+fn provider_callback<'a>(fields: &Value, standard: &'a str, params: &mut Value) -> &'a str {
+    if fields["provider_latency_profile"].as_str() != Some("foresight_first_pass") {
+        return standard;
+    }
+    params["expected_provider_attempt"] = fields["provider_call_attempt"].clone();
+    match standard {
+        "ProviderAuthExpired" => "ForesightProviderAuthExpired",
+        "ProviderResponseReady" => "ForesightProviderResponseReady",
+        _ => standard,
+    }
 }
 
 fn resolve_provider_and_model(
@@ -4328,6 +4724,22 @@ fn check_phase_budget(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn required_codex_turns_never_accept_tool_call_prose_as_completion() {
+        let tools = vec![json!({"name":"execute"})];
+        let prose = json!([{"type":"text","text":"Tool call call_123: execute({\"code\":\"temper.action('Worlds', 'w', 'SeedComplete', {})\"})"}]);
+        assert!(required_tool_nudge(true, &tools, &prose, 0).unwrap());
+        assert!(required_tool_nudge(true, &tools, &prose, 1).unwrap());
+        assert!(
+            required_tool_nudge(true, &tools, &prose, 2)
+                .unwrap_err()
+                .contains("assistant prose was not executed")
+        );
+        assert!(!required_tool_nudge(false, &tools, &prose, 2).unwrap());
+        let actual = json!([{"type":"tool_use","id":"call_123","name":"execute","input":{"code":"temper.list('EventNodes')"}}]);
+        assert!(!required_tool_nudge(true, &tools, &actual, 2).unwrap());
+        assert!(required_tool_nudge(true, &[], &prose, 0).is_err());
+    }
     #[test]
     fn reasoning_effort_defaults_to_medium_and_accepts_valid_levels() {
         use super::reasoning_effort_from_options as effort;
@@ -4841,45 +5253,126 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_input_downgrades_matched_tool_history_to_user_context() {
-        let converted = build_openai_responses_input(&[
-            json!({
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": "call_ok",
-                    "name": "temper_status",
-                    "input": {"scope": "dm"}
-                }]
-            }),
-            json!({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "call_ok",
-                    "content": [{"type": "text", "text": "ready"}]
-                }]
-            }),
-        ]);
+    fn published_required_tool_choice_remains_opt_in() {
+        for (value, expected) in [
+            (json!("required"), true),
+            (json!("auto"), false),
+            (Value::Null, false),
+        ] {
+            let ctx = Context {
+                config: BTreeMap::new(),
+                trigger_params: json!({}),
+                entity_state: json!({"fields":{"tool_choice":value}}),
+                tenant: "default".into(),
+                entity_type: "Session".into(),
+                entity_id: "fixture".into(),
+                trigger_action: "CallProviderStandard".into(),
+                wasm_module: "provider_caller".into(),
+                http_request: None,
+            };
+            assert_eq!(tool_choice_required(&ctx), expected);
+        }
+    }
 
-        assert_eq!(converted.tool_calls_as_context, 1);
-        assert_eq!(converted.tool_outputs_as_context, 1);
-        assert!(!converted.input.iter().any(|item| {
-            matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call" | "function_call_output")
-            )
-        }));
-        assert!(converted.input.iter().any(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && item
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some_and(|content| {
-                        content.contains("Tool result for call call_ok")
-                            && content.contains("ready")
+    #[test]
+    fn fast_callback_carries_its_invocation_attempt_and_standard_callback_is_unchanged() {
+        for standard in ["ProviderResponseReady", "ProviderAuthExpired"] {
+            let mut params = json!({"existing":"preserved"});
+            assert_eq!(
+                provider_callback(&json!({}), standard, &mut params),
+                standard
+            );
+            assert_eq!(params, json!({"existing":"preserved"}));
+            let callback = provider_callback(
+                &json!({"provider_latency_profile":"foresight_first_pass","provider_call_attempt":7}),
+                standard,
+                &mut params,
+            );
+            assert_eq!(callback, format!("Foresight{standard}"));
+            assert_eq!(params["expected_provider_attempt"], 7);
+            assert_eq!(params["existing"], "preserved");
+        }
+    }
+
+    #[test]
+    fn openai_responses_preserve_matched_calls_and_results() {
+        let converted = build_openai_responses_input(&[
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"call_ok","name":"execute","input":{"code":"done()"}}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"call_ok","content":"ok"}]}),
+        ]);
+        assert_eq!(converted.tool_calls_as_context, 0);
+        assert_eq!(converted.tool_outputs_as_context, 0);
+        assert_eq!(
+            converted.input,
+            vec![
+                json!({"type":"function_call","call_id":"call_ok","name":"execute","arguments":"{\"code\":\"done()\"}"}),
+                json!({"type":"function_call_output","call_id":"call_ok","output":"ok"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_terminal_event_does_not_wait_for_transport_eof() {
+        for event_type in [
+            "response.completed",
+            "response.failed",
+            "response.incomplete",
+        ] {
+            let mut accumulator = OpenAiStreamAccumulator::default();
+            let event = format!(
+                "data: {}\n\n",
+                json!({"type":event_type,"response":{"output":[],"usage":{}}})
+            );
+            let mut reads = 0;
+            let result = read_stream_body(
+                200,
+                |buffer| {
+                    reads += 1;
+                    assert_eq!(reads, 1, "terminal stream must not request another chunk");
+                    buffer[..event.len()].copy_from_slice(event.as_bytes());
+                    Ok(Some(event.len()))
+                },
+                |data| {
+                    accumulator.ingest_data(data)?;
+                    Ok(if accumulator.saw_completed {
+                        StreamControl::Complete
+                    } else {
+                        StreamControl::Continue
                     })
-        }));
+                },
+            );
+            assert_eq!(reads, 1);
+            assert_eq!(result.is_ok(), event_type == "response.completed");
+        }
+    }
+
+    #[test]
+    fn openai_orphan_duplicate_and_out_of_order_history_stays_context() {
+        let call = json!({"role":"assistant","content":[{"type":"tool_use","id":"call_x","name":"execute","input":{}}]});
+        let result = json!({"role":"tool_result","tool_use_id":"call_x","content":"ok"});
+        for history in [
+            vec![call.clone()],
+            vec![result.clone()],
+            vec![result.clone(), call.clone()],
+            vec![call.clone(), call.clone(), result.clone()],
+            vec![call.clone(), result.clone(), result.clone()],
+        ] {
+            let converted = build_openai_responses_input(&history);
+            assert!(!converted.input.iter().any(|item| matches!(
+                item["type"].as_str(),
+                Some("function_call" | "function_call_output")
+            )));
+        }
+    }
+
+    #[test]
+    fn openai_unsuccessful_terminal_events_fail_immediately() {
+        for event_type in ["response.failed", "response.incomplete"] {
+            let mut accumulator = OpenAiStreamAccumulator::default();
+            let event = json!({"type":event_type,"response":{"status":"failed","error":{"code":"server_error"},"incomplete_details":{"reason":"max_output_tokens"}}});
+            let error = accumulator.ingest_data(&event.to_string()).unwrap_err();
+            assert!(error.to_string().contains(event_type));
+        }
     }
 
     #[test]
@@ -4914,15 +5407,43 @@ mod tests {
     fn openai_codex_host_http_failure_message_names_host_boundary() {
         let msg = format_openai_codex_exhausted_error(
             5,
+            None,
             "HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses",
         );
 
-        assert!(msg.contains("OpenAI Codex host HTTP call failed after 5 attempts"));
+        assert!(msg.contains("OpenAI Codex failed after 5 attempts"));
         assert!(msg.contains("before a provider HTTP response was returned"));
         assert!(
             msg.contains("HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses")
         );
         assert!(!msg.starts_with("OpenAI Codex API failed"));
+    }
+
+    #[test]
+    fn codex_rate_limit_details_are_allowlisted_bounded_and_typed() {
+        let result = codex_rate_limit_error(
+            &json!({"error": {
+            "code":"usage_limit_reached", "type":"x".repeat(100), "message":"🎉".repeat(1000),
+            "resets_at":1790166642_u64,"resets_in_seconds":571398,
+            "plan_type":"pro","account_id":"not-for-diagnostics"
+        },"access_token":"not-for-diagnostics"})
+            .to_string(),
+        );
+        assert!(result.terminal_usage_limit);
+        assert_eq!(result.details.as_object().unwrap().len(), 5);
+        assert_eq!(result.details["type"].as_str().unwrap().chars().count(), 64);
+        assert_eq!(
+            result.details["message"].as_str().unwrap().chars().count(),
+            512
+        );
+        assert_eq!(result.details["resets_at"], 1790166642_u64);
+        assert!(!result.details.to_string().contains("not-for-diagnostics"));
+        for body in ["not JSON".to_string(), "x".repeat(16385),
+            json!({"error":{"type":{"nested":"bad"},"message":[],"resets_at":-1,"resets_in_seconds":"571398"}}).to_string()] {
+            let invalid = codex_rate_limit_error(&body);
+            assert!(!invalid.terminal_usage_limit);
+            assert_eq!(invalid.details,json!({}));
+        }
     }
 
     #[test]
@@ -4973,6 +5494,33 @@ mod tests {
     }
 
     #[test]
+    fn parsed_codex_literal_execute_reply_requires_a_real_tool_call() {
+        let chunks:Vec<&[u8]>=vec![br#"data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Tool call call_fake: execute({})"}]}],"usage":{"input_tokens":3,"output_tokens":4}}}"#,b"\n\n"];
+        let parsed = parse_openai_stream_chunks(&chunks).unwrap();
+        assert_eq!(parsed.stop_reason, "end_turn");
+        assert!(
+            required_tool_nudge(true, &[json!({"name":"execute"})], &parsed.content, 0).unwrap()
+        );
+        assert!(
+            required_tool_nudge(
+                true,
+                &[json!({"name":"execute"})],
+                &parsed.content,
+                TOOL_CHOICE_NUDGE_MAX
+            )
+            .is_err()
+        );
+        assert!(
+            !parsed
+                .content
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["type"] == "tool_use")
+        );
+    }
+
+    #[test]
     fn openai_completed_text_does_not_clobber_streamed_function_call() {
         let chunks: Vec<&[u8]> = vec![
             br#"data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_streamed","name":"execute","arguments":"{\"code\":\"await temper.list('default', 'World')\"}"}}"#,
@@ -4984,6 +5532,15 @@ mod tests {
         let parsed = parse_openai_stream_chunks(&chunks).expect("OpenAI stream should parse");
 
         assert_eq!(parsed.stop_reason, "tool_use");
+        assert!(
+            !required_tool_nudge(
+                true,
+                &[json!({"name":"execute"})],
+                &parsed.content,
+                TOOL_CHOICE_NUDGE_MAX
+            )
+            .unwrap()
+        );
         assert_eq!(
             parsed.content,
             json!([
@@ -5087,5 +5644,90 @@ mod tests {
             extract_chatgpt_account_id_from_jwt(&token).as_deref(),
             Some("acct_456")
         );
+    }
+}
+
+#[cfg(test)]
+mod incremental_count_tests {
+    use super::*;
+    #[test]
+    fn unicode_counts_preserve_fallback_tool_progress_and_block_replacement() {
+        let mut openai = OpenAiStreamAccumulator::default();
+        for (text, total) in [("é", 1), ("🦀a", 3)] {
+            let d = openai
+                .ingest_data(&json!({"type":"response.output_text.delta","delta":text}).to_string())
+                .unwrap();
+            assert_eq!(d[0].accumulated_text_chars, total);
+        }
+        assert!(
+            openai
+                .ingest_data(
+                    &json!({"type":"response.output_text.done","text":"ignored"}).to_string()
+                )
+                .unwrap()
+                .is_empty()
+        );
+        let d = openai.ingest_data(&json!({"type":"response.output_item.done","item":{"type":"function_call","name":"execute","arguments":"{}"}}).to_string()).unwrap();
+        assert_eq!(d[0].accumulated_text_chars, 3);
+        assert_eq!(openai.streamed_text, "é🦀a");
+        let mut fallback = OpenAiStreamAccumulator::default();
+        assert_eq!(
+            fallback
+                .ingest_data(&json!({"type":"response.output_text.done","text":"é🦀"}).to_string())
+                .unwrap()[0]
+                .accumulated_text_chars,
+            2
+        );
+        let mut anthropic = AnthropicStreamAccumulator::default();
+        for (index, text) in [(0, "é🦀"), (1, "abc"), (0, "z")] {
+            anthropic.ingest_data(&json!({"type":"content_block_start","index":index,"content_block":{"type":"text","text":text}}).to_string()).unwrap();
+            assert_eq!(
+                anthropic.accumulated_text_chars(),
+                anthropic
+                    .blocks
+                    .values()
+                    .map(|b| b.text.chars().count())
+                    .sum::<usize>()
+            );
+        }
+        let d=anthropic.ingest_data(&json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"🦀"}}).to_string()).unwrap();
+        assert_eq!(d[0].accumulated_text_chars, 5);
+        let mut router = OpenRouterStreamAccumulator::default();
+        for (text, total) in [("é", 1), ("🦀a", 3)] {
+            let d = router
+                .ingest_data(&json!({"choices":[{"delta":{"content":text}}]}).to_string())
+                .unwrap();
+            assert_eq!(d[0].accumulated_text_chars, total);
+        }
+    }
+    #[test]
+    fn unicode_sse_split_at_every_byte_preserves_output() {
+        let stream = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"type":"response.output_text.delta","delta":"é🦀"}),
+            json!({"type":"response.completed","response":{"output":[],"usage":{}}})
+        );
+        for split in 1..stream.len() {
+            let events = collect_sse_data_events(&[
+                &stream.as_bytes()[..split],
+                &stream.as_bytes()[split..],
+            ])
+            .unwrap();
+            let mut a = OpenAiStreamAccumulator::default();
+            for event in events {
+                a.ingest_data(&event).unwrap();
+            }
+            assert_eq!(a.streamed_text, "é🦀");
+            assert_eq!(a.streamed_text_chars, 2);
+            let tool_event = format!(
+                "data: {}\n\n",
+                json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c","name":"execute","arguments":"{\"text\":\"é🦀\"}"}})
+            );
+            let pieces: Vec<&[u8]> = tool_event.as_bytes().chunks(1).collect();
+            for event in collect_sse_data_events(&pieces).unwrap() {
+                a.ingest_data(&event).unwrap();
+            }
+            assert_eq!(a.output_items[0]["arguments"], "{\"text\":\"é🦀\"}");
+        }
     }
 }

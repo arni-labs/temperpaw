@@ -124,8 +124,22 @@ name = "ScoreComplete"
 kind = "input"
 from = ["Running"]
 to = "Scored"
-params = ["mean_brier", "graded_count", "actuals_file_id", "coverage_note"]
+params = ["mean_brier", "graded_count", "actuals_file_id", "coverage_note", "learning_as_of"]
 hint = "Grading finished. System principals only (Cedar)."
+
+[[action.triggers]]
+name = "learn_from_historical_batch"
+kind = "entity"
+principal = "system"
+target_entity = "LearningRun"
+target_action = "Start"
+params = {dataset_json = "", mode = "historical"}
+guard = {type = "not", guard = {type = "field_equals", field = "learning_as_of", value = ""}}
+[action.triggers.resolve_target]
+type = "create"
+[action.triggers.params_from]
+world_id = "world_id"
+as_of = "learning_as_of"
 
 [[action]]
 name = "Fail"
@@ -146,3 +160,8 @@ assert = "no_further_transitions"
 name = "FailedIsFinal"
 when = ["Failed"]
 assert = "no_further_transitions"
+
+[[state]]
+name = "learning_as_of"
+type = "string"
+initial = ""

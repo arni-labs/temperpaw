@@ -132,7 +132,25 @@ from = ["Sampled"]
 to = "Written"
 params = ["bundle_file_id", "summary", "author_agent_id"]
 hint = "Writer self-reports the bundle. Parks in Written for the diversity gate (ADR-006); the gate, not the writer, starts repair."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
+
+[[action.triggers]]
+name = "check_diversity_barrier"
+kind = "entity"
+principal = "system"
+target_entity = "Endpoint"
+target_action = "CheckDiversityBarrier"
+[action.triggers.resolve_target]
+type = "same_id"
+
+# The session reports its bundle; only this declared system reaction enters
+# deterministic cross-entity work with system authority.
+[[action]]
+name = "CheckDiversityBarrier"
+kind = "input"
+from = ["Written"]
+to = "Written"
+params = []
+hint = "Check the all-written diversity barrier under the declared system principal."
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -204,6 +222,24 @@ from = ["Sampled"]
 to = "Sampled"
 params = []
 hint = "Self-heal: re-spawn a dead/orphaned endpoint writer. Fires on the Sampled state_timeout. System principals only."
+
+[[action.triggers]]
+name = "enter_StartWriter"
+kind = "entity"
+principal = "system"
+target_entity = "Endpoint"
+target_action = "StartWriter"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "StartWriter"
+kind = "input"
+from = ["Sampled"]
+to = "Sampled"
+params = []
+hint = "Protected deterministic recovery entry; invoked by the declared system trigger."
+
 effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
@@ -227,6 +263,24 @@ from = ["UnderRepair"]
 to = "UnderRepair"
 params = []
 hint = "Self-heal: re-score an endpoint whose claims are all terminal but ScoreComplete never fired. Fires on the UnderRepair state_timeout."
+
+[[action.triggers]]
+name = "enter_EvaluateEndpointScoring"
+kind = "entity"
+principal = "system"
+target_entity = "Endpoint"
+target_action = "EvaluateEndpointScoring"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "EvaluateEndpointScoring"
+kind = "input"
+from = ["UnderRepair"]
+to = "UnderRepair"
+params = []
+hint = "Protected deterministic recovery entry; invoked by the declared system trigger."
+
 effect = [{ type = "trigger", name = "aggregate_costs_endpoint_scoring" }]
 
 [[action.triggers]]
@@ -244,7 +298,23 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["claims_json"]
 hint = "Decomposer self-reports 3-8 separable load-bearing claims. Re-enters decompose_endpoint to create Claim entities and start the chunked bridge fan-out."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
+
+[[action.triggers]]
+name = "enter_PrepareClaims"
+kind = "entity"
+principal = "system"
+target_entity = "Endpoint"
+target_action = "PrepareClaims"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "PrepareClaims"
+kind = "input"
+from = ["UnderRepair"]
+to = "UnderRepair"
+params = []
+hint = "Enter deterministic corridor work through the declared system reaction."
 
 [[action.triggers]]
 name = "decompose_endpoint"

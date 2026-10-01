@@ -1,0 +1,185 @@
+# Continuous learning: each concern has its own recorded transition and integration.
+[automaton]
+name = "LearningRun"
+states = ["Created","Preparing","Training","Evaluating","Adopting","Adopted","Rejected","Failed"]
+initial = "Created"
+allow_indefinite_states = ["Created"]
+strict_action_params = true
+
+[[state]]
+name = "world_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "mode"
+type = "string"
+initial = ""
+
+[[state]]
+name = "as_of"
+type = "string"
+initial = ""
+
+[[state]]
+name = "dataset_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "prepared_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "incumbent_model_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "expected_model_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "candidate_model_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "report_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[action]]
+name = "Start"
+kind = "input"
+from = ["Created"]
+to = "Preparing"
+params = ["world_id","mode","as_of","dataset_json"]
+
+[[action.triggers]]
+name = "learning_prepare"
+kind = "wasm"
+module = "learning_prepare"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "Prepared"
+kind = "input"
+from = ["Preparing"]
+to = "Training"
+params = ["prepared_json","incumbent_model_json","expected_model_json"]
+
+[[action.triggers]]
+name = "learning_train"
+kind = "wasm"
+module = "learning_train"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "Trained"
+kind = "input"
+from = ["Training"]
+to = "Evaluating"
+params = ["candidate_model_json"]
+
+[[action.triggers]]
+name = "learning_evaluate"
+kind = "wasm"
+module = "learning_evaluate"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "CandidatePassed"
+kind = "input"
+from = ["Evaluating"]
+to = "Adopting"
+params = ["report_json"]
+
+[[action.triggers]]
+name = "adopt_candidate"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "AdoptModel"
+
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+[action.triggers.params_from]
+expected_model_json = "expected_model_json"
+model_json = "candidate_model_json"
+adopted_learning_run_id = "Id"
+learning_mode = "mode"
+
+[[action]]
+name = "ConfirmAdoption"
+kind = "input"
+from = ["Adopting"]
+to = "Adopted"
+params = []
+
+[[action]]
+name = "Reject"
+kind = "input"
+from = ["Evaluating"]
+to = "Rejected"
+params = ["report_json"]
+
+[[action]]
+name = "Fail"
+kind = "input"
+from = ["Preparing","Training","Evaluating","Adopting"]
+to = "Failed"
+params = ["error_message"]
+
+[[state_timeout]]
+state = "Preparing"
+after_seconds = 120
+on_timeout = "Fail"
+params = { error_message = "Learning preparing did not complete within 120 seconds. A newer model or a failed integration may have prevented completion; incumbent is preserved." }
+
+[[state_timeout]]
+state = "Training"
+after_seconds = 120
+on_timeout = "Fail"
+params = { error_message = "Learning training did not complete within 120 seconds. A newer model or a failed integration may have prevented completion; incumbent is preserved." }
+
+[[state_timeout]]
+state = "Evaluating"
+after_seconds = 120
+on_timeout = "Fail"
+params = { error_message = "Learning evaluating did not complete within 120 seconds. A newer model or a failed integration may have prevented completion; incumbent is preserved." }
+
+[[state_timeout]]
+state = "Adopting"
+after_seconds = 120
+on_timeout = "Fail"
+params = { error_message = "Learning adopting did not complete within 120 seconds. A newer model or a failed integration may have prevented completion; incumbent is preserved." }
+
+[[invariant]]
+name="AdoptedIsFinal"
+when=["Adopted"]
+assert="no_further_transitions"
+
+[[invariant]]
+name="RejectedIsFinal"
+when=["Rejected"]
+assert="no_further_transitions"
+
+[[invariant]]
+name="FailedIsFinal"
+when=["Failed"]
+assert="no_further_transitions"

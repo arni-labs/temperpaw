@@ -1,0 +1,684 @@
+# Native bounded semantic traversal. Every provider call is traced; bounded batches preserve partial progress.
+[automaton]
+name = "SemanticRun"
+states = ["Created", "Preparing", "Choosing", "Calling", "ReasoningSetup", "Reasoning", "Expanding", "Completed", "Failed", "Cancelled"]
+initial = "Created"
+allow_indefinite_states = ["Created"]
+strict_action_params = true
+
+[[state]]
+name = "world_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "snapshot_json"
+type = "string"
+initial = ""
+# Bounded native graph/trace payload; keep the declared string visible to consumers.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "program_json"
+type = "string"
+initial = ""
+# Bounded native graph/trace payload; keep the declared string visible to consumers.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "trace_json"
+type = "string"
+initial = ""
+# Bounded native graph/trace payload; keep the declared string visible to consumers.
+overflow_inline_max_bytes = "33554432"
+
+[[state]]
+name = "request_json"
+type = "string"
+initial = ""
+
+# Machine-consumed text stays inline through bounded app handoffs.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "started_at_ms"
+type = "string"
+initial = ""
+
+[[state]]
+name = "finished_at_ms"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[action]]
+name = "Start"
+kind = "input"
+from = ["Created"]
+to = "Preparing"
+params = ["world_id", "parent_id", "parent_type", "resume_run_id"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_prepare"
+kind = "wasm"
+module = "semantic_prepare"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "Prepared"
+kind = "input"
+from = ["Preparing"]
+to = "ReasoningSetup"
+params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase", "reasoning_phase_polls"]
+effect = [{type="increment",var="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"}]
+[[action.triggers]]
+name = "semantic_reasoning"
+kind = "wasm"
+module = "semantic_reasoning"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[action]]
+name = "SearchPlanned"
+kind = "input"
+from = ["Choosing"]
+to = "Choosing"
+params = ["program_json"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_step"
+kind = "wasm"
+module = "semantic_step"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[action]]
+name = "Evaluate"
+kind = "input"
+from = ["Choosing"]
+to = "Calling"
+params = ["request_json"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_call"
+kind = "wasm"
+module = "semantic_call"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+typesafe_api_key = "{secret:foresight_typesafe_api_key}"
+
+[[action]]
+name = "Recorded"
+kind = "input"
+from = ["Calling"]
+to = "Choosing"
+params = ["program_json", "trace_json"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_step"
+kind = "wasm"
+module = "semantic_step"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[action]]
+name = "Complete"
+kind = "input"
+from = ["Expanding"]
+to = "Completed"
+params = ["answer", "finished_at_ms"]
+effect = [{type="increment",var="transition_count"}]
+
+[[action]]
+name = "Fail"
+kind = "input"
+from = ["Preparing", "Choosing", "Calling", "ReasoningSetup", "Reasoning", "Expanding"]
+to = "Failed"
+params = ["error_message"]
+effect = [{type="increment",var="transition_count"}]
+
+[[action]]
+name = "Cancel"
+kind = "input"
+from = ["Preparing", "Choosing", "Calling", "ReasoningSetup", "Reasoning", "Expanding"]
+to = "Cancelled"
+params = []
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "cancel_reasoning_session"
+kind = "entity"
+principal = "system"
+target_entity = "Session"
+target_action = "Cancel"
+guard = {type="not",guard={type="field_equals",field="reasoning_session_id",value=""}}
+[action.triggers.resolve_target]
+type = "field"
+field = "reasoning_session_id"
+
+
+[[state_timeout]]
+state = "Preparing"
+after_seconds = 120
+on_timeout = "Fail"
+params = {error_message = "Semantic execution timed out; unresolved work was not accepted."}
+
+[[state_timeout]]
+state = "Choosing"
+after_seconds = 120
+on_timeout = "Fail"
+params = {error_message = "Semantic execution timed out; unresolved work was not accepted."}
+
+[[state_timeout]]
+state = "Calling"
+after_seconds = 120
+on_timeout = "Fail"
+params = {error_message = "Semantic execution timed out; unresolved work was not accepted."}
+
+[[invariant]]
+name = "CompletedIsFinal"
+when = ["Completed"]
+assert = "no_further_transitions"
+
+[[invariant]]
+name = "FailedIsFinal"
+when = ["Failed"]
+assert = "no_further_transitions"
+
+[[invariant]]
+name = "CancelledIsFinal"
+when = ["Cancelled"]
+assert = "no_further_transitions"
+
+[[state]]
+name = "parent_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "phase"
+type = "string"
+initial = "seed"
+
+[[state]]
+name = "agent_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "model"
+type = "string"
+initial = ""
+
+[[state]]
+name = "provider"
+type = "string"
+initial = ""
+
+[[state]]
+name = "system_prompt"
+type = "string"
+initial = ""
+
+[[state]]
+name = "user_message"
+type = "string"
+initial = ""
+
+# Bounded 3 MiB reasoning JSON can expand when serialized as a field string.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "tools_enabled"
+type = "string"
+initial = ""
+
+[[state]]
+name = "tool_choice"
+type = "string"
+initial = "none"
+
+[[state]]
+name = "max_turns"
+type = "string"
+initial = "1"
+
+[[state]]
+name = "sandbox_url"
+type = "string"
+initial = "none"
+
+[[state]]
+name = "temper_api_url"
+type = "string"
+initial = "http://127.0.0.1:3467"
+
+[[state]]
+name = "reasoning_session_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "reasoning_result"
+type = "string"
+initial = ""
+
+# Machine-consumed text stays inline through bounded app handoffs.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "answer"
+type = "string"
+initial = ""
+
+# Machine-consumed text stays inline through bounded app handoffs.
+overflow_inline_max_bytes = "8388608"
+
+[[state]]
+name = "check_count"
+type = "counter"
+initial = "0"
+
+[[action]]
+name = "Reason"
+kind = "input"
+from = ["Choosing"]
+to = "ReasoningSetup"
+params = ["phase", "program_json", "trace_json", "reasoning_phase_polls"]
+effect = [{type="increment",var="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"}]
+[[action.triggers]]
+name = "semantic_reasoning"
+kind = "wasm"
+module = "semantic_reasoning"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[action]]
+name = "LaunchReasoning"
+kind = "input"
+from = ["ReasoningSetup"]
+params = ["system_prompt", "user_message", "tools_enabled", "tool_choice", "max_turns"]
+effect = [{type="increment",var="transition_count"},{type="schedule",action="SpawnReasoning",delay_seconds=0}]
+
+[[action]]
+name = "SpawnReasoning"
+kind = "input"
+from = ["ReasoningSetup"]
+to = "Reasoning"
+params = []
+effect = [{type="increment",var="transition_count"},
+ {type="spawn", entity_type="Session", entity_id_source="{uuid}", initial_action="Configure", store_id_in="reasoning_session_id", copy_fields="system_prompt,user_message,model,provider,provider_options_json,provider_latency_profile,tool_choice,temperature,max_turns,tools_enabled,workdir,sandbox_url,sandbox_id,sandbox_provider,sandbox_networking_type,sandbox_allowed_hosts_json,sandbox_allow_mcp_servers,sandbox_allow_package_managers,sandbox_packages_json,temper_api_url,soul_id,agent_id,reply_channel_id,reply_thread_id,reply_channel_entity_id,reply_channel_type,reply_route_source,parent_session_id,session_depth,max_follow_ups,hook_policy,reserve_tokens,keep_recent_tokens,compaction_model,heartbeat_timeout_seconds,project_harness_id,project_id,workspace_id,conversation_file_id,file_manifest_id,session_file_id,session_leaf_id,session_entries_materialized,prepared_context_file_id,prepared_context_inline_json,system_prompt_hash,system_prompt_file_id,session_mode,gen_ai_parent_trace_id,gen_ai_parent_span_id"},
+ {type="schedule", action="CheckReasoning", delay_seconds=60}
+]
+
+[[action]]
+name = "CheckReasoning"
+kind = "input"
+from = ["Reasoning"]
+to = "Reasoning"
+params = []
+effect = [{type="increment",var="transition_count"},{type="increment",var="reasoning_phase_polls"}]
+[[action.triggers]]
+name = "semantic_session"
+kind = "wasm"
+module = "semantic_session"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ReasoningPending"
+kind = "input"
+from = ["Reasoning"]
+to = "Reasoning"
+params = []
+effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=60}]
+
+[[action]]
+name = "ReasoningComplete"
+kind = "input"
+from = ["Reasoning"]
+to = "Expanding"
+params = ["reasoning_result"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_expand"
+kind = "wasm"
+module = "semantic_expand"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[action]]
+name = "Expanded"
+kind = "input"
+from = ["Expanding"]
+to = "Choosing"
+params = ["snapshot_json", "program_json", "started_at_ms"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_step"
+kind = "wasm"
+module = "semantic_step"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+[[state_timeout]]
+state = "ReasoningSetup"
+after_seconds = 900
+on_timeout = "Fail"
+params = {error_message = "Reasoning stage timed out; partial exploration is preserved."}
+
+[[state_timeout]]
+state = "Reasoning"
+after_seconds = 900
+on_timeout = "Fail"
+params = {error_message = "Reasoning stage timed out; partial exploration is preserved."}
+
+[[state_timeout]]
+state = "Expanding"
+after_seconds = 900
+on_timeout = "Fail"
+params = {error_message = "Reasoning stage timed out; partial exploration is preserved."}
+
+[[state]]
+name = "parent_type"
+type = "string"
+initial = ""
+
+[[state]]
+name = 'provider_options_json'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'provider_latency_profile'
+type = 'string'
+initial = 'standard'
+
+[[state]]
+name = 'temperature'
+type = 'string'
+initial = '1.0'
+
+[[state]]
+name = 'workdir'
+type = 'string'
+initial = '/workspace'
+
+[[state]]
+name = 'sandbox_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'sandbox_provider'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'sandbox_networking_type'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'sandbox_allowed_hosts_json'
+type = 'string'
+initial = '[]'
+
+[[state]]
+name = 'sandbox_allow_mcp_servers'
+type = 'bool'
+initial = 'false'
+
+[[state]]
+name = 'sandbox_allow_package_managers'
+type = 'bool'
+initial = 'false'
+
+[[state]]
+name = 'sandbox_packages_json'
+type = 'string'
+initial = '[]'
+
+[[state]]
+name = 'soul_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'reply_channel_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'reply_thread_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'reply_channel_entity_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'reply_channel_type'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'reply_route_source'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'parent_session_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'session_depth'
+type = 'counter'
+initial = '0'
+
+[[state]]
+name = 'max_follow_ups'
+type = 'string'
+initial = '5'
+
+[[state]]
+name = 'hook_policy'
+type = 'string'
+initial = 'none'
+
+[[state]]
+name = 'reserve_tokens'
+type = 'string'
+initial = '20000'
+
+[[state]]
+name = 'keep_recent_tokens'
+type = 'string'
+initial = '10000'
+
+[[state]]
+name = 'compaction_model'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'heartbeat_timeout_seconds'
+type = 'string'
+initial = '300'
+
+[[state]]
+name = 'project_harness_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'project_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'workspace_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'conversation_file_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'file_manifest_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'session_file_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'session_leaf_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'session_entries_materialized'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'prepared_context_file_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'prepared_context_inline_json'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'system_prompt_hash'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'system_prompt_file_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'session_mode'
+type = 'string'
+initial = 'execute'
+
+[[state]]
+name = 'gen_ai_parent_trace_id'
+type = 'string'
+initial = ''
+
+[[state]]
+name = 'gen_ai_parent_span_id'
+type = 'string'
+initial = ''
+
+# App-owned bounded retries preserve the exploration checkpoint and prompt.
+[[state]]
+name = "reasoning_retry_count"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "last_retry_error"
+type = "string"
+initial = ""
+
+[[state]]
+name = "last_retry_session_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "resume_run_id"
+type = "string"
+initial = ""
+
+[[action]]
+name = "ReasoningRetry"
+kind = "input"
+from = ["Reasoning"]
+to = "ReasoningSetup"
+params = ["last_retry_error", "last_retry_session_id"]
+guard = [{type="max_count",var="reasoning_retry_count",max=3}]
+effect = [{type="increment",var="transition_count"},{type="increment",var="reasoning_retry_count"},{type="schedule",action="SpawnReasoning",delay_seconds=15}]
+
+[[action]]
+name = "ResumePrepared"
+kind = "input"
+from = ["Preparing"]
+to = "Choosing"
+params = ["reasoning_phase_polls", "world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase"]
+effect = [{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"},{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_step"
+kind = "wasm"
+module = "semantic_step"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+
+# Invalid composition is returned to the composer without repeating evaluation.
+[[action]]
+name = "CompositionRejected"
+kind = "input"
+from = ["Expanding"]
+to = "ReasoningSetup"
+params = ["program_json"]
+effect = [{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_reasoning"
+kind = "wasm"
+module = "semantic_reasoning"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
+# Conservative bound on this run's native causal chain; never reset on model retry.
+[[state]]
+name = "transition_count"
+type = "counter"
+initial = "0"
+
+[[state]]
+name = "reasoning_phase_polls"
+type = "counter"
+initial = "0"

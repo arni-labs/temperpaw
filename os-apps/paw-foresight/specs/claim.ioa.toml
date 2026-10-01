@@ -1,6 +1,6 @@
 # Claim — one separable, load-bearing assertion of an imagined future.
 #
-# A decomposer session splits an endpoint's document bundle into 3–8 claims
+# A decomposer session splits an endpoint's document bundle into three key claims
 # (ADR-004). Each claim gets its own backward bridge: one or more Path
 # routes, searched until a route settles cheap enough or the budget is
 # spent. The claim's verdict is the cost of its cheapest surviving route.
@@ -118,9 +118,25 @@ name = "SubmitForBridge"
 kind = "input"
 from = ["Proposed", "Bridging"]
 to = "Bridging"
-params = []
+params = ["revision_brief"]
 hint = "Dispatched by decompose_endpoint for the first route, and by aggregate_costs for alternate routes (revision_brief carries the standing objections). Spawns a repairer route."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
+
+[[action.triggers]]
+name = "enter_PrepareBridge"
+kind = "entity"
+principal = "system"
+target_entity = "Claim"
+target_action = "PrepareBridge"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "PrepareBridge"
+kind = "input"
+from = ["Bridging"]
+to = "Bridging"
+params = []
+hint = "Enter deterministic corridor work through the declared system reaction."
 
 [[action.triggers]]
 name = "spawn_repairers"
@@ -153,17 +169,15 @@ from = ["Bridging"]
 to = "Bridging"
 params = []
 hint = "Self-heal: re-evaluate this claim (routes may have died). Re-runs the claim decision deterministically. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
-name = "aggregate_costs"
-kind = "wasm"
-module = "aggregate_costs"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
-
+name = "enter_route_evaluation"
+kind = "entity"
+principal = "system"
+target_entity = "Claim"
+target_action = "EvaluateRoutes"
+[action.triggers.resolve_target]
+type = "same_id"
 
 [[action]]
 name = "RouteSettled"
@@ -191,6 +205,17 @@ to = "Settled"
 params = ["settled_route_id", "best_route_cost", "classification"]
 hint = "Cheapest surviving route accepted. Single writer: aggregate_costs only."
 
+
+[[action.triggers]]
+name = "report_settled_claim"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "ResumeWorldCascade"
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+
 [[action]]
 name = "Reprice"
 kind = "input"
@@ -206,6 +231,17 @@ to = "Unreachable"
 params = ["unreachable_reason"]
 hint = "Route budget exhausted with no route under the acceptability bound. An honest verdict, not an error."
 
+
+[[action.triggers]]
+name = "report_settled_claim"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "ResumeWorldCascade"
+[action.triggers.resolve_target]
+type = "field"
+field = "world_id"
+
 [[action]]
 name = "Fail"
 kind = "input"
@@ -216,12 +252,45 @@ hint = "Unrecoverable error during decomposition or bridging."
 
 # --- Invariants ---
 
-[[invariant]]
-name = "UnreachableIsFinal"
-when = ["Unreachable"]
-assert = "no_further_transitions"
+# First-pass verdicts may reopen exactly once for bounded background exploration.
+[[state]]
+name = "deepening_started"
+type = "bool"
+initial = "false"
+
+[[action]]
+name = "BeginDeepening"
+kind = "input"
+from = ["Settled", "Unreachable"]
+to = "Bridging"
+params = ["settled_route_id"]
+guard = "is_false deepening_started"
+effect = [{ type = "set_bool", var = "deepening_started", value = true }]
+
+[[action.triggers]]
+name = "enter_background_bridge"
+kind = "entity"
+principal = "system"
+target_entity = "Claim"
+target_action = "PrepareBridge"
+[action.triggers.resolve_target]
+type = "same_id"
+
 
 [[invariant]]
 name = "FailedIsFinal"
 when = ["Failed"]
 assert = "no_further_transitions"
+
+[[action]]
+name = "EvaluateRoutes"
+kind = "input"
+from = ["Bridging"]
+params = []
+[[action.triggers]]
+name = "aggregate_costs"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"

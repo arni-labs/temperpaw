@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import { requiresAgentSetup } from '$lib/setup-routing';
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
@@ -67,9 +68,7 @@
           try {
             const setupStatus = await fetchSetupStatus();
             if (
-              !setupStatus.has_anthropic_key
-              || !setupStatus.has_agents
-              || !setupStatus.has_personalized_soul
+              requiresAgentSetup(relativePath($page.url.pathname), setupStatus)
             ) {
               await goto(appHref('/welcome'));
               return;
@@ -163,6 +162,10 @@
       <a href={appHref('/apps/paw-patrol')} class="nav-item" class:active={currentPath.startsWith('/apps/paw-patrol')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z"/><path d="M9 12l2 2 4-5"/></svg>
         {#if !collapsed}<span>Patrol</span>{/if}
+      </a>
+      <a href={appHref('/foresight')} class="nav-item" class:active={currentPath.startsWith('/foresight')}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 19L9 13L14 16L21 5"/><path d="M15 5H21V11"/></svg>
+        {#if !collapsed}<span>Foresight</span>{/if}
       </a>
       <a href={appHref('/sessions')} class="nav-item" class:active={currentPath.startsWith('/sessions')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>

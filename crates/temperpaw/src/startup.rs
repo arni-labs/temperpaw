@@ -1848,7 +1848,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         cookie_secure,
     );
 
-    let router = build_platform_router(state.clone());
+    let router = build_platform_router(state.clone()).layer(axum::middleware::from_fn_with_state(
+        state.server.internal_invocation_credentials.clone(),
+        crate::auth::platform_session_credentials,
+    ));
     let setup_state = crate::setup_api::SetupApiState {
         platform: state.clone(),
         storage: storage.clone(),

@@ -1750,36 +1750,51 @@ fn upsert_artifact_file(
     body: &str,
     content_type: &str,
 ) -> Result<String, String> {
-    if !existing_file_id.is_empty() {
-        let value_url = format!("{temper_api_url}/tdata/Files('{existing_file_id}')/$value");
-        let headers = runtime_headers(ctx, tenant, fields, Some(content_type), None);
-        if write_temperfs_value_with_retry(ctx, &value_url, &headers, body, file_name).is_ok() {
-            return Ok(existing_file_id.to_string());
-        }
-    }
-
-    let effective_workspace = if workspace_id.is_empty() {
-        "default"
-    } else {
-        workspace_id
-    };
-    create_content_file(
-        ctx,
-        temper_api_url,
-        tenant,
-        effective_workspace,
-        file_name,
-        body,
+    write_or_create_artifact_file(
+        existing_file_id,
+        || {
+            let value_url = format!("{temper_api_url}/tdata/Files('{existing_file_id}')/$value");
+            let headers = runtime_headers(ctx, tenant, fields, Some(content_type), None);
+            write_temperfs_value_with_retry(ctx, &value_url, &headers, body, file_name).map(|_| ())
+        },
+        || {
+            let effective_workspace = if workspace_id.is_empty() {
+                "default"
+            } else {
+                workspace_id
+            };
+            create_content_file(
+                ctx,
+                temper_api_url,
+                tenant,
+                effective_workspace,
+                file_name,
+                body,
+            )
+        },
     )
+}
+
+fn write_or_create_artifact_file(
+    existing_file_id: &str,
+    write_existing: impl FnOnce() -> Result<(), String>,
+    create_new: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if existing_file_id.is_empty() {
+        return create_new();
+    }
+    write_existing()?;
+    Ok(existing_file_id.to_string())
 }
 
 fn choose_prepared_context_storage(
     artifact_json: &str,
-    _existing_file_id: &str,
+    existing_file_id: &str,
     inline_max_bytes: usize,
     write_file: impl FnOnce(&str) -> Result<String, String>,
 ) -> Result<PreparedContextStorage, String> {
-    if artifact_json.len() <= inline_max_bytes {
+    // Keep the stable file reference after externalizing, even if a later context shrinks.
+    if existing_file_id.is_empty() && artifact_json.len() <= inline_max_bytes {
         return Ok(PreparedContextStorage {
             file_id: String::new(),
             inline_json: artifact_json.to_string(),
@@ -2659,7 +2674,10 @@ fn load_mode_instructions(
     let file_id = parsed
         .get("value")
         .and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|item| !bounded_reads::entity_is_archived(item)))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|item| !bounded_reads::entity_is_archived(item))
+        })
         .and_then(|item| entity_field_str(item, &["Id", "entity_id"]))
         .unwrap_or("");
     if file_id.is_empty() {
@@ -3289,14 +3307,67 @@ mod tests {
     }
 
     #[test]
-    fn prepared_context_storage_keeps_small_artifacts_inline() {
-        let storage = choose_prepared_context_storage("small", "existing-file", 32, |_| {
+    fn prepared_context_storage_keeps_small_initial_artifacts_inline() {
+        let storage = choose_prepared_context_storage("small", "", 32, |_| {
             panic!("small artifacts should not be written to TemperFS")
         })
         .expect("storage decision");
 
         assert_eq!(storage.file_id, "");
         assert_eq!(storage.inline_json, "small");
+    }
+
+    #[test]
+    fn prepared_context_storage_retains_file_across_size_changes() {
+        use std::cell::Cell;
+
+        let creations = Cell::new(0);
+        let updates = Cell::new(0);
+        let mut file_id = String::new();
+        for body in [
+            "larger-than-threshold",
+            "small",
+            "large-again-after-shrinking",
+        ] {
+            let storage = choose_prepared_context_storage(body, &file_id, 8, |_| {
+                write_or_create_artifact_file(
+                    &file_id,
+                    || {
+                        updates.set(updates.get() + 1);
+                        Ok(())
+                    },
+                    || {
+                        if creations.get() != 0 {
+                            return Err("duplicate workspace path".to_string());
+                        }
+                        creations.set(creations.get() + 1);
+                        Ok("prepared-file".to_string())
+                    },
+                )
+            })
+            .expect("a shrinking context must not forget its existing file");
+            file_id = storage.file_id;
+        }
+        assert_eq!(file_id, "prepared-file");
+        assert_eq!(creations.get(), 1);
+        assert_eq!(updates.get(), 2);
+    }
+
+    #[test]
+    fn artifact_file_update_failure_does_not_create_replacement() {
+        use std::cell::Cell;
+
+        let creations = Cell::new(0);
+        let result = write_or_create_artifact_file(
+            "existing-file",
+            || Err("existing artifact write failed".to_string()),
+            || {
+                creations.set(creations.get() + 1);
+                Ok("replacement-file".to_string())
+            },
+        );
+        assert_eq!(result, Err("existing artifact write failed".to_string()));
+        assert_eq!(creations.get(), 0);
     }
 
     #[test]

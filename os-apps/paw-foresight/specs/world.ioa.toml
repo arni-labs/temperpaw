@@ -19,8 +19,9 @@
 
 [automaton]
 name = "World"
-states = ["Created", "Seeding", "Active", "Updating", "Archived", "Failed"]
+states = ["Created", "Seeding", "Active", "Updating", "OpeningReplay", "RegisteringForecasts", "Archived", "Failed"]
 initial = "Created"
+strict_action_params = true
 
 # ADR-0050/ADR-007: Created awaits human/agent configuration (no deadline by
 # design). Active is the steady state of a living world — indefinite by
@@ -32,8 +33,8 @@ allow_indefinite_states = ["Created", "Active", "Updating"]
 [[state_timeout]]
 state = "Seeding"
 after_seconds = 1200
-on_timeout = "ResumeSeed"
-reset_on = ["SeedComplete", "Fail"]
+on_timeout = "CheckResearchSession"
+reset_on = ["SeedComplete", "Fail", "ResumeSeed", "ResearchSessionStarted", "ResearchPending", "ResearchIncomplete"]
 
 # Self-heal (ADR-007): when every claim is terminal but canonical_path_id is still
 # empty — e.g. the last claim resolved off the Bridging settle path (operator
@@ -122,6 +123,23 @@ name = "agent_provider"
 type = "string"
 initial = ""
 
+# Current surveyor session, recorded only by seed_world's trusted callback.
+[[state]]
+name = "research_session_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "research_session_attempt"
+type = "string"
+initial = ""
+
+# Correlate callbacks with the Seed/ResumeSeed invocation that created them.
+[[state]]
+name = "research_attempt"
+type = "counter"
+initial = "0"
+
 # Hindcast worlds run from a frozen past vantage: web tools are stripped from
 # every spawned session and evidence_ingest reads only the frozen corpus.
 [[state]]
@@ -201,7 +219,7 @@ initial = ""
 name = "Configure"
 kind = "input"
 from = ["Created"]
-params = ["name", "domain", "description", "horizon_months", "target_date", "frontier_date", "corpus_file_id", "driver_config_file_id", "lag_table_file_id", "endpoint_budget", "token_budget_cents", "agent_model", "agent_provider", "hindcast_mode"]
+params = ["name", "domain", "description", "horizon_months", "target_date", "frontier_date", "corpus_file_id", "driver_config_file_id", "lag_table_file_id", "endpoint_budget", "token_budget_cents", "agent_model", "agent_provider", "hindcast_mode", "last_ingest_date"]
 hint = "Configure world parameters. Self-loop on Created."
 
 [[action]]
@@ -211,16 +229,53 @@ from = ["Created"]
 to = "Seeding"
 params = []
 hint = "Begin skeleton construction. Spawns surveyor and bookmaker sessions."
-effect = [{ type = "trigger", name = "seed_world" }]
+effect = [{ type = "increment", var = "research_attempt" }]
+
+[[action.triggers]]
+name = "start_seed_as_system"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartSeed"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "StartSeed"
+kind = "input"
+from = ["Seeding"]
+params = []
+hint = "The declared system flow creates the researcher after an operator requests Seed."
 
 [[action.triggers]]
 name = "seed_world"
 kind = "wasm"
 module = "seed_world"
+on_success = "ResearchSessionStarted"
 on_failure = "Fail"
 
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
+
+
+# The configured session may already have completed before its spawn callback
+# arrives. Preserve the current state, including terminal states.
+[[action]]
+name = "ResearchSessionStarted"
+kind = "input"
+from = ["Seeding", "Active", "Updating", "RegisteringForecasts", "Archived", "Failed"]
+params = [{ name = "research_session_id", type = "string" }, { name = "expected_research_attempt", type = "counter" }, { name = "research_session_attempt", type = "string" }]
+hint = "Record the exact surveyor Session returned by seed_world without changing world progress."
+effect = [{type="schedule",action="CheckResearchSession",delay_seconds=15}]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "research_session_id"
 
 
 [[action]]
@@ -231,19 +286,30 @@ to = "Active"
 params = ["skeleton_node_count", "graph_snapshot_file_id", "uncertainty_axes"]
 hint = "Surveyor self-reports the skeleton is recorded plus the named uncertainty axes (ADR-006). World becomes active."
 
+[[action.triggers]]
+name = "start_requested_semantic_exploration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartSemanticExploration"
+guard = {type="bool_true",field="semantic_exploration_requested"}
+[action.triggers.resolve_target]
+type = "same_id"
+
 [[action]]
 name = "ResumeSeed"
 kind = "input"
-from = ["Seeding"]
+from = ["Seeding", "Failed"]
 to = "Seeding"
 params = []
-hint = "Self-heal: re-spawn the surveyor/bookmaker batch when Seeding did not receive SeedComplete. System principals only."
-effect = [{ type = "trigger", name = "seed_world" }]
+hint = "Explicitly continue saved research after an unfinished or failed attempt. Automatic terminal retries are bounded separately; Failed never retries itself. System principals only."
+effect = [{type="set_bool",var="research_monitor_unavailable",value=false},{ type = "increment", var = "research_attempt" }, { type = "trigger", name = "seed_world" }]
 
 [[action.triggers]]
 name = "seed_world"
 kind = "wasm"
 module = "seed_world"
+on_success = "ResearchSessionStarted"
 on_failure = "Fail"
 
 [action.triggers.config]
@@ -307,17 +373,31 @@ hint = "Callback after endpoint writers are spawned. Corridor proceeds per Endpo
 [[action]]
 name = "ResumeWorldCascade"
 kind = "input"
-from = ["Active"]
-to = "Active"
+from = ["Active", "RegisteringForecasts"]
 params = []
 hint = "Self-heal: re-run world aggregate when claims are settled but canonical_path_id is unset. Fires on the Active state_timeout."
-effect = [{ type = "trigger", name = "aggregate_costs_world_cascade" }]
+
+[[action.triggers]]
+name = "evaluate_world_after_recovery"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "EvaluateWorldCascade"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "EvaluateWorldCascade"
+kind = "input"
+from = ["Active", "RegisteringForecasts"]
+params = []
 
 [[action.triggers]]
 name = "aggregate_costs_world_cascade"
 kind = "wasm"
 module = "aggregate_costs"
-on_failure = "Fail"
+# A stale phase-fenced report must not fail newer exploration.
+# Host failures remain recorded and the world timer can retry.
 
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
@@ -325,19 +405,23 @@ temper_api_url = "{secret:temper_api_url}"
 [[action]]
 name = "PathsScored"
 kind = "input"
-from = ["Active"]
-params = ["canonical_path_id"]
-hint = "aggregate_costs classified all paths for this pass. Registers implied near-term forecasts."
-effect = [{ type = "trigger", name = "register_forecasts" }]
+from = ["Active", "RegisteringForecasts"]
+params = ["canonical_path_id", "exploration_phase", "expected_exploration_phase"]
+constraints = [{kind="param_equals_field",param="expected_exploration_phase",field="exploration_phase"}]
+hint = "The pass is evaluated. Publish its pending predictions before background deepening."
+effect = [{type="set_bool",var="first_pass_complete",value=true},{type="set_bool",var="forecast_registration_pending",value=true}]
 
 [[action.triggers]]
-name = "register_forecasts"
-kind = "wasm"
-module = "register_forecasts"
-on_failure = "Fail"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
+name = "start_requested_registration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
 
 
 [[action]]
@@ -475,7 +559,7 @@ hint = "Retire the world. Read-only thereafter."
 [[action]]
 name = "Fail"
 kind = "input"
-from = ["Created", "Seeding", "Active", "Updating"]
+from = ["Created", "Seeding", "Active", "Updating", "OpeningReplay", "RegisteringForecasts"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error."
@@ -491,3 +575,623 @@ assert = "no_further_transitions"
 name = "FailedIsFinal"
 when = ["Failed"]
 assert = "no_further_transitions"
+
+[[state]]
+name = "learning_mode"
+type = "string"
+initial = "observed"
+
+[[state]]
+name = "model_json"
+type = "string"
+initial = ""
+
+[[state]]
+name = "adopted_learning_run_id"
+type = "string"
+initial = ""
+
+[[action]]
+name = "ConfigureLearning"
+kind = "input"
+from = ["Created"]
+to = "Created"
+params = ["learning_mode"]
+
+[[action]]
+name = "OpenReplay"
+kind = "input"
+from = ["Created"]
+to = "OpeningReplay"
+params = ["learning_mode","domain","frontier_date","last_ingest_date"]
+
+[[action.triggers]]
+name = "replay_open"
+kind = "wasm"
+module = "replay_open"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ReplayOpened"
+kind = "input"
+from = ["OpeningReplay"]
+to = "Active"
+params = []
+
+[[state_timeout]]
+state="OpeningReplay"
+after_seconds=120
+on_timeout="Fail"
+params={error_message="Replay world initialization did not complete within 120 seconds."}
+
+# Multiple evaluated paths coalesce into one follow-up batch. World remains
+# the sole registration writer; no worker can overlap its immutable commit loop.
+[[state]]
+name = "forecast_registration_pending"
+type = "bool"
+initial = "false"
+
+[[state]]
+name = "registration_attempt"
+type = "counter"
+initial = "0"
+
+[[action]]
+name = "RegisterForecasts"
+kind = "input"
+from = ["Active", "RegisteringForecasts"]
+params = ["last_ingest_date"]
+effect = [{type="set_bool",var="forecast_registration_pending",value=true}]
+
+[[action.triggers]]
+name = "start_requested_registration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "RequestForecastRegistration"
+kind = "input"
+from = ["Active", "RegisteringForecasts"]
+effect = [{type="set_bool",var="forecast_registration_pending",value=true}]
+
+[[action.triggers]]
+name = "start_requested_registration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "StartForecastRegistration"
+kind = "input"
+from = ["Active"]
+to = "RegisteringForecasts"
+params = ["forecast_registration_key"]
+guard = "is_true forecast_registration_pending"
+effect = [{type="set_bool",var="forecast_registration_pending",value=false},{type="increment",var="registration_attempt"}]
+
+[[action.triggers]]
+name = "learning_register_forecasts"
+kind = "wasm"
+module = "register_forecasts"
+# Module errors return an attempt-fenced callback. Host traps are handled by
+# the state timeout: stale callback rejection must not compensate a newer batch.
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "AdoptModel"
+kind = "input"
+from = ["Active", "Updating", "RegisteringForecasts"]
+params = ["expected_model_json","model_json","adopted_learning_run_id","learning_mode"]
+
+[[action.constraints]]
+kind="param_equals_field"
+param="expected_model_json"
+field="model_json"
+[[action.constraints]]
+kind="param_equals_field"
+param="learning_mode"
+field="learning_mode"
+
+[[action.triggers]]
+name = "confirm_model_adoption"
+kind = "entity"
+principal = "system"
+target_entity = "LearningRun"
+target_action = "ConfirmAdoption"
+
+[action.triggers.resolve_target]
+type = "field"
+field = "adopted_learning_run_id"
+[action.triggers.params_from]
+
+# One durable pending registration; each committed Forecast advances the loop.
+
+[[state]]
+name = "forecast_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_registration_key"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_world_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_event_node_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_question"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_probability"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_base_probability"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_model_version"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_learning_run_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_previous_forecast_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_evidence_kind"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_resolve_by"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_market_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_engine_version"
+type = "string"
+initial = ""
+
+[[state]]
+name = "forecast_registered_at"
+type = "string"
+initial = ""
+
+# Candidate selection commits before the observed preregistration clock starts.
+[[action]]
+name = "RegistrationSnapshotPrepared"
+kind = "input"
+from = ["RegisteringForecasts"]
+params = ["registration_nodes_json","registration_model_json","forecast_learning_run_id","forecast_registered_at","learning_mode","expected_registration_attempt"]
+constraints = [{kind="param_equals_field",param="expected_registration_attempt",field="registration_attempt"}]
+[[action.triggers]]
+name = "commit_frozen_forecast_snapshot"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "CommitForecastSnapshot"
+[action.triggers.resolve_target]
+type = "same_id"
+[action.triggers.params_from]
+expected_registration_attempt = "registration_attempt"
+
+[[action]]
+name = "CommitForecastSnapshot"
+kind = "input"
+from = ["RegisteringForecasts"]
+params = ["expected_registration_attempt"]
+constraints = [{kind="param_equals_field",param="expected_registration_attempt",field="registration_attempt"}]
+[[action.triggers]]
+name = "prepare_frozen_forecasts"
+kind = "wasm"
+module = "register_forecasts"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ForecastPrepared"
+kind = "input"
+from = ["RegisteringForecasts"]
+to = "RegisteringForecasts"
+params = ["forecast_id", "forecast_registration_key", "forecast_world_id", "forecast_event_node_id", "forecast_question", "forecast_probability", "forecast_base_probability", "forecast_model_version", "forecast_learning_run_id", "forecast_previous_forecast_id", "forecast_evidence_kind", "forecast_resolve_by", "forecast_market_ref", "forecast_engine_version", "forecast_registered_at", "registration_model_json", "registration_nodes_json", "learning_mode", "expected_registration_attempt"]
+constraints = [{kind="param_nonempty",param="forecast_id"},{kind="param_equals_field",param="expected_registration_attempt",field="registration_attempt"}]
+
+[[action.triggers]]
+name = "commit_forecast_registration"
+kind = "entity"
+principal = "system"
+target_entity = "Forecast"
+target_action = "Register"
+[action.triggers.resolve_target]
+type = "create_if_missing"
+id_field = "forecast_id"
+[action.triggers.params_from]
+registration_key = "forecast_registration_key"
+world_id = "forecast_world_id"
+event_node_id = "forecast_event_node_id"
+question = "forecast_question"
+probability = "forecast_probability"
+base_probability = "forecast_base_probability"
+model_version = "forecast_model_version"
+learning_run_id = "forecast_learning_run_id"
+previous_forecast_id = "forecast_previous_forecast_id"
+evidence_kind = "forecast_evidence_kind"
+resolve_by = "forecast_resolve_by"
+market_ref = "forecast_market_ref"
+engine_version = "forecast_engine_version"
+registered_at = "forecast_registered_at"
+
+[[action]]
+name = "ForecastRegistered"
+kind = "input"
+from = ["RegisteringForecasts"]
+to = "RegisteringForecasts"
+params = ["registration_key"]
+constraints = [{kind="param_equals_field",param="registration_key",field="forecast_registration_key"}]
+
+[[action.triggers]]
+name = "prepare_next_forecast"
+kind = "wasm"
+module = "register_forecasts"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ForecastRegistrationComplete"
+kind = "input"
+from = ["RegisteringForecasts"]
+to = "Active"
+params = ["error_message", "learning_mode", "expected_registration_attempt"]
+constraints = [{kind="param_equals_field",param="expected_registration_attempt",field="registration_attempt"}]
+
+[[action.triggers]]
+name = "start_requested_registration"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action.triggers]]
+name = "consider_background_deepening"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "MaybeDeepen"
+guard = {type="all_of",guards=[{type="bool_false",field="forecast_registration_pending"},{type="bool_true",field="first_pass_complete"},{type="bool_false",field="deepening_started"}]}
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[state_timeout]]
+state = "RegisteringForecasts"
+after_seconds = 120
+on_timeout = "ForecastRegistrationTimedOut"
+reset_on = ["RegistrationSnapshotPrepared", "CommitForecastSnapshot", "ForecastPrepared", "ForecastRegistered"]
+params = {error_message="Forecast registration did not complete within 120 seconds."}
+
+# Frozen before the first Forecast.Register and retained throughout this batch.
+[[state]]
+name = "registration_model_json"
+type = "string"
+initial = ""
+
+[[action]]
+name = "ForecastRegistrationFailed"
+kind = "input"
+from = ["RegisteringForecasts"]
+to = "Active"
+params = ["error_message", "expected_registration_attempt"]
+hint = "Registration did not finish; inspect the error, correct the replay clock or retry. Existing revisions are retained."
+constraints = [{kind="param_equals_field",param="expected_registration_attempt",field="registration_attempt"}]
+
+
+[[action.triggers]]
+name = "start_queued_registration_after_recovery"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
+
+
+# The host's sequence-checked state timer interrupts a trapped batch.
+[[action]]
+name = "ForecastRegistrationTimedOut"
+kind = "input"
+from = ["RegisteringForecasts"]
+to = "Active"
+params = ["error_message"]
+
+[[action.triggers]]
+name = "start_queued_registration_after_recovery"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "StartForecastRegistration"
+to_state = "Active"
+guard = {type="bool_true", field="forecast_registration_pending"}
+params = {forecast_registration_key=""}
+[action.triggers.resolve_target]
+type = "same_id"
+
+
+[[state]]
+name = "first_pass_complete"
+type = "bool"
+initial = "false"
+
+[[state]]
+name = "exploration_phase"
+type = "string"
+initial = "first_pass"
+
+[[state]]
+name = "deepening_started"
+type = "bool"
+initial = "false"
+
+[[state]]
+name = "deepening_claim_ids"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "deepening_cursor"
+type = "string"
+initial = "0"
+
+[[state]]
+name = "deepening_claim_id"
+type = "string"
+initial = ""
+
+[[action]]
+name = "MaybeDeepen"
+kind = "input"
+from = ["Active"]
+guard = [{type="is_false",var="forecast_registration_pending"},{type="is_true",var="first_pass_complete"},{type="is_false",var="deepening_started"}]
+[[action.triggers]]
+name = "check_first_pass_predictions"
+kind = "wasm"
+module = "aggregate_costs"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "BeginDeepening"
+kind = "input"
+from = ["Active"]
+params = ["deepening_claim_ids","deepening_cursor","exploration_phase"]
+guard = [{type="is_false",var="forecast_registration_pending"},{type="is_true",var="first_pass_complete"},{type="is_false",var="deepening_started"}]
+effect = [{type="set_bool",var="deepening_started",value=true}]
+[[action.triggers]]
+name = "start_deepening"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "ContinueDeepening"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[action]]
+name = "ContinueDeepening"
+kind = "input"
+from = ["Active","RegisteringForecasts"]
+guard = "is_true deepening_started"
+[[action.triggers]]
+name = "prepare_background_claim"
+kind = "wasm"
+module = "aggregate_costs"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "DeepeningClaimPrepared"
+kind = "input"
+from = ["Active","RegisteringForecasts"]
+params = ["deepening_claim_id","deepening_cursor","expected_deepening_cursor"]
+guard = "is_true deepening_started"
+constraints = [{kind="param_nonempty",param="deepening_claim_id"},{kind="param_equals_field",param="expected_deepening_cursor",field="deepening_cursor"}]
+[[action.triggers]]
+name = "deepen_claim"
+kind = "entity"
+principal = "system"
+target_entity = "Claim"
+target_action = "BeginDeepening"
+params = {settled_route_id=""}
+[action.triggers.resolve_target]
+type = "field"
+field = "deepening_claim_id"
+[[action.triggers]]
+name = "next_deepening_claim"
+kind = "entity"
+principal = "system"
+target_entity = "World"
+target_action = "ContinueDeepening"
+[action.triggers.resolve_target]
+type = "same_id"
+
+[[state]]
+name = "registration_nodes_json"
+type = "string"
+initial = "[]"
+
+# Chosen before research so comparison runs have explicit evaluator provenance.
+[[state]]
+name = "semantic_evaluation_mode"
+type = "string"
+initial = "off"
+
+[[action]]
+name = "ConfigureSemanticEvaluation"
+kind = "input"
+from = ["Created"]
+to = "Created"
+params = ["semantic_evaluation_mode"]
+constraints = [{kind="param_nonempty",param="semantic_evaluation_mode"}]
+
+[[state]]
+name = "semantic_exploration_requested"
+type = "bool"
+initial = "false"
+
+[[action]]
+name = "RequestSemanticExploration"
+kind = "input"
+from = ["Created"]
+params = []
+effect = [{type="set_bool",var="semantic_exploration_requested",value=true}]
+
+[[action]]
+name = "StartSemanticExploration"
+kind = "input"
+from = ["Active"]
+params = []
+guard = "is_true semantic_exploration_requested"
+effect = [{type="spawn",entity_type="SemanticRun",entity_id_source="{uuid}",initial_action="Start",copy_fields=""},{type="set_bool",var="semantic_exploration_requested",value=false}]
+
+# Research terminal replies are not proof of the application's completion callback.
+[[action]]
+name = "CheckResearchSession"
+kind = "input"
+from = ["Seeding"]
+guard = "is_false research_monitor_unavailable"
+params = []
+[[action.triggers]]
+name = "seed_session"
+kind = "wasm"
+module = "seed_session"
+on_failure = "ResearchMonitorInvocationFailed"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ResearchPending"
+kind = "input"
+from = ["Seeding"]
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+effect = [{type="schedule",action="CheckResearchSession",delay_seconds=15}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+
+[[action]]
+name = "ResearchIncomplete"
+kind = "input"
+from = ["Seeding"]
+to = "Seeding"
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"},{name="research_session_attempt",type="string"}]
+effect = [{type="increment",var="research_attempt"},{type="trigger",name="seed_world"}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+[[action.triggers]]
+name = "seed_world"
+kind = "wasm"
+module = "seed_world"
+on_success = "ResearchSessionStarted"
+on_failure = "Fail"
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "ResearchFailed"
+kind = "input"
+from = ["Seeding"]
+to = "Failed"
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+
+# Losing observation is not evidence that the researcher failed.
+[[state]]
+name = "research_monitor_unavailable"
+type = "bool"
+initial = "false"
+
+[[action]]
+name = "ResearchMonitorUnavailable"
+kind = "input"
+from = ["Seeding"]
+params = [{name="expected_research_attempt",type="counter"},{name="expected_research_session_id",type="string"},{name="error_message",type="string"}]
+effect = [{type="set_bool",var="research_monitor_unavailable",value=true}]
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_attempt"
+field = "research_attempt"
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_research_session_id"
+field = "research_session_id"
+
+# Host denials/traps precede the guest's fenced callback; they only disable observation.
+[[action]]
+name = "ResearchMonitorInvocationFailed"
+kind = "input"
+from = ["Seeding"]
+params = ["error_message"]
+effect = [{type="set_bool",var="research_monitor_unavailable",value=true}]

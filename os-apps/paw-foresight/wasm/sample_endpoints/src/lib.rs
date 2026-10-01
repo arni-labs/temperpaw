@@ -29,7 +29,7 @@ fn tools_enabled(hindcast: bool) -> String {
 /// token spend grows linearly with writers, and each endpoint fans out into
 /// repairer and adversary sessions besides.
 fn endpoint_budget(raw: &str) -> usize {
-    raw.trim().parse::<usize>().unwrap_or(3).min(5)
+    raw.trim().parse::<usize>().unwrap_or(3).clamp(1, 5)
 }
 
 /// Parse the surveyor's named uncertainty axes (ADR-006): a JSON array of
@@ -200,9 +200,15 @@ fn endpoint_writer_prompt(
          - at least one in-world primary document (a filing, a review, a changelog).\n\
          Documents must contain specific dates, named actors, and numbers — vague futures \
          cannot be repaired.\n\n\
-         Save the whole bundle as ONE markdown file with temper.write, then self-report:\n\
+         Save the whole bundle as ONE markdown file with the temper.write tool — this is the \
+         ONLY way to create a FILE, and your workspace already exists. Do NOT create Files, \
+         Directories, or Workspaces yourself, and do NOT invent a file-creation API via \
+         temper.action — temper.write is the whole job. Call it exactly like this:\n\
+         result = temper.write(\"/bundle-{endpoint_id}.md\", \"<your full markdown bundle>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as bundle_file_id below, then self-report:\n\
          temper.action(\"Endpoints\", \"{endpoint_id}\", \"BundleWritten\", \
-         {{\"bundle_file_id\": \"<file-id-from-temper.write>\", \"summary\": \"<one line>\", \
+         {{\"bundle_file_id\": \"<result file_id>\", \"summary\": \"<one line>\", \
          \"author_agent_id\": \"{agent_id}\"}})\n\
          Then call temper.done(\"complete\"). The diversity gate, not you, starts repair."
     )
@@ -266,6 +272,7 @@ fn spawn_session(
     max_turns: &str,
     user_message: &str,
     workspace_id: &str,
+    latency_profile: &str,
 ) -> Result<String, String> {
     let agent_body = json!({ "Name": name, "Role": role });
     let agent_resp = ctx.http_call(
@@ -289,18 +296,44 @@ fn spawn_session(
         })
         .ok_or("Agent create returned no entity_id")?;
 
-    let session_resp = ctx.http_call(
-        "POST",
-        &format!("{api}/tdata/Sessions"),
-        headers,
-        &json!({ "agent_id": agent_id }).to_string(),
-    )?;
-    if session_resp.status < 200 || session_resp.status >= 300 {
-        return Err(format!(
-            "create Session for {name} failed (HTTP {})",
-            session_resp.status
-        ));
+    // Session create can fail transiently under load (host HTTP errors and 5xx).
+    // Retry before giving up; caller may treat failure as non-fatal (ResumeWriter).
+    let session_body = json!({ "agent_id": agent_id }).to_string();
+    let mut session_resp = None;
+    let mut last_err = String::new();
+    for attempt in 1..=5 {
+        match ctx.http_call(
+            "POST",
+            &format!("{api}/tdata/Sessions"),
+            headers,
+            &session_body,
+        ) {
+            Ok(resp) if (200..300).contains(&resp.status) => {
+                session_resp = Some(resp);
+                break;
+            }
+            Ok(resp) => {
+                last_err = format!("HTTP {}", resp.status);
+                ctx.log(
+                    "warn",
+                    &format!(
+                        "sample_endpoints: create Session for {name} attempt {attempt} {last_err}"
+                    ),
+                );
+            }
+            Err(e) => {
+                last_err = e.clone();
+                ctx.log(
+                    "warn",
+                    &format!(
+                        "sample_endpoints: create Session for {name} attempt {attempt} err: {e}"
+                    ),
+                );
+            }
+        }
     }
+    let session_resp = session_resp
+        .ok_or_else(|| format!("create Session for {name} failed after 5 attempts: {last_err}"))?;
     let session_id = serde_json::from_str::<Value>(&session_resp.body)
         .ok()
         .and_then(|v| {
@@ -317,6 +350,8 @@ fn spawn_session(
         "provider": provider,
         "agent_name": role,
         "tools_enabled": tools,
+        "tool_choice": "required",
+        "provider_latency_profile": latency_profile,
         "max_turns": max_turns,
         "user_message": message,
         "sandbox_url": "none",
@@ -355,10 +390,39 @@ const DIVERSITY_MIN_DISTANCE: f32 = 0.15;
 /// near-duplicate (bounds the loop; ADR-006).
 const GATE_MAX_ROUNDS: usize = 2;
 
-/// Chars of each bundle to embed. mxbai-embed-large caps at ~512 tokens, so the
-/// whole 30KB bundle cannot be embedded; the head (the dated retrospective that
-/// opens every bundle) is the diversity signal available pre-decomposition.
-const BUNDLE_HEAD_CHARS: usize = 1800;
+/// The gate's per-candidate verdict. Factored out of `phase_gate` so the policy
+/// is pure and testable without HTTP.
+#[derive(Debug, PartialEq, Eq)]
+enum GateVerdict {
+    /// Release the world into repair (distinct, or not yet measurable).
+    Release,
+    /// Near-duplicate, rounds remain — rewrite it on a divergence brief.
+    ReSteer,
+    /// Near-duplicate after the round cap — drop it.
+    Discard,
+}
+
+/// Decide a candidate world's fate. Two invariants beyond the obvious
+/// distinct→Release / duplicate→ReSteer→Discard ladder:
+///
+/// 1. A world we *cannot measure* (`has_summary == false`) is NEVER collapsed.
+///    The diversity decision keys on the SUMMARY (a world's thesis); the
+///    OData list projection can lag the authoritative summary that
+///    `BundleWritten` just committed. Gating on an absent summary used to fall
+///    back to the bundle-HEAD — a known false-collapse signal (two 0.25-distinct
+///    futures measured 0.11 on their shared dated-market heads, run-1c/ec4d2).
+///    So missing signal → Release, never Discard.
+/// 2. Discard only fires once the re-steer rounds are spent (`rounds >=
+///    GATE_MAX_ROUNDS`), so a persistent duplicate is bounded, not immortal.
+fn gate_decision(has_summary: bool, diverse: bool, rounds: usize) -> GateVerdict {
+    if !has_summary || diverse {
+        GateVerdict::Release
+    } else if rounds < GATE_MAX_ROUNDS {
+        GateVerdict::ReSteer
+    } else {
+        GateVerdict::Discard
+    }
+}
 
 fn row_str<'a>(row: &'a Value, pascal: &str) -> &'a str {
     fn snake(p: &str) -> String {
@@ -416,7 +480,10 @@ fn system_headers(ctx: &Context, principal_id: &str) -> Vec<(String, String)> {
         ("content-type".to_string(), "application/json".to_string()),
         ("x-tenant-id".to_string(), ctx.tenant.clone()),
         ("x-temper-principal-kind".to_string(), "agent".to_string()),
-        ("x-temper-principal-id".to_string(), principal_id.to_string()),
+        (
+            "x-temper-principal-id".to_string(),
+            principal_id.to_string(),
+        ),
         ("x-temper-agent-type".to_string(), "system".to_string()),
     ]
 }
@@ -473,6 +540,15 @@ fn dispatch(
         &body.to_string(),
     )?;
     if !(200..300).contains(&r.status) {
+        // Parallel BundleWritten barriers can dispatch GateDiversity twice; the
+        // second pass hits endpoints already in UnderRepair. Treat as success.
+        if r.status == 409 && action == "SubmitForRepair" && r.body.contains("UnderRepair") {
+            ctx.log(
+                "warn",
+                &format!("{set}.{action} on {id} no-op (already UnderRepair)"),
+            );
+            return Ok(());
+        }
         return Err(format!(
             "{set}.{action} on {id} failed (HTTP {}): {}",
             r.status,
@@ -510,7 +586,10 @@ fn fetch_embeddings(ctx: &Context, texts: &[String]) -> Option<Vec<Vec<f32>>> {
     if !(200..300).contains(&r.status) {
         ctx.log(
             "warn",
-            &format!("sample_endpoints: embedding endpoint {endpoint} HTTP {}", r.status),
+            &format!(
+                "sample_endpoints: embedding endpoint {endpoint} HTTP {}",
+                r.status
+            ),
         );
         return None;
     }
@@ -529,39 +608,6 @@ fn fetch_embeddings(ctx: &Context, texts: &[String]) -> Option<Vec<Vec<f32>>> {
     Some(vecs)
 }
 
-/// The first BUNDLE_HEAD_CHARS chars of an endpoint's bundle, at a char
-/// boundary — the diversity signal. Empty string if unreadable.
-fn fetch_bundle_head(
-    ctx: &Context,
-    api: &str,
-    headers: &[(String, String)],
-    bundle_file_id: &str,
-) -> String {
-    if bundle_file_id.is_empty() {
-        return String::new();
-    }
-    match ctx.http_call(
-        "GET",
-        &format!("{api}/tdata/Files('{bundle_file_id}')/$value"),
-        headers,
-        "",
-    ) {
-        Ok(r) if (200..300).contains(&r.status) => {
-            let body = r.body;
-            if body.len() <= BUNDLE_HEAD_CHARS {
-                body
-            } else {
-                let mut end = BUNDLE_HEAD_CHARS;
-                while !body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                body[..end].to_string()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
 /// The per-world context every writer session needs, gathered once.
 struct WriterCtx {
     world_id: String,
@@ -574,6 +620,7 @@ struct WriterCtx {
     provider: String,
     hindcast: bool,
     workspace_id: String,
+    latency_profile: String,
 }
 
 /// Build the writer context from a World's fields (already fetched), resolving
@@ -605,6 +652,12 @@ fn load_writer_ctx(
         model,
         provider,
         hindcast: f("HindcastMode") == "true",
+        latency_profile: if f("ExplorationPhase") == "first_pass" {
+            "foresight_first_pass"
+        } else {
+            "standard"
+        }
+        .into(),
         workspace_id,
     })
 }
@@ -645,6 +698,7 @@ fn spawn_writer(
         "50",
         &writer_msg,
         &wc.workspace_id,
+        &wc.latency_profile,
     )?;
     Ok(())
 }
@@ -661,35 +715,68 @@ fn phase_sample(ctx: &Context) -> Result<(), String> {
     // "fields" (snake) — wrap it so row_str finds them.
     let world_wrapped = json!({ "entity_id": world_id, "fields": world });
     let wc = load_writer_ctx(ctx, &api, &headers, &world_wrapped)?;
-    let budget = endpoint_budget(row_str(&world_wrapped, "EndpointBudget"));
+    let requested = endpoint_budget(row_str(&world_wrapped, "EndpointBudget"));
+    let budget = if row_str(&world_wrapped, "ExplorationPhase") == "first_pass" {
+        requested.min(3)
+    } else {
+        requested
+    };
     // ADR-006: the surveyor's named axes steer the anti-modal worlds so they
     // are distinct by construction; empty -> generic tail stances.
     let axes = parse_axes(row_str(&world_wrapped, "UncertaintyAxes"));
     ctx.log(
         "info",
-        &format!("sample_endpoints: sampling {budget} worlds across {} named axes", axes.len()),
+        &format!(
+            "sample_endpoints: sampling {budget} worlds across {} named axes",
+            axes.len()
+        ),
     );
+
+    let mut existing = list(
+        ctx,
+        &api,
+        &headers,
+        "Endpoints",
+        &format!("world_id eq '{world_id}'"),
+    )?;
+    existing.sort_by(|a, b| row_id(a).cmp(row_id(b)));
 
     for i in 0..budget {
         let stance = driver_stance(i, &axes);
-        let endpoint_resp = ctx.http_call(
-            "POST",
-            &format!("{api}/tdata/Endpoints"),
-            &headers,
-            &json!({
-                "world_id": world_id,
-                "driver_config": json!({ "stance": stance }).to_string(),
-            })
-            .to_string(),
-        )?;
-        if !(200..300).contains(&endpoint_resp.status) {
-            return Err(format!("create Endpoint {i} failed (HTTP {})", endpoint_resp.status));
-        }
-        let endpoint_id = serde_json::from_str::<Value>(&endpoint_resp.body)
-            .ok()
-            .and_then(|v| v.get("entity_id").and_then(|x| x.as_str()).map(str::to_string))
-            .ok_or("Endpoint create returned no entity_id")?;
-        spawn_writer(
+        let endpoint_id = if let Some(ep) = existing.get(i) {
+            let id = row_id(ep).to_string();
+            ctx.log(
+                "info",
+                &format!("sample_endpoints: reusing endpoint {id} slot {i}"),
+            );
+            id
+        } else {
+            let endpoint_resp = ctx.http_call(
+                "POST",
+                &format!("{api}/tdata/Endpoints"),
+                &headers,
+                &json!({
+                    "world_id": world_id,
+                    "driver_config": json!({ "stance": stance }).to_string(),
+                })
+                .to_string(),
+            )?;
+            if !(200..300).contains(&endpoint_resp.status) {
+                return Err(format!(
+                    "create Endpoint {i} failed (HTTP {})",
+                    endpoint_resp.status
+                ));
+            }
+            serde_json::from_str::<Value>(&endpoint_resp.body)
+                .ok()
+                .and_then(|v| {
+                    v.get("entity_id")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
+                .ok_or("Endpoint create returned no entity_id")?
+        };
+        if let Err(e) = spawn_writer(
             ctx,
             &api,
             &headers,
@@ -698,7 +785,15 @@ fn phase_sample(ctx: &Context) -> Result<(), String> {
             &stance,
             "",
             &format!("EndpointWriter-{world_id}-{i}"),
-        )?;
+        ) {
+            // Endpoint stays Sampled; ResumeWriter self-heal re-spawns (ADR-007).
+            ctx.log(
+                "warn",
+                &format!(
+                    "sample_endpoints: writer {i} spawn failed: {e} (ResumeWriter will retry)"
+                ),
+            );
+        }
     }
 
     set_success_result("EndpointsSampled", &json!({}));
@@ -713,14 +808,24 @@ fn phase_sample(ctx: &Context) -> Result<(), String> {
 /// still being written, fire the diversity gate (ADR-006).
 fn phase_barrier(ctx: &Context) -> Result<(), String> {
     let ep = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
-    let world_id = ep.get("world_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let world_id = ep
+        .get("world_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if world_id.is_empty() {
         return Err("BundleWritten on an endpoint without world_id".to_string());
     }
     let api = api_url(ctx);
     let headers = system_headers(ctx, &ctx.entity_id);
 
-    let endpoints = list(ctx, &api, &headers, "Endpoints", &format!("world_id eq '{world_id}'"))?;
+    let endpoints = list(
+        ctx,
+        &api,
+        &headers,
+        "Endpoints",
+        &format!("world_id eq '{world_id}'"),
+    )?;
     let mut pending = false; // a writer still running (Sampled)
     let mut written = 0usize;
     for e in &endpoints {
@@ -740,7 +845,9 @@ fn phase_barrier(ctx: &Context) -> Result<(), String> {
     if pending || written == 0 {
         ctx.log(
             "info",
-            &format!("sample_endpoints: barrier waiting (pending writers={pending}, written={written})"),
+            &format!(
+                "sample_endpoints: barrier waiting (pending writers={pending}, written={written})"
+            ),
         );
         set_success_result("", &json!({}));
         return Ok(());
@@ -762,7 +869,10 @@ fn phase_barrier(ctx: &Context) -> Result<(), String> {
     set_success_result("", &json!({}));
     ctx.log(
         "info",
-        &format!("sample_endpoints: all {written} worlds written; dispatched GateDiversity (round {})", rounds + 1),
+        &format!(
+            "sample_endpoints: all {written} worlds written; dispatched GateDiversity (round {})",
+            rounds + 1
+        ),
     );
     Ok(())
 }
@@ -775,112 +885,194 @@ fn phase_gate(ctx: &Context) -> Result<(), String> {
     let world_id = ctx.entity_id.clone();
     let api = api_url(ctx);
     let headers = system_headers(ctx, &world_id);
-    let rounds = world.get("gate_rounds").and_then(|v| v.as_str()).unwrap_or("0").parse::<usize>().unwrap_or(0);
+    let rounds = world
+        .get("gate_rounds")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0")
+        .parse::<usize>()
+        .unwrap_or(0);
 
-    let endpoints = list(ctx, &api, &headers, "Endpoints", &format!("world_id eq '{world_id}'"))?;
-    // Released worlds are fixed references; written worlds are this round's candidates.
-    let mut ref_heads: Vec<String> = Vec::new();
+    let endpoint_rows = list(
+        ctx,
+        &api,
+        &headers,
+        "Endpoints",
+        &format!("world_id eq '{world_id}'"),
+    )?;
+
+    // Re-read each endpoint AUTHORITATIVELY. The OData list projection lags the
+    // summary that BundleWritten just committed; the old gate read the lagging
+    // (empty) summary, fell back to the bundle-HEAD, and false-collapsed distinct
+    // futures (two 0.25-apart worlds measured 0.11 on their shared dated-market
+    // heads — run-1c/ec4d2). We now gate on the SUMMARY only, read from the
+    // entity actor's committed state. Released worlds (UnderRepair/Scored/
+    // Weighted) are fixed references; Written worlds are this round's candidates.
     let mut ref_summaries: Vec<String> = Vec::new();
     let mut cand_ids: Vec<String> = Vec::new();
-    let mut cand_heads: Vec<String> = Vec::new();
     let mut cand_summaries: Vec<String> = Vec::new();
-    for e in &endpoints {
-        let id = row_id(e).to_string();
-        let summary = row_str(e, "Summary").to_string();
-        // ADR-006 (calibrated on run-1d): gate on the SUMMARY — it carries a
-        // world's thesis/divergence (modal vs anti-modal-on-axis measured 0.298
-        // apart), while the bundle-HEAD's shared dated-market retrospective
-        // drowns a single-axis fork (the same pair measured only 0.111, a false
-        // collapse). Fall back to the bundle-head only when a summary is missing.
-        let text = if !summary.trim().is_empty() {
-            summary.clone()
-        } else {
-            fetch_bundle_head(ctx, &api, &headers, &row_str(e, "BundleFileId").to_string())
+    for row in &endpoint_rows {
+        let id = row_id(row).to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let entity = fetch_entity(ctx, &api, &headers, "Endpoints", &id);
+        let (status, summary) = match &entity {
+            Some(e) => (
+                row_status(e).to_string(),
+                row_str(e, "Summary").trim().to_string(),
+            ),
+            // Authoritative read failed: trust the list row's status and treat the
+            // summary as unmeasurable -> Release (never collapse on missing signal).
+            None => (row_status(row).to_string(), String::new()),
         };
-        match row_status(e) {
+        match status.as_str() {
             "Written" => {
                 cand_ids.push(id);
-                cand_heads.push(text);
                 cand_summaries.push(summary);
             }
             "UnderRepair" | "Scored" | "Weighted" => {
-                ref_heads.push(text);
-                ref_summaries.push(summary);
+                if !summary.is_empty() {
+                    ref_summaries.push(summary);
+                }
             }
             _ => {}
         }
     }
     if cand_ids.is_empty() {
-        ctx.log("info", "sample_endpoints: gate found no written worlds (already released); no-op");
+        ctx.log(
+            "info",
+            "sample_endpoints: gate found no written worlds (already released); no-op",
+        );
         set_success_result("", &json!({}));
         return Ok(());
     }
 
-    // Embed references + candidates in one batch.
-    let mut all = ref_heads.clone();
-    all.extend(cand_heads.clone());
-    let keep: Vec<bool> = match fetch_embeddings(ctx, &all) {
-        Some(vecs) => {
-            let ref_vecs = vecs[..ref_heads.len()].to_vec();
-            let cand_vecs = vecs[ref_heads.len()..].to_vec();
-            // For the re-steer brief: which kept/ref world each collapsed one is nearest.
-            let decisions = corridor_embed::select_diverse(&ref_vecs, &cand_vecs, DIVERSITY_MIN_DISTANCE);
-            // Log the round's pairwise floor for calibration.
-            ctx.log(
-                "info",
-                &format!(
-                    "sample_endpoints: gate round {rounds} — {} candidates, {} references, kept {}",
-                    cand_ids.len(),
-                    ref_heads.len(),
-                    decisions.iter().filter(|k| **k).count()
-                ),
-            );
-            // Stash vectors for nearest-sibling briefs.
-            // (kept candidates also become references as select_diverse walks.)
-            let _ = &cand_vecs;
-            decisions
+    // Only candidates with a readable summary are measured. Default diverse=true
+    // so an unmeasurable candidate (or a down embedder) is released, never
+    // collapsed.
+    let measurable: Vec<usize> = (0..cand_ids.len())
+        .filter(|&i| !cand_summaries[i].is_empty())
+        .collect();
+    let mut diverse = vec![true; cand_ids.len()];
+    if !measurable.is_empty() {
+        let mut batch = ref_summaries.clone();
+        for &i in &measurable {
+            batch.push(cand_summaries[i].clone());
         }
-        None => {
-            // No embedder: never wedge the pass — release everything, loudly.
-            ctx.log(
-                "warn",
-                "sample_endpoints: embedder unreachable; gate releasing all worlds undiverse-checked",
-            );
-            vec![true; cand_ids.len()]
-        }
-    };
-
-    for (i, keep_it) in keep.iter().enumerate() {
-        if *keep_it {
-            dispatch(ctx, &api, &headers, "Endpoints", &cand_ids[i], "SubmitForRepair", &json!({}))?;
-            ctx.log("info", &format!("sample_endpoints: gate released world {} into repair", cand_ids[i]));
-        } else if rounds < GATE_MAX_ROUNDS {
-            // Brief the rewrite on the kept world it most resembles.
-            let nearest_summary = ref_summaries
-                .iter()
-                .chain(cand_summaries.iter())
-                .find(|s| !s.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "another world being explored in parallel".to_string());
-            let brief = format!(
-                "Your future read too close to: \"{}\". Diverge on the load-bearing mechanism, not the wording.",
-                nearest_summary
-            );
-            dispatch(ctx, &api, &headers, "Endpoints", &cand_ids[i], "ReSteer", &json!({ "revision_brief": brief }))?;
-            ctx.log("info", &format!("sample_endpoints: gate re-steering collapsed world {} (round {rounds})", cand_ids[i]));
-        } else {
-            dispatch(
-                ctx,
-                &api,
-                &headers,
-                "Endpoints",
-                &cand_ids[i],
-                "Discard",
-                &json!({ "discard_reason": format!("diversity gate: still a near-duplicate after {GATE_MAX_ROUNDS} re-steer rounds") }),
-            )?;
-            ctx.log("info", &format!("sample_endpoints: gate discarded persistent near-duplicate {}", cand_ids[i]));
+        match fetch_embeddings(ctx, &batch) {
+            Some(vecs) => {
+                let ref_vecs = vecs[..ref_summaries.len()].to_vec();
+                let cand_vecs = vecs[ref_summaries.len()..].to_vec();
+                let decisions =
+                    corridor_embed::select_diverse(&ref_vecs, &cand_vecs, DIVERSITY_MIN_DISTANCE);
+                for (k, &i) in measurable.iter().enumerate() {
+                    diverse[i] = *decisions.get(k).unwrap_or(&true);
+                }
+            }
+            None => {
+                ctx.log(
+                    "warn",
+                    "sample_endpoints: embedder unreachable; gate releasing all worlds undiverse-checked",
+                );
+            }
         }
     }
+
+    let nearest_summary = ref_summaries
+        .iter()
+        .chain(cand_summaries.iter())
+        .find(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "another world being explored in parallel".to_string());
+    let mut released = 0usize;
+    for i in 0..cand_ids.len() {
+        let has_summary = !cand_summaries[i].is_empty();
+        match gate_decision(has_summary, diverse[i], rounds) {
+            GateVerdict::Release => {
+                let current = fetch_entity(ctx, &api, &headers, "Endpoints", &cand_ids[i])
+                    .map(|e| row_status(&e).to_string())
+                    .unwrap_or_default();
+                if current != "Written" {
+                    ctx.log(
+                        "info",
+                        &format!(
+                            "sample_endpoints: gate skip {} (status={current}, already handled)",
+                            cand_ids[i]
+                        ),
+                    );
+                    if matches!(current.as_str(), "UnderRepair" | "Scored" | "Weighted") {
+                        released += 1;
+                    }
+                    continue;
+                }
+                dispatch(
+                    ctx,
+                    &api,
+                    &headers,
+                    "Endpoints",
+                    &cand_ids[i],
+                    "SubmitForRepair",
+                    &json!({}),
+                )?;
+                ctx.log(
+                    "info",
+                    &format!(
+                        "sample_endpoints: gate released world {} into repair",
+                        cand_ids[i]
+                    ),
+                );
+                released += 1;
+            }
+            GateVerdict::ReSteer => {
+                let brief = format!(
+                    "Your future read too close to: \"{}\". Diverge on the load-bearing mechanism, not the wording.",
+                    nearest_summary
+                );
+                dispatch(
+                    ctx,
+                    &api,
+                    &headers,
+                    "Endpoints",
+                    &cand_ids[i],
+                    "ReSteer",
+                    &json!({ "revision_brief": brief }),
+                )?;
+                ctx.log(
+                    "info",
+                    &format!(
+                        "sample_endpoints: gate re-steering collapsed world {} (round {rounds})",
+                        cand_ids[i]
+                    ),
+                );
+            }
+            GateVerdict::Discard => {
+                dispatch(
+                    ctx,
+                    &api,
+                    &headers,
+                    "Endpoints",
+                    &cand_ids[i],
+                    "Discard",
+                    &json!({ "discard_reason": format!("diversity gate: still a near-duplicate after {GATE_MAX_ROUNDS} re-steer rounds") }),
+                )?;
+                ctx.log(
+                    "info",
+                    &format!(
+                        "sample_endpoints: gate discarded persistent near-duplicate {}",
+                        cand_ids[i]
+                    ),
+                );
+            }
+        }
+    }
+    ctx.log(
+        "info",
+        &format!(
+            "sample_endpoints: gate round {rounds} — {} candidates, {} references, released {released}",
+            cand_ids.len(),
+            ref_summaries.len()
+        ),
+    );
     set_success_result("", &json!({}));
     Ok(())
 }
@@ -906,7 +1098,7 @@ fn phase_resteer(ctx: &Context) -> Result<(), String> {
         .ok()
         .and_then(|v| v.get("stance").and_then(|s| s.as_str()).map(str::to_string))
         .unwrap_or_default();
-    let reason = if ctx.trigger_action == "ResumeWriter" {
+    let reason = if matches!(ctx.trigger_action.as_str(), "ResumeWriter" | "StartWriter") {
         "resume"
     } else {
         "resteer"
@@ -924,7 +1116,10 @@ fn phase_resteer(ctx: &Context) -> Result<(), String> {
     set_success_result("", &json!({}));
     ctx.log(
         "info",
-        &format!("sample_endpoints: {reason} writer for endpoint {}", ctx.entity_id),
+        &format!(
+            "sample_endpoints: {reason} writer for endpoint {}",
+            ctx.entity_id
+        ),
     );
     Ok(())
 }
@@ -936,14 +1131,17 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let ctx = Context::from_host()?;
         match ctx.trigger_action.as_str() {
             "SampleEndpoints" => phase_sample(&ctx),
-            "BundleWritten" => phase_barrier(&ctx),
+            "BundleWritten" | "CheckDiversityBarrier" => phase_barrier(&ctx),
             "GateDiversity" => phase_gate(&ctx),
             // ReSteer (gate-dispatched) and ResumeWriter (the Sampled
             // state_timeout self-heal) share one path: re-spawn the writer with
             // the endpoint's stance + any revision_brief (ADR-0050/ADR-007).
-            "ReSteer" | "ResumeWriter" => phase_resteer(&ctx),
+            "ReSteer" | "ResumeWriter" | "StartWriter" => phase_resteer(&ctx),
             other => {
-                ctx.log("warn", &format!("sample_endpoints: unexpected trigger {other}; nothing to do"));
+                ctx.log(
+                    "warn",
+                    &format!("sample_endpoints: unexpected trigger {other}; nothing to do"),
+                );
                 set_success_result("", &json!({}));
                 Ok(())
             }
@@ -1006,7 +1204,10 @@ mod tests {
         // ADR-006: each anti-modal slot inverts a DIFFERENT named axis, so the
         // worlds are distinct by construction (not generic converging stances).
         let axes = vec![
-            ("capability slope".to_string(), "incremental gains".to_string()),
+            (
+                "capability slope".to_string(),
+                "incremental gains".to_string(),
+            ),
             ("regulation".to_string(), "light-touch".to_string()),
         ];
         assert!(driver_stance(0, &axes).starts_with("modal:"));
@@ -1026,11 +1227,48 @@ mod tests {
     }
 
     #[test]
+    fn gate_never_collapses_a_world_it_cannot_measure() {
+        // The bug behind run-1c/ec4d2: the gate read the SUMMARY from the lagging
+        // list projection, found it empty, fell back to the bundle-HEAD (a false
+        // 0.11 collapse on shared dated-market heads), and discarded a genuinely
+        // distinct future. A world with no readable summary must be RELEASED, not
+        // collapsed — even at the round cap.
+        assert_eq!(gate_decision(false, false, 0), GateVerdict::Release);
+        assert_eq!(
+            gate_decision(false, false, GATE_MAX_ROUNDS),
+            GateVerdict::Release
+        );
+        assert_eq!(gate_decision(false, true, 0), GateVerdict::Release);
+    }
+
+    #[test]
+    fn gate_releases_distinct_resteers_then_discards_duplicates() {
+        // Distinct world -> straight into repair.
+        assert_eq!(gate_decision(true, true, 0), GateVerdict::Release);
+        assert_eq!(
+            gate_decision(true, true, GATE_MAX_ROUNDS),
+            GateVerdict::Release
+        );
+        // Near-duplicate with rounds left -> re-steer.
+        assert_eq!(gate_decision(true, false, 0), GateVerdict::ReSteer);
+        assert_eq!(
+            gate_decision(true, false, GATE_MAX_ROUNDS - 1),
+            GateVerdict::ReSteer
+        );
+        // Near-duplicate past the round cap -> discard (the loop is bounded).
+        assert_eq!(
+            gate_decision(true, false, GATE_MAX_ROUNDS),
+            GateVerdict::Discard
+        );
+    }
+
+    #[test]
     fn budget_defaults_to_three_and_caps_at_five() {
         assert_eq!(endpoint_budget(""), 3);
         assert_eq!(endpoint_budget("junk"), 3);
         assert_eq!(endpoint_budget("-1"), 3);
         assert_eq!(endpoint_budget("1"), 1);
+        assert_eq!(endpoint_budget("0"), 1);
         assert_eq!(endpoint_budget("5"), 5);
         assert_eq!(endpoint_budget("10"), 5);
     }
@@ -1054,10 +1292,83 @@ mod tests {
     }
 
     #[test]
+    fn writer_artifact_paths_are_endpoint_scoped_and_retry_stable() {
+        let prompt = |endpoint| {
+            endpoint_writer_prompt(
+                "world-1",
+                endpoint,
+                "writer-1",
+                "Test",
+                "AI",
+                "2026-12-31",
+                "modal",
+                "corpus",
+                "drivers",
+                "",
+                false,
+            )
+        };
+        let path = |text: String| {
+            text.split("temper.write(\"")
+                .nth(1)
+                .expect("write recipe")
+                .split('"')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let first = path(prompt("endpoint-1"));
+        let second = path(prompt("endpoint-2"));
+        assert_ne!(
+            first, second,
+            "parallel writers share a world workspace, so their artifact paths must differ"
+        );
+        assert_eq!(
+            first,
+            path(prompt("endpoint-1")),
+            "retry must reuse only its own artifact path"
+        );
+    }
+
+    #[test]
+    fn writer_prompt_gives_explicit_file_write_recipe() {
+        // Same class of bug as the adversary wedge: an under-specified file-write
+        // instruction lets a session reverse-engineer file creation through
+        // temper.action against Directories, trip a Cedar gate, and loop in
+        // WaitingForApproval. The prompt must show the exact temper.write call,
+        // name the file_id return field, forbid improvising file/dir creation,
+        // and never leave the bare placeholder behind.
+        let p = writer_prompt(&driver_stance(0, &[]), false);
+        assert!(
+            p.contains("temper.write(\"/bundle-e-1.md\""),
+            "writer prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "writer prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "writer prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone — the recipe captures result[\"file_id\"]"
+        );
+    }
+
+    #[test]
     fn re_steer_brief_demands_divergence_not_rewording() {
         let p = endpoint_writer_prompt(
-            "w-1", "e-1", "a-1", "Test", "ai coding tools", "2026-12-11",
-            &driver_stance(1, &[]), "", "",
+            "w-1",
+            "e-1",
+            "a-1",
+            "Test",
+            "ai coding tools",
+            "2026-12-11",
+            &driver_stance(1, &[]),
+            "",
+            "",
             "Your future read too close to: \"agents replace junior devs\".",
             false,
         );

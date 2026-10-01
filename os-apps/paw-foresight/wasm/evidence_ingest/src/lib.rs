@@ -115,7 +115,10 @@ fn transitive_dependents(
         std::collections::BTreeMap::new();
     for (node, deps) in depends_on {
         for d in deps {
-            dependents_of.entry(d.as_str()).or_default().push(node.as_str());
+            dependents_of
+                .entry(d.as_str())
+                .or_default()
+                .push(node.as_str());
         }
     }
     let mut hit: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -421,7 +424,9 @@ fn ingest(ctx: &Context) -> Result<(), String> {
             Err(e) => {
                 ctx.log(
                     "warn",
-                    &format!("evidence_ingest: market fetch for node {node_id} failed: {e}; skipping"),
+                    &format!(
+                        "evidence_ingest: market fetch for node {node_id} failed: {e}; skipping"
+                    ),
                 );
                 continue;
             }
@@ -521,7 +526,10 @@ fn ingest(ctx: &Context) -> Result<(), String> {
             Ok(r) if (200..300).contains(&r.status) => {
                 ctx.log(
                     "info",
-                    &format!("evidence_ingest: node {node_id} resolved {outcome} at price {:.2}", fp.price),
+                    &format!(
+                        "evidence_ingest: node {node_id} resolved {outcome} at price {:.2}",
+                        fp.price
+                    ),
                 );
                 resolved.push((node_id.clone(), outcome, fp.refs.clone()));
             }
@@ -559,8 +567,7 @@ fn ingest(ctx: &Context) -> Result<(), String> {
             }
             let forecast_id = row_id(forecast).to_string();
             let node_id = str_of("EventNodeId");
-            let Some((_, outcome, refs)) = resolved.iter().find(|(id, _, _)| id == node_id)
-            else {
+            let Some((_, outcome, refs)) = resolved.iter().find(|(id, _, _)| id == node_id) else {
                 continue;
             };
             let Ok(probability) = str_of("Probability").trim().parse::<f64>() else {
@@ -574,7 +581,17 @@ fn ingest(ctx: &Context) -> Result<(), String> {
                 continue;
             };
             let resolve_url = format!("{api}/tdata/Forecasts('{forecast_id}')/TemperPaw.Resolve");
-            let resolve_body = json!({ "outcome": outcome, "outcome_source_refs": refs });
+            let resolution_time = if as_of.len() == 10 {
+                format!("{as_of}T23:59:59Z")
+            } else {
+                as_of.clone()
+            };
+            let resolve_body = json!({
+                "outcome": outcome, "outcome_source_refs": refs,
+                "resolved_at": resolution_time,
+                // The existing resolver infers from price, not an official settlement.
+                "outcome_evidence_kind": "proxy",
+            });
             match ctx.http_call("POST", &resolve_url, &headers, &resolve_body.to_string()) {
                 Ok(r) if (200..300).contains(&r.status) => {}
                 Ok(r) => {
@@ -633,23 +650,103 @@ fn ingest(ctx: &Context) -> Result<(), String> {
     let mut claim_flipped = false;
     if !dead.is_empty() {
         // The world's node graph (edges were declared during repair).
-        let nodes_url =
-            format!("{api}/tdata/EventNodes?$filter=world_id eq '{world_id}'");
-        if let Ok(r) = ctx.http_call("GET", &nodes_url, &headers, "") {
-            if (200..300).contains(&r.status) {
-                let body: Value = serde_json::from_str(&r.body).unwrap_or(json!({}));
-                let rows = body
+        let nodes_url = format!("{api}/tdata/EventNodes?$filter=world_id eq '{world_id}'");
+        if let Ok(r) = ctx.http_call("GET", &nodes_url, &headers, "")
+            && (200..300).contains(&r.status)
+        {
+            let body: Value = serde_json::from_str(&r.body).unwrap_or(json!({}));
+            let rows = body
+                .get("value")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut depends_on: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            let mut live_status: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for row in &rows {
+                let id = row_id(row).to_string();
+                let deps: Vec<String> = Some(row_str(row, "Edges"))
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .and_then(|v| v.as_array().cloned())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                live_status.insert(id.clone(), row_status(row).to_string());
+                depends_on.insert(id, deps);
+            }
+            let invalidated = transitive_dependents(&depends_on, &dead);
+            for node_id in &invalidated {
+                if !matches!(
+                    live_status.get(node_id).map(String::as_str),
+                    Some("Proposed") | Some("Confirmed")
+                ) {
+                    continue;
+                }
+                let retire_url = format!("{api}/tdata/EventNodes('{node_id}')/TemperPaw.Retire");
+                let body = json!({
+                    "retire_reason": format!(
+                        "invalidated: transitively depends on a node that resolved no ({})",
+                        dead.join(", ")
+                    )
+                });
+                match ctx.http_call("POST", &retire_url, &headers, &body.to_string()) {
+                    Ok(r) if (200..300).contains(&r.status) => ctx.log(
+                        "info",
+                        &format!(
+                            "evidence_ingest: node {node_id} invalidated (upstream resolved no)"
+                        ),
+                    ),
+                    Ok(r) => ctx.log(
+                        "warn",
+                        &format!(
+                            "evidence_ingest: Retire on {node_id} failed (HTTP {})",
+                            r.status
+                        ),
+                    ),
+                    Err(e) => ctx.log(
+                        "warn",
+                        &format!("evidence_ingest: Retire on {node_id} failed: {e}"),
+                    ),
+                }
+            }
+
+            // Re-price settled claims whose settled route requires a dead
+            // or invalidated node.
+            let mut all_dead: Vec<String> = dead.clone();
+            all_dead.extend(invalidated.iter().cloned());
+            let claims_url = format!("{api}/tdata/Claims?$filter=world_id eq '{world_id}'");
+            if let Ok(cr) = ctx.http_call("GET", &claims_url, &headers, "")
+                && (200..300).contains(&cr.status)
+            {
+                let cbody: Value = serde_json::from_str(&cr.body).unwrap_or(json!({}));
+                let crows = cbody
                     .get("value")
                     .and_then(|v| v.as_array())
                     .cloned()
                     .unwrap_or_default();
-                let mut depends_on: std::collections::BTreeMap<String, Vec<String>> =
-                    std::collections::BTreeMap::new();
-                let mut live_status: std::collections::BTreeMap<String, String> =
-                    std::collections::BTreeMap::new();
-                for row in &rows {
-                    let id = row_id(row).to_string();
-                    let deps: Vec<String> = Some(row_str(row, "Edges"))
+                for c in &crows {
+                    if row_status(c) != "Settled" {
+                        continue;
+                    }
+                    let claim_id = row_id(c).to_string();
+                    let route_id = row_str(c, "SettledRouteId").to_string();
+                    if route_id.is_empty() {
+                        continue;
+                    }
+                    let purl = format!("{api}/tdata/Paths('{route_id}')");
+                    let Ok(pr) = ctx.http_call("GET", &purl, &headers, "") else {
+                        continue;
+                    };
+                    if !(200..300).contains(&pr.status) {
+                        continue;
+                    }
+                    let path: Value = serde_json::from_str(&pr.body).unwrap_or(json!({}));
+                    let required: Vec<String> = Some(row_str(&path, "RequiredNodeIds"))
                         .filter(|s| !s.is_empty())
                         .and_then(|s| serde_json::from_str::<Value>(s).ok())
                         .and_then(|v| v.as_array().cloned())
@@ -659,136 +756,43 @@ fn ingest(ctx: &Context) -> Result<(), String> {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    live_status.insert(id.clone(), row_status(row).to_string());
-                    depends_on.insert(id, deps);
-                }
-                let invalidated = transitive_dependents(&depends_on, &dead);
-                for node_id in &invalidated {
-                    if !matches!(
-                        live_status.get(node_id).map(String::as_str),
-                        Some("Proposed") | Some("Confirmed")
-                    ) {
+                    let dead_required = required.iter().filter(|r| all_dead.contains(r)).count();
+                    if dead_required == 0 {
                         continue;
                     }
-                    let retire_url =
-                        format!("{api}/tdata/EventNodes('{node_id}')/TemperPaw.Retire");
+                    let old_cost = row_str(c, "BestRouteCost")
+                        .parse::<f64>()
+                        .unwrap_or(f64::MAX);
+                    let old_class = row_str(c, "Classification").to_string();
+                    let (new_cost, new_class) = repriced(old_cost, dead_required);
+                    let reprice_url = format!("{api}/tdata/Claims('{claim_id}')/TemperPaw.Reprice");
                     let body = json!({
-                        "retire_reason": format!(
-                            "invalidated: transitively depends on a node that resolved no ({})",
-                            dead.join(", ")
-                        )
+                        "best_route_cost": format!("{:.2}", new_cost),
+                        "classification": new_class,
                     });
-                    match ctx.http_call("POST", &retire_url, &headers, &body.to_string()) {
-                        Ok(r) if (200..300).contains(&r.status) => ctx.log(
-                            "info",
-                            &format!("evidence_ingest: node {node_id} invalidated (upstream resolved no)"),
-                        ),
+                    match ctx.http_call("POST", &reprice_url, &headers, &body.to_string()) {
+                        Ok(r) if (200..300).contains(&r.status) => {
+                            ctx.log(
+                                        "info",
+                                        &format!(
+                                            "evidence_ingest: claim {claim_id} repriced {old_cost:.2} -> {new_cost:.2} ({new_class}); {dead_required} required node(s) dead"
+                                        ),
+                                    );
+                            if new_class != old_class {
+                                claim_flipped = true;
+                            }
+                        }
                         Ok(r) => ctx.log(
                             "warn",
                             &format!(
-                                "evidence_ingest: Retire on {node_id} failed (HTTP {})",
+                                "evidence_ingest: Reprice on claim {claim_id} failed (HTTP {})",
                                 r.status
                             ),
                         ),
                         Err(e) => ctx.log(
                             "warn",
-                            &format!("evidence_ingest: Retire on {node_id} failed: {e}"),
+                            &format!("evidence_ingest: Reprice on claim {claim_id} failed: {e}"),
                         ),
-                    }
-                }
-
-                // Re-price settled claims whose settled route requires a dead
-                // or invalidated node.
-                let mut all_dead: Vec<String> = dead.clone();
-                all_dead.extend(invalidated.iter().cloned());
-                let claims_url =
-                    format!("{api}/tdata/Claims?$filter=world_id eq '{world_id}'");
-                if let Ok(cr) = ctx.http_call("GET", &claims_url, &headers, "") {
-                    if (200..300).contains(&cr.status) {
-                        let cbody: Value =
-                            serde_json::from_str(&cr.body).unwrap_or(json!({}));
-                        let crows = cbody
-                            .get("value")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        for c in &crows {
-                            if row_status(c) != "Settled" {
-                                continue;
-                            }
-                            let claim_id = row_id(c).to_string();
-                            let route_id = row_str(c, "SettledRouteId").to_string();
-                            if route_id.is_empty() {
-                                continue;
-                            }
-                            let purl = format!("{api}/tdata/Paths('{route_id}')");
-                            let Ok(pr) = ctx.http_call("GET", &purl, &headers, "") else {
-                                continue;
-                            };
-                            if !(200..300).contains(&pr.status) {
-                                continue;
-                            }
-                            let path: Value =
-                                serde_json::from_str(&pr.body).unwrap_or(json!({}));
-                            let required: Vec<String> = Some(row_str(&path, "RequiredNodeIds"))
-                                .filter(|s| !s.is_empty())
-                                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                                .and_then(|v| v.as_array().cloned())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|x| x.as_str().map(str::to_string))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let dead_required = required
-                                .iter()
-                                .filter(|r| all_dead.contains(r))
-                                .count();
-                            if dead_required == 0 {
-                                continue;
-                            }
-                            let old_cost = row_str(c, "BestRouteCost")
-                                .parse::<f64>()
-                                .unwrap_or(f64::MAX);
-                            let old_class = row_str(c, "Classification").to_string();
-                            let (new_cost, new_class) = repriced(old_cost, dead_required);
-                            let reprice_url = format!(
-                                "{api}/tdata/Claims('{claim_id}')/TemperPaw.Reprice"
-                            );
-                            let body = json!({
-                                "best_route_cost": format!("{:.2}", new_cost),
-                                "classification": new_class,
-                            });
-                            match ctx.http_call("POST", &reprice_url, &headers, &body.to_string())
-                            {
-                                Ok(r) if (200..300).contains(&r.status) => {
-                                    ctx.log(
-                                        "info",
-                                        &format!(
-                                            "evidence_ingest: claim {claim_id} repriced {} -> {} ({new_class}); {dead_required} required node(s) dead",
-                                            format!("{:.2}", old_cost),
-                                            format!("{:.2}", new_cost)
-                                        ),
-                                    );
-                                    if new_class != old_class {
-                                        claim_flipped = true;
-                                    }
-                                }
-                                Ok(r) => ctx.log(
-                                    "warn",
-                                    &format!(
-                                        "evidence_ingest: Reprice on claim {claim_id} failed (HTTP {})",
-                                        r.status
-                                    ),
-                                ),
-                                Err(e) => ctx.log(
-                                    "warn",
-                                    &format!(
-                                        "evidence_ingest: Reprice on claim {claim_id} failed: {e}"
-                                    ),
-                                ),
-                            }
-                        }
                     }
                 }
             }
@@ -992,5 +996,4 @@ mod tests {
         assert_eq!(row_status(&pascal), "Tail");
         assert_eq!(row_str(&pascal, "RepairCost"), "50.00");
     }
-
 }

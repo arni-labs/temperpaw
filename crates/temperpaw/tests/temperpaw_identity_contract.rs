@@ -388,11 +388,52 @@ fn dockerfile_prunes_wasm_build_outputs_before_runtime_copy() {
 fn app_required_wasm_build_scripts_publish_module_local_artifacts() {
     let root = repo_root();
 
-    for (module, script_path) in [
-        ("blob_adapter", "os-apps/paw-fs/wasm/blob_adapter/build.sh"),
-        ("workspace_fs", "os-apps/paw-fs/wasm/workspace_fs/build.sh"),
-    ] {
-        let script = fs::read_to_string(root.join(script_path))
+    let invokes_aggregate = |source: &str, docker: bool| {
+        source.lines().any(|line| {
+            let line = line.trim().trim_end_matches('\\').trim_end();
+            if docker {
+                let command = line
+                    .strip_prefix("&& ")
+                    .or_else(|| line.strip_prefix("RUN "));
+                command.is_some_and(|command| {
+                    command.split_whitespace().eq([
+                        "cd",
+                        "/app/os-apps/paw-fs/wasm",
+                        "&&",
+                        "bash",
+                        "build.sh",
+                    ])
+                })
+            } else {
+                line == "os-apps/paw-fs/wasm/build.sh"
+            }
+        })
+    };
+    for (path, docker) in [("Dockerfile", true), (".github/workflows/ci.yml", false)] {
+        let source = fs::read_to_string(root.join(path)).unwrap();
+        assert!(
+            invokes_aggregate(&source, docker),
+            "{path} must invoke the paw-fs aggregate builder"
+        );
+        for replacement in ["os-apps/paw-fs/wasm/blob_adapter", "# removed aggregate"] {
+            let mutant = source.replace("os-apps/paw-fs/wasm", replacement);
+            assert!(
+                !invokes_aggregate(&mutant, docker),
+                "{path} caller mutation escaped"
+            );
+        }
+    }
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("os-apps/paw-fs/app.toml")).unwrap()).unwrap();
+    let modules = manifest["wasm_modules"].as_array().unwrap();
+    assert!(!modules.is_empty());
+    for entry in modules {
+        if entry["criticality"].as_str() != Some("app-required") {
+            continue;
+        }
+        let module = entry["name"].as_str().unwrap();
+        let script_path = format!("os-apps/paw-fs/wasm/{module}/build.sh");
+        let script = fs::read_to_string(root.join(&script_path))
             .unwrap_or_else(|err| panic!("failed to read {script_path}: {err}"));
         assert!(
             script.contains(&format!("{module}.wasm")),

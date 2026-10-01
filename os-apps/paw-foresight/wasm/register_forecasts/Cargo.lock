@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "foresight-learning-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -44,6 +52,7 @@ name = "register-forecasts"
 version = "0.1.0"
 dependencies = [
  "corridor-embed",
+ "foresight-learning-core",
  "serde_json",
  "temper-wasm-sdk",
 ]

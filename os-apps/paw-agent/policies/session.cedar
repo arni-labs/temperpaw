@@ -151,3 +151,7 @@ permit(
   context.parent_session_id == principal.id ||
   principal == resource
 };
+
+// Only declared system entries may launch bounded calls or replay their callbacks.
+permit(principal, action in [Action::"CallProviderStandard", Action::"CallProviderForesight", Action::"CallProviderForesightRetry", Action::"RetryForesightProvider", Action::"ForesightProviderFailed", Action::"ForesightProviderRetryFailed", Action::"ForesightProviderResponseReady", Action::"ForesightProviderAuthExpired"], resource is Session) when { principal.agent_type == "system" };
+forbid(principal, action in [Action::"CallProviderStandard", Action::"CallProviderForesight", Action::"CallProviderForesightRetry", Action::"RetryForesightProvider", Action::"ForesightProviderFailed", Action::"ForesightProviderRetryFailed", Action::"ForesightProviderResponseReady", Action::"ForesightProviderAuthExpired"], resource is Session) unless { principal is Agent && principal.agent_type == "system" };

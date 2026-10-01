@@ -646,6 +646,66 @@ pub fn sandbox_health_check(ctx: &Context, handle: &SandboxHandle) -> Result<boo
     result
 }
 
+/// Destroy a sandbox via the provider's control plane. Best-effort by
+/// contract: callers releasing compute on session teardown must not fail the
+/// terminal transition over a destroy error — surface it in the Result and
+/// let the caller log it.
+pub fn sandbox_destroy(ctx: &Context, handle: &SandboxHandle) -> Result<(), String> {
+    let api_key = resolve_sandbox_api_key(ctx, &handle.provider)?;
+    let result = match handle.provider.as_str() {
+        "tensorlake" => {
+            let url = format!(
+                "https://api.tensorlake.ai/sandboxes/{}",
+                handle.sandbox_id
+            );
+            let resp = ctx.http_call("DELETE", &url, &bearer_headers(&api_key), "")?;
+            // 404 means it already expired or was deleted — released either way.
+            if (200..300).contains(&resp.status) || resp.status == 404 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "tensorlake sandbox delete returned HTTP {}: {}",
+                    resp.status,
+                    &resp.body[..resp.body.len().min(200)]
+                ))
+            }
+        }
+        "modal" => {
+            let base = modal_base_url(ctx)?;
+            let url = modal_url(&base, "terminate", &api_key, "");
+            let body = json!({ "sandbox_id": handle.sandbox_id });
+            let resp = ctx.http_call(
+                "POST",
+                &url,
+                &[("content-type".to_string(), "application/json".to_string())],
+                &body.to_string(),
+            )?;
+            if (200..300).contains(&resp.status) || resp.status == 404 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "modal sandbox terminate returned HTTP {}: {}",
+                    resp.status,
+                    &resp.body[..resp.body.len().min(200)]
+                ))
+            }
+        }
+        other => Err(format!("unsupported sandbox provider: {other}")),
+    };
+    let outcome = if result.is_ok() { "success" } else { "error" };
+    log_sandbox_observability(
+        ctx,
+        &handle.provider,
+        "destroy",
+        outcome,
+        &handle.sandbox_id,
+        None,
+        None,
+        "",
+    );
+    result
+}
+
 // ---------------------------------------------------------------------------
 // File I/O
 // ---------------------------------------------------------------------------

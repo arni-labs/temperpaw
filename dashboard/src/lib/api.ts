@@ -5,7 +5,6 @@ const BASE = ''; // relative — proxied by Vite in dev, served by tower-http in
 
 // Default headers for all OData requests.
 const HEADERS: Record<string, string> = {
-  'x-tenant-id': 'default',
   'x-temper-principal-kind': 'human',
   'x-temper-principal-id': 'dashboard'
 };
@@ -124,7 +123,7 @@ export async function postEntityAction(
     body: JSON.stringify(body)
   });
   if (!res.ok) {
-    throw new Error(`OData action failed: ${res.status} ${res.statusText}`);
+    throw Object.assign(new Error(`OData action failed: ${res.status} ${res.statusText}`), { status: res.status });
   }
   const raw = await res.json().catch(() => ({}));
   return typeof raw === 'object' && raw !== null ? flattenEntity(raw as Record<string, unknown>) : {};
