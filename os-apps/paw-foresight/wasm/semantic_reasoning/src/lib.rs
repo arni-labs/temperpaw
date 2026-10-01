@@ -330,6 +330,11 @@ fn setup(ctx: &Context) -> Result<(), String> {
             "Scope output contract (scope_review and scope_disposition are distinct judgments): {}",
             serde_json::json!({"scope":scope::contract(),"baseline":outlook::baseline_contract()})
         )
+    } else if phase == "explore" {
+        format!(
+            "If research_evidence adds any typed finding, also return a reconciled baseline and current scope_review under these exact contracts: {}. Incorporate what was actually learned, revise now-stale unknowns or limitations, and retain unresolved qualifications. Existing evidence uses supplied ref_ IDs; new findings may use same-response research_evidence local IDs. This is present evidence reconciliation, not proof that future hypotheses or all coverage gaps are resolved. Leads alone do not require a refresh. The engine retains prior summaries as history; do not rewrite source records.",
+            json!({"baseline":outlook::baseline_contract(),"scope":scope::contract()})
+        )
     } else {
         String::new()
     };

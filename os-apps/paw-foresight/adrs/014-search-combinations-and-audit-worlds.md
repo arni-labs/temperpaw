@@ -125,3 +125,9 @@ Actual-WASM replay of the saved second living research output removes 32 old
 ranking tasks while retaining 12 new ranking tasks and all temporal/support/
 probability refreshes. Old artifacts fail the same provenance check. The recorded
 25-batch counterfactual is not a promised live saving or proof of richer futures.
+
+### Reconcile later research with the current baseline
+
+Ordinary exploration that adds typed findings returns the current baseline and scope review in the same response. The consumer resolves existing aliases against the pre-expansion catalog and new local source references against their round-qualified identities, then validates the summaries against the candidate snapshot before accepting any nodes. Missing or invalid summaries use the existing bounded response correction; rejected findings remain unaccepted. Leads-only batches do not require a rewrite.
+
+`baseline_history` retains each predecessor baseline and scope review, accepted replacement, source Session, round and added finding identities. The original scope-repair receipt remains historical; an updated summary does not certify that gaps are resolved. Current temporal/probability judgments still refresh on the changed source basis. This repairs stale statements such as “only unverified companion records exist” after an actual limited survey finding arrives; it does not establish future novelty or forecast accuracy.

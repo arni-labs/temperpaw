@@ -595,6 +595,49 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
     )
 }
 
+// Reconcile newly read findings in the same atomic proposal, not a later model phase.
+fn refresh_researched_baseline(
+    before: &Value,
+    after: &Value,
+    generated: &Value,
+    old: &Value,
+) -> Result<Option<Value>, String> {
+    let reports = generated["research_evidence"]
+        .as_array()
+        .ok_or("Missing research evidence")?;
+    if !reports
+        .iter()
+        .any(|r| r["evidence_metadata"]["kind"] == "finding")
+    {
+        return Ok(None);
+    }
+    if !generated["baseline"].is_object() || !generated["scope_review"].is_object() {
+        return Err("New research findings require reconciled baseline and current scope_review using the supplied contracts".into());
+    }
+    let mut reply = generated.clone();
+    references::References::new(before)?.resolve_generated(&mut reply);
+    let round = old["round"].as_u64().unwrap_or(0) + 1;
+    let locals: std::collections::BTreeSet<_> =
+        reports.iter().filter_map(|r| r["id"].as_str()).collect();
+    for claim in reply["baseline"]["observed"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        for id in claim["evidence_ids"].as_array_mut().into_iter().flatten() {
+            if let Some(local) = id.as_str().filter(|id| locals.contains(id)) {
+                *id = json!(format!("r{round}-{local}"));
+            }
+        }
+    }
+    outlook::validate_baseline(&reply["baseline"], after)?;
+    validate_scope(&reply["scope_review"], after)?;
+    retain_scope_limits(&reply["baseline"], &reply["scope_review"])?;
+    Ok(Some(
+        json!({"round":round,"prior_baseline":old["baseline"],"prior_scope_review":old["scope_review"],"baseline":reply["baseline"],"scope_review":reply["scope_review"],"added_finding_ids":reports.iter().filter(|r|r["evidence_metadata"]["kind"]=="finding").map(|r|json!(format!("r{round}-{}",r["id"].as_str().unwrap()))).collect::<Vec<_>>(),"coverage_certified":false}),
+    ))
+}
+
 fn establish_baseline(snapshot: &Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
@@ -810,6 +853,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "round",
         "rounds",
         "baseline_status",
+        "baseline_history",
         "scope_review",
         "scope_repair",
         "temporal_decomposition_requested",
@@ -1083,6 +1127,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "evaluations",
         "baseline",
         "baseline_status",
+        "baseline_history",
         "scope_review",
         "scope_repair",
         "temporal_decomposition_requested",
@@ -1374,6 +1419,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         return Ok(());
     }
     let before = snapshot["nodes"].as_array().ok_or("Missing nodes")?.len();
+    let mut baseline_refresh = None;
     let composed = if phase == "compose" {
         match core::parse(raw).and_then(|generated| compose(&mut snapshot, &generated, &old)) {
             Ok(program) => Some(program),
@@ -1410,7 +1456,15 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 Ok(())
             })
         } else {
-            expand(&mut snapshot, &generated, phase, &old)
+            let mut candidate = snapshot.clone();
+            expand(&mut candidate, &generated, phase, &old).and_then(|_| {
+                if phase == "explore" {
+                    baseline_refresh =
+                        refresh_researched_baseline(&snapshot, &candidate, &generated, &old)?;
+                }
+                snapshot = candidate;
+                Ok(())
+            })
         };
         if let Err(error) = expansion {
             if !matches!(phase, "challenge" | "explore") {
@@ -1462,6 +1516,19 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         program["rounds"] = old["rounds"].clone();
         program["continue_exploring"] = json!(true);
     }
+    if let Some(mut receipt) = baseline_refresh {
+        receipt["source_session_id"] =
+            json!(core::field(&ctx.entity_state, "reasoning_session_id"));
+        program["baseline"] = receipt["baseline"].clone();
+        program["scope_review"] = receipt["scope_review"].clone();
+        if !program["baseline_history"].is_array() {
+            program["baseline_history"] = json!([]);
+        }
+        program["baseline_history"]
+            .as_array_mut()
+            .unwrap()
+            .push(receipt);
+    }
     if phase == "challenge" {
         record_challenge(&snapshot, before, &core::parse(raw)?, &mut program)?;
     }
@@ -1481,6 +1548,46 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn researched_baseline_maps_new_sources_and_rejects_unaccepted_summaries() {
+        let before = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[]});
+        let source = json!({"Id":"r4-local","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2025","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-01"}});
+        let mut after = before.clone();
+        after["nodes"] = json!([source]);
+        let old = json!({"round":3,"baseline":{"unknowns":["No finding"]},"scope_review":{"status":"narrowed"}});
+        let reply = json!({"research_evidence":[{"id":"local","evidence_metadata":{"kind":"finding"}}],"baseline":{"as_of":"2026-10-01","observed":[{"claim":"Known limited observation","evidence_ids":["local"]}],"assumptions":[],"unknowns":["Future remains unknown"]},"scope_review":{"requested_question":"Question","evidence_scope":"Limited observation","status":"narrowed","narrowing_basis":"evidence_availability","limitations":["Future remains unknown"]}});
+        let receipt = refresh_researched_baseline(&before, &after, &reply, &old)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt["prior_baseline"], old["baseline"]);
+        assert_eq!(
+            receipt["baseline"]["observed"][0]["evidence_ids"][0],
+            "r4-local"
+        );
+        let mut bad = reply.clone();
+        bad.as_object_mut().unwrap().remove("baseline");
+        assert!(
+            refresh_researched_baseline(&before, &after, &bad, &old)
+                .unwrap_err()
+                .contains("require reconciled")
+        );
+        bad = reply.clone();
+        bad["baseline"]["observed"][0]["evidence_ids"] = json!(["invented"]);
+        assert!(refresh_researched_baseline(&before, &after, &bad, &old).is_err());
+        bad = reply.clone();
+        bad["scope_review"]["requested_question"] = json!("Other");
+        assert!(refresh_researched_baseline(&before, &after, &bad, &old).is_err());
+        let mut future = after.clone();
+        future["nodes"][0]["evidence_metadata"]["publication_date"] = json!("2027");
+        assert!(refresh_researched_baseline(&before, &future, &reply, &old).is_err());
+        bad = reply.clone();
+        bad["research_evidence"][0]["evidence_metadata"]["kind"] = json!("lead");
+        assert!(
+            refresh_researched_baseline(&before, &after, &bad, &old)
+                .unwrap()
+                .is_none()
+        );
+    }
     use super::*;
     fn world_fixture() -> (Value, Value, Value) {
         let snapshot = json!({"world":{"last_ingest_date":"2026-09-19","target_date":"2027-09-19"},"nodes":[{"Id":"e","kind":"evidence","statement":"Observed baseline","edges":"[]"},{"Id":"a","kind":"scenario","statement":"Component A","edges":"[]"},{"Id":"b","kind":"revision","statement":"Component B","edges":"[]"},{"Id":"c","kind":"scenario","statement":"Component C","edges":"[]"},{"Id":"d","kind":"scenario","statement":"Counter D","edges":"[]"}]});
