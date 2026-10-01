@@ -407,8 +407,14 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
     let wasm = read(root.join("os-apps/paw-media/wasm/openrouter_image_generate/src/lib.rs"));
 
     // An undeclared module is never uploaded, and every trigger for it fails.
-    assert!(app.contains("name = \"openrouter_image_generate\""), "app.toml must declare the OpenRouter module");
-    assert!(build_script.contains("openrouter_image_generate"), "build.sh must build and package the OpenRouter module");
+    assert!(
+        app.contains("name = \"openrouter_image_generate\""),
+        "app.toml must declare the OpenRouter module"
+    );
+    assert!(
+        build_script.contains("openrouter_image_generate"),
+        "build.sh must build and package the OpenRouter module"
+    );
 
     let spec = temper_spec::automaton::parse_automaton(&spec_source).expect("media spec parses");
     let action = spec
@@ -416,20 +422,46 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
         .iter()
         .find(|a| a.name == "GenerateWithOpenRouter")
         .expect("GenerateWithOpenRouter action");
-    assert_eq!(action.from, vec!["Created".to_string(), "Failed".to_string()]);
-    assert_eq!(action.to.as_deref(), Some("Generating"), "OpenRouter skips the Codex auth gate");
+    assert_eq!(
+        action.from,
+        vec!["Created".to_string(), "Failed".to_string()]
+    );
+    assert_eq!(
+        action.to.as_deref(),
+        Some("Generating"),
+        "OpenRouter skips the Codex auth gate"
+    );
     for needle in [
         "module = \"openrouter_image_generate\"",
         "openrouter_api_key = \"{secret:openrouter_api_key}\"",
         "default_model = \"x-ai/grok-imagine-image-2.0\"",
     ] {
-        assert!(spec_source.contains(needle), "media spec should contain {needle}");
+        assert!(
+            spec_source.contains(needle),
+            "media spec should contain {needle}"
+        );
     }
     let model = temper_spec::csdl::parse_csdl(&csdl).expect("media CSDL parses");
-    let actions: Vec<String> = model.schemas.iter().flat_map(|s| s.actions.iter().map(|a| a.name.clone())).collect();
-    assert!(actions.iter().any(|a| a == "GenerateWithOpenRouter"), "CSDL must expose GenerateWithOpenRouter, got {actions:?}");
+    let actions: Vec<String> = model
+        .schemas
+        .iter()
+        .flat_map(|s| s.actions.iter().map(|a| a.name.clone()))
+        .collect();
+    assert!(
+        actions.iter().any(|a| a == "GenerateWithOpenRouter"),
+        "CSDL must expose GenerateWithOpenRouter, got {actions:?}"
+    );
 
-    for needle in ["https://openrouter.ai/api/v1/images", "b64_json", "RecordResult", "RecordError", "streaming_call"] {
-        assert!(wasm.contains(needle), "OpenRouter renderer should contain {needle}");
+    for needle in [
+        "https://openrouter.ai/api/v1/images",
+        "b64_json",
+        "RecordResult",
+        "RecordError",
+        "streaming_call",
+    ] {
+        assert!(
+            wasm.contains(needle),
+            "OpenRouter renderer should contain {needle}"
+        );
     }
 }
