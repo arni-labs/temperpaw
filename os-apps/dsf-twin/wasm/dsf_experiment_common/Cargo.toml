@@ -9,4 +9,4 @@ serde_json = "1"
 sha2 = "0.10"
 base64 = "0.22"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "5f831fc9d6471bb491db1e7f8f9c1017b87698cb" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "6c8019d0458fee5683de6891c75ec7fc61c279f0" }
