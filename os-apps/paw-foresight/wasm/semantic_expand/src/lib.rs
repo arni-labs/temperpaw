@@ -77,12 +77,12 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
             &format!("premises_challenged[{index}].alternative"),
         )?;
     }
-    if generated["research_evidence"]
+    let evidence_ids: std::collections::BTreeSet<_> = generated["research_evidence"]
         .as_array()
-        .is_none_or(|reports| !reports.is_empty())
-    {
-        return Err("Independent challenge cannot add unresearched evidence".into());
-    }
+        .ok_or("Missing challenge research evidence")?
+        .iter()
+        .filter_map(|report| report["id"].as_str())
+        .collect();
     let hypotheses = generated["hypotheses"]
         .as_array()
         .ok_or("Missing challenge hypotheses")?;
@@ -153,9 +153,12 @@ fn resolve_challenge(snapshot: &Value, generated: &mut Value) -> Result<(), Stri
             .ok_or("Missing challenge prerequisites")?
         {
             let reference = reference.as_str().ok_or("Invalid challenge reference")?;
-            if !new_ids.contains(reference) && !existing_ids.contains(reference) {
+            if !new_ids.contains(reference)
+                && !existing_ids.contains(reference)
+                && !evidence_ids.contains(reference)
+            {
                 return Err(format!(
-                    "Challenge reference {reference} is outside its visible catalog and new hypotheses"
+                    "Challenge reference {reference} is outside its visible catalog and new hypotheses or evidence"
                 ));
             }
         }
@@ -202,7 +205,8 @@ fn record_challenge(
     program["independent_challenge"] = json!({
         "status":"completed","trigger":old["independent_challenge"]["trigger"].as_str().unwrap_or("candidate_generation_reported_saturation"),
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
-        "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
+        "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).filter(|n| matches!(core::field(n, "kind"), "scenario" | "revision")).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
+        "added_evidence_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).filter(|n| core::field(n, "kind") == "research_evidence").map(|n|n["Id"].clone()).collect::<Vec<_>>(),
         "note":generated["exploration_note"],"accuracy_verified":false,
         "branches":actual_branches
     });
@@ -1566,6 +1570,23 @@ fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, St
     }
 }
 
+fn expand_with_baseline(
+    snapshot: &mut Value,
+    generated: &Value,
+    phase: &str,
+    old: &Value,
+) -> Result<Option<Value>, String> {
+    let mut candidate = snapshot.clone();
+    expand(&mut candidate, generated, phase, old)?;
+    let refresh = if matches!(phase, "explore" | "challenge") {
+        refresh_researched_baseline(snapshot, &candidate, generated, old)?
+    } else {
+        None
+    };
+    *snapshot = candidate;
+    Ok(refresh)
+}
+
 fn run_inner(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let mut old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
@@ -1685,14 +1706,8 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 Ok(())
             })
         } else {
-            let mut candidate = snapshot.clone();
-            expand(&mut candidate, &generated, phase, &old).and_then(|_| {
-                if phase == "explore" {
-                    baseline_refresh =
-                        refresh_researched_baseline(&snapshot, &candidate, &generated, &old)?;
-                }
-                snapshot = candidate;
-                Ok(())
+            expand_with_baseline(&mut snapshot, &generated, phase, &old).map(|refresh| {
+                baseline_refresh = refresh;
             })
         };
         if let Err(error) = expansion {
@@ -2543,6 +2558,58 @@ mod tests {
             receipt["branches"][0]["condition"]["event_ids"],
             json!(["r1-premise"])
         );
+    }
+
+    #[test]
+    fn challenge_research_updates_sources_without_turning_findings_into_hypotheses() {
+        let before = json!({"world":{"hindcast_mode":"false","evidence_contract":"v1","description":"Question","last_ingest_date":"2026-10-01"},"nodes":[{"Id":"old","kind":"scenario","statement":"Old framing","edges":"[]"}]});
+        let mut reply = batch("alternative");
+        reply["premises_challenged"] = json!([{"assumption":"The service is new","alternative":"Existing adoption changes its downstream consequences","prior_hypothesis_ids":["ref_0001"],"alternative_hypothesis_ids":["alternative"]}]);
+        reply["hypotheses"][0]["requires"] = json!(["adoption"]);
+        reply["research_evidence"] = json!([{"id":"adoption","statement":"A measured portion already uses the service","url":"https://example.org/adoption","quote":"Measured adoption","evidence_metadata":{"kind":"finding","publication_date":"2025","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-01"},"provenance":"observed"}]);
+        reply["baseline"] = json!({"as_of":"2026-10-01","observed":[{"claim":"A measured portion already uses the service","evidence_ids":["adoption"]}],"assumptions":[],"unknowns":["Future adoption remains unknown"]});
+        reply["scope_review"] = json!({"requested_question":"Question","evidence_scope":"Limited adoption evidence","status":"narrowed","narrowing_basis":"evidence_availability","limitations":["Future adoption remains unknown"]});
+        let old = json!({"round":0,"baseline":{"observed":[],"unknowns":["No finding"]}});
+        let mut after = before.clone();
+        let refresh = expand_with_baseline(&mut after, &reply, "challenge", &old)
+            .unwrap()
+            .unwrap();
+        let edges = core::parse(after["nodes"][2]["edges"].as_str().unwrap()).unwrap();
+        assert_eq!(edges[0]["to_id"], "r1-adoption");
+        assert_eq!(edges[0]["kind"], "supports");
+        assert_eq!(
+            refresh["baseline"]["observed"][0]["evidence_ids"],
+            json!(["r1-adoption"])
+        );
+        let mut program = replan(&after, &old, &reply, 2).unwrap();
+        record_challenge(&after, 1, &reply, &old, &mut program).unwrap();
+        assert_eq!(
+            program["independent_challenge"]["added_hypothesis_ids"],
+            json!(["r1-alternative"])
+        );
+        assert_eq!(
+            program["independent_challenge"]["added_evidence_ids"],
+            json!(["r1-adoption"])
+        );
+        for bad_url in ["http://example.org/adoption", ""] {
+            let mut bad = reply.clone();
+            bad["research_evidence"][0]["url"] = json!(bad_url);
+            let mut unchanged = before.clone();
+            assert!(expand(&mut unchanged, &bad, "challenge", &old).is_err());
+            assert_eq!(unchanged, before);
+        }
+        let mut missing_baseline = reply.clone();
+        missing_baseline.as_object_mut().unwrap().remove("baseline");
+        let mut unchanged = before.clone();
+        assert!(
+            expand_with_baseline(&mut unchanged, &missing_baseline, "challenge", &old).is_err()
+        );
+        assert_eq!(unchanged, before);
+        let mut frozen = before.clone();
+        frozen["world"]["hindcast_mode"] = json!("true");
+        let unchanged = frozen.clone();
+        assert!(expand(&mut frozen, &reply, "challenge", &old).is_err());
+        assert_eq!(frozen, unchanged);
     }
 
     #[test]
