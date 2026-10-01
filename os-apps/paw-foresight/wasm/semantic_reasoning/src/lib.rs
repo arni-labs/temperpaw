@@ -76,6 +76,7 @@ fn challenge_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         }
     }
     let input = references::References::new(snapshot)?.project(&json!({
+        "baseline":program["baseline"], "scope_review":program["scope_review"],
         "candidate_judgments":judgments,
         "historical_search_guidance":program["historical_search_guidance"],
         "historical_guidance_semantics":"Recorded search rankings with their original context, not current judgments. Missing provenance remains unknown. Use as fallible search guidance only; changed evidence or comparison samples can change their relevance.",
@@ -416,6 +417,37 @@ mod reasoning_tests {
 
     mod outlook_contract {
         include!("../../semantic_outlook.rs");
+    }
+
+    #[test]
+    fn challenge_receives_ordered_baseline_and_current_scope_for_reconciliation() {
+        let snapshot = json!({"world":{"description":"Small venues in 2030"},"nodes":[
+            {"Id":"source-a","kind":"evidence","statement":"Dated scoped source"},
+            {"Id":"source-b","kind":"evidence","statement":"Indexed excerpt only"},
+            {"Id":"candidate","kind":"scenario","statement":"A possible change"}
+        ]});
+        // A full baseline makes retention and explicit index-based consolidation
+        // necessary; observing the evidence catalog is not equivalent to seeing it.
+        let baseline = json!({"as_of":"2026-10-01","observed":(0..16).map(|i|
+            json!({"claim":format!("Observation {i}: 2025 local survey, indexed excerpt only; not a global pattern."),"evidence_ids":["source-b","source-a"]})
+        ).collect::<Vec<_>>(),"assumptions":[],"unknowns":["Small venues are not separately measured."]});
+        let scope = json!({"requested_question":"Small venues in 2030","evidence_scope":"Local surveys only","status":"narrowed","narrowing_basis":"evidence_availability","limitations":["Small venues are not separately measured."]});
+        let program = json!({"baseline":baseline,"scope_review":scope,"scope_repair":{"status":"completed","baseline":{"observed":[{"claim":"Stale historical claim"}]}}});
+        let input = challenge_input(&snapshot, &program).unwrap();
+        let mut expected = baseline.clone();
+        for observation in expected["observed"].as_array_mut().unwrap() {
+            observation["evidence_ids"] = json!(["ref_0002", "ref_0001"]);
+        }
+        assert_eq!(input["baseline"], expected);
+        assert_eq!(input["scope_review"], scope);
+        assert!(input.get("scope_repair").is_none());
+        let mut restored =
+            json!({"baseline":input["baseline"],"scope_review":input["scope_review"]});
+        references::References::new(&snapshot)
+            .unwrap()
+            .resolve_generated(&mut restored);
+        assert_eq!(restored["baseline"], baseline);
+        assert_eq!(restored["scope_review"], scope);
     }
 
     #[test]
