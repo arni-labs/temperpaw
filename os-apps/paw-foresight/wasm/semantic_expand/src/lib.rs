@@ -584,8 +584,25 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
             *id = json!(format!("scope-{local}"));
         }
     }
+    if let Some(dispositions) = generated
+        .get_mut("baseline_dispositions")
+        .and_then(Value::as_array_mut)
+    {
+        for disposition in dispositions {
+            for id in disposition["evidence_ids"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                if let Some(local) = id.as_str().filter(|v| locals.contains(*v)) {
+                    *id = json!(format!("scope-{local}"));
+                }
+            }
+        }
+    }
     validate_scope(&generated["scope_review"], snapshot)?;
     outlook::validate_new_baseline(&generated["baseline"], snapshot)?;
+    validate_baseline_dispositions(old, &generated, snapshot)?;
     retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
     let report = &generated["scope_disposition"];
     bounded_text(
@@ -623,7 +640,7 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
         return Err("Addressed scope needs a current typed finding; lead-only or legacy sources remain limited".into());
     }
     Ok(
-        json!({"status":"completed","attempted":true,"disposition":report["status"],"report":report["report"],"evidence_ids":refs,"coverage_certified":false,"original_baseline":old["baseline"],"original_review":old["scope_review"],"baseline":generated["baseline"],"review":generated["scope_review"]}),
+        json!({"status":"completed","attempted":true,"disposition":report["status"],"report":report["report"],"evidence_ids":refs,"coverage_certified":false,"original_baseline":old["baseline"],"original_review":old["scope_review"],"baseline":generated["baseline"],"review":generated["scope_review"],"dispositions":generated["baseline_dispositions"],"dispositions_verified":false}),
     )
 }
 
@@ -1835,6 +1852,9 @@ mod tests {
             serde_json::from_str(row["fields"]["program_json"].as_str().unwrap()).unwrap();
         let snapshot: Value =
             serde_json::from_str(row["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let repair = &program["scope_repair"];
+        let repaired=finish_scope_repair(&snapshot,&json!({"baseline":repair["baseline"],"scope_review":repair["review"],"research_evidence":[],"scope_disposition":{"status":repair["disposition"],"report":repair["report"],"evidence_ids":repair["evidence_ids"]}}),&json!({"baseline":repair["original_baseline"],"scope_review":repair["original_review"]})).unwrap();
+        assert_eq!(repaired["baseline"], repair["baseline"]);
         let receipt = &program["baseline_history"][1];
         assert_eq!(
             receipt["prior_baseline"]["observed"]
@@ -1989,10 +2009,39 @@ mod tests {
         assert_eq!(repaired, snapshot);
         bad = generated.clone();
         bad["baseline"]["observed"] = json!([]);
-        assert!(finish_scope_repair(&snapshot, &bad, &pending).is_ok());
+        assert!(
+            finish_scope_repair(&snapshot, &bad, &pending)
+                .unwrap_err()
+                .contains("omitted prior observation 0")
+        );
         bad = generated.clone();
         bad["scope_disposition"]["evidence_ids"] = json!(["invented"]);
         assert!(finish_scope_repair(&snapshot, &bad, &pending).is_err());
+    }
+
+    #[test]
+    fn scope_repair_accounts_for_prior_fourteen_and_normalizes_dispositions() {
+        let snapshot = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[{"Id":"scope-new","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2026","observation_period":{"start":null,"end":null},"retrieved_at":null}}]});
+        let baseline = json!({"as_of":"2026-10-01","observed":(0..14).map(|i|json!({"claim":format!("Prior {i}"),"evidence_ids":["scope-new"]})).collect::<Vec<_>>(),"assumptions":[],"unknowns":[]});
+        let old = json!({"baseline":baseline,"started_at_ms":12345});
+        let mut reply = json!({"baseline":baseline,"research_evidence":[{"id":"new"}],"scope_review":{"requested_question":"Question","evidence_scope":"Current evidence","narrowing_basis":"none","status":"aligned","limitations":[]},"scope_disposition":{"status":"addressed","report":"Retained prior findings","evidence_ids":["new"]}});
+        let receipt = finish_scope_repair(&snapshot, &reply, &old).unwrap();
+        assert_eq!(receipt["baseline"], baseline);
+        reply["baseline"]["observed"].as_array_mut().unwrap().pop();
+        assert!(
+            finish_scope_repair(&snapshot, &reply, &old)
+                .unwrap_err()
+                .contains("omitted prior observation 13")
+        );
+        reply["baseline_dispositions"] = json!([{"prior_observation_index":13,"replacement_observation_indices":[],"reason":"New source supports retracting this claim","evidence_ids":["new"]}]);
+        let receipt = finish_scope_repair(&snapshot, &reply, &old).unwrap();
+        assert_eq!(
+            receipt["dispositions"][0]["evidence_ids"],
+            json!(["scope-new"])
+        );
+        assert_eq!(receipt["original_baseline"], baseline);
+        assert_eq!(receipt["dispositions_verified"], false);
+        assert_eq!(old["started_at_ms"], 12345);
     }
 
     #[test]
