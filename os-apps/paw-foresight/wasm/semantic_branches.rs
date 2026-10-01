@@ -338,13 +338,25 @@ fn descends_from(hypothesis: &Value, root: &str, branches: &[Value]) -> bool {
     false
 }
 
-/// Check supplied roots before accepting any generated nodes. Descendants may
-/// branch further, but each side must have an actual bound consequence.
+/// Whether the response uses either recommended root, including descendants.
+pub fn challenge_rollout_adopted(generated: &Value, rollout: &Value) -> bool {
+    rollout["branches"].as_array().into_iter().flatten().any(|root| {
+        let id = field(root, "id");
+        generated["branches"].as_array().into_iter().flatten().any(|b| {
+            field(b, "id") == id || field(b, "parent_branch_id") == id
+        }) || generated["hypotheses"].as_array().into_iter().flatten().any(|h| {
+            field(h, "branch_id") == id
+        })
+    })
+}
+
+/// If either recommended root is adopted, preserve both roots and bind an
+/// actual consequence on each side. Independent hypotheses remain permitted.
 pub fn validate_challenge_rollout(generated: &Value, rollout: &Value) -> Result<(), String> {
     let hypotheses = generated["hypotheses"]
         .as_array()
         .ok_or("Missing challenge hypotheses")?;
-    if hypotheses.is_empty() {
+    if !challenge_rollout_adopted(generated, rollout) {
         return Ok(());
     }
     let branches = generated["branches"]
@@ -370,18 +382,6 @@ pub fn validate_challenge_rollout(generated: &Value, rollout: &Value) -> Result<
             ));
         }
     }
-    if hypotheses.iter().any(|h| {
-        !rollout["branches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|root| descends_from(h, field(root, "id"), branches))
-    }) {
-        return Err(
-            "Every selected-rollout hypothesis must bind to one supplied root or its descendants"
-                .into(),
-        );
-    }
     Ok(())
 }
 
@@ -404,7 +404,16 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(json!({"id":"unbound"}));
-        assert!(validate_challenge_rollout(&extra, &rollout).is_err());
+        validate_challenge_rollout(&extra, &rollout).unwrap();
+        let mut missing_root = reply.clone();
+        missing_root["branches"].as_array_mut().unwrap().pop();
+        assert!(validate_challenge_rollout(&missing_root, &rollout).is_err());
+        let mut empty = reply.clone();
+        empty["hypotheses"] = json!([]);
+        assert!(validate_challenge_rollout(&empty, &rollout).is_err());
+        let unrelated = json!({"hypotheses":[{"id":"new-premise"}],"branches":[]});
+        assert!(!challenge_rollout_adopted(&unrelated, &rollout));
+        validate_challenge_rollout(&unrelated, &rollout).unwrap();
         let mut dropped_parent = reply.clone();
         dropped_parent["branches"][1]["parent_branch_id"] = Value::Null;
         assert!(validate_challenge_rollout(&dropped_parent, &rollout).is_err());

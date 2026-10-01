@@ -186,12 +186,31 @@ fn record_challenge(
             *id = json!(format!("r{round}-{}", id.as_str().unwrap()));
         }
     }
+    let recommended = core::branches::challenge_rollout(&prior, old);
+    let adopted = recommended
+        .as_ref()
+        .is_some_and(|rollout| core::branches::challenge_rollout_adopted(&generated, rollout));
+    let generated_branch_ids: std::collections::BTreeSet<_> = generated["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|branch| format!("branch-r{round}-{}", core::field(branch, "id")))
+        .collect();
+    let actual_branches: Vec<_> = snapshot["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|branch| generated_branch_ids.contains(core::field(branch, "id")))
+        .cloned()
+        .collect();
     program["independent_challenge"] = json!({
         "status":"completed","trigger":"candidate_generation_reported_saturation",
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
         "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
         "note":generated["exploration_note"],"accuracy_verified":false,
-        "causal_rollout":core::branches::challenge_rollout(&prior,old)
+        "recommended_causal_rollout":recommended,
+        "causal_rollout":if adopted {recommended.clone()} else {None},
+        "recommended_rollout_adopted":adopted,"branches":actual_branches
     });
     Ok(())
 }
@@ -575,7 +594,7 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
         }
     }
     validate_scope(&generated["scope_review"], snapshot)?;
-    outlook::validate_baseline(&generated["baseline"], snapshot)?;
+    outlook::validate_new_baseline(&generated["baseline"], snapshot)?;
     retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
     let report = &generated["scope_disposition"];
     bounded_text(
@@ -652,7 +671,7 @@ fn refresh_researched_baseline(
             }
         }
     }
-    outlook::validate_baseline(&reply["baseline"], after)?;
+    outlook::validate_new_baseline(&reply["baseline"], after)?;
     validate_scope(&reply["scope_review"], after)?;
     retain_scope_limits(&reply["baseline"], &reply["scope_review"])?;
     Ok(Some(
@@ -663,7 +682,7 @@ fn refresh_researched_baseline(
 fn establish_baseline(snapshot: &Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
-    outlook::validate_baseline(&generated["baseline"], snapshot)?;
+    outlook::validate_new_baseline(&generated["baseline"], snapshot)?;
     let mut program = old.clone();
     program["baseline"] = generated["baseline"].clone();
     if !generated["scope_review"].is_null() || snapshot["world"]["evidence_contract"] == "v1" {
@@ -700,7 +719,11 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     } else {
         &generated["baseline"]
     };
-    outlook::validate_baseline(baseline, snapshot)?;
+    if old["baseline"].is_object() {
+        outlook::validate_baseline(baseline, snapshot)?;
+    } else {
+        outlook::validate_new_baseline(baseline, snapshot)?;
+    }
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
     let by_id: std::collections::BTreeMap<_, _> =
         nodes.iter().map(|n| (core::field(n, "Id"), n)).collect();
@@ -2031,6 +2054,131 @@ mod tests {
             exploration_correction("challenge", &second, "Still invalid", "{}")
                 .unwrap_err()
                 .contains("after two corrective attempts")
+        );
+    }
+
+    #[test]
+    fn new_baseline_rejects_invented_limits_but_preserves_historical_reads() {
+        let mut snapshot = json!({"world":{"description":"How will people get around cities in 2030?","last_ingest_date":"2026-10-01"},"nodes":[]});
+        let restriction = "2030 means what a city resident notices in ordinary travel by 2030-12-31, not a complete replacement of today’s systems.";
+        let baseline =
+            json!({"as_of":"2026-10-01","observed":[],"assumptions":[restriction],"unknowns":[]});
+        outlook::validate_baseline(&baseline, &snapshot).unwrap();
+        assert!(
+            outlook::validate_new_baseline(&baseline, &snapshot)
+                .unwrap_err()
+                .contains("verbatim")
+        );
+        snapshot["world"]["description"] = json!(format!(
+            "How will people get around cities in 2030? {restriction}"
+        ));
+        outlook::validate_new_baseline(&baseline, &snapshot).unwrap();
+        let mut reply = json!({"baseline":baseline,"scope_review":{"requested_question":snapshot["world"]["description"],"evidence_scope":"No current observations","narrowing_basis":"none","status":"aligned","limitations":[]}});
+        establish_baseline(&snapshot, &reply, &json!({})).unwrap();
+        snapshot["world"]["description"] = json!("How will people get around cities in 2030?");
+        reply["scope_review"]["requested_question"] = snapshot["world"]["description"].clone();
+        assert!(
+            establish_baseline(&snapshot, &reply, &json!({}))
+                .unwrap_err()
+                .contains("verbatim")
+        );
+    }
+
+    #[test]
+    fn challenge_can_introduce_and_evaluate_a_new_paired_premise() {
+        let mut snapshot = json!({"world":{"hindcast_mode":"false","last_ingest_date":"2026-10-01","target_date":"2030-12-31"},"nodes":[{"Id":"old","kind":"scenario","statement":"The current arrangement grows","edges":"[]"}]});
+        let old = json!({"baseline_status":"established","results":{"old":{"classify_temporal":"future_change","classify_gap":"evidence","decision_value":"3"}}});
+        assert!(core::branches::challenge_rollout(&snapshot, &old).is_some());
+        let generated = json!({
+            "hypotheses":[
+                {"id":"premise","statement":"A different mechanism becomes available","requires":[]},
+                {"id":"on","statement":"People reorganize the activity","requires":[],"branch_id":"new-on"},
+                {"id":"off","statement":"People develop another workaround","requires":[],"branch_id":"new-off"}
+            ],
+            "branches":[
+                {"id":"new-on","parent_branch_id":null,"condition":{"kind":"all_occurring","event_ids":["premise"]},"by":"2030-12-31"},
+                {"id":"new-off","parent_branch_id":null,"condition":{"kind":"not_all_occurring","event_ids":["premise"]},"by":"2030-12-31"}
+            ],
+            "premises_challenged":[{"assumption":"The old arrangement remains necessary","alternative":"Another mechanism changes the activity","prior_hypothesis_ids":["old"],"alternative_hypothesis_ids":["premise","on","off"]}],
+            "research_evidence":[],"continue_exploring":true,"exploration_note":"Investigate a premise outside the ranked event"
+        });
+        let original = snapshot.clone();
+        expand(&mut snapshot, &generated, "challenge", &old).unwrap();
+        let mut program = replan(&snapshot, &old, &generated, 3).unwrap();
+        for id in ["r1-premise", "r1-on", "r1-off"] {
+            let node = snapshot["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["Id"] == id)
+                .unwrap();
+            assert_eq!(node["provenance"], "generated_hypothesis");
+            assert_eq!(node["source_refs"], "[]");
+            assert!(
+                program["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["nodeId"] == id && t["function"] == "classify_temporal")
+            );
+        }
+        for (id, sign) in [("r1-on", "all_occurring"), ("r1-off", "not_all_occurring")] {
+            let node = snapshot["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["Id"] == id)
+                .unwrap();
+            assert_eq!(node["branch_state"]["conditions"][0]["kind"], sign);
+            assert_eq!(
+                node["branch_state"]["conditions"][0]["events"][0]["id"],
+                "r1-premise"
+            );
+            assert!(
+                program["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["nodeId"] == id && t["function"] == "estimate_conditional")
+            );
+            program["results"][id]["classify_temporal"] = json!("future_change");
+            assert!(!core::branches::future_eligible(&snapshot, &program, id));
+        }
+        program["results"]["r1-premise"]["classify_temporal"] = json!("future_change");
+        assert!(core::branches::future_eligible(
+            &snapshot, &program, "r1-on"
+        ));
+        assert!(core::branches::future_eligible(
+            &snapshot, &program, "r1-off"
+        ));
+        record_challenge(&snapshot, 1, &generated, &old, &mut program).unwrap();
+        let receipt = &program["independent_challenge"];
+        assert_eq!(receipt["recommended_causal_rollout"]["nodeId"], "old");
+        assert_eq!(receipt["recommended_rollout_adopted"], false);
+        assert!(receipt["causal_rollout"].is_null());
+        assert_eq!(receipt["branches"], snapshot["branches"]);
+        assert_eq!(
+            receipt["branches"][0]["condition"]["event_ids"],
+            json!(["r1-premise"])
+        );
+        // Adopting the advice keeps both exact roots while allowing a separate premise.
+        let rollout = core::branches::challenge_rollout(&original, &old).unwrap();
+        let mut advised = generated.clone();
+        advised["branches"] = rollout["branches"].clone();
+        advised["hypotheses"][1]["branch_id"] = json!("challenge-premise-on");
+        advised["hypotheses"][2]["branch_id"] = json!("challenge-premise-off");
+        let mut updated = original;
+        expand(&mut updated, &advised, "challenge", &old).unwrap();
+        let mut program = replan(&updated, &old, &advised, 3).unwrap();
+        record_challenge(&updated, 1, &advised, &old, &mut program).unwrap();
+        assert_eq!(
+            program["independent_challenge"]["recommended_rollout_adopted"],
+            true
+        );
+        assert_eq!(program["independent_challenge"]["causal_rollout"], rollout);
+        assert_eq!(
+            program["independent_challenge"]["branches"],
+            updated["branches"]
         );
     }
 

@@ -387,8 +387,22 @@ pub const BASELINE_LIST_MAX: usize = 16;
 pub const BASELINE_CLAIM_MAX: usize = 400;
 pub const BASELINE_NOTE_MAX: usize = 240;
 pub fn baseline_contract() -> Value {
-    serde_json::json!({"as_of":"exact world.last_ingest_date","observed":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"items":{"claim":{"minLength":1,"maxLength":BASELINE_CLAIM_MAX},"evidence_ids":{"minItems":1,"maxItems":BASELINE_LIST_MAX,"items":"actual supplied finding refs; during scope repair only, same-response research_evidence local IDs are also allowed; seed uses supplied refs only"}}},"assumptions":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"unknowns":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"empty_observations":"requires at least one assumption or unknown"})
+    serde_json::json!({"as_of":"exact world.last_ingest_date","observed":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"items":{"claim":{"minLength":1,"maxLength":BASELINE_CLAIM_MAX},"evidence_ids":{"minItems":1,"maxItems":BASELINE_LIST_MAX,"items":"actual supplied finding refs; during scope repair only, same-response research_evidence local IDs are also allowed; seed uses supplied refs only"}}},"assumptions":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX,"items":"exact verbatim quote of an explicit user constraint from world.description; no model-invented limits"},"unknowns":{"minItems":0,"maxItems":BASELINE_LIST_MAX,"itemMinLength":1,"itemMaxLength":BASELINE_NOTE_MAX},"empty_observations":"requires at least one assumption or unknown"})
 }
+/// Accept a new baseline without allowing model assumptions to narrow the question.
+/// Historical baselines remain readable through `validate_baseline`.
+pub fn validate_new_baseline(baseline: &Value, snapshot: &Value) -> Result<(), String> {
+    validate_baseline(baseline, snapshot)?;
+    let question = snapshot["world"]["description"].as_str().unwrap_or("");
+    for assumption in baseline["assumptions"].as_array().unwrap() {
+        let quote = assumption.as_str().unwrap(); // Validated string list above.
+        if !question.contains(quote) {
+            return Err("baseline.assumptions must quote explicit user constraints verbatim from world.description; model premises belong in hypothetical events and present uncertainty in unknowns".into());
+        }
+    }
+    Ok(())
+}
+
 /// Present observations remain distinct from assumptions and future hypotheses.
 pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), String> {
     if baseline["as_of"] != snapshot["world"]["last_ingest_date"] {
