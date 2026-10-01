@@ -12,5 +12,5 @@ crate-type = ["cdylib"]
 hex = "0.4"
 serde_json = "1"
 sha2 = "0.10"
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "dbb7269f760495db6fcfa889f857407b47e36548" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }
 wasm-helpers = { path = "../../../paw-agent/wasm/wasm-helpers" }
