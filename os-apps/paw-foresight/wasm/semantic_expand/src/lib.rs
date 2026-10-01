@@ -628,6 +628,67 @@ fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Resu
 }
 
 // Reconcile newly read findings in the same atomic proposal, not a later model phase.
+// A replacement may consolidate or retract claims, but never silently forget them.
+fn validate_baseline_dispositions(
+    old: &Value,
+    reply: &Value,
+    snapshot: &Value,
+) -> Result<(), String> {
+    let prior = old["baseline"]["observed"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let current = reply["baseline"]["observed"]
+        .as_array()
+        .ok_or("Missing baseline observations")?;
+    let dispositions = match reply.get("baseline_dispositions") {
+        None => vec![],
+        Some(value) => value
+            .as_array()
+            .ok_or("baseline_dispositions must be an array")?
+            .clone(),
+    };
+    if dispositions.len() > prior.len() {
+        return Err("baseline_dispositions exceeds prior observation count".into());
+    }
+    let mut accounted = std::collections::BTreeSet::new();
+    for disposition in &dispositions {
+        let index = disposition["prior_observation_index"]
+            .as_u64()
+            .ok_or("Invalid prior_observation_index")?;
+        let index = usize::try_from(index).map_err(|_| "Invalid prior_observation_index")?;
+        if index >= prior.len() || !accounted.insert(index) {
+            return Err("Unknown or duplicate prior_observation_index".into());
+        }
+        bounded_text(&disposition["reason"], 400, "baseline_dispositions.reason")?;
+        let replacements = disposition["replacement_observation_indices"]
+            .as_array()
+            .ok_or("Missing replacement_observation_indices")?;
+        if replacements.len() > 16
+            || replacements
+                .iter()
+                .any(|v| v.as_u64().is_none_or(|i| i >= current.len() as u64))
+        {
+            return Err("Invalid replacement_observation_indices".into());
+        }
+        // Reuse source-kind, chronology and reference validation. This validates
+        // provenance, not the truth of the model's revision/retraction judgment.
+        let citation = json!({"as_of":reply["baseline"]["as_of"],"observed":[{"claim":disposition["reason"],"evidence_ids":disposition["evidence_ids"]}],"assumptions":[],"unknowns":[]});
+        outlook::validate_new_baseline(&citation, snapshot)?;
+    }
+    for (index, observation) in prior.iter().enumerate() {
+        // Adding citations to an unchanged claim is not a retraction.
+        if !current.iter().any(|v| v["claim"] == observation["claim"])
+            && !accounted.contains(&index)
+        {
+            return Err(format!(
+                "Refreshed baseline omitted prior observation {index}; retain its claim or provide baseline_dispositions with explicit replacement indices (empty for retraction), reason and finding evidence_ids"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn refresh_researched_baseline(
     before: &Value,
     after: &Value,
@@ -662,11 +723,28 @@ fn refresh_researched_baseline(
             }
         }
     }
+    if let Some(dispositions) = reply
+        .get_mut("baseline_dispositions")
+        .and_then(Value::as_array_mut)
+    {
+        for disposition in dispositions {
+            for id in disposition["evidence_ids"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                if let Some(local) = id.as_str().filter(|id| locals.contains(id)) {
+                    *id = json!(format!("r{round}-{local}"));
+                }
+            }
+        }
+    }
     outlook::validate_new_baseline(&reply["baseline"], after)?;
+    validate_baseline_dispositions(old, &reply, after)?;
     validate_scope(&reply["scope_review"], after)?;
     retain_scope_limits(&reply["baseline"], &reply["scope_review"])?;
     Ok(Some(
-        json!({"round":round,"prior_baseline":old["baseline"],"prior_scope_review":old["scope_review"],"baseline":reply["baseline"],"scope_review":reply["scope_review"],"added_finding_ids":reports.iter().filter(|r|r["evidence_metadata"]["kind"]=="finding").map(|r|json!(format!("r{round}-{}",r["id"].as_str().unwrap()))).collect::<Vec<_>>(),"coverage_certified":false}),
+        json!({"round":round,"prior_baseline":old["baseline"],"prior_scope_review":old["scope_review"],"baseline":reply["baseline"],"scope_review":reply["scope_review"],"added_finding_ids":reports.iter().filter(|r|r["evidence_metadata"]["kind"]=="finding").map(|r|json!(format!("r{round}-{}",r["id"].as_str().unwrap()))).collect::<Vec<_>>(),"coverage_certified":false,"dispositions":reply["baseline_dispositions"],"dispositions_verified":false}),
     ))
 }
 
@@ -1704,6 +1782,79 @@ mod tests {
     }
 
     #[test]
+    fn baseline_replacement_accounts_for_all_prior_claims() {
+        let snapshot = json!({"world":{"last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[{"Id":"e","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2026","observation_period":{"start":null,"end":null},"retrieved_at":null}}]});
+        let old = json!({"baseline":{"observed":(0..16).map(|i|json!({"claim":format!("Prior {i}"),"evidence_ids":["e"]})).collect::<Vec<_>>()}});
+        let mut reply = json!({"baseline":{"as_of":"2026-10-01","observed":[{"claim":"Reconciled finding","evidence_ids":["e"]}]}});
+        assert!(
+            validate_baseline_dispositions(&old, &reply, &snapshot)
+                .unwrap_err()
+                .contains("omitted prior observation 0")
+        );
+        reply["baseline_dispositions"] = json!((0..16).map(|i|json!({"prior_observation_index":i,"replacement_observation_indices":if i==15 {vec![]} else {vec![0]},"reason":"Source supports consolidation or withdrawal","evidence_ids":["e"]})).collect::<Vec<_>>());
+        validate_baseline_dispositions(&old, &reply, &snapshot).unwrap();
+        let mut bad = reply.clone();
+        bad["baseline_dispositions"][15]["prior_observation_index"] = json!(16);
+        assert!(validate_baseline_dispositions(&old, &bad, &snapshot).is_err());
+        bad = reply.clone();
+        bad["baseline_dispositions"][0]["evidence_ids"] = json!(["foreign"]);
+        assert!(validate_baseline_dispositions(&old, &bad, &snapshot).is_err());
+        for (field, value) in [
+            ("prior_observation_index", json!(0)),
+            ("prior_observation_index", json!(4294967296u64)),
+            ("replacement_observation_indices", json!([1])),
+            ("replacement_observation_indices", json!([4294967296u64])),
+        ] {
+            bad = reply.clone();
+            bad["baseline_dispositions"][15][field] = value;
+            assert!(validate_baseline_dispositions(&old, &bad, &snapshot).is_err());
+        }
+        for (field, value) in [("kind", json!("lead")), ("publication_date", json!("2027"))] {
+            let mut invalid_source = snapshot.clone();
+            invalid_source["nodes"][0]["evidence_metadata"][field] = value;
+            assert!(validate_baseline_dispositions(&old, &reply, &invalid_source).is_err());
+        }
+        let enriched =
+            json!({"baseline":{"observed":[{"claim":"Prior 0","evidence_ids":["e","other"]}]}});
+        validate_baseline_dispositions(
+            &json!({"baseline":{"observed":[old["baseline"]["observed"][0]]}}),
+            &enriched,
+            &snapshot,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore = "private captured clothing fixture; set CLOTHING_BASELINE_CAPTURE"]
+    fn captured_clothing_baseline_delta_is_rejected() {
+        let row: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("CLOTHING_BASELINE_CAPTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let program: Value =
+            serde_json::from_str(row["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(row["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let receipt = &program["baseline_history"][1];
+        assert_eq!(
+            receipt["prior_baseline"]["observed"]
+                .as_array()
+                .unwrap()
+                .len(),
+            16
+        );
+        assert_eq!(receipt["baseline"]["observed"].as_array().unwrap().len(), 1);
+        let old = json!({"round":2,"baseline":receipt["prior_baseline"],"scope_review":receipt["prior_scope_review"]});
+        let reply = json!({"baseline":receipt["baseline"],"scope_review":receipt["scope_review"],"research_evidence":[{"id":"e-bnpl-fca-2026","evidence_metadata":{"kind":"finding"}}]});
+        outlook::validate_new_baseline(&reply["baseline"], &snapshot).unwrap(); // old acceptance boundary
+        assert!(
+            refresh_researched_baseline(&snapshot, &snapshot, &reply, &old)
+                .unwrap_err()
+                .contains("omitted prior observation 0")
+        );
+    }
+
+    #[test]
     fn researched_baseline_maps_new_sources_and_rejects_unaccepted_summaries() {
         let before = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[]});
         let source = json!({"Id":"r4-local","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2025","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-01"}});
@@ -1719,6 +1870,20 @@ mod tests {
             receipt["baseline"]["observed"][0]["evidence_ids"][0],
             "r4-local"
         );
+        let mut replacement = reply.clone();
+        replacement["baseline_dispositions"] = json!([{"prior_observation_index":0,"replacement_observation_indices":[0],"reason":"The new finding corrects the earlier account","evidence_ids":["local"]}]);
+        let mut earlier = old.clone();
+        earlier["baseline"]["observed"] =
+            json!([{"claim":"Earlier account","evidence_ids":["r4-local"]}]);
+        let revision = refresh_researched_baseline(&before, &after, &replacement, &earlier)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            revision["dispositions"][0]["evidence_ids"],
+            json!(["r4-local"])
+        );
+        assert_eq!(revision["prior_baseline"], earlier["baseline"]);
+        assert_eq!(revision["dispositions_verified"], false);
         let mut bad = reply.clone();
         bad.as_object_mut().unwrap().remove("baseline");
         assert!(

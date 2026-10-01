@@ -350,14 +350,17 @@ fn setup(ctx: &Context) -> Result<(), String> {
     } else {
         ""
     };
-    let scope_contract = if phase == "seed" || phase == "explore" || scope_repair {
+    let scope_contract = if phase == "seed"
+        || matches!(phase, "explore" | "challenge")
+        || scope_repair
+    {
         let mut fields = scope::contract();
         if !scope_repair {
             fields.as_object_mut().unwrap().remove("scope_disposition");
         }
         fields["baseline"] = outlook::baseline_contract();
-        let requirement = if phase == "explore" && !scope_repair {
-            "When research_evidence adds any typed finding, return these fields at the response root alongside hypotheses/research_evidence. Incorporate what was actually learned, revise stale unknowns and limitations, and retain unresolved qualifications. Leads alone do not require a refresh."
+        let requirement = if matches!(phase, "explore" | "challenge") && !scope_repair {
+            "When research_evidence adds any typed finding, return these fields at the response root alongside hypotheses/research_evidence. Return the complete replacement baseline, not only newly learned claims. Retain still-supported prior observed claims (citations may be enriched), revise stale unknowns and limitations, and retain unresolved qualifications. For EACH omitted or rewritten prior observed claim, include a root baseline_dispositions item: {prior_observation_index: zero-based integer in supplied baseline.observed, replacement_observation_indices: array of indices in the returned baseline.observed (empty for explicit retraction), reason: nonempty text up to 400 characters, evidence_ids: 1–16 current finding refs or same-response finding IDs}. At most one disposition per prior observation. Within the unchanged 16-observation limit, consolidate claims explicitly using these mappings; never silently drop prior facts. Dispositions are model judgments, not verified retractions. Leads alone do not require a refresh."
         } else {
             "Return these fields at the response root. scope_review and scope_disposition, when requested, are distinct judgments."
         };
