@@ -1,9 +1,12 @@
 # MediaGenerationRequest — Governed media generation request/result lifecycle.
 #
-# Version 1 supports image generation through the OpenAI Codex subscription
-# provider. The entity is intentionally media/provider generic so future image,
-# video, audio, and other providers can add dedicated WASM modules without
-# changing the agent tool surface.
+# Two image providers, each a dedicated WASM module started by its own action
+# (IOA guards cannot compare strings, so the action is the route):
+# - Generate: the OpenAI Codex subscription, behind the provider auth gate.
+# - GenerateWithOpenRouter: OpenRouter's image API with the openrouter_api_key
+#   tenant secret, no auth gate; default model xAI Grok Imagine.
+# The entity stays media/provider generic so further providers add a module
+# and an action without changing the request/result fields.
 
 [automaton]
 name = "MediaGenerationRequest"
@@ -174,6 +177,31 @@ auth_action = "EnsureFresh"
 ready_action = "RecordAuthReady"
 
 [[action]]
+name = "GenerateWithOpenRouter"
+kind = "input"
+from = ["Created", "Failed"]
+to = "Generating"
+params = ["prompt", "media_type", "operation", "provider", "model", "size", "quality", "output_format", "background", "workspace_id", "output_path"]
+hint = "Start a media generation request through OpenRouter's image API (API key, no subscription auth). model: leave empty for the default, 'x-ai/grok-imagine-image-2.0'; only allow-listed models (or the operator's configured default) are drawn, since every picture is paid from the tenant's OpenRouter credit, and the result's model says which drew; pass provider 'openrouter'. A non-square size is sent as an aspect ratio; quality and background are not sent."
+effect = [{ type = "trigger", name = "generate_openrouter_image" }]
+
+[[action.triggers]]
+name = "generate_openrouter_image"
+kind = "wasm"
+module = "openrouter_image_generate"
+on_failure = "RecordError"
+llm = true
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+openrouter_api_key = "{secret:openrouter_api_key}"
+openrouter_images_url = "https://openrouter.ai/api/v1/images"
+default_model = "x-ai/grok-imagine-image-2.0"
+timeout_secs = "600"
+max_response_bytes = "67108864"
+max_memory = "268435456"
+
+[[action]]
 name = "RecordAuthReady"
 kind = "input"
 from = ["Authorizing"]
@@ -228,10 +256,9 @@ name = "CompleteIsFinal"
 when = ["Complete"]
 assert = "no_further_transitions"
 
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
+# Failed is not final: Generate and GenerateWithOpenRouter retry from it. The
+# FailedIsFinal invariant that stood here contradicted those retries and failed
+# every level of `temper verify` (2026-10-01).
 
 [[state_timeout]]
 state = "Authorizing"
