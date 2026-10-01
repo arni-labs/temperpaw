@@ -163,7 +163,13 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         }
         if candidate_bytes > 128 * 1024 {
             if batch.tasks.is_empty() {
-                return Err("Batched semantic request exceeds 128 KB".into());
+                // request_task already enforces the individual hard limit. The
+                // batch wrapper must not reject an otherwise valid single request.
+                return Ok(Batch {
+                    request: individual.clone(),
+                    tasks: vec![task.clone()],
+                    individual: vec![individual],
+                });
             }
             break;
         }
@@ -202,6 +208,44 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wrapper_overflow_preserves_valid_individual_and_result_answer() {
+        let task = json!({"nodeId":"h","function":"classify_temporal","depth":0});
+        let mut snapshot = json!({"world":{"description":"Question","target_date":"2030-12-31","last_ingest_date":"2026-10-01"},"nodes":[{"Id":"h","kind":"scenario","statement":"change","edges":"[]"}]});
+        let program = json!({"tasks":[task.clone()],"cursor":0,"results":{},"evaluations":{}});
+        // Accumulated, individually bounded source records, not an oversized hypothesis.
+        loop {
+            let bytes = super::super::evaluation::request_task(&snapshot, &program, &task)
+                .unwrap()
+                .to_string()
+                .len();
+            if 128 * 1024 - bytes <= 300 {
+                break;
+            }
+            let id = snapshot["nodes"].as_array().unwrap().len();
+            snapshot["nodes"].as_array_mut().unwrap().push(json!({
+                "Id":format!("e{id}"), "kind":"research_evidence", "statement":"x".repeat(100),
+                "source_refs":"[\"https://example.com/source\"]", "quote":"Source finding."
+            }));
+        }
+        let base = super::super::evaluation::request_task(&snapshot, &program, &task).unwrap();
+        let padding = 128 * 1024 - base.to_string().len();
+        assert!(padding <= 300);
+        assert!(snapshot["nodes"].as_array().unwrap().len() < 2048);
+        snapshot["nodes"][0]["statement"] = json!(format!("change{}", "x".repeat(padding)));
+        let individual =
+            super::super::evaluation::request_task(&snapshot, &program, &task).unwrap();
+        assert_eq!(individual.to_string().len(), 128 * 1024);
+        let batch = prepare(&snapshot, &program, 1).unwrap();
+        assert_eq!(batch.request, individual);
+        assert_eq!(batch.individual, vec![individual]);
+        assert_eq!(batch.tasks, vec![task]);
+        assert_eq!(batch.question_key(0), "result");
+        let response = json!({"model":super::super::MODEL,"answers":{"result":{"type":"choice","choice":"future_change","probabilities":{"future_change":1.0,"already_observed":0.0,"mixed":0.0,"uncertain":0.0}}}});
+        assert_eq!(answers(&batch, &response).unwrap()[0].0, "future_change");
+        snapshot["nodes"][0]["statement"] = json!(format!("change{}x", "x".repeat(padding)));
+        assert!(prepare(&snapshot, &program, 1).is_err());
+    }
     fn assert_comparison_roundtrip(batch: &Batch) {
         for (i, individual) in batch.individual.iter().enumerate() {
             let mut state = batch.request["state"]["cases"][format!("q{i}")].clone();
