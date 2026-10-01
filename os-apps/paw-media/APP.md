@@ -4,11 +4,13 @@ Paw Media provides governed media generation as Temper-native entity flows.
 
 ## Entities
 
-- `MediaGenerationRequest`: request/result state for media generation. Version 1 supports `media_type = "image"`, `operation = "generate"`, and `provider = "openai_codex"`.
+- `MediaGenerationRequest`: request/result state for media generation (`media_type = "image"`, `operation = "generate"`). Two providers, each started by its own action:
+  - `Generate`: `provider = "openai_codex"`, the Codex subscription, behind the provider auth gate.
+  - `GenerateWithOpenRouter`: `provider = "openrouter"`, OpenRouter's image API with the `openrouter_api_key` tenant secret, no auth gate. `model` is an OpenRouter image model id; the default is `x-ai/grok-imagine-image-2.0`. A second model is what an art-style bake-off compares against (ADR 004).
 
 ## Agent Tool
 
-Agents call `temper.image_generate(prompt, opts=None)`. The tool creates a `MediaGenerationRequest`, dispatches `Generate`, waits for the WASM provider module, then returns PawFS file metadata plus a short-lived inline image marker for immediate multimodal feedback.
+Agents call `temper.image_generate(prompt, opts=None)`; `opts={"provider": "openrouter", "model": "..."}` draws through OpenRouter. The tool creates a `MediaGenerationRequest`, dispatches `Generate`, waits for the WASM provider module, then returns PawFS file metadata plus a short-lived inline image marker for immediate multimodal feedback.
 
 Durable bytes are stored through PawFS `File` streams. Inline base64 is only a transient tool-result convenience and uses the spec overflow TTL.
 
