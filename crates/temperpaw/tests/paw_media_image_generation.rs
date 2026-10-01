@@ -425,9 +425,9 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
         "Action::\"read\"",
         "Action::\"list\"",
         "Action::\"GenerateWithOpenRouter\"",
-        ") unless {",
-        "\"service\", \"owner\", \"curator\"",
-        "\"wasm-runtime\"",
+        ") when {",
+        "principal is Customer && !(principal has role && [\"owner\", \"curator\"].contains(principal.role))",
+        "principal.agent_type == \"contributor\"",
     ] {
         assert!(
             forbid.contains(needle),

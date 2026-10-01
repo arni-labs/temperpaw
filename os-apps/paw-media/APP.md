@@ -6,7 +6,7 @@ Paw Media provides governed media generation as Temper-native entity flows.
 
 - `MediaGenerationRequest`: request/result state for media generation (`media_type = "image"`, `operation = "generate"`). Two providers, each started by its own action:
   - `Generate`: `provider = "openai_codex"`, the Codex subscription, behind the provider auth gate.
-  - `GenerateWithOpenRouter`: `provider = "openrouter"`, OpenRouter's image API with the `openrouter_api_key` tenant secret, no auth gate. `model` is an OpenRouter image model id; the default is `x-ai/grok-imagine-image-2.0`. A second model is what Katagami's art-style transfer test compares against (ADR 004).
+  - `GenerateWithOpenRouter`: `provider = "openrouter"`, OpenRouter's image API with the `openrouter_api_key` tenant secret, no auth gate. `model` is the default, `x-ai/grok-imagine-image-2.0`, unless the operator configures another default; other models are refused before a paid call (allow-list in the module). The result's `model` says which drew. A second model is what Katagami's art-style transfer test compares against (ADR 004).
 
 ## Agent Tool
 

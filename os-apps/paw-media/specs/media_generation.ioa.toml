@@ -182,7 +182,7 @@ kind = "input"
 from = ["Created", "Failed"]
 to = "Generating"
 params = ["prompt", "media_type", "operation", "provider", "model", "size", "quality", "output_format", "background", "workspace_id", "output_path"]
-hint = "Start a media generation request through OpenRouter's image API (API key, no subscription auth). model: an OpenRouter image model id such as 'x-ai/grok-imagine-image-2.0' (the default) or 'google/gemini-3.1-flash-image'; pass provider 'openrouter'. A non-square size is sent as an aspect ratio; quality and background are not sent."
+hint = "Start a media generation request through OpenRouter's image API (API key, no subscription auth). model: leave empty for the default, 'x-ai/grok-imagine-image-2.0'; only allow-listed models (or the operator's configured default) are drawn, since every picture is paid from the tenant's OpenRouter credit, and the result's model says which drew; pass provider 'openrouter'. A non-square size is sent as an aspect ratio; quality and background are not sent."
 effect = [{ type = "trigger", name = "generate_openrouter_image" }]
 
 [[action.triggers]]
