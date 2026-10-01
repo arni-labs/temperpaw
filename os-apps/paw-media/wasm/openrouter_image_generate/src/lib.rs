@@ -353,8 +353,11 @@ fn requested_mime(fields: &Value) -> String {
 }
 
 /// Create the picture's PawFS File (no content yet) and return its id. A File
-/// a failed earlier attempt left at the same path with no content is reused,
-/// so a retry is not refused by PawFS's one-file-per-(workspace, path) rule.
+/// a failed earlier attempt of this same request left at its path with no
+/// content is reused, so a retry is not refused by PawFS's
+/// one-file-per-(workspace, path) rule. Only a path that carries this
+/// request's id is this request's own (the default /generated/images/<id>);
+/// any other File already at the path is someone else's and is refused.
 fn create_image_file(
     ctx: &Context,
     fields: &Value,
@@ -373,7 +376,7 @@ fn create_image_file(
             .or_else(|| existing.get("entity_id").and_then(Value::as_str))
             .unwrap_or("")
             .to_string();
-        if status == "Created" && !id.is_empty() {
+        if status == "Created" && !id.is_empty() && path_is_this_requests(path, &entity_id(ctx)) {
             return Ok(id);
         }
         return Err(format!(
@@ -414,6 +417,11 @@ fn create_image_file(
         .filter(|value| !value.is_empty())
         .ok_or("image_generate: PawFS File create response did not include an id")?
         .to_string())
+}
+
+/// Whether a path is this request's own: it carries the request's entity id.
+fn path_is_this_requests(path: &str, request_id: &str) -> bool {
+    !request_id.is_empty() && path.contains(request_id)
 }
 
 /// The File at (workspace, path), if there is one.
@@ -775,6 +783,19 @@ mod tests {
                 .unwrap_err()
                 .contains("data[0]")
         );
+    }
+
+    #[test]
+    fn only_a_path_carrying_this_request_id_is_its_own() {
+        assert!(path_is_this_requests(
+            "/generated/images/req-1.png",
+            "req-1"
+        ));
+        assert!(!path_is_this_requests(
+            "/transfer-test/art-styles/a/t/x-1.png",
+            "req-1"
+        ));
+        assert!(!path_is_this_requests("/generated/images/req-1.png", ""));
     }
 
     #[test]
