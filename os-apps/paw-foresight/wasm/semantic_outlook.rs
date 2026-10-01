@@ -115,6 +115,31 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn chronology_error_identifies_source_field_date_and_vantage() {
+        let baseline = json!({"as_of":"2026-10-01","observed":[{"claim":"IEA projects a future outcome, not an observation","evidence_ids":["r2-ev_r2_iea_2w3w"]}],"assumptions":[],"unknowns":[]});
+        let metadata = json!({"kind":"finding","publication_date":null,"observation_period":{"start":null,"end":"2035"},"retrieved_at":"2026-10-01"});
+        let mut snapshot = json!({"world":{"last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[{"Id":"r2-ev_r2_iea_2w3w","kind":"research_evidence","evidence_metadata":metadata}]});
+        let error = validate_baseline(&baseline, &snapshot).unwrap_err();
+        for detail in [
+            "r2-ev_r2_iea_2w3w",
+            "observation_period.end=2035",
+            "baseline.as_of=2026-10-01",
+            "not a forecast horizon",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        // A projection's horizon stays in the claim; its unknown observation date is null.
+        snapshot["nodes"][0]["evidence_metadata"]["observation_period"]["end"] = Value::Null;
+        assert!(validate_baseline(&baseline, &snapshot).is_ok());
+        snapshot["nodes"][0]["evidence_metadata"]["publication_date"] = json!("2035");
+        assert!(
+            validate_baseline(&baseline, &snapshot)
+                .unwrap_err()
+                .contains("publication_date=2035")
+        );
+    }
+
+    #[test]
     fn leads_and_unverified_legacy_cannot_establish_new_baselines() {
         let baseline = json!({"as_of":"2026-09-30","observed":[{"claim":"A substantive finding","evidence_ids":["e"]}],"assumptions":[],"unknowns":[]});
         let metadata = json!({"kind":"lead","publication_date":"2025","observation_period":{"start":"2020","end":"2021"},"retrieved_at":"2026-09-30"});
@@ -407,7 +432,13 @@ pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), Strin
                 evidence_contract::within_vantage(
                     metadata,
                     baseline["as_of"].as_str().unwrap_or(""),
-                )?;
+                )
+                .map_err(|error| {
+                    format!(
+                        "Evidence {}: {error}",
+                        node["Id"].as_str().unwrap_or("<missing Id>")
+                    )
+                })?;
                 if metadata["kind"] == "lead" {
                     return Err("Research lead cannot establish a baseline observation".into());
                 }

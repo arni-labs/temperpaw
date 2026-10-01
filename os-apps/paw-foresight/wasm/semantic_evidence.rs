@@ -1,5 +1,6 @@
 // Evidence chronology is distinct from forecast horizons and retrieval time.
 use serde_json::{Value, json};
+pub const CHRONOLOGY: &str = "observation_period dates describe when source observations occurred, not a forecast horizon. Preserve projections and their target dates explicitly as projections in the finding statement; use null for unknown observation dates. publication_date dates the source publication, not the projected event.";
 fn date(value: &Value, day_required: bool) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
@@ -109,18 +110,24 @@ pub fn single_source(refs: &Value) -> Result<(), String> {
 }
 pub fn within_vantage(metadata: &Value, vantage: &str) -> Result<(), String> {
     date(&json!(vantage), true)?;
-    for value in [
-        &metadata["publication_date"],
-        &metadata["observation_period"]["start"],
-        &metadata["observation_period"]["end"],
+    for (field, value) in [
+        ("publication_date", &metadata["publication_date"]),
+        (
+            "observation_period.start",
+            &metadata["observation_period"]["start"],
+        ),
+        (
+            "observation_period.end",
+            &metadata["observation_period"]["end"],
+        ),
     ] {
         if let Some(date) = value.as_str() {
             // Partial dates denote intervals. Reject only a wholly later interval.
             let n = date.len().min(vantage.len());
             if date[..n] > vantage[..n] {
-                return Err(
-                    "Evidence publication or observation is later than the baseline vantage".into(),
-                );
+                return Err(format!(
+                    "evidence_metadata.{field}={date} is later than baseline.as_of={vantage}. {CHRONOLOGY}"
+                ));
             }
         }
     }
