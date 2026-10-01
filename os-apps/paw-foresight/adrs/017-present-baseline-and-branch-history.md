@@ -98,3 +98,18 @@ A measured-duration simulation through the actual monitor WASM needs seven polls
 at the new spacing; the old spacing fails at ten. This trades up to another
 30 seconds of completion-detection latency for less premature abandonment, not
 additional model attempts or a promise that arbitrary corrections will finish.
+
+### Source-driven scope narrowing
+
+Baseline review records the original question separately from the scope supported
+by retrieved evidence. A narrowed or uncertain scope caused by source availability
+requests one research-only use of the existing explore lifecycle before seed
+hypotheses are evaluated. This is a fallible model review, not coverage certification.
+The repair may revise the sourced baseline; its original version remains in the
+receipt. New sources use a separate identity prefix, existing sources stay immutable,
+and ordinary exploration rounds, the original clock and budgets are not reset.
+Malformed repair responses receive the existing bounded corrections, then continue
+with the original baseline and explicit limitations. Frozen or budget-limited runs
+skip external repair honestly. A completed repair can remain limited; only typed,
+dated findings can support an addressed disposition, and unresolved scope remains
+visible in baseline unknowns. No domain checklist or future outcome is prescribed.

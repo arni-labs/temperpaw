@@ -255,6 +255,28 @@ fn step(ctx: &Context) -> Result<(), String> {
         )
     );
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    if program["scope_repair"]["status"] == "pending" {
+        let remaining = core::transition_limit(&program)
+            .saturating_sub(core::transition_count(&ctx.entity_state));
+        let allowed = !stopped
+            && calls < core::call_limit(&program)
+            && elapsed < core::time_limit(&program).saturating_sub(120_000)
+            && remaining >= core::REASONING_TRANSITION_RESERVE + 32
+            && core::field(&snapshot["world"], "hindcast_mode") == "false";
+        if allowed {
+            set_success_result(
+                "Reason",
+                &json!({"phase":"explore","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
+            );
+            return Ok(());
+        }
+        program["scope_repair"] = json!({"status":"skipped","attempted":false,"coverage_certified":false,"reason":if core::field(&snapshot["world"], "hindcast_mode") != "false" {"frozen_evidence_only"} else {"resource_limit"}});
+        set_success_result(
+            "SearchPlanned",
+            &json!({"program_json":program.to_string()}),
+        );
+        return Ok(());
+    }
     if program["stage"] == "worlds" && program["tasks"][0]["function"] == "check_world_set" {
         let task = program["tasks"][0].clone();
         let id = core::field(&task, "nodeId").to_owned();

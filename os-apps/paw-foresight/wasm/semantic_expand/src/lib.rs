@@ -196,6 +196,16 @@ fn expand(
         resolve_challenge(snapshot, &mut generated)?;
     }
     references::References::new(snapshot)?.resolve_generated(&mut generated);
+    if scope_pending(program)
+        && (generated["hypotheses"]
+            .as_array()
+            .is_none_or(|v| !v.is_empty())
+            || generated["branches"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty()))
+    {
+        return Err("Scope repair is research-only: hypotheses and branches must be empty".into());
+    }
     let hypotheses = generated["hypotheses"]
         .as_array()
         .ok_or("Missing hypotheses")?;
@@ -230,7 +240,11 @@ fn expand(
         if local.starts_with(references::PREFIX) {
             return Err("Generated identity uses reserved reference namespace".into());
         }
-        let id = format!("r{round}-{local}");
+        let id = if scope_pending(program) {
+            format!("scope-{local}")
+        } else {
+            format!("r{round}-{local}")
+        };
         if known.contains(local)
             || mapped.insert(local.to_owned(), id.clone()).is_some()
             || !known.insert(id)
@@ -463,12 +477,143 @@ fn expand(
     Ok(())
 }
 
+fn validate_scope(review: &Value, snapshot: &Value) -> Result<(), String> {
+    if review["requested_question"] != snapshot["world"]["description"] {
+        return Err("Scope requested_question must equal the original question exactly".into());
+    }
+    bounded_text(&review["evidence_scope"], 800)?;
+    bounded_texts(&review["limitations"], 0, 16, 240)?;
+    if !matches!(
+        review["status"].as_str(),
+        Some("aligned" | "narrowed" | "uncertain")
+    ) || !matches!(
+        review["narrowing_basis"].as_str(),
+        Some("user_explicit" | "evidence_availability" | "none")
+    ) {
+        return Err("Invalid scope review judgment".into());
+    }
+    if review["status"] != "aligned" && review["limitations"].as_array().unwrap().is_empty() {
+        return Err("Limited or uncertain scope needs explicit limitations".into());
+    }
+    Ok(())
+}
+
+fn retain_scope_limits(baseline: &Value, review: &Value) -> Result<(), String> {
+    let unknowns = baseline["unknowns"]
+        .as_array()
+        .ok_or("Missing baseline unknowns")?;
+    if review["status"] != "aligned"
+        && review["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|limit| !unknowns.contains(limit))
+    {
+        return Err("Copy each unresolved scope limitation exactly into baseline.unknowns".into());
+    }
+    Ok(())
+}
+
+fn scope_pending(program: &Value) -> bool {
+    program["scope_repair"]["status"] == "pending"
+}
+
+fn failed_scope_repair(old: &Value, error: &str) -> Value {
+    let mut program = old.clone();
+    program["scope_repair"] = json!({"status":"failed","attempted":true,"coverage_certified":false,"disposition":"limited","original_baseline":old["baseline"],"original_review":old["scope_review"],"report":format!("Scope repair response rejected after bounded corrections: {error}")});
+    program["response_correction"] = Value::Null;
+    program["continue_exploring"] = json!(true);
+    program
+}
+
+fn finish_scope_repair(snapshot: &Value, generated: &Value, old: &Value) -> Result<Value, String> {
+    let mut generated = generated.clone();
+    references::References::new(snapshot)?.resolve_generated(&mut generated);
+    let locals: std::collections::BTreeSet<String> = generated["research_evidence"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v["id"].as_str().map(str::to_owned))
+        .collect();
+    for claim in generated["baseline"]["observed"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        for id in claim["evidence_ids"].as_array_mut().into_iter().flatten() {
+            if let Some(local) = id.as_str().filter(|v| locals.contains(*v)) {
+                *id = json!(format!("scope-{local}"));
+            }
+        }
+    }
+    for id in generated["scope_disposition"]["evidence_ids"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(local) = id.as_str().filter(|v| locals.contains(*v)) {
+            *id = json!(format!("scope-{local}"));
+        }
+    }
+    validate_scope(&generated["scope_review"], snapshot)?;
+    outlook::validate_baseline(&generated["baseline"], snapshot)?;
+    retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
+    let report = &generated["scope_disposition"];
+    bounded_text(&report["report"], 1200)?;
+    if !matches!(
+        report["status"].as_str(),
+        Some("addressed" | "limited" | "uncertain")
+    ) {
+        return Err("Invalid scope repair disposition".into());
+    }
+    let refs = report["evidence_ids"]
+        .as_array()
+        .ok_or("Missing scope disposition evidence_ids")?;
+    if refs.len() > 32
+        || refs.iter().any(|id| {
+            !snapshot["nodes"].as_array().unwrap().iter().any(|n| {
+                n["Id"] == *id && matches!(core::field(n, "kind"), "evidence" | "research_evidence")
+            })
+        })
+    {
+        return Err("Scope disposition references unknown evidence".into());
+    }
+    if report["status"] == "addressed"
+        && !refs.iter().any(|id| {
+            snapshot["nodes"].as_array().unwrap().iter().any(|n| {
+                n["Id"] == *id
+                    && n["evidence_metadata"]["kind"] == "finding"
+                    && core::evidence::validate(&n["evidence_metadata"]).is_ok()
+                    && core::evidence::within_vantage(
+                        &n["evidence_metadata"],
+                        core::field(&snapshot["world"], "last_ingest_date"),
+                    )
+                    .is_ok()
+            })
+        })
+    {
+        return Err("Addressed scope needs a current typed finding; lead-only or legacy sources remain limited".into());
+    }
+    Ok(
+        json!({"status":"completed","attempted":true,"disposition":report["status"],"report":report["report"],"evidence_ids":refs,"coverage_certified":false,"original_baseline":old["baseline"],"original_review":old["scope_review"],"baseline":generated["baseline"],"review":generated["scope_review"]}),
+    )
+}
+
 fn establish_baseline(snapshot: &Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     outlook::validate_baseline(&generated["baseline"], snapshot)?;
     let mut program = old.clone();
     program["baseline"] = generated["baseline"].clone();
+    if !generated["scope_review"].is_null() || snapshot["world"]["evidence_contract"] == "v1" {
+        validate_scope(&generated["scope_review"], snapshot)?;
+        retain_scope_limits(&generated["baseline"], &generated["scope_review"])?;
+        program["scope_review"] = generated["scope_review"].clone();
+        let pending = generated["scope_review"]["narrowing_basis"] == "evidence_availability"
+            && generated["scope_review"]["status"] != "aligned";
+        program["scope_repair"] = json!({"status":if pending {"pending"} else {"not_requested"},"attempted":false,"coverage_certified":false});
+    }
+
     program["baseline_status"] = json!("established");
     program["baseline_correction"] = Value::Null;
     program["continue_exploring"] = json!(true);
@@ -669,6 +814,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "round",
         "rounds",
         "baseline_status",
+        "scope_review",
+        "scope_repair",
         "temporal_decomposition_requested",
         "last_error",
         "combination_search",
@@ -833,6 +980,8 @@ fn attach_world_probabilities(
         json!({"task_id":core::search::world_set_task(program["active_world_ids"].as_array().unwrap_or(&vec![]))["nodeId"],"revision":program["world_revision"],"world_ids":program["active_world_ids"],"verdict":"uncertain","evaluation":null,"correction_status":"unavailable"})
     };
     answer["baseline"] = program["baseline"].clone();
+    answer["scope_review"] = program["scope_review"].clone();
+    answer["scope_repair"] = program["scope_repair"].clone();
     answer["evaluation_status"] = json!(if evaluated == count && count > 0 {
         "evaluated"
     } else if evaluated > 0 {
@@ -937,6 +1086,8 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "evaluations",
         "baseline",
         "baseline_status",
+        "scope_review",
+        "scope_repair",
         "temporal_decomposition_requested",
         "rounds",
         "http_calls",
@@ -1099,7 +1250,9 @@ fn exploration_correction(phase: &str, old: &Value, error: &str) -> Result<Value
         ));
     }
     let mut program = old.clone();
-    let instruction = if phase == "challenge" {
+    let instruction = if scope_pending(old) {
+        "Scope research repair was not applied. Return the complete research-only repair JSON: no hypotheses or branches; preserve original question and source qualifications, validate refreshed baseline, and report remaining limits honestly. Empty research_evidence is valid when no new findings were obtained."
+    } else if phase == "challenge" {
         "The challenge response was not applied. Return the complete corrected challenge JSON against the unchanged visible catalog. Every premise must link existing prior hypotheses to new alternative hypotheses; every new hypothesis must be linked. Do not invent references, evidence, or evaluations. You may return empty premises and hypotheses with an honest explanation."
     } else {
         "The exploration response was not applied. Return the complete corrected exploration JSON against the unchanged visible catalog. Parent denotes hypothesis lineage and must reference a scenario/revision or a new hypothesis in this batch; source evidence is support, not a parent. Preserve the distinction between source observations and future hypotheses. Do not invent references or evaluations, and cite only research actually retrieved."
@@ -1140,6 +1293,14 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let generated = match generated_response(response, &old) {
         Ok(Ok(value)) => value,
         Err(error) => {
+            if scope_pending(&old) {
+                let program = failed_scope_repair(&old, &error);
+                set_success_result(
+                    "Expanded",
+                    &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+                );
+                return Ok(());
+            }
             if phase == "compose"
                 && let Some(program) =
                     optional_composition_fallback(&snapshot, &old, &error, response)
@@ -1228,11 +1389,32 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         }
     } else {
         let generated = core::parse(raw)?;
-        if let Err(error) = expand(&mut snapshot, &generated, phase, &old) {
+        let expansion = if scope_pending(&old) {
+            let mut candidate = snapshot.clone();
+            expand(&mut candidate, &generated, phase, &old).and_then(|_| {
+                finish_scope_repair(&candidate, &generated, &old)?;
+                snapshot = candidate;
+                Ok(())
+            })
+        } else {
+            expand(&mut snapshot, &generated, phase, &old)
+        };
+        if let Err(error) = expansion {
             if !matches!(phase, "challenge" | "explore") {
                 return Err(error);
             }
-            let program = exploration_correction(phase, &old, &error)?;
+            let program = match exploration_correction(phase, &old, &error) {
+                Ok(program) => program,
+                Err(_) if scope_pending(&old) => {
+                    let program = failed_scope_repair(&old, &error);
+                    set_success_result(
+                        "Expanded",
+                        &json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+                    );
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             set_success_result(
                 "CompositionRejected",
                 &json!({"program_json":program.to_string()}),
@@ -1249,8 +1431,24 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let mut program = if let Some(program) = composed {
         program
     } else {
-        replan(&snapshot, &old, &core::parse(raw)?, added)?
+        let mut planning_old = old.clone();
+        if scope_pending(&old) {
+            let repaired = finish_scope_repair(&snapshot, &core::parse(raw)?, &old)?;
+            if repaired["baseline"] != old["baseline"] {
+                planning_old["evidence_ids"] = json!([]);
+            }
+        }
+        replan(&snapshot, &planning_old, &core::parse(raw)?, added)?
     };
+    if scope_pending(&old) {
+        let receipt = finish_scope_repair(&snapshot, &core::parse(raw)?, &old)?;
+        program["baseline"] = receipt["baseline"].clone();
+        program["scope_review"] = receipt["review"].clone();
+        program["scope_repair"] = receipt;
+        program["round"] = old["round"].clone();
+        program["rounds"] = old["rounds"].clone();
+        program["continue_exploring"] = json!(true);
+    }
     if phase == "challenge" {
         record_challenge(&snapshot, before, &core::parse(raw)?, &mut program)?;
     }
@@ -1282,6 +1480,69 @@ mod tests {
         let program = json!({"results":{"a":{"estimate_likelihood":"0.9"},"b":{"estimate_likelihood":"0.8"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
+    #[test]
+    fn malformed_scope_repair_exhaustion_keeps_work_and_continues() {
+        let old = json!({"scope_repair":{"status":"pending"},"baseline":{"unknowns":["narrow"]},"results":{"h":{"classify_gap":"none"}},"http_calls":9,"round":0,"response_correction":{"attempt":2}});
+        assert!(generated_response("invalid", &old).is_err());
+        let next = failed_scope_repair(&old, "invalid JSON");
+        assert!(!scope_pending(&next));
+        assert_eq!(next["results"], old["results"]);
+        assert_eq!(next["baseline"], old["baseline"]);
+        assert_eq!(next["http_calls"], 9);
+        assert_eq!(next["continue_exploring"], true);
+    }
+
+    #[test]
+    fn scope_repair_distinguishes_user_scope_and_preserves_sources() {
+        let snapshot = json!({"world":{"description":"How might teenagers learn?","last_ingest_date":"2026-10-01","hindcast_mode":"false"},"branches":[],"nodes":[{"Id":"e","kind":"evidence","statement":"Observed US AI use","edges":"[]"}]});
+        let baseline = json!({"as_of":"2026-10-01","observed":[{"claim":"US AI use observed","evidence_ids":["e"]}],"assumptions":[],"unknowns":["Evidence only covers US school AI use."]});
+        let review = json!({"requested_question":"How might teenagers learn?","evidence_scope":"US school AI use","narrowing_basis":"evidence_availability","status":"narrowed","limitations":["Evidence only covers US school AI use."]});
+        let old = core::plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        let pending = establish_baseline(
+            &snapshot,
+            &json!({"baseline":baseline,"scope_review":review}),
+            &old,
+        )
+        .unwrap();
+        assert!(scope_pending(&pending));
+        let mut explicit = review.clone();
+        explicit["narrowing_basis"] = json!("user_explicit");
+        assert!(!scope_pending(
+            &establish_baseline(
+                &snapshot,
+                &json!({"baseline":baseline,"scope_review":explicit}),
+                &old
+            )
+            .unwrap()
+        ));
+        let mut wrong = review.clone();
+        wrong["requested_question"] = json!("US AI policy");
+        assert!(validate_scope(&wrong, &snapshot).is_err());
+        let generated = json!({"hypotheses":[],"branches":[],"research_evidence":[],"continue_exploring":true,"exploration_note":"No additional supported evidence found","baseline":baseline,"scope_review":review,"scope_disposition":{"status":"limited","report":"Sources remain narrow; no new supported findings.","evidence_ids":["e"]}});
+        let mut repaired = snapshot.clone();
+        expand(&mut repaired, &generated, "explore", &pending).unwrap();
+        assert_eq!(repaired, snapshot);
+        let receipt = finish_scope_repair(&repaired, &generated, &pending).unwrap();
+        assert_eq!(receipt["coverage_certified"], false);
+        let mut done = pending.clone();
+        done["scope_repair"] = receipt;
+        assert!(!scope_pending(&done));
+        let mut bad = generated.clone();
+        bad["hypotheses"] = json!([{"id":"future"}]);
+        assert!(
+            expand(&mut repaired, &bad, "explore", &pending)
+                .unwrap_err()
+                .contains("research-only")
+        );
+        assert_eq!(repaired, snapshot);
+        bad = generated.clone();
+        bad["baseline"]["observed"] = json!([]);
+        assert!(finish_scope_repair(&snapshot, &bad, &pending).is_ok());
+        bad = generated.clone();
+        bad["scope_disposition"]["evidence_ids"] = json!(["invented"]);
+        assert!(finish_scope_repair(&snapshot, &bad, &pending).is_err());
+    }
+
     #[test]
     fn optional_fallback_requires_valid_prior_set_and_exhausted_invalid_correction() {
         let (mut snapshot, generated, old) = world_fixture();
