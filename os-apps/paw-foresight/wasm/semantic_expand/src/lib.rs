@@ -186,10 +186,6 @@ fn record_challenge(
             *id = json!(format!("r{round}-{}", id.as_str().unwrap()));
         }
     }
-    let recommended = core::branches::challenge_rollout(&prior, old);
-    let adopted = recommended
-        .as_ref()
-        .is_some_and(|rollout| core::branches::challenge_rollout_adopted(&generated, rollout));
     let generated_branch_ids: std::collections::BTreeSet<_> = generated["branches"]
         .as_array()
         .into_iter()
@@ -208,9 +204,7 @@ fn record_challenge(
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
         "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
         "note":generated["exploration_note"],"accuracy_verified":false,
-        "recommended_causal_rollout":recommended,
-        "causal_rollout":if adopted {recommended.clone()} else {None},
-        "recommended_rollout_adopted":adopted,"branches":actual_branches
+        "branches":actual_branches
     });
     Ok(())
 }
@@ -227,9 +221,6 @@ fn expand(
     let mut generated = generated.clone();
     if phase == "challenge" {
         resolve_challenge(snapshot, &mut generated)?;
-        if let Some(rollout) = core::branches::challenge_rollout(snapshot, program) {
-            core::branches::validate_challenge_rollout(&generated, &rollout)?;
-        }
     }
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     if scope_pending(program)
@@ -2120,7 +2111,6 @@ mod tests {
     fn challenge_can_introduce_and_evaluate_a_new_paired_premise() {
         let mut snapshot = json!({"world":{"hindcast_mode":"false","last_ingest_date":"2026-10-01","target_date":"2030-12-31"},"nodes":[{"Id":"old","kind":"scenario","statement":"The current arrangement grows","edges":"[]"}]});
         let old = json!({"baseline_status":"established","results":{"old":{"classify_temporal":"future_change","classify_gap":"evidence","decision_value":"3"}}});
-        assert!(core::branches::challenge_rollout(&snapshot, &old).is_some());
         let generated = json!({
             "hypotheses":[
                 {"id":"premise","statement":"A different mechanism becomes available","requires":[]},
@@ -2134,7 +2124,6 @@ mod tests {
             "premises_challenged":[{"assumption":"The old arrangement remains necessary","alternative":"Another mechanism changes the activity","prior_hypothesis_ids":["old"],"alternative_hypothesis_ids":["premise","on","off"]}],
             "research_evidence":[],"continue_exploring":true,"exploration_note":"Investigate a premise outside the ranked event"
         });
-        let original = snapshot.clone();
         expand(&mut snapshot, &generated, "challenge", &old).unwrap();
         let mut program = replan(&snapshot, &old, &generated, 3).unwrap();
         for id in ["r1-premise", "r1-on", "r1-off"] {
@@ -2185,32 +2174,13 @@ mod tests {
         ));
         record_challenge(&snapshot, 1, &generated, &old, &mut program).unwrap();
         let receipt = &program["independent_challenge"];
-        assert_eq!(receipt["recommended_causal_rollout"]["nodeId"], "old");
-        assert_eq!(receipt["recommended_rollout_adopted"], false);
-        assert!(receipt["causal_rollout"].is_null());
+        assert!(receipt.get("recommended_causal_rollout").is_none());
+        assert!(receipt.get("recommended_rollout_adopted").is_none());
+        assert!(receipt.get("causal_rollout").is_none());
         assert_eq!(receipt["branches"], snapshot["branches"]);
         assert_eq!(
             receipt["branches"][0]["condition"]["event_ids"],
             json!(["r1-premise"])
-        );
-        // Adopting the advice keeps both exact roots while allowing a separate premise.
-        let rollout = core::branches::challenge_rollout(&original, &old).unwrap();
-        let mut advised = generated.clone();
-        advised["branches"] = rollout["branches"].clone();
-        advised["hypotheses"][1]["branch_id"] = json!("challenge-premise-on");
-        advised["hypotheses"][2]["branch_id"] = json!("challenge-premise-off");
-        let mut updated = original;
-        expand(&mut updated, &advised, "challenge", &old).unwrap();
-        let mut program = replan(&updated, &old, &advised, 3).unwrap();
-        record_challenge(&updated, 1, &advised, &old, &mut program).unwrap();
-        assert_eq!(
-            program["independent_challenge"]["recommended_rollout_adopted"],
-            true
-        );
-        assert_eq!(program["independent_challenge"]["causal_rollout"], rollout);
-        assert_eq!(
-            program["independent_challenge"]["branches"],
-            updated["branches"]
         );
     }
 

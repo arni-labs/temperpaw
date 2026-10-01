@@ -48,9 +48,9 @@ Reference contract: existing catalog nodes use exact ref_ identifiers; never rec
 
 Resource contract: at most128 TOTAL hypotheses plus research_evidence per batch; capacity5000 Jev calls,2048 nodes,64 rounds and one hour. These are limits, not targets or category counts. Continue while another round can add a materially different mechanism or resolve a consequential uncertainty. Stop with continue_exploring=false when it cannot, explaining why and what remains unknown. A budget stop means incomplete exploration, not convergence."#;
 
-const CHALLENGE_PROMPT: &str = r#"The supplied causal_rollout is an advisory investigation chosen from existing candidates by recorded decision value, not a required framing. You may investigate it, another existing premise, or a new conjectural premise that challenges the candidates' shared arrangement. A new premise is an ordinary hypothesis in this response, not observed evidence; include it and its consequences in the appropriate premises_challenged alternative group. Its new branch conditions may reference its same-batch ID. Bind consequences with branch_id; an unconditioned premise must not condition on itself. Preserve existing ancestry when extending an existing branch.
+const CHALLENGE_PROMPT: &str = r#"Investigate existing or new conjectural premises that challenge the candidates' shared arrangement. A new premise is an ordinary hypothesis in this response, not observed evidence; include it and its consequences in the appropriate premises_challenged alternative group. Its new branch conditions may reference its same-batch ID. Bind consequences with branch_id; an unconditioned premise must not condition on itself. Preserve existing ancestry when extending an existing branch.
 
-If you adopt either supplied causal_rollout root, return both exact roots with unchanged conditions, dates and inherited parent, plus a bound consequence under each root or its descendants. You may also return independent hypotheses and branches. If you choose another premise, use distinct branch IDs rather than repurposing the supplied root IDs. Explore both signs when making a paired rollout. The complement of a compound event means at least one part fails, not that an opposite mechanism necessarily happens. Do not invent certainty or force an opposite outcome. If no defensible challenge can be proposed, return empty hypotheses and premises with an honest explanation.
+Explore both signs when making a paired rollout. The complement of a compound event means at least one part fails, not that an opposite mechanism necessarily happens. Do not invent certainty or force an opposite outcome. If no defensible challenge can be proposed, return empty hypotheses and premises with an honest explanation.
 
 Challenge the shared causal premises of the supplied candidate futures. You are a fresh reasoner given the same question and observed baseline, plus existing candidate definitions and mechanisms with current novelty and decision-value judgments. These are fallible critiques, not probabilities, targets or a required novelty threshold. Use them to examine repeated mechanisms and consequential unanswered alternatives, not to manufacture surprising claims. Identify where several candidates assume the same arrangement continues. Develop a rival mechanism and interacting downstream consequences that would change the answer to the whole question, rather than another topic or example within that arrangement. Explain which existing claims share the premise and which new claims express its alternative. Rival trajectories may overlap; do not force mutually exclusive worlds, prescribed axes, optimism or any desired outcome. Keep observations separate from conjecture and respect the vantage and horizon; frozen hindcasts admit no later knowledge.
 
@@ -75,7 +75,6 @@ fn challenge_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     }
     let input = references::References::new(snapshot)?.project(&json!({
         "candidate_judgments":judgments,
-        "causal_rollout":core::branches::challenge_rollout(snapshot,program),
         "historical_search_guidance":program["historical_search_guidance"],
         "historical_guidance_semantics":"Recorded search rankings with their original context, not current judgments. Missing provenance remains unknown. Use as fallible search guidance only; changed evidence or comparison samples can change their relevance.",
         "evaluation_semantics":{
@@ -406,6 +405,24 @@ mod reasoning_tests {
 
     mod outlook_contract {
         include!("../../semantic_outlook.rs");
+    }
+
+    #[test]
+    fn challenger_receives_judgments_without_a_preselected_premise() {
+        let snapshot = json!({"world":{"target_date":"2030-12-31"},"nodes":[{"Id":"a","kind":"scenario","statement":"One arrangement","edges":"[]"},{"Id":"b","kind":"scenario","statement":"Another arrangement","edges":"[]"}]});
+        let program = json!({"baseline_status":"established","results":{"a":{"classify_temporal":"future_change","classify_gap":"evidence","decision_value":"4","evaluate_novelty":"1"},"b":{"classify_temporal":"future_change","classify_gap":"uncertain","decision_value":"2","evaluate_novelty":"3"}}});
+        let input = challenge_input(&snapshot, &program).unwrap();
+        assert!(input.get("causal_rollout").is_none());
+        assert_eq!(input["existing_candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            input["candidate_judgments"]["ref_0001"]["decision_value"],
+            "4"
+        );
+        assert_eq!(
+            input["candidate_judgments"]["ref_0002"]["evaluate_novelty"],
+            "3"
+        );
+        assert!(!CHALLENGE_PROMPT.contains("supplied causal_rollout"));
     }
 
     #[test]

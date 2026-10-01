@@ -96,11 +96,19 @@ async fn challenge_producer_binds_both_signs_and_preserves_joint_semantics() {
     assert_eq!(launch["callback_action"], "LaunchReasoning");
     let input: Value =
         serde_json::from_str(launch["callback_params"]["user_message"].as_str().unwrap()).unwrap();
-    let rollout = &input["causal_rollout"];
-    assert!(
-        rollout.is_object(),
-        "reserved challenge must carry selected signed state"
-    );
+    assert!(input.get("causal_rollout").is_none());
+    // The test response chooses its own premise; production supplies no roots.
+    let premise = snapshot["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| core::branches::future_eligible(&snapshot, &p, core::field(n, "Id")))
+        .unwrap();
+    let parent = premise.get("branch_id").cloned().unwrap_or(Value::Null);
+    let rollout = json!({"nodeId":premise["Id"],"statement":premise["statement"],"branches":[
+        {"id":"challenge-premise-on","parent_branch_id":parent,"condition":{"kind":"all_occurring","event_ids":[premise["Id"]]},"by":snapshot["world"]["target_date"]},
+        {"id":"challenge-premise-off","parent_branch_id":parent,"condition":{"kind":"not_all_occurring","event_ids":[premise["Id"]]},"by":snapshot["world"]["target_date"]}
+    ]});
     let generated = json!({"branches":rollout["branches"],"hypotheses":[{"id":"on_effect","statement":"A downstream consequence within the question horizon","requires":[],"branch_id":"challenge-premise-on","mechanism":"The selected event changes available choices"},{"id":"off_effect","statement":"A different consequence within the question horizon","requires":[],"branch_id":"challenge-premise-off","mechanism":"Failure of the selected event leaves different available choices"}],"research_evidence":[],"premises_challenged":[{"assumption":rollout["statement"],"alternative":"Investigate both exact signs without asserting a particular opposite","prior_hypothesis_ids":[rollout["nodeId"]],"alternative_hypothesis_ids":["on_effect","off_effect"]}],"continue_exploring":true,"exploration_note":"Synthetic contract proof, not evidence of output quality"});
     let mut f = fields.clone();
     f["reasoning_result"] = json!(generated.to_string());
@@ -127,10 +135,13 @@ async fn challenge_producer_binds_both_signs_and_preserves_joint_semantics() {
         snapshot["nodes"].as_array().unwrap()
     );
     assert_eq!(np["evidence_ids"], p["evidence_ids"]);
+    assert!(np["independent_challenge"].get("causal_rollout").is_none());
     assert_eq!(
-        np["independent_challenge"]["causal_rollout"],
-        core::branches::challenge_rollout(&snapshot, &p).unwrap(),
-        "receipt must retain pre-append selection and ranking provenance"
+        np["independent_challenge"]["branches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
     for (id, kind) in [
         ("r4-on_effect", "all_occurring"),
@@ -205,10 +216,7 @@ async fn challenge_producer_binds_both_signs_and_preserves_joint_semantics() {
         core::REASONING_TRANSITION_RESERVE + 2 * new_batches as u64
     );
     let mut bad = generated.clone();
-    bad["hypotheses"][1]
-        .as_object_mut()
-        .unwrap()
-        .remove("branch_id");
+    bad["hypotheses"][1]["branch_id"] = json!("missing-branch");
     let mut f = fields;
     f["reasoning_result"] = json!(bad.to_string());
     let reject = invoke(&engine, "semantic_expand", f).await;
