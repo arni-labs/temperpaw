@@ -519,12 +519,12 @@ fn should_retry_stream_failure(
 
 #[derive(Default)]
 struct SseDataDecoder {
-    pending: String,
+    pending: Vec<u8>,
 }
 
 impl SseDataDecoder {
     fn push_chunk(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.pending.push_str(&String::from_utf8_lossy(chunk));
+        self.pending.extend_from_slice(chunk);
         self.drain_complete_lines(false)
     }
 
@@ -534,17 +534,22 @@ impl SseDataDecoder {
 
     fn drain_complete_lines(&mut self, include_partial: bool) -> Vec<String> {
         let mut events = Vec::new();
-        loop {
-            let Some(newline) = self.pending.find('\n') else {
-                break;
-            };
-            let line = self.pending[..newline].trim_end_matches('\r').to_string();
-            self.pending = self.pending[newline + 1..].to_string();
-            push_sse_data_line(&line, &mut events);
+        let mut consumed = 0;
+        while let Some(offset) = self.pending[consumed..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let newline = consumed + offset;
+            let line = String::from_utf8_lossy(&self.pending[consumed..newline]);
+            push_sse_data_line(line.trim_end_matches('\r'), &mut events);
+            consumed = newline + 1;
         }
+        self.pending.drain(..consumed);
 
         if include_partial {
-            let line = self.pending.trim_end_matches('\r').to_string();
+            let line = String::from_utf8_lossy(&self.pending)
+                .trim_end_matches('\r')
+                .to_string();
             self.pending.clear();
             push_sse_data_line(&line, &mut events);
         }
@@ -611,6 +616,7 @@ struct OpenAiStreamAccumulator {
     output_items: Vec<Value>,
     usage: Value,
     streamed_text: String,
+    streamed_text_chars: usize,
     saw_completed: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
     token_signals: Option<Value>,
@@ -639,10 +645,8 @@ impl OpenAiStreamAccumulator {
                     .unwrap_or("");
                 if !delta.is_empty() {
                     self.streamed_text.push_str(delta);
-                    deltas.push(LlmStreamDelta::text(
-                        delta,
-                        self.streamed_text.chars().count(),
-                    ));
+                    self.streamed_text_chars += delta.chars().count();
+                    deltas.push(LlmStreamDelta::text(delta, self.streamed_text_chars));
                 }
             }
             "response.output_text.done" => {
@@ -651,10 +655,8 @@ impl OpenAiStreamAccumulator {
                     && !text.is_empty()
                 {
                     self.streamed_text.push_str(text);
-                    deltas.push(LlmStreamDelta::text(
-                        text,
-                        self.streamed_text.chars().count(),
-                    ));
+                    self.streamed_text_chars += text.chars().count();
+                    deltas.push(LlmStreamDelta::text(text, self.streamed_text_chars));
                 }
             }
             "response.output_item.done" => {
@@ -668,7 +670,7 @@ impl OpenAiStreamAccumulator {
                             item.get("arguments")
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
-                            self.streamed_text.chars().count(),
+                            self.streamed_text_chars,
                         ));
                     }
                     self.output_items.push(item.clone());
@@ -849,6 +851,7 @@ fn parse_openai_stream_events(
 
 #[derive(Default)]
 struct AnthropicBlockAccum {
+    text_chars: usize,
     block_type: String,
     id: String,
     name: String,
@@ -858,6 +861,7 @@ struct AnthropicBlockAccum {
 
 #[derive(Default)]
 struct AnthropicStreamAccumulator {
+    text_chars: usize,
     blocks: BTreeMap<usize, AnthropicBlockAccum>,
     stop_reason: String,
     input_tokens: i64,
@@ -909,6 +913,12 @@ impl AnthropicStreamAccumulator {
                     .unwrap_or("")
                     .to_string();
                 let mut block = AnthropicBlockAccum {
+                    text_chars: content_block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .count(),
                     block_type,
                     id: content_block
                         .get("id")
@@ -940,6 +950,9 @@ impl AnthropicStreamAccumulator {
                         self.accumulated_text_chars(),
                     ));
                 }
+                self.text_chars = self.text_chars
+                    - self.blocks.get(&index).map_or(0, |old| old.text_chars)
+                    + block.text_chars;
                 self.blocks.insert(index, block);
             }
             "content_block_delta" => {
@@ -952,6 +965,9 @@ impl AnthropicStreamAccumulator {
                         if !text.is_empty() {
                             block.block_type = "text".to_string();
                             block.text.push_str(text);
+                            let added = text.chars().count();
+                            block.text_chars += added;
+                            self.text_chars += added;
                             let accumulated = self.accumulated_text_chars();
                             deltas.push(LlmStreamDelta::text(text, accumulated));
                         }
@@ -1007,10 +1023,7 @@ impl AnthropicStreamAccumulator {
     }
 
     fn accumulated_text_chars(&self) -> usize {
-        self.blocks
-            .values()
-            .map(|block| block.text.chars().count())
-            .sum()
+        self.text_chars
     }
 
     fn semantic_output_seen(&self) -> bool {
@@ -1116,6 +1129,7 @@ struct OpenRouterToolCallAccum {
 #[derive(Default)]
 struct OpenRouterStreamAccumulator {
     text: String,
+    text_chars: usize,
     tool_calls: BTreeMap<usize, OpenRouterToolCallAccum>,
     finish_reason: String,
     input_tokens: i64,
@@ -1185,7 +1199,8 @@ impl OpenRouterStreamAccumulator {
                     && !text.is_empty()
                 {
                     self.text.push_str(text);
-                    deltas.push(LlmStreamDelta::text(text, self.text.chars().count()));
+                    self.text_chars += text.chars().count();
+                    deltas.push(LlmStreamDelta::text(text, self.text_chars));
                 }
                 if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for tool_call in tool_calls {
@@ -1214,7 +1229,7 @@ impl OpenRouterStreamAccumulator {
                             (!accum.id.is_empty()).then(|| accum.id.clone()),
                             (!accum.name.is_empty()).then(|| accum.name.clone()),
                             (!args_delta.is_empty()).then(|| args_delta.to_string()),
-                            self.text.chars().count(),
+                            self.text_chars,
                         ));
                     }
                 }
@@ -5629,5 +5644,90 @@ mod tests {
             extract_chatgpt_account_id_from_jwt(&token).as_deref(),
             Some("acct_456")
         );
+    }
+}
+
+#[cfg(test)]
+mod incremental_count_tests {
+    use super::*;
+    #[test]
+    fn unicode_counts_preserve_fallback_tool_progress_and_block_replacement() {
+        let mut openai = OpenAiStreamAccumulator::default();
+        for (text, total) in [("é", 1), ("🦀a", 3)] {
+            let d = openai
+                .ingest_data(&json!({"type":"response.output_text.delta","delta":text}).to_string())
+                .unwrap();
+            assert_eq!(d[0].accumulated_text_chars, total);
+        }
+        assert!(
+            openai
+                .ingest_data(
+                    &json!({"type":"response.output_text.done","text":"ignored"}).to_string()
+                )
+                .unwrap()
+                .is_empty()
+        );
+        let d = openai.ingest_data(&json!({"type":"response.output_item.done","item":{"type":"function_call","name":"execute","arguments":"{}"}}).to_string()).unwrap();
+        assert_eq!(d[0].accumulated_text_chars, 3);
+        assert_eq!(openai.streamed_text, "é🦀a");
+        let mut fallback = OpenAiStreamAccumulator::default();
+        assert_eq!(
+            fallback
+                .ingest_data(&json!({"type":"response.output_text.done","text":"é🦀"}).to_string())
+                .unwrap()[0]
+                .accumulated_text_chars,
+            2
+        );
+        let mut anthropic = AnthropicStreamAccumulator::default();
+        for (index, text) in [(0, "é🦀"), (1, "abc"), (0, "z")] {
+            anthropic.ingest_data(&json!({"type":"content_block_start","index":index,"content_block":{"type":"text","text":text}}).to_string()).unwrap();
+            assert_eq!(
+                anthropic.accumulated_text_chars(),
+                anthropic
+                    .blocks
+                    .values()
+                    .map(|b| b.text.chars().count())
+                    .sum::<usize>()
+            );
+        }
+        let d=anthropic.ingest_data(&json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"🦀"}}).to_string()).unwrap();
+        assert_eq!(d[0].accumulated_text_chars, 5);
+        let mut router = OpenRouterStreamAccumulator::default();
+        for (text, total) in [("é", 1), ("🦀a", 3)] {
+            let d = router
+                .ingest_data(&json!({"choices":[{"delta":{"content":text}}]}).to_string())
+                .unwrap();
+            assert_eq!(d[0].accumulated_text_chars, total);
+        }
+    }
+    #[test]
+    fn unicode_sse_split_at_every_byte_preserves_output() {
+        let stream = format!(
+            "data: {}\n\ndata: {}\n\n",
+            json!({"type":"response.output_text.delta","delta":"é🦀"}),
+            json!({"type":"response.completed","response":{"output":[],"usage":{}}})
+        );
+        for split in 1..stream.len() {
+            let events = collect_sse_data_events(&[
+                &stream.as_bytes()[..split],
+                &stream.as_bytes()[split..],
+            ])
+            .unwrap();
+            let mut a = OpenAiStreamAccumulator::default();
+            for event in events {
+                a.ingest_data(&event).unwrap();
+            }
+            assert_eq!(a.streamed_text, "é🦀");
+            assert_eq!(a.streamed_text_chars, 2);
+            let tool_event = format!(
+                "data: {}\n\n",
+                json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c","name":"execute","arguments":"{\"text\":\"é🦀\"}"}})
+            );
+            let pieces: Vec<&[u8]> = tool_event.as_bytes().chunks(1).collect();
+            for event in collect_sse_data_events(&pieces).unwrap() {
+                a.ingest_data(&event).unwrap();
+            }
+            assert_eq!(a.output_items[0]["arguments"], "{\"text\":\"é🦀\"}");
+        }
     }
 }
