@@ -182,6 +182,29 @@ fn restore_exploration(snapshot: &Value, program: &Value) -> Result<(Value, Valu
     Ok((snapshot, restored))
 }
 
+/// Return None only for a failure before Prepared with no checkpoint to resume.
+/// Inspect exact stored types: missing/null/corrupt is not proof of an unstarted run.
+fn prepare_retry(record: &Value, world_id: &str, now_ms: u64) -> Result<Option<Value>, String> {
+    let uninitialized = record["Status"] == "Failed"
+        && record["world_id"].as_str() == Some(world_id)
+        && record["phase"] == "seed"
+        && [
+            "snapshot_json",
+            "program_json",
+            "trace_json",
+            "started_at_ms",
+            "agent_id",
+            "model",
+            "provider",
+        ]
+        .iter()
+        .all(|key| record[*key].as_str() == Some(""));
+    if uninitialized {
+        return Ok(None);
+    }
+    resume_checkpoint(record, world_id, now_ms).map(Some)
+}
+
 /// Resume only trusted persisted state; no caller-provided graph or evaluations.
 fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Value, String> {
     if core::field(record, "world_id") != world_id {
@@ -420,9 +443,12 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             "SemanticRuns('{resume_id}')?$select=Id,Status,world_id,agent_id,model,provider,snapshot_json,program_json,trace_json,started_at_ms,phase"
         );
         let record = read_bounded(ctx, &path, 64 * 1024 * 1024)?;
-        let prepared = resume_checkpoint(&record, id, Context::get_time_millis() as u64)?;
-        set_success_result(resume_transition(&prepared)?, &prepared);
-        return Ok(());
+        if let Some(prepared) = prepare_retry(&record, id, Context::get_time_millis() as u64)? {
+            set_success_result(resume_transition(&prepared)?, &prepared);
+            return Ok(());
+        }
+        // No prior Prepared callback: use the ordinary saved-research path below.
+        // Its active-world, source, chronology and agent checks still apply.
     }
     let world = read(ctx, &format!("Worlds('{id}')"))?;
     if core::field(&world, "Status") != "Active" {
@@ -499,6 +525,72 @@ mod tests {
         let program = json!({"schema":"foresight-open-semantic-v2","tasks":[],"cursor":0,"results":{"h":{"estimate_likelihood":"0.37"}},"evaluations":{},"rounds":[],"round":2});
         json!({"Status":"Failed","world_id":"w","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":"1000","phase":"explore","agent_id":"agent-a","model":"model-a","provider":"provider-a"})
     }
+    fn failed_before_prepare() -> Value {
+        // Exact selected-field shape of the music run that failed while parsing
+        // quarter metadata, before its first Prepared callback.
+        json!({"Status":"Failed","world_id":"w","phase":"seed",
+            "snapshot_json":"","program_json":"","trace_json":"",
+            "started_at_ms":"","agent_id":"","model":"","provider":""})
+    }
+
+    #[test]
+    fn failed_before_first_prepare_can_read_saved_research_again() {
+        let record = failed_before_prepare();
+        assert_eq!(prepare_retry(&record, "w", 2000).unwrap(), None);
+        assert!(resume_checkpoint(&record, "w", 2000).is_err());
+        // The classification itself does not synthesize a checkpoint or clock.
+        assert_eq!(record, failed_before_prepare());
+    }
+
+    #[test]
+    fn retry_never_treats_partial_corrupt_or_other_runs_as_uninitialized() {
+        let empty = failed_before_prepare();
+        for key in [
+            "snapshot_json",
+            "program_json",
+            "trace_json",
+            "started_at_ms",
+            "agent_id",
+            "model",
+            "provider",
+        ] {
+            for value in [
+                json!(" "),
+                json!("{}"),
+                json!("[]"),
+                json!("1000"),
+                Value::Null,
+                json!(0),
+            ] {
+                let mut record = empty.clone();
+                record[key] = value;
+                assert!(prepare_retry(&record, "w", 2000).is_err(), "{key}");
+            }
+            let mut record = empty.clone();
+            record.as_object_mut().unwrap().remove(key);
+            assert!(prepare_retry(&record, "w", 2000).is_err(), "missing {key}");
+        }
+        assert!(prepare_retry(&empty, "other-world", 2000).is_err());
+        for status in [
+            "Created",
+            "Preparing",
+            "Reasoning",
+            "Completed",
+            "Cancelled",
+        ] {
+            let mut record = empty.clone();
+            record["Status"] = json!(status);
+            assert!(prepare_retry(&record, "w", 2000).is_err(), "{status}");
+        }
+        let mut record = empty;
+        record["phase"] = json!("explore");
+        assert!(prepare_retry(&record, "w", 2000).is_err());
+        let existing = checkpoint();
+        let restored = prepare_retry(&existing, "w", 2000).unwrap().unwrap();
+        assert_eq!(restored, resume_checkpoint(&existing, "w", 2000).unwrap());
+        assert_eq!(restored["started_at_ms"], "1000");
+    }
+
     #[test]
     fn legacy_resume_requeues_odds_removed_by_new_admission() {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","edges":"[]"}]});
