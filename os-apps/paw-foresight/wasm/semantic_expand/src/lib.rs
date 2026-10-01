@@ -159,6 +159,7 @@ fn record_challenge(
     snapshot: &Value,
     before: usize,
     generated: &Value,
+    old: &Value,
     program: &mut Value,
 ) -> Result<(), String> {
     let mut prior = snapshot.clone();
@@ -181,7 +182,8 @@ fn record_challenge(
         "status":"completed","trigger":"candidate_generation_reported_saturation",
         "round":program["round"],"premises_challenged":generated["premises_challenged"],
         "added_hypothesis_ids":snapshot["nodes"].as_array().unwrap().iter().skip(before).map(|n|n["Id"].clone()).collect::<Vec<_>>(),
-        "note":generated["exploration_note"],"accuracy_verified":false
+        "note":generated["exploration_note"],"accuracy_verified":false,
+        "causal_rollout":core::branches::challenge_rollout(&prior,old)
     });
     Ok(())
 }
@@ -198,6 +200,9 @@ fn expand(
     let mut generated = generated.clone();
     if phase == "challenge" {
         resolve_challenge(snapshot, &mut generated)?;
+        if let Some(rollout) = core::branches::challenge_rollout(snapshot, program) {
+            core::branches::validate_challenge_rollout(&generated, &rollout)?;
+        }
     }
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     if scope_pending(program)
@@ -1530,7 +1535,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             .push(receipt);
     }
     if phase == "challenge" {
-        record_challenge(&snapshot, before, &core::parse(raw)?, &mut program)?;
+        record_challenge(&snapshot, before, &core::parse(raw)?, &old, &mut program)?;
     }
     set_success_result(
         "Expanded",
@@ -1963,7 +1968,7 @@ mod tests {
             "e"
         );
         let mut program = replan(&updated, &json!({}), &generated, 1).unwrap();
-        record_challenge(&updated, 2, &generated, &mut program).unwrap();
+        record_challenge(&updated, 2, &generated, &json!({}), &mut program).unwrap();
         assert_eq!(
             program["independent_challenge"]["premises_challenged"][0]["prior_hypothesis_ids"],
             json!(["old"])

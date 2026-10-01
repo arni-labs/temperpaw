@@ -244,9 +244,191 @@ pub fn future_eligible(snapshot: &Value, program: &Value, id: &str) -> bool {
     })
 }
 
+/// One fallible recorded search ranking chooses a premise, never its truth value.
+/// Both signs share its inherited state; the complement is not an invented opposite.
+pub fn challenge_rollout(snapshot: &Value, program: &Value) -> Option<Value> {
+    let nodes = snapshot["nodes"].as_array()?;
+    let replaced: BTreeSet<_> = nodes.iter().filter_map(|n| n["parent"].as_str()).collect();
+    let mut choices = vec![];
+    for node in nodes {
+        let id = field(node, "Id");
+        if !matches!(field(node, "kind"), "scenario" | "revision")
+            || replaced.contains(id)
+            || !future_eligible(snapshot, program, id)
+            || !matches!(
+                program["results"][id]["classify_gap"].as_str(),
+                Some("evidence" | "prerequisite" | "timing" | "uncertain")
+            )
+        {
+            continue;
+        }
+        let current = &program["results"][id]["decision_value"];
+        let historical = &program["historical_search_guidance"][id]["decision_value"];
+        let (raw, guidance) = if current.is_string() {
+            let evaluation = &program["evaluations"][id]["decision_value"];
+            let same_sources = match (
+                evaluation["context"]["evidence_ids"].as_array(),
+                program["evidence_ids"].as_array(),
+            ) {
+                (Some(a), Some(b)) => {
+                    a.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
+                        == b.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>()
+                }
+                _ => false,
+            };
+            let verified = evaluation["type"] == "score"
+                && evaluation["score"].as_f64()
+                    == current.as_str().and_then(|v| v.parse::<f64>().ok())
+                && same_sources;
+            (
+                current,
+                json!({"result":current,"evaluation":evaluation,"current":if verified {json!(true)}else{Value::Null}}),
+            )
+        } else {
+            (&historical["result"], historical.clone())
+        };
+        let Some(score) = raw
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|s| s.is_finite() && (0.0..=4.0).contains(s))
+        else {
+            continue;
+        };
+        let by = node["resolve_by"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(field(&snapshot["world"], "target_date"));
+        let parent = node["branch_id"].as_str().filter(|s| !s.is_empty());
+        let roots = json!([
+            {"id":"challenge-premise-on","parent_branch_id":parent,"condition":{"kind":"all_occurring","event_ids":[id]},"by":by},
+            {"id":"challenge-premise-off","parent_branch_id":parent,"condition":{"kind":"not_all_occurring","event_ids":[id]},"by":by}
+        ]);
+        let mut probe = snapshot.clone();
+        if !probe["branches"].is_array() {
+            probe["branches"] = json!([]);
+        }
+        probe["branches"]
+            .as_array_mut()
+            .unwrap()
+            .extend(roots.as_array().unwrap().clone());
+        if state(&probe, "challenge-premise-on", None).is_err()
+            || state(&probe, "challenge-premise-off", None).is_err()
+        {
+            continue;
+        }
+        choices.push((score,id,json!({"nodeId":id,"statement":node["statement"],"guidance":guidance,"branches":roots,"interpretation":"Both states are hypothetical. not_all_occurring negates the exact event, including its scope; it does not assert an opposite mechanism or identify why it fails. Recorded decision guidance selects investigation, not likelihood or truth."})));
+    }
+    choices.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    choices.into_iter().next().map(|(_, _, v)| v)
+}
+
+fn descends_from(hypothesis: &Value, root: &str, branches: &[Value]) -> bool {
+    let mut branch = field(hypothesis, "branch_id");
+    let mut seen = BTreeSet::new();
+    while !branch.is_empty() && seen.insert(branch) {
+        if branch == root {
+            return true;
+        }
+        branch = branches
+            .iter()
+            .find(|b| field(b, "id") == branch)
+            .map(|b| field(b, "parent_branch_id"))
+            .unwrap_or("");
+    }
+    false
+}
+
+/// Check supplied roots before accepting any generated nodes. Descendants may
+/// branch further, but each side must have an actual bound consequence.
+pub fn validate_challenge_rollout(generated: &Value, rollout: &Value) -> Result<(), String> {
+    let hypotheses = generated["hypotheses"]
+        .as_array()
+        .ok_or("Missing challenge hypotheses")?;
+    if hypotheses.is_empty() {
+        return Ok(());
+    }
+    let branches = generated["branches"]
+        .as_array()
+        .ok_or("Selected challenge premise requires both supplied branch states")?;
+    for expected in rollout["branches"].as_array().unwrap() {
+        let id = field(expected, "id");
+        let actual = branches
+            .iter()
+            .find(|b| field(b, "id") == id)
+            .ok_or("Missing selected challenge branch")?;
+        for key in ["parent_branch_id", "condition", "by"] {
+            if actual[key] != expected[key] {
+                return Err(format!(
+                    "Challenge branch {id} must preserve supplied {key}"
+                ));
+            }
+        }
+        let bound = hypotheses.iter().any(|h| descends_from(h, id, branches));
+        if !bound {
+            return Err(format!(
+                "Challenge branch {id} needs a bound consequence; branch records alone are not a rollout"
+            ));
+        }
+    }
+    if hypotheses.iter().any(|h| {
+        !rollout["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|root| descends_from(h, field(root, "id"), branches))
+    }) {
+        return Err(
+            "Every selected-rollout hypothesis must bind to one supplied root or its descendants"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn challenge_selects_recorded_guidance_and_enforces_both_inherited_signs() {
+        let mut snapshot = fixture();
+        snapshot["world"]["target_date"] = json!("2027-09-30");
+        let mut p = json!({"baseline_status":"established","results":{"a":{"classify_temporal":"future_change","classify_gap":"evidence","decision_value":"2"},"b":{"classify_temporal":"future_change","classify_gap":"uncertain","decision_value":"3"}}});
+        let rollout = challenge_rollout(&snapshot, &p).unwrap();
+        assert_eq!(rollout["nodeId"], "b");
+        assert_eq!(rollout["branches"][0]["parent_branch_id"], "on");
+        let reply = json!({"branches":rollout["branches"],"hypotheses":[{"branch_id":"challenge-premise-on"},{"branch_id":"challenge-premise-off"}]});
+        validate_challenge_rollout(&reply, &rollout).unwrap();
+        assert!(rollout["guidance"]["current"].is_null());
+        let mut extra = reply.clone();
+        extra["hypotheses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"unbound"}));
+        assert!(validate_challenge_rollout(&extra, &rollout).is_err());
+        let mut dropped_parent = reply.clone();
+        dropped_parent["branches"][1]["parent_branch_id"] = Value::Null;
+        assert!(validate_challenge_rollout(&dropped_parent, &rollout).is_err());
+        let mut bad = reply.clone();
+        bad["branches"][1]["condition"]["kind"] = json!("all_occurring");
+        assert!(validate_challenge_rollout(&bad, &rollout).is_err());
+        bad = reply.clone();
+        bad["hypotheses"].as_array_mut().unwrap().pop();
+        assert!(validate_challenge_rollout(&bad, &rollout).is_err());
+        p["results"]["b"]["classify_temporal"] = json!("already_observed");
+        assert_eq!(challenge_rollout(&snapshot, &p).unwrap()["nodeId"], "a");
+        p["historical_search_guidance"]["a"]["decision_value"] =
+            json!({"result":"2","current":false,"recorded_round":1});
+        p["results"]["a"]
+            .as_object_mut()
+            .unwrap()
+            .remove("decision_value");
+        assert_eq!(
+            challenge_rollout(&snapshot, &p).unwrap()["guidance"]["current"],
+            false
+        );
+        p["results"]["a"]["classify_gap"] = json!("none");
+        assert!(challenge_rollout(&snapshot, &p).is_none());
+    }
     fn fixture() -> Value {
         json!({"world":{"last_ingest_date":"2026-09-30","target_date":"2027-09-30"},"nodes":[
             {"Id":"a","kind":"scenario","statement":"A happens","edges":"[]"},
