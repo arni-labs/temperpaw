@@ -129,3 +129,29 @@ scope repair records the actual limit error and continues on the original baseli
 Actual-WASM tests cover the observed enum/list errors, draft producer-consumer
 round-trip, and unchanged snapshot on oversized rejection; the previous producer
 artifact fails the contract test. This does not certify the model's repaired scope.
+
+### Separate contributory routes
+
+A captured composition supplied school projects and work placements as separate
+routes to portfolio records. Rejecting the shared target forced the correction to
+drop one route. Links now retain distinct identities when they share a target;
+multiple `from_ids` within one link still mean that link's joint prerequisites.
+Separate routes are not assumed exhaustive, exclusive, or collectively necessary.
+
+Automatic hypothetical ancestry follows unique incoming routes as before. At a
+convergence with multiple incoming routes, their origins remain unassigned. The
+exact links are retained in `branch_state.unassigned_upstream_routes` as context,
+with `assumed:false`; provider input includes the referenced event descriptions.
+A separately required direct event remains assigned even if it also appears in
+an unassigned route. Off conditions remain “not all direct prerequisites occur,”
+without inventing which fails. No route-selection API is added.
+
+Each link date remains inside the world interval. Nondecreasing dates are checked
+along unambiguously inherited routes, not across alternative origins that were
+never assumed. Cycle rejection still covers the entire claimed graph. Per-link
+task identities and fresh joint-world estimation are unchanged. Portable tests
+cover converging routes, diamond ancestry, off conditions, route descriptors,
+cycles and reversed unique-route dates; actual expansion preserves both captured
+links where the previous artifact rejects them. The replay uses the later saved
+catalog and assessments with local correction cursors cleared, not an untouched
+capture of the original failed execution.

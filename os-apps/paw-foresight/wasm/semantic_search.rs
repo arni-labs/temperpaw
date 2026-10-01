@@ -96,7 +96,7 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
     let baseline = field(&snapshot["world"], "last_ingest_date");
     let mut graph: BTreeMap<&str, BTreeSet<&str>> =
         components.iter().map(|id| (*id, BTreeSet::new())).collect();
-    let mut deadlines = BTreeMap::new();
+    let mut incoming: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
     let mut link_ids = BTreeSet::new();
     for link in links {
         let to = field(link, "to_id");
@@ -117,31 +117,22 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
         {
             return Err("Causal link date is outside the world interval".into());
         }
-        if deadlines.insert(to, by).is_some() {
-            return Err("Use one joint prerequisite set per target event".into());
-        }
+        incoming.entry(to).or_default().push(link);
         graph
             .get_mut(to)
             .ok_or("Missing causal target")?
             .extend(from.iter().copied());
     }
     let mut date_conflicts = vec![];
-    for (target, prerequisites) in &graph {
-        for source in prerequisites {
-            if deadlines
-                .get(source)
-                .zip(deadlines.get(target))
-                .is_some_and(|(a, b)| a > b)
+    // Inherit only an unambiguous incoming route. Multiple contributory routes
+    // do not imply that all routes occurred or share a single milestone.
+    for child in links {
+        for source in ids(&child["from_ids"])? {
+            if let Some(parents) = incoming.get(source)
+                && let [parent] = parents.as_slice()
+                && field(parent, "by") > field(child, "by")
             {
-                let parent = links
-                    .iter()
-                    .find(|link| field(link, "to_id") == *source)
-                    .unwrap();
-                let child = links
-                    .iter()
-                    .find(|link| field(link, "to_id") == *target)
-                    .unwrap();
-                date_conflicts.push(format!("link '{}' ({}) -> link '{}' ({}): prerequisite event '{}' reaches downstream event '{}'",field(parent,"id"),field(parent,"by"),field(child,"id"),field(child,"by"),source,target));
+                date_conflicts.push(format!("link '{}' ({}) -> link '{}' ({}): prerequisite event '{}' reaches downstream event '{}'",field(parent,"id"),field(parent,"by"),field(child,"id"),field(child,"by"),source,field(child,"to_id")));
             }
         }
     }
@@ -207,15 +198,13 @@ fn branch_state(
     as_of: &Value,
 ) -> Result<Value, String> {
     let links = world["chain"].as_array().ok_or("Missing causal chain")?;
-    let mut incoming = BTreeMap::new();
+    let mut incoming: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
     for item in links {
-        if incoming.insert(field(item, "to_id"), item).is_some() {
-            return Err("Use one joint prerequisite set per target event".into());
-        }
+        incoming.entry(field(item, "to_id")).or_default().push(item);
     }
     fn visit<'a>(
         id: &'a str,
-        incoming: &BTreeMap<&'a str, &'a Value>,
+        incoming: &BTreeMap<&'a str, Vec<&'a Value>>,
         active: &mut BTreeSet<&'a str>,
         done: &mut BTreeSet<&'a str>,
         order: &mut Vec<&'a str>,
@@ -226,7 +215,9 @@ fn branch_state(
         if !active.insert(id) {
             return Err("Cyclic hypothetical branch".into());
         }
-        if let Some(link) = incoming.get(id) {
+        if let Some(routes) = incoming.get(id)
+            && let [link] = routes.as_slice()
+        {
             for parent in ids(&link["from_ids"])? {
                 visit(parent, incoming, active, done, order)?;
             }
@@ -252,33 +243,50 @@ fn branch_state(
             field(link, "id")
         )
     };
-    let history:Vec<_>=order.iter().filter_map(|id|incoming.get(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(|prior|json!({"state_id":state_id(prior),"link_id":prior["id"],"by":prior["by"],"from_ids":prior["from_ids"],"to_id":prior["to_id"]})).collect();
+    let unique = |id: &str| {
+        incoming.get(id).and_then(|routes| {
+            if routes.len() == 1 {
+                Some(routes[0])
+            } else {
+                None
+            }
+        })
+    };
+    let unassigned_routes: Vec<_> = order
+        .iter()
+        .filter_map(|id| {
+            incoming
+                .get(id)
+                .filter(|routes| routes.len() > 1)
+                .map(|routes| json!({"target_id":id,"candidate_links":routes,"assumed":false}))
+        })
+        .collect();
+    let history:Vec<_>=order.iter().filter_map(|id|unique(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(|prior|json!({"state_id":state_id(prior),"link_id":prior["id"],"by":prior["by"],"from_ids":prior["from_ids"],"to_id":prior["to_id"]})).collect();
     let assignments: Vec<_> = order
         .iter()
         .filter(|id| on || !direct.contains(id))
         .map(|id| {
-            let by = incoming
-                .get(id)
-                .map(|item| field(item, "by"))
-                .unwrap_or_else(|| {
-                    links
-                        .iter()
-                        .filter(|item| {
-                            (done.contains(field(item, "to_id")) || field(item, "to_id") == target)
-                                && item["from_ids"].as_array().is_some_and(|parents| {
-                                    parents.iter().any(|p| p.as_str() == Some(id))
-                                })
-                        })
-                        .map(|item| field(item, "by"))
-                        .min()
-                        .unwrap_or(field(link, "by"))
-                });
+            let by = unique(id).map(|item| field(item, "by")).unwrap_or_else(|| {
+                links
+                    .iter()
+                    .filter(|item| {
+                        (done.contains(field(item, "to_id")) || field(item, "to_id") == target)
+                            && item["from_ids"].as_array().is_some_and(|parents| {
+                                parents.iter().any(|p| p.as_str() == Some(id))
+                            })
+                    })
+                    .map(|item| field(item, "by"))
+                    .min()
+                    .unwrap_or(field(link, "by"))
+            });
             json!({"node_id":id,"occurs":true,"by":by})
         })
         .collect();
-    Ok(
-        json!({"id":format!("{}/branch/{}/{}",field(world,"Id"),field(link,"id"),function),"world_id":world["Id"],"link_id":link["id"],"baseline_ref":"state.baseline","as_of":as_of,"by":link["by"],"target_id":target,"hypothetical":true,"assignments":assignments,"unassigned_parent_ids":if on {vec![]}else{direct.clone()},"condition":{"kind":if on {"all_occurring"}else{"not_all_occurring"},"event_ids":direct},"parent_state_ids":direct.iter().filter_map(|id|incoming.get(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(|prior|state_id(prior)).collect::<Vec<_>>(),"history":history}),
-    )
+    let mut result = json!({"id":format!("{}/branch/{}/{}",field(world,"Id"),field(link,"id"),function),"world_id":world["Id"],"link_id":link["id"],"baseline_ref":"state.baseline","as_of":as_of,"by":link["by"],"target_id":target,"hypothetical":true,"assignments":assignments,"unassigned_parent_ids":if on {vec![]}else{direct.clone()},"condition":{"kind":if on {"all_occurring"}else{"not_all_occurring"},"event_ids":direct},"parent_state_ids":direct.iter().filter_map(|id|unique(id)).filter(|prior|on || !direct.contains(&field(prior,"to_id"))).map(state_id).collect::<Vec<_>>(),"history":history});
+    if !unassigned_routes.is_empty() {
+        result["unassigned_upstream_routes"] = json!(unassigned_routes);
+    }
+    Ok(result)
 }
 
 pub fn audit_world(world: &Value, program: &Value) -> Value {
@@ -635,7 +643,7 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
     if let Some(world) = world {
         state["previous_world_judgments"] = previous_world_judgments(program, world);
     }
-    let question = match field(task, "function") {
+    let mut question = match field(task, "function") {
         "check_world_set" => {
             if program["active_world_ids"].is_array()
                 && program["active_world_ids"] != task["world_ids"]
@@ -730,6 +738,22 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .map(|a| get(field(a, "node_id")))
                     .collect::<Result<Vec<_>, _>>()?
             );
+            let route_ids: BTreeSet<_> = branch["unassigned_upstream_routes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|group| group["candidate_links"].as_array().into_iter().flatten())
+                .flat_map(|route| route["from_ids"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .collect();
+            if !route_ids.is_empty() {
+                state["unassigned_route_events"] = json!(
+                    route_ids
+                        .into_iter()
+                        .map(get)
+                        .collect::<Result<Vec<_>, _>>()?
+                );
+            }
             state["branch_state"] = branch;
 
             // Do not condition on the target or on downstream consequences merely because
@@ -749,6 +773,15 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
         }
         _ => return Err("Unsupported structural question".into()),
     };
+    if state["branch_state"]["unassigned_upstream_routes"]
+        .as_array()
+        .is_some_and(|routes| !routes.is_empty())
+    {
+        question["instructions"] = json!(format!(
+            "{} unassigned_upstream_routes lists exact candidate routes as context only: none is assumed to occur, collectively required, exhaustive or mutually exclusive.",
+            field(&question, "instructions")
+        ));
+    }
     let request = json!({"model":MODEL,"state":state,"questions":{"result":question}});
     if request.to_string().len() > 128 * 1024 {
         return Err("Structural request exceeds 128 KB".into());
@@ -765,6 +798,141 @@ mod tests {
         world["kind"] = json!("world");
         let snapshot = json!({"world":{"target_date":"2027-09-01","last_ingest_date":"2026-09-20"},"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},world.clone()]});
         (world, snapshot)
+    }
+    #[test]
+    fn contributory_routes_remain_separate_and_ambiguous_ancestors_unassigned() {
+        let (mut world, mut snapshot) = fixture();
+        world["component_ids"] = json!(["a", "b", "c", "d"]);
+        world["facets"][2]["component_ids"] = json!(["c", "d"]);
+        world["chain"] = json!([
+          {"id":"ac","from_ids":["a"],"to_id":"c","mechanism":"A contributes C","by":"2027-02-01"},
+          {"id":"bc","from_ids":["b"],"to_id":"c","mechanism":"B separately contributes C","by":"2027-08-01"},
+          {"id":"cd","from_ids":["c"],"to_id":"d","mechanism":"C contributes D","by":"2027-05-01"}]);
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .insert(3, json!({"Id":"d","kind":"scenario"}));
+        snapshot["nodes"][4] = world.clone();
+        validate_world(&world, &snapshot).unwrap();
+        for (index, parent) in [(0, "a"), (1, "b")] {
+            let state = branch_state(
+                &world,
+                &world["chain"][index],
+                "conditional_on",
+                &json!("2026-09-20"),
+            )
+            .unwrap();
+            assert_eq!(state["assignments"].as_array().unwrap().len(), 1);
+            assert_eq!(state["assignments"][0]["node_id"], parent);
+            assert_eq!(state["target_id"], "c");
+        }
+        let state = branch_state(
+            &world,
+            &world["chain"][2],
+            "conditional_on",
+            &json!("2026-09-20"),
+        )
+        .unwrap();
+        assert_eq!(
+            state["assignments"],
+            json!([{"node_id":"c","occurs":true,"by":"2027-05-01"}])
+        );
+        assert_eq!(state["history"], json!([]));
+        assert_eq!(state["parent_state_ids"], json!([]));
+        assert_eq!(
+            state["unassigned_upstream_routes"][0]["candidate_links"],
+            json!([world["chain"][0], world["chain"][1]])
+        );
+        let off =
+            branch_state(&world, &world["chain"][2], "conditional_off", &Value::Null).unwrap();
+        assert_eq!(off["assignments"], json!([]));
+        assert_eq!(off["condition"]["kind"], "not_all_occurring");
+        assert_eq!(
+            off["unassigned_upstream_routes"],
+            state["unassigned_upstream_routes"]
+        );
+        let tasks = world_tasks(&world);
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|t| t["function"] == "conditional_on")
+                .count(),
+            3
+        );
+        let mut diamond = world.clone();
+        diamond["chain"][2]["from_ids"] = json!(["c", "a"]);
+        let inherited = branch_state(
+            &diamond,
+            &diamond["chain"][2],
+            "conditional_on",
+            &Value::Null,
+        )
+        .unwrap();
+        let assigned: BTreeSet<_> = inherited["assignments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| field(v, "node_id"))
+            .collect();
+        assert_eq!(assigned, BTreeSet::from(["a", "c"]));
+        snapshot["nodes"][4] = diamond.clone();
+        let task = world_tasks(&diamond)
+            .into_iter()
+            .find(|t| t["link_id"] == "cd" && t["function"] == "conditional_on")
+            .unwrap();
+        let request = request(&snapshot, &json!({}), &task).unwrap();
+        let descriptors: BTreeSet<_> = request["state"]["unassigned_route_events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| field(v, "Id"))
+            .collect();
+        assert_eq!(descriptors, BTreeSet::from(["a", "b"]));
+        assert_eq!(
+            request["state"]["branch_state"]["assignments"],
+            inherited["assignments"]
+        );
+        assert_eq!(
+            request["state"]["branch_state"]["condition"],
+            json!({"kind":"all_occurring","event_ids":["c","a"]})
+        );
+        assert!(
+            request["questions"]["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("none is assumed to occur")
+        );
+        if let Ok(path) = std::env::var("FORESIGHT_ROUTES_CONTEXT_OUTPUT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&request["state"]).unwrap()).unwrap();
+        }
+
+        snapshot["nodes"][4] = world.clone();
+        let mut reversed = world.clone();
+        reversed["chain"].as_array_mut().unwrap().remove(0);
+        assert!(
+            validate_world(&reversed, &snapshot)
+                .unwrap_err()
+                .contains("nondecreasing")
+        );
+        let mut cyclic = world.clone();
+        cyclic["chain"].as_array_mut().unwrap().push(
+            json!({"id":"da","from_ids":["d"],"to_id":"a","mechanism":"Cycle","by":"2027-05-01"}),
+        );
+        for link in cyclic["chain"].as_array_mut().unwrap() {
+            link["by"] = json!("2027-05-01");
+        }
+        assert!(
+            validate_world(&cyclic, &snapshot)
+                .unwrap_err()
+                .contains("cycle")
+        );
+        let mut outside = world.clone();
+        outside["chain"][1]["by"] = json!("2028-01-01");
+        assert!(
+            validate_world(&outside, &snapshot)
+                .unwrap_err()
+                .contains("outside")
+        );
     }
     #[test]
     fn structural_validation_matches_request_checks_without_building_evidence_payloads() {
