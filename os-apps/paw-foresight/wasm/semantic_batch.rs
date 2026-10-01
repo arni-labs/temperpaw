@@ -122,12 +122,40 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
             state.as_object_mut().unwrap().remove("comparisons");
             state["comparison_refs"] = json!(indices);
         }
+        // Intern whole values, not IDs: two revisions of the same event must
+        // remain distinct. Catalog entries are data, never extra case premises.
+        for field in [
+            "events",
+            "prerequisite_events",
+            "ancestor_events",
+            "unassigned_route_events",
+        ] {
+            if let Some(values) = state.get(field).and_then(Value::as_array).cloned()
+                && !values.is_empty()
+            {
+                let refs: Vec<_> = values
+                    .into_iter()
+                    .map(|value| intern_event(&mut candidate["state"], value))
+                    .collect();
+                state.as_object_mut().unwrap().remove(field);
+                state[format!("{field}_refs")] = json!(refs);
+            }
+        }
+        if let Some(value) = state.as_object_mut().unwrap().remove("target_event") {
+            state["target_event_ref"] = json!(intern_event(&mut candidate["state"], value));
+        }
         candidate["state"]["cases"][&key] = state;
         let mut question = individual["questions"]["result"].clone();
         question["instructions"] = json!(format!(
             "For this question, first expand state.cases.{key}: if it contains comparison_refs, replace that field with comparisons containing exactly the entries of state.comparison_catalog at those zero-based indices, in order. Then state means ONLY that expanded case combined with state.common; no other catalog entries belong to this case. This is lossless reference encoding, not additional evidence. Other cases are separate hypothetical questions, not assumed facts. {}",
             super::field(&question, "instructions")
         ));
+        if candidate["state"]["event_catalog"].is_array() {
+            question["instructions"] = json!(format!(
+                "Expand ONLY state.cases.{key}: replace comparison_refs with comparisons from state.comparison_catalog; replace events_refs, prerequisite_events_refs, ancestor_events_refs and unassigned_route_events_refs with their named arrays from state.event_catalog; replace target_event_ref with target_event from state.event_catalog. Indices are zero-based; preserve exact values and array order. Combine the expanded case with state.common. No unreferenced catalog entries or other cases are assumed facts. This is lossless encoding, not additional evidence. {}",
+                super::field(&individual["questions"]["result"], "instructions")
+            ));
+        }
         candidate["questions"][&key] = question;
         let candidate_bytes = candidate.to_string().len();
         if candidate_bytes > cap && !batch.tasks.is_empty() {
@@ -148,6 +176,19 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
     }
     Ok(batch)
 }
+fn intern_event(state: &mut Value, value: Value) -> usize {
+    if !state["event_catalog"].is_array() {
+        state["event_catalog"] = json!([]);
+    }
+    let catalog = state["event_catalog"].as_array_mut().unwrap();
+    if let Some(index) = catalog.iter().position(|entry| entry == &value) {
+        index
+    } else {
+        catalog.push(value);
+        catalog.len() - 1
+    }
+}
+
 /// Validate every answer before advancing any cursor; malformed fan-out stays retryable.
 pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Value)>, String> {
     if response["answers"].as_object().map(|a| a.len()) != Some(batch.tasks.len()) {
@@ -178,9 +219,136 @@ mod tests {
                         .collect::<Vec<_>>()
                 );
             }
+            for field in [
+                "events",
+                "prerequisite_events",
+                "ancestor_events",
+                "unassigned_route_events",
+            ] {
+                if let Some(refs) = state
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(&format!("{field}_refs"))
+                {
+                    state[field] = json!(
+                        refs.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|r| batch.request["state"]["event_catalog"]
+                                [r.as_u64().unwrap() as usize]
+                                .clone())
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+            if let Some(index) = state.as_object_mut().unwrap().remove("target_event_ref") {
+                state["target_event"] = batch.request["state"]["event_catalog"]
+                    [index.as_u64().unwrap() as usize]
+                    .clone();
+            }
             assert_eq!(state, individual["state"]);
         }
     }
+    #[test]
+    fn event_catalog_preserves_order_full_values_and_response_identity() {
+        let s = json!({"nodes":[
+            {"Id":"a","kind":"scenario","statement":"α","edges":"[]","source_refs":[{"quote":"exact source"}]},
+            {"Id":"b","kind":"scenario","statement":"β","edges":"[]"},
+            {"Id":"c","kind":"scenario","statement":"γ","edges":"[]"}]});
+        let p = json!({"cursor":0,"tasks":[
+            {"nodeId":"pair:1:a:1:b","function":"check_pair","pair_ids":["a","b"]},
+            {"nodeId":"pair:1:a:1:c","function":"check_pair","pair_ids":["a","c"]}]});
+        let batch = prepare(&s, &p, 16).unwrap();
+        assert_eq!(
+            batch.request["state"]["event_catalog"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            batch.request["state"]["cases"]["q0"]["events_refs"],
+            json!([0, 1])
+        );
+        assert_eq!(
+            batch.request["state"]["cases"]["q1"]["events_refs"],
+            json!([0, 2])
+        );
+        assert_comparison_roundtrip(&batch);
+        let mut catalog = json!({});
+        assert_eq!(
+            intern_event(&mut catalog, json!({"Id":"a","statement":"before"})),
+            0
+        );
+        assert_eq!(
+            intern_event(&mut catalog, json!({"Id":"a","statement":"after"})),
+            1
+        );
+        assert_eq!(
+            intern_event(&mut catalog, json!({"Id":"a","statement":"before"})),
+            0
+        );
+        let response = json!({"model":super::super::MODEL,"answers":{
+            "q0":{"type":"choice","choice":"compatible","probabilities":{"compatible":1.0,"conflict":0.0,"uncertain":0.0}},
+            "q1":{"type":"choice","choice":"conflict","probabilities":{"compatible":0.0,"conflict":1.0,"uncertain":0.0}}}});
+        let answers = answers(&batch, &response).unwrap();
+        assert_eq!(answers[0].0, "compatible");
+        assert_eq!(answers[1].0, "conflict");
+    }
+
+    #[test]
+    #[ignore = "Requires private captured transit checkpoint and old request reconstruction"]
+    fn captured_transit_event_catalog_preserves_all_179_inputs() {
+        let dir = std::path::PathBuf::from(std::env::var("FORESIGHT_EVENT_FIXTURE_DIR").unwrap());
+        let read = |name: &str| -> Value {
+            serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap()
+        };
+        let snapshot = read("focal-transit-final-snapshot.json");
+        let original = read("focal-transit-final-checkpoint.json");
+        let baseline = read("focal-packing-export.json");
+        let mut p = original.clone();
+        p["world_refinement"] = json!({});
+        p["world_audits"] = json!({});
+        let tasks = original["tasks"].as_array().unwrap();
+        for task in tasks {
+            for map in ["results", "evaluations"] {
+                if let Some(m) = p[map][task["nodeId"].as_str().unwrap()].as_object_mut() {
+                    m.remove(task["function"].as_str().unwrap());
+                }
+            }
+        }
+        assert_eq!(tasks.len(), 179);
+        assert_eq!(p["batch_byte_cap"], 48523);
+        let mut cursor = 0;
+        let mut batches = 0;
+        while cursor < tasks.len() {
+            p["cursor"] = json!(cursor);
+            let batch = prepare(&snapshot, &p, tasks.len() - cursor).unwrap();
+            assert_comparison_roundtrip(&batch);
+            if cursor == 5 {
+                if let Ok(path) = std::env::var("FORESIGHT_EVENT_OUTPUT") {
+                    std::fs::write(path,json!({"snapshot":snapshot,"program":p,"individual":batch.individual,"expected_tasks":batch.tasks.len(),"expected_request":batch.request,"fingerprints":batch.tasks.iter().zip(&batch.individual).map(|(t,r)|super::super::search::audit_input_fingerprint(&snapshot,t,r)).collect::<Vec<_>>(),"disclosure":"Reconstructed captured checkpoint with observed receipts replayed; actual WASM uses a separate synthetic execution clock, no native mutation"}).to_string()).unwrap();
+                }
+                assert!(batch.tasks.len() > 2, "old encoding fits only two pairs");
+            }
+            for (task, individual) in batch.tasks.iter().zip(&batch.individual) {
+                assert_eq!(
+                    individual, &baseline["rows"][cursor]["request"],
+                    "task {cursor}"
+                );
+                let id = task["nodeId"].as_str().unwrap();
+                let f = task["function"].as_str().unwrap();
+                if !original["results"][id][f].is_null() {
+                    p["results"][id][f] = original["results"][id][f].clone();
+                    p["evaluations"][id][f] = original["evaluations"][id][f].clone();
+                }
+                cursor += 1;
+            }
+            batches += 1;
+        }
+        assert_eq!(batches, 71);
+    }
+
     #[test]
     fn comparison_catalog_is_lossless_and_allows_multiple_deep_questions() {
         let nodes: Vec<_> = (0..16).map(|i|json!({"Id":format!("h{i:02}"),"kind":"scenario","statement":format!("event {i}"),"mechanism":"mechanism detail ".repeat(70),"edges":"[]"})).collect();
@@ -279,17 +447,12 @@ mod tests {
         let batch = prepare(&snapshot, &program, 3).unwrap();
         assert_eq!(batch.tasks.len(), 3);
         assert_eq!(batch.request["state"]["common"]["world"], world);
-        for (index, individual) in batch.individual.iter().enumerate() {
+        for index in 0..batch.individual.len() {
             let case = &batch.request["state"]["cases"][format!("q{index}")];
             assert!(case["world"].is_null());
             assert!(case["previous_world_judgments"].is_null());
-            let mut restored = batch.request["state"]["common"]
-                .as_object()
-                .unwrap()
-                .clone();
-            restored.extend(case.as_object().unwrap().clone());
-            assert_eq!(Value::Object(restored), individual["state"]);
         }
+        assert_comparison_roundtrip(&batch);
     }
 
     #[test]

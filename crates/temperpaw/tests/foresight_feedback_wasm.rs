@@ -1372,3 +1372,95 @@ async fn captured_living_research_defers_old_rankings_only() {
         "Actual captured-content expand:32 old ranking tasks deferred,12 new ranking tasks retained; truth/probability refreshes retained"
     );
 }
+
+/// Captured inputs with a synthetic execution clock; provider replies are mocked.
+/// The immutable original requests, not packed catalog objects, own receipt hashes.
+#[tokio::test]
+#[ignore = "Requires prepared captured transit event-catalog fixture"]
+async fn captured_transit_event_catalog_preserves_individual_receipts() {
+    use sha2::{Digest, Sha256};
+    let raw: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_EVENT_OUTPUT").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let fields = json!({"snapshot_json":raw["snapshot"].to_string(),"program_json":raw["program"].to_string(),"trace_json":"[]","started_at_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string()});
+    let engine = WasmEngine::new().unwrap();
+    let host = Arc::new(WorldProvider::default());
+    let result = call(&engine, fields, host.clone()).await;
+    assert_eq!(result["callback_action"], "Recorded", "{result}");
+    let request = {
+        let requests = host.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        requests[0].clone()
+    };
+    let count = raw["expected_tasks"].as_u64().unwrap() as usize;
+    assert!(count > 2);
+    assert_eq!(
+        request["questions"].as_object().unwrap().len(),
+        count,
+        "old encoding only packs two pairs"
+    );
+    assert_eq!(request, raw["expected_request"]);
+    assert!(request.to_string().len() <= 48523);
+    let trace: Value =
+        serde_json::from_str(result["callback_params"]["trace_json"].as_str().unwrap()).unwrap();
+    let after: Value =
+        serde_json::from_str(result["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(trace.as_array().unwrap().len(), count);
+    assert_eq!(
+        after["cursor"].as_u64().unwrap(),
+        raw["program"]["cursor"].as_u64().unwrap() + count as u64
+    );
+    assert_eq!(
+        after["http_calls"].as_u64().unwrap(),
+        raw["program"]["http_calls"].as_u64().unwrap() + 1
+    );
+    for (i, original) in raw["individual"].as_array().unwrap().iter().enumerate() {
+        let mut state = request["state"]["cases"][format!("q{i}")].clone();
+        for field in [
+            "events",
+            "prerequisite_events",
+            "ancestor_events",
+            "unassigned_route_events",
+        ] {
+            if let Some(refs) = state
+                .as_object_mut()
+                .unwrap()
+                .remove(&format!("{field}_refs"))
+            {
+                state[field] = json!(
+                    refs.as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|index| request["state"]["event_catalog"]
+                            [index.as_u64().unwrap() as usize]
+                            .clone())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        if let Some(index) = state.as_object_mut().unwrap().remove("target_event_ref") {
+            state["target_event"] =
+                request["state"]["event_catalog"][index.as_u64().unwrap() as usize].clone();
+        }
+        for (key, value) in request["state"]["common"].as_object().unwrap() {
+            state[key] = value.clone();
+        }
+        assert_eq!(state, original["state"]);
+        assert_eq!(
+            trace[i]["caseHash"],
+            format!("{:x}", Sha256::digest(original.to_string().as_bytes()))
+        );
+        assert_eq!(
+            trace[i]["request"]["state_ref"]["context"]["audit_input_fingerprint"],
+            raw["fingerprints"][i]
+        );
+        assert_eq!(trace[i]["questionKey"], format!("q{i}"));
+        let task = &raw["program"]["tasks"][5 + i];
+        assert_eq!(trace[i]["task"], *task);
+        assert_eq!(
+            after["results"][task["nodeId"].as_str().unwrap()][task["function"].as_str().unwrap()],
+            "compatible"
+        );
+    }
+}
