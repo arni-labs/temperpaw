@@ -953,6 +953,23 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     ) {
         program["stop_reason"] = old["stop_reason"].clone();
     }
+    let mut first_pass = program.clone();
+    // The shared estimator plans the next pass; zero requests the exact initial
+    // pass context rather than adding prior-world feedback that does not exist.
+    first_pass["world_pass"] = json!(0);
+    let admission = core::search::refinement_admission(
+        &updated,
+        &first_pass,
+        program["tasks"].as_array().unwrap(),
+    );
+    if admission["admitted"] != true {
+        return Err(format!(
+            "Proposed world set cannot fit its complete first audit pass: {}. Return a complete 2–6 world composition whose full audit plan fits the remaining capacity; preserve defining claims and do not omit required audits. A corrective reasoning phase may consume up to {} additional transitions, and the corrected proposal will be measured again against the then-current budget.",
+            admission,
+            core::REASONING_TRANSITION_RESERVE,
+        ));
+    }
+    program["first_world_pass_admission"] = admission;
     *snapshot = updated;
     Ok(program)
 }
@@ -1440,7 +1457,13 @@ fn generated_response(raw: &str, old: &Value) -> Result<Result<Value, Value>, St
 
 fn run_inner(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
-    let old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    let mut old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    // Reasoning and corrective attempts consume transitions after the planner's
+    // saved checkpoint. Admission must use the live count, never that stale copy.
+    if phase == "compose" {
+        old["transition_count"] =
+            json!(core::transition_count(&old).max(core::transition_count(&ctx.entity_state)));
+    }
     let mut snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     let response = core::field(&ctx.entity_state, "reasoning_result");
     let generated = match generated_response(response, &old) {
@@ -1495,7 +1518,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
-    let old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+
     if phase == "seed" {
         match core::parse(raw).and_then(|generated| establish_baseline(&snapshot, &generated, &old))
         {
