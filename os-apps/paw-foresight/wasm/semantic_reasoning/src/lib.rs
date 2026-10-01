@@ -241,8 +241,18 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
             )
         })
         .collect();
-    let input = json!({
-        "world":snapshot["world"], "catalog":node_catalog(snapshot), "branches":snapshot["branches"],
+    // Source rows retain their full payload once; catalog entries are compact
+    // future/context nodes. Build references from the full snapshot below.
+    let source_ids: std::collections::BTreeSet<_> = evidence
+        .iter()
+        .map(|node| core::field(node, "Id"))
+        .collect();
+    let catalog: Vec<_> = node_catalog(snapshot)
+        .into_iter()
+        .filter(|node| !source_ids.contains(core::field(node, "Id")))
+        .collect();
+    let mut input = json!({
+        "world":snapshot["world"], "catalog":catalog, "branches":snapshot["branches"],
         "source_evidence":evidence, "baseline":program["baseline"], "scope_review":program["scope_review"], "scope_repair":program["scope_repair"],
         "historical_search_guidance":program["historical_search_guidance"],
         "historical_guidance_semantics":"Recorded search rankings with their original context, not current judgments. Missing provenance remains unknown. Use as fallible search guidance only; changed evidence or comparison samples can change their relevance.",
@@ -261,6 +271,11 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         "combination_search":program["combination_search"], "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":core::search::world_set_reporting(&program["world_set_audit"]),
         "active_world_ids":program["active_world_ids"], "world_revision":program["world_revision"], "world_refinement":compact_world_refinement(program)
     });
+    // Completed repair is historical provenance, retained in the program and
+    // writer input. Current baseline and scope review remain authoritative.
+    if program["scope_repair"]["status"] == "completed" {
+        input.as_object_mut().unwrap().remove("scope_repair");
+    }
     let input = references::References::new(snapshot)?.project(&input);
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
         return Err(
@@ -394,6 +409,58 @@ mod reasoning_tests {
     }
 
     #[test]
+    fn reasoning_sources_are_canonical_without_losing_live_context() {
+        let snapshot = json!({"world":{"description":"Question"},"nodes":[
+            {"Id":"source","kind":"evidence","statement":"Observed","url":"https://example.test/source","quote":"Exact quote","extra_source_field":{"keep":true}},
+            {"Id":"future","kind":"scenario","statement":"Future","edges":[{"target":"source","type":"requires"}],"parent":"source","mechanism":"A mechanism","scene":"A scene"},
+            {"Id":"other-source","kind":"research_evidence","statement":"Another observation","evidence_metadata":{"kind":"finding"}}
+        ]});
+        let program = json!({"baseline":{"observed":[{"claim":"Current","evidence_ids":["source"]}]},"scope_review":{"status":"narrowed"},"scope_repair":{"status":"completed","original_baseline":{"obsolete":"history"}},"response_correction":{"error":"Keep correction"},"baseline_correction":{"error":"Keep baseline correction"},"composition_correction":{"error":"Keep composition correction"},"results":{"future":{"classify_temporal":"future_change"}}});
+        let before = (snapshot.clone(), program.clone());
+        let refs = references::References::new(&snapshot).unwrap();
+        let input = reasoning_input(&snapshot, &program).unwrap();
+        assert_eq!(
+            input["source_evidence"],
+            refs.project(&json!([snapshot["nodes"][0], snapshot["nodes"][2]]))
+        );
+        assert_eq!(
+            input["catalog"],
+            refs.project(&json!([node_catalog(&snapshot)[1]]))
+        );
+        assert_eq!(
+            input["catalog"][0]["parent"],
+            input["source_evidence"][0]["Id"]
+        );
+        assert_eq!(input["catalog"][0]["Id"], "ref_0002");
+        assert_eq!(
+            input["catalog"][0]["edges"][0]["target"],
+            input["source_evidence"][0]["Id"]
+        );
+        assert!(input.get("scope_repair").is_none());
+        assert_eq!(input["baseline"], refs.project(&program["baseline"]));
+        assert_eq!(input["scope_review"], program["scope_review"]);
+        for key in ["baseline_correction", "composition_correction"] {
+            assert_eq!(input[key], program[key]);
+        }
+        assert_eq!((snapshot.clone(), program.clone()), before);
+        let mut pending = program.clone();
+        pending["scope_repair"]["status"] = json!("pending");
+        assert_eq!(
+            reasoning_input(&snapshot, &pending).unwrap()["scope_repair"],
+            refs.project(&pending["scope_repair"])
+        );
+        let mut writer_snapshot = snapshot.clone();
+        writer_snapshot["nodes"].as_array_mut().unwrap().extend([
+            json!({"Id":"w1","kind":"world","component_ids":["future"]}),
+            json!({"Id":"w2","kind":"world","component_ids":["future"]}),
+        ]);
+        assert_eq!(
+            world_writing_input(&writer_snapshot, &program).unwrap()["scope_repair"],
+            refs.project(&program["scope_repair"])
+        );
+    }
+
+    #[test]
     fn historical_guidance_projects_ids_without_becoming_current() {
         let snapshot = json!({"world":{},"nodes":[{"Id":"source","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"Future H","edges":"[]"}]});
         let evaluation = json!({"score":2.0,"context":{"round":1,"evidence_ids":["source"],"task":{"nodeId":"h","function":"evaluate_novelty"}}});
@@ -457,7 +524,8 @@ mod reasoning_tests {
             input["composition_candidates"]["excluded"][0]["reason"],
             "not evaluated in current evidence context"
         );
-        assert_eq!(input["catalog"].as_array().unwrap().len(), 5);
+        assert_eq!(input["catalog"].as_array().unwrap().len(), 4);
+        assert_eq!(input["source_evidence"].as_array().unwrap().len(), 1);
     }
     #[test]
     fn contrastive_challenge_retains_candidates_but_excludes_likelihoods() {
