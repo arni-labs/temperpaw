@@ -1275,7 +1275,14 @@ pub fn audit_input_fingerprint(snapshot: &Value, task: &Value, request: &Value) 
     format!("{:x}", Sha256::digest(input.to_string().as_bytes()))
 }
 
+#[cfg(test)]
+thread_local! {
+    static AUDIT_REUSE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn reusable_audit(snapshot: &Value, program: &Value, task: &Value) -> bool {
+    #[cfg(test)]
+    AUDIT_REUSE_CHECKS.with(|count| count.set(count.get() + 1));
     let node = field(task, "nodeId");
     let function = field(task, "function");
     let saved = &program["evaluations"][node][function]["context"]["audit_input_fingerprint"];
@@ -1394,37 +1401,55 @@ pub fn refine_worlds(
     if !program["world_refinement"].is_object() {
         program["world_refinement"] = json!({});
     }
+    // Check each task once against the same pre-history state. Request construction
+    // and fingerprinting include the full evidence and can dominate WASM fuel.
+    let mut checked_worlds: Vec<_> = worlds
+        .iter()
+        .map(|world| {
+            let tasks = world_tasks(world);
+            let reusable: Vec<_> = tasks
+                .iter()
+                .map(|task| reusable_audit(snapshot, program, task))
+                .collect();
+            let changed = tasks.iter().zip(&reusable).any(|(task, reusable)| {
+                program["evaluations"][field(task, "nodeId")][field(task, "function")]
+                    ["context"]["audit_input_fingerprint"]
+                    .is_string()
+                    && !reusable
+            });
+            (*world, tasks, reusable, changed)
+        })
+        .collect();
     // A same-ID edit is not an optional confidence pass. Invalidate its current
     // results before any budget refusal; completed historical receipts stay intact.
-    let changed_worlds: Vec<_> = worlds
-        .iter()
-        .filter(|world| {
-            world_tasks(world).iter().any(|task| {
-                let saved = &program["evaluations"][field(task, "nodeId")][field(task, "function")]
-                    ["context"]["audit_input_fingerprint"];
-                saved.is_string() && !reusable_audit(snapshot, program, task)
-            })
-        })
-        .copied()
-        .collect();
-    for world in &changed_worlds {
-        for task in world_tasks(world) {
-            for collection in ["results", "evaluations"] {
-                if let Some(values) = program[collection][field(&task, "nodeId")].as_object_mut() {
-                    values.remove(field(&task, "function"));
+    let refresh_required = checked_worlds.iter().any(|(_, _, _, changed)| *changed);
+    for (_, tasks, _, changed) in &checked_worlds {
+        if *changed {
+            for task in tasks {
+                for collection in ["results", "evaluations"] {
+                    if let Some(values) = program[collection][field(task, "nodeId")].as_object_mut()
+                    {
+                        values.remove(field(task, "function"));
+                    }
                 }
             }
         }
     }
-    let refresh_required = !changed_worlds.is_empty();
+    // Clearing a world also clears its cached decisions. Check stored results
+    // after all invalidations so even overlapping task IDs cannot retain reuse.
+    for (_, tasks, reusable, _) in &mut checked_worlds {
+        for (task, reusable) in tasks.iter().zip(reusable) {
+            *reusable &=
+                program["results"][field(task, "nodeId")][field(task, "function")].is_string();
+        }
+    }
     let mut all_stable = true;
     let mut all_complete = true;
     let mut tasks = vec![];
-    for world in &worlds {
+    for (world, world_tasks, reusable, _) in checked_worlds {
         let id = field(world, "Id");
         let mut assessments = json!({});
         let mut evaluations = json!({});
-        let world_tasks = world_tasks(world);
         let complete = world_tasks.iter().all(|task| {
             program["results"][field(task, "nodeId")][field(task, "function")].is_string()
         });
@@ -1440,12 +1465,13 @@ pub fn refine_worlds(
             .filter(|p| p.is_finite() && (0.0..=1.0).contains(p));
         let reused_checks: Vec<_> = world_tasks
             .iter()
-            .filter_map(|task| {
+            .zip(&reusable)
+            .filter_map(|(task, reusable)| {
                 let node = field(task, "nodeId");
                 let function = field(task, "function");
                 let context = &program["evaluations"][node][function]["context"];
                 let source_round = context["world_pass"].as_u64()?;
-                (source_round < pass && reusable_audit(snapshot, program, task)).then(|| {
+                (source_round < pass && *reusable).then(|| {
                     json!({
                         "node_id":node,"function":function,"source_round":source_round,
                         "input_fingerprint":context["audit_input_fingerprint"]
@@ -1463,8 +1489,9 @@ pub fn refine_worlds(
         }
         let reuse = world_tasks
             .iter()
-            .filter(|t| field(t, "function") != "estimate_likelihood")
-            .all(|task| reusable_audit(snapshot, program, task));
+            .zip(&reusable)
+            .filter(|(task, _)| field(task, "function") != "estimate_likelihood")
+            .all(|(_, reusable)| *reusable);
         // Legacy records remain readable without inventing provenance/counts.
         let accounted = fresh_check_count + reused_checks.len();
         let present = world_tasks
@@ -1641,6 +1668,34 @@ mod refinement_tests {
             );
             assert_eq!(renewed["world_refinement"]["w"]["converged"], false);
         }
+    }
+
+    #[test]
+    fn refinement_checks_each_task_once_before_history_changes() {
+        let (snapshot, mut program) = fixture();
+        fill(&snapshot, &mut program, 0.4);
+        assert!(refine_worlds(&snapshot, &mut program, 20, 1000, ""));
+        // Only the estimate is fresh in pass two; all structural receipts must
+        // retain their pass-one provenance and count as exact reuse.
+        program["results"]["w"]["estimate_likelihood"] = json!("0.7");
+        program["evaluations"]["w"]["estimate_likelihood"] =
+            json!({"probability":0.7,"context":{"world_pass":2}});
+        let task_count = world_tasks(&snapshot["nodes"][3]).len();
+        AUDIT_REUSE_CHECKS.with(|count| count.set(0));
+        assert!(refine_worlds(&snapshot, &mut program, 40, 2000, ""));
+        assert_eq!(AUDIT_REUSE_CHECKS.with(|count| count.get()), task_count);
+        let receipt = &program["world_refinement"]["w"]["rounds"][1];
+        assert_eq!(receipt["fresh_check_count"], 1);
+        assert_eq!(receipt["reused_check_count"], task_count - 1);
+        assert!(
+            receipt["reused_checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|check| check["source_round"] == 1)
+        );
+        assert_eq!(program["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(program["tasks"][0]["function"], "estimate_likelihood");
     }
 
     #[test]
