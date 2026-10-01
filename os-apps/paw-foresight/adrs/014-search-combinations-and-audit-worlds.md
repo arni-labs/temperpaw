@@ -107,3 +107,21 @@ calls, exact history preservation and interruption. A separately labelled
 simulation over captured living content creates new receipts through mocked
 provider calls and estimates 13 of 35 transitions; the original captured legacy
 receipts do not qualify for reuse. This is not a live second-pass result.
+
+### Historical rankings guide search without repeated whole-pool scoring
+
+In the captured living exploration, 40 repeated novelty/decision judgments used
+25 HTTP batches. New evidence still invalidates and refreshes temporal, support,
+marginal and conditional judgments. Unchanged older candidates' ranking scores
+instead move to `historical_search_guidance`, retaining their exact available
+evaluation/context, recorded round and evidence IDs with `current:false`.
+Missing provenance stays unknown; a complete comparison sample is not inferred.
+These values are separate generator/challenge guidance, never current prerequisite
+judgments, forecast evidence or component probabilities. New and revised
+candidate IDs retain fresh ranking tasks. Admission and resumed exploration use
+the same rule; source acquisition and all resource limits remain unchanged.
+
+Actual-WASM replay of the saved second living research output removes 32 old
+ranking tasks while retaining 12 new ranking tasks and all temporal/support/
+probability refreshes. Old artifacts fail the same provenance check. The recorded
+25-batch counterfactual is not a promised live saving or proof of richer futures.

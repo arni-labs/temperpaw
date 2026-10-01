@@ -211,6 +211,7 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
     // forecast costs. Legacy eligibility is used only for unsent size planning;
     // no classifications, requests or evaluations from it enter the run.
     scratch["baseline_status"] = Value::Null;
+    core::defer_recorded_rankings(&mut scratch, program);
     let task_count = scratch["tasks"].as_array().unwrap().len();
     let mut batches = 0u64;
     let mut cursor = 0usize;

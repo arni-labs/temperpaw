@@ -1148,3 +1148,113 @@ async fn captured_living_new_first_pass_refines_within_thirty_five_transitions()
         after["refinement_admission"]
     );
 }
+
+#[tokio::test]
+#[ignore = "Requires captured living round1 checkpoint and generation Sessions"]
+async fn captured_living_research_defers_old_rankings_only() {
+    let dir = PathBuf::from(std::env::var("FORESIGHT_LIVING_DIRECTORY").unwrap());
+    let raw: Value = serde_json::from_slice(
+        &std::fs::read(dir.join("living-30be-round1-checkpoint.json")).unwrap(),
+    )
+    .unwrap();
+    let sessions: Value = serde_json::from_slice(
+        &std::fs::read(dir.join("living-30be-generation-sessions.json")).unwrap(),
+    )
+    .unwrap();
+    let result = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|session| {
+            let text = session["fields"]["result"].as_str()?;
+            let v: Value = serde_json::from_str(text).ok()?;
+            (v["hypotheses"].as_array().is_some_and(|h| h.len() == 6)).then(|| text.to_owned())
+        })
+        .unwrap();
+    let mut fields = raw["fields"].clone();
+    let old = program(&fields);
+    fields["phase"] = json!("explore");
+    fields["reasoning_result"] = json!(result);
+    let original_snapshot = fields["snapshot_json"].clone();
+    let engine = WasmEngine::new().unwrap();
+    let expanded = invoke(&engine, "semantic_expand", fields.clone()).await;
+    assert_eq!(expanded["callback_action"], "Expanded", "{expanded}");
+    apply(&mut fields, &expanded);
+    let next = program(&fields);
+    let mut moved = 0;
+    for (id, values) in old["results"].as_object().unwrap() {
+        for function in ["evaluate_novelty", "decision_value"] {
+            if values[function].is_string() {
+                moved += 1;
+                assert!(next["results"][id][function].is_null());
+                assert!(next["evaluations"][id][function].is_null());
+                assert_eq!(
+                    next["historical_search_guidance"][id][function]["result"],
+                    values[function]
+                );
+                assert_eq!(
+                    next["historical_search_guidance"][id][function]["evaluation"],
+                    old["evaluations"][id][function]
+                );
+                assert_eq!(
+                    next["historical_search_guidance"][id][function]["current"],
+                    false
+                );
+                assert!(
+                    !next["tasks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|t| t["nodeId"] == *id && t["function"] == function)
+                );
+            }
+        }
+        if values["classify_temporal"].is_string() {
+            for function in ["classify_temporal", "classify_gap", "estimate_likelihood"] {
+                assert!(next["results"][id][function].is_null());
+                assert!(
+                    next["tasks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|t| t["nodeId"] == *id && t["function"] == function)
+                );
+            }
+        }
+    }
+    assert_eq!(moved, 32);
+    let new_rankings = next["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| {
+            matches!(
+                t["function"].as_str(),
+                Some("evaluate_novelty" | "decision_value")
+            )
+        })
+        .count();
+    assert_eq!(new_rankings, 12);
+    assert_eq!(next["http_calls"], old["http_calls"]);
+    assert_eq!(fields["started_at_ms"], raw["fields"]["started_at_ms"]);
+    let before: Value = serde_json::from_str(original_snapshot.as_str().unwrap()).unwrap();
+    let after: Value = serde_json::from_str(fields["snapshot_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        &after["nodes"].as_array().unwrap()[..before["nodes"].as_array().unwrap().len()],
+        before["nodes"].as_array().unwrap()
+    );
+    let launch = invoke(&engine, "semantic_reasoning", fields.clone()).await;
+    assert_eq!(launch["callback_action"], "LaunchReasoning");
+    let input: Value =
+        serde_json::from_str(launch["callback_params"]["user_message"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        input["historical_search_guidance"]
+            .as_object()
+            .unwrap()
+            .len(),
+        16
+    );
+    eprintln!(
+        "Actual captured-content expand:32 old ranking tasks deferred,12 new ranking tasks retained; truth/probability refreshes retained"
+    );
+}

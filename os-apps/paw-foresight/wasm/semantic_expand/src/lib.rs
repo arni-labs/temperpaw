@@ -820,6 +820,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "world_set_audit",
         "world_refinement",
         "independent_challenge",
+        "historical_search_guidance",
         "exploration_admission",
         "batch_byte_cap",
         "http_calls",
@@ -1089,6 +1090,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "http_calls",
         "transition_count",
         "independent_challenge",
+        "historical_search_guidance",
         "exploration_admission",
         "batch_byte_cap",
         "world_revision",
@@ -1128,6 +1130,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         .as_array_mut()
         .ok_or("Invalid round history")?
         .push(receipt);
+    core::defer_recorded_rankings(&mut program, old);
     let current_evidence = evidence_ids(snapshot);
     let previous_evidence: std::collections::BTreeSet<_> = old["evidence_ids"]
         .as_array()
@@ -2137,6 +2140,22 @@ mod tests {
             );
         }
         assert!(refreshed["results"]["h"]["evaluate_novelty"].is_null());
+        assert_eq!(
+            refreshed["historical_search_guidance"]["h"]["evaluate_novelty"]["result"],
+            "2"
+        );
+        assert_eq!(
+            refreshed["historical_search_guidance"]["h"]["evaluate_novelty"]["current"],
+            false
+        );
+        assert!(
+            !refreshed["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["nodeId"] == "h" && t["function"] == "evaluate_novelty")
+        );
+
         assert_eq!(refreshed["evidence_ids"], json!(["e", "new-source"]));
         assert_eq!(old["results"]["h"]["estimate_likelihood"], "0.4");
     }
@@ -2378,7 +2397,15 @@ mod tests {
         assert_eq!(next["round"], 2);
         assert_eq!(next["tasks"].as_array().unwrap().len(), 5);
         assert_eq!(s["nodes"][0], original);
-        assert_eq!(next["results"], p["results"]);
+        let mut expected = p["results"].clone();
+        for function in ["evaluate_novelty", "decision_value"] {
+            expected["r1-h"].as_object_mut().unwrap().remove(function);
+            assert_eq!(
+                next["historical_search_guidance"]["r1-h"][function]["result"],
+                p["results"]["r1-h"][function]
+            );
+        }
+        assert_eq!(next["results"], expected);
     }
     #[test]
     fn empty_research_round_can_continue_without_false_convergence() {

@@ -59,6 +59,51 @@ pub fn field<'a>(v: &'a Value, key: &str) -> &'a str {
 pub fn parse(raw: &str) -> Result<Value, String> {
     serde_json::from_str(raw).map_err(|_| "Invalid persisted semantic state".into())
 }
+/// Rankings guide search; they are not truth/probability prerequisites. Preserve
+/// their exact recorded basis outside current maps rather than re-score unchanged
+/// append-only candidates whenever research adds evidence. Revisions have new IDs.
+pub fn defer_recorded_rankings(program: &mut Value, previous: &Value) {
+    let mut history = previous["historical_search_guidance"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(nodes) = previous["results"].as_object() {
+        for (id, functions) in nodes {
+            for function in ["evaluate_novelty", "decision_value"] {
+                if functions[function].is_string() {
+                    let evaluation = &previous["evaluations"][id][function];
+                    let entry = history.entry(id.clone()).or_insert_with(|| json!({}));
+                    entry[function] = json!({"result":functions[function],"evaluation":evaluation,
+                        "recorded_round":evaluation["context"]["round"],
+                        "evidence_ids":evaluation["context"]["evidence_ids"],"current":false});
+                }
+            }
+        }
+    }
+    for (id, functions) in &history {
+        for function in ["evaluate_novelty", "decision_value"] {
+            if functions[function]["result"].is_string() {
+                for collection in ["results", "evaluations"] {
+                    if let Some(values) = program[collection][id].as_object_mut() {
+                        values.remove(function);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(tasks) = program["tasks"].as_array_mut() {
+        tasks.retain(|task| {
+            !matches!(
+                field(task, "function"),
+                "evaluate_novelty" | "decision_value"
+            ) || !history
+                .get(field(task, "nodeId"))
+                .is_some_and(|functions| functions[field(task, "function")]["result"].is_string())
+        });
+    }
+    program["historical_search_guidance"] = Value::Object(history);
+}
+
 /// Order prerequisites before dependent hypotheses without recursive stack growth.
 pub fn plan(nodes: &[Value]) -> Result<Value, String> {
     if nodes.is_empty() || nodes.len() > MAX_NODES {
@@ -291,6 +336,65 @@ mod tests {
             serde_json::to_string(&self).unwrap()
         }
     }
+    #[test]
+    fn historical_rankings_never_enter_current_probability_context() {
+        let snapshot = json!({"world":{},"nodes":[{"Id":"h","kind":"scenario","statement":"Future H","edges":"[]"},{"Id":"new","kind":"revision","statement":"Future N","edges":"[{\"kind\":\"requires\",\"to_id\":\"h\"}]"}]});
+        let evaluation = json!({"score":2.0,"context":{"round":1,"evidence_ids":["old-source"],"task":{"nodeId":"h","function":"evaluate_novelty"}}});
+        let previous = json!({"results":{"h":{"classify_temporal":"future_change","classify_gap":"uncertain","estimate_likelihood":"0.4","evaluate_novelty":"2","decision_value":"3"}},"evaluations":{"h":{"evaluate_novelty":evaluation}}});
+        let mut p = plan(snapshot["nodes"].as_array().unwrap()).unwrap();
+        p["results"] = previous["results"].clone();
+        p["evaluations"] = previous["evaluations"].clone();
+        defer_recorded_rankings(&mut p, &previous);
+        assert_eq!(
+            p["historical_search_guidance"]["h"]["evaluate_novelty"]["evaluation"],
+            evaluation
+        );
+        assert_eq!(
+            p["historical_search_guidance"]["h"]["evaluate_novelty"]["recorded_round"],
+            1
+        );
+        assert_eq!(
+            p["historical_search_guidance"]["h"]["evaluate_novelty"]["evidence_ids"],
+            json!(["old-source"])
+        );
+        assert_eq!(
+            p["historical_search_guidance"]["h"]["decision_value"]["recorded_round"],
+            Value::Null
+        );
+        for function in ["evaluate_novelty", "decision_value"] {
+            assert!(p["results"]["h"][function].is_null());
+            assert!(p["evaluations"]["h"][function].is_null());
+            assert!(
+                !p["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["nodeId"] == "h" && t["function"] == function)
+            );
+            assert!(
+                p["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["nodeId"] == "new" && t["function"] == function)
+            );
+        }
+        p["results"]["new"]["classify_temporal"] = json!("future_change");
+        let request = evaluation::request_task(
+            &snapshot,
+            &p,
+            &json!({"nodeId":"new","function":"estimate_likelihood","depth":1}),
+        )
+        .unwrap();
+        assert!(request["state"]["prerequisites"][0]["assessment"]["evaluate_novelty"].is_null());
+        assert!(request["state"]["prerequisites"][0]["evaluations"]["evaluate_novelty"].is_null());
+        assert_eq!(
+            request["state"]["prerequisites"][0]["assessment"]["estimate_likelihood"],
+            "0.4"
+        );
+        assert!(request["state"].get("historical_search_guidance").is_none());
+    }
+
     #[test]
     fn polling_reserve_preserves_all_stage_budgets() {
         assert_eq!(MAX_REASONING_POLLS, 10);

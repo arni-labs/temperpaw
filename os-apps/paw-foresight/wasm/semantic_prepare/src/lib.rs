@@ -156,6 +156,10 @@ fn restore_exploration(snapshot: &Value, program: &Value) -> Result<(Value, Valu
     });
     let mut restored = program.clone();
     restored["tasks"] = planned["tasks"].clone();
+    core::defer_recorded_rankings(
+        &mut restored,
+        &json!({"historical_search_guidance":program["historical_search_guidance"]}),
+    );
     restored["cursor"] = json!(0);
     restored["stage"] = json!("exploration");
     restored["continue_exploring"] = json!(true);
@@ -491,6 +495,22 @@ mod tests {
         let program = json!({"schema":"foresight-open-semantic-v2","tasks":[],"cursor":0,"results":{"h":{"estimate_likelihood":"0.37"}},"evaluations":{},"rounds":[],"round":2});
         json!({"Status":"Failed","world_id":"w","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":"1000","phase":"explore","agent_id":"agent-a","model":"model-a","provider":"provider-a"})
     }
+    #[test]
+    fn resumed_exploration_does_not_reschedule_historical_rankings() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","edges":"[]"}]});
+        let old = json!({"results":{},"evaluations":{},"historical_search_guidance":{"h":{"evaluate_novelty":{"result":"2","current":false},"decision_value":{"result":"3","current":false}}}});
+        let (_, p) = restore_exploration(&snapshot, &old).unwrap();
+        assert_eq!(
+            p["historical_search_guidance"],
+            old["historical_search_guidance"]
+        );
+        assert!(p["tasks"].as_array().unwrap().iter().all(|t| !matches!(
+            core::field(t, "function"),
+            "evaluate_novelty" | "decision_value"
+        )));
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 3);
+    }
+
     #[test]
     fn completed_world_composition_checkpoint_returns_to_native_decision() {
         let program = json!({"stage":"worlds","cursor":0,"tasks":[]});

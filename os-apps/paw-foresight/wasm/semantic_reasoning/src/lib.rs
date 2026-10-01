@@ -71,6 +71,8 @@ fn challenge_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     }
     let input = references::References::new(snapshot)?.project(&json!({
         "candidate_judgments":judgments,
+        "historical_search_guidance":program["historical_search_guidance"],
+        "historical_guidance_semantics":"Recorded search rankings with their original context, not current judgments. Missing provenance remains unknown. Use as fallible search guidance only; changed evidence or comparison samples can change their relevance.",
         "evaluation_semantics":{
             "score_scale":"Expected category index on a 0–4 scale, not a probability or a percentage.",
             "evaluate_novelty":definitions::evaluate_novelty(),
@@ -234,6 +236,8 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let input = json!({
         "world":snapshot["world"], "catalog":node_catalog(snapshot), "branches":snapshot["branches"],
         "source_evidence":evidence, "baseline":program["baseline"], "scope_review":program["scope_review"], "scope_repair":program["scope_repair"],
+        "historical_search_guidance":program["historical_search_guidance"],
+        "historical_guidance_semantics":"Recorded search rankings with their original context, not current judgments. Missing provenance remains unknown. Use as fallible search guidance only; changed evidence or comparison samples can change their relevance.",
         "assessments":without_operation_recommendations(program["results"].clone()), "evaluations": without_operation_recommendations(compact_evaluations(program)), "assessment_semantics":core::gap_criteria(),
         "evaluation_semantics":{
             "score_scale":"Expected category index on a 0–4 scale, not a probability or a percentage.",
@@ -355,6 +359,35 @@ mod reasoning_tests {
 
     mod outlook_contract {
         include!("../../semantic_outlook.rs");
+    }
+
+    #[test]
+    fn historical_guidance_projects_ids_without_becoming_current() {
+        let snapshot = json!({"world":{},"nodes":[{"Id":"source","kind":"evidence","edges":"[]"},{"Id":"h","kind":"scenario","statement":"Future H","edges":"[]"}]});
+        let evaluation = json!({"score":2.0,"context":{"round":1,"evidence_ids":["source"],"task":{"nodeId":"h","function":"evaluate_novelty"}}});
+        let old = json!({"results":{"h":{"evaluate_novelty":"2"}},"evaluations":{"h":{"evaluate_novelty":evaluation}}});
+        let mut program = old.clone();
+        core::defer_recorded_rankings(&mut program, &old);
+        for input in [
+            reasoning_input(&snapshot, &program).unwrap(),
+            challenge_input(&snapshot, &program).unwrap(),
+        ] {
+            let history = &input["historical_search_guidance"]["ref_0002"]["evaluate_novelty"];
+            assert_eq!(history["current"], false);
+            assert_eq!(history["recorded_round"], 1);
+            assert_eq!(history["evidence_ids"], json!(["ref_0001"]));
+            assert_eq!(
+                history["evaluation"]["context"]["task"]["nodeId"],
+                "ref_0002"
+            );
+            assert!(input["candidate_judgments"]["ref_0002"]["evaluate_novelty"].is_null());
+            assert!(input["assessments"]["ref_0002"]["evaluate_novelty"].is_null());
+            assert!(input["evaluations"]["ref_0002"]["evaluate_novelty"].is_null());
+        }
+        assert_eq!(
+            program["historical_search_guidance"]["h"]["evaluate_novelty"]["evaluation"],
+            evaluation
+        );
     }
 
     #[test]
