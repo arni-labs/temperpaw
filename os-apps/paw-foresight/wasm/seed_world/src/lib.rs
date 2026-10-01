@@ -249,8 +249,10 @@ records so publication chronology has an unambiguous source.
 A finding contains substantive content actually read in a source or returned extracted
 excerpt. A title, source existence, report contents list or missing result is a lead,
 retained for further research but cannot establish the substantive present baseline.
-Publication and observation dates accept YYYY, YYYY-MM or YYYY-MM-DD at the precision
-actually supported. Retrieval accepts YYYY-MM-DD. Unknown dates are null, never guessed
+Publication and observation dates accept YYYY, YYYY-Q1 through YYYY-Q4 for calendar
+quarters, YYYY-MM or YYYY-MM-DD at the precision actually supported. Do not treat a
+fiscal quarter as a calendar quarter; preserve its wording in the statement and use
+null dates unless its calendar bounds are known. Retrieval accepts YYYY-MM-DD. Unknown dates are null, never guessed
 from the current vantage or URL. These are different dates: a paper retrieved today can
 report a study from years ago. Search published_at is provider-reported metadata; check
 against the source before treating it as its publication date. No dated metadata makes a
