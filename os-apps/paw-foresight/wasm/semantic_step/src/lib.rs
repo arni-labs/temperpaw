@@ -687,12 +687,57 @@ mod tests {
         );
     }
 
+    // A valid set with complete, reusable audit provenance for each world.
+    fn conflicting_world_set() -> (Value, Value) {
+        let (mut snapshot, mut program) = evaluated_world("conflict");
+        let mut second = snapshot["nodes"][3].clone();
+        second["Id"] = json!("w2");
+        second["statement"] = json!("A second joint future with the same tested components");
+        snapshot["nodes"].as_array_mut().unwrap().push(second);
+        program["active_world_ids"] = json!(["w", "w2"]);
+        let tasks: Vec<_> = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["kind"] == "world")
+            .flat_map(core::search::world_tasks)
+            .collect();
+        program["tasks"] = json!(tasks);
+        for task in tasks {
+            let id = core::field(&task, "nodeId");
+            let function = core::field(&task, "function");
+            program["results"][id][function] = json!(match function {
+                "estimate_likelihood" => "0.42",
+                "check_world_consistency" => "conflict",
+                _ => "compatible",
+            });
+            let mut context = json!({"world_pass":1});
+            if function != "estimate_likelihood" {
+                let request = core::search::request(&snapshot, &program, &task).unwrap();
+                context["audit_input_fingerprint"] = json!(core::search::audit_input_fingerprint(
+                    &snapshot, &task, &request
+                ));
+            }
+            program["evaluations"][id][function] = json!({"context":context});
+        }
+        (snapshot, program)
+    }
+
+    fn finish_second_world_estimates(program: &mut Value) {
+        assert_eq!(program["world_pass"], 2);
+        assert_eq!(program["tasks"].as_array().unwrap().len(), 2);
+        for id in ["w", "w2"] {
+            program["results"][id]["estimate_likelihood"] = json!("0.42");
+            program["evaluations"][id]["estimate_likelihood"] =
+                json!({"context":{"world_pass":2},"probability":0.42});
+        }
+    }
+
     #[test]
     fn explicit_conflict_still_recomposes_after_completed_refinement() {
-        let (snapshot, mut program) = evaluated_world("conflict");
-        let results = program["results"].clone();
+        let (snapshot, mut program) = conflicting_world_set();
         assert_eq!(next_phase(&snapshot, &mut program, 20, 1000), "refine");
-        program["results"] = results;
+        finish_second_world_estimates(&mut program);
         assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "compose");
         assert_eq!(program["world_audits"]["w"]["status"], "conflicts_found");
         assert_eq!(program["stop_reason"], "world_revision_needed");
@@ -809,12 +854,16 @@ mod tests {
     }
     #[test]
     fn world_conflict_triggers_revision_but_never_an_endless_rewrite() {
-        let s = json!({"nodes":[{"Id":"a","kind":"scenario"},{"Id":"b","kind":"scenario"},{"Id":"c","kind":"scenario"},{"Id":"w","kind":"world","component_ids":["a","b","c"],"counter_ids":[],"edges":"[]","chain":[]}]});
-        let mut p = json!({"stage":"worlds","world_revision":1,"active_world_ids":["w"],"results":{"w":{"check_world_consistency":"conflict"}}});
-        assert_eq!(next_phase(&s, &mut p, 300, 1000), "compose");
-        assert_eq!(p["world_audits"]["w"]["status"], "conflicts_found");
-        p["world_revision"] = json!(3);
-        assert_eq!(next_phase(&s, &mut p, 300, 1000), "synthesize");
-        assert_eq!(p["stop_reason"], "world_audits_incomplete");
+        let (snapshot, mut program) = conflicting_world_set();
+        assert_eq!(next_phase(&snapshot, &mut program, 20, 1000), "refine");
+        finish_second_world_estimates(&mut program);
+        assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "compose");
+        assert_eq!(program["recomposition_admission"]["admitted"], true);
+        assert_eq!(program["world_audits"]["w"]["status"], "conflicts_found");
+        assert_eq!(program["world_audits"]["w2"]["status"], "conflicts_found");
+        // Even a complete contradiction with budget remaining cannot rewrite forever.
+        program["world_revision"] = json!(3);
+        assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "synthesize");
+        assert_eq!(program["stop_reason"], "world_audits_unresolved");
     }
 }
