@@ -96,6 +96,13 @@ fn generate_and_store(ctx: &Context, fields: &Value) -> Result<StoredImageResult
         ("X-Title".to_string(), "TemperPaw media".to_string()),
     ];
 
+    // The File is created before the paid call: if this identity may not write
+    // there (a policy or workspace problem), the request fails before any
+    // OpenRouter credit is spent. The bytes are uploaded once they exist.
+    let planned_mime = requested_mime(fields);
+    let output_path = resolve_output_path(fields, ctx, mime_extension(&planned_mime));
+    let file_id = create_image_file(ctx, fields, workspace_id, &output_path, &planned_mime)?;
+
     ctx.log(
         "info",
         &format!("openrouter_image_generate: calling OpenRouter images model={model}"),
@@ -113,22 +120,21 @@ fn generate_and_store(ctx: &Context, fields: &Value) -> Result<StoredImageResult
     let image_bytes = decode_image_base64(&output.base64_data)?;
     let mime_type = detect_image_mime(&image_bytes)
         .or_else(|| normalize_output_mime(&output.media_type))
-        .unwrap_or_else(|| "image/png".to_string());
-    let output_path = resolve_output_path(fields, ctx, mime_extension(&mime_type));
+        .unwrap_or_else(|| planned_mime.clone());
 
     record_storing(ctx, fields, &model, &output)?;
-    let stored = store_image_file(
+    let file_version_id = upload_image_bytes(
         ctx,
         fields,
         workspace_id,
-        &output_path,
+        &file_id,
         &mime_type,
         &image_bytes,
     )?;
 
     Ok(StoredImageResult {
-        file_id: stored.file_id,
-        file_version_id: stored.file_version_id,
+        file_id,
+        file_version_id,
         path: output_path,
         mime_type,
         model,
@@ -332,19 +338,28 @@ fn entity_id(ctx: &Context) -> String {
         .to_string()
 }
 
-struct StoredFile {
-    file_id: String,
-    file_version_id: String,
+/// The image type a request asks for (output_format), PNG unless it says
+/// otherwise: the File is created with it before the picture exists.
+fn requested_mime(fields: &Value) -> String {
+    match field_or_default(fields, &["output_format", "OutputFormat"], "png")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpeg" | "jpg" => "image/jpeg".to_string(),
+        "webp" => "image/webp".to_string(),
+        _ => "image/png".to_string(),
+    }
 }
 
-fn store_image_file(
+/// Create the picture's PawFS File (no content yet) and return its id.
+fn create_image_file(
     ctx: &Context,
     fields: &Value,
     workspace_id: &str,
     path: &str,
     mime_type: &str,
-    bytes: &[u8],
-) -> Result<StoredFile, String> {
+) -> Result<String, String> {
     let temper_api_url = resolve_temper_api_url(ctx, fields);
     let file_name = path
         .rsplit('/')
@@ -368,19 +383,30 @@ fn store_image_file(
     )?;
     if !(200..300).contains(&create_resp.status) {
         return Err(format!(
-            "image_generate: PawFS File create failed (HTTP {}): {}",
+            "image_generate: PawFS File create failed before the paid call (HTTP {}): {}",
             create_resp.status,
             sanitized_body_snippet(&create_resp.body)
         ));
     }
     let file_value: Value = serde_json::from_str(&create_resp.body)
         .map_err(|err| format!("image_generate: parse PawFS File create response: {err}"))?;
-    let file_id = entity_field_str(&file_value, &["Id", "id"])
+    Ok(entity_field_str(&file_value, &["Id", "id"])
         .or_else(|| file_value.get("entity_id").and_then(Value::as_str))
         .filter(|value| !value.is_empty())
         .ok_or("image_generate: PawFS File create response did not include an id")?
-        .to_string();
+        .to_string())
+}
 
+/// Upload the picture's bytes to its File and return the new version's id.
+fn upload_image_bytes(
+    ctx: &Context,
+    fields: &Value,
+    workspace_id: &str,
+    file_id: &str,
+    mime_type: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let temper_api_url = resolve_temper_api_url(ctx, fields);
     let value_headers = runtime_headers_for_workspace(
         ctx,
         &ctx.tenant,
@@ -418,13 +444,11 @@ fn store_image_file(
     }
     let head_value: Value = serde_json::from_str(&head_resp.body)
         .map_err(|err| format!("image_generate: parse PawFS File head response: {err}"))?;
-    let file_version_id = entity_field_str(&head_value, &["LastVersionId", "last_version_id"])
-        .unwrap_or("")
-        .to_string();
-    Ok(StoredFile {
-        file_id,
-        file_version_id,
-    })
+    Ok(
+        entity_field_str(&head_value, &["LastVersionId", "last_version_id"])
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 fn record_storing(
@@ -671,6 +695,19 @@ mod tests {
             extract_image_output(&json!({ "data": [] }).to_string())
                 .unwrap_err()
                 .contains("data[0]")
+        );
+    }
+
+    #[test]
+    fn the_file_is_created_with_the_requested_image_type() {
+        assert_eq!(requested_mime(&json!({})), "image/png");
+        assert_eq!(
+            requested_mime(&json!({ "output_format": "jpeg" })),
+            "image/jpeg"
+        );
+        assert_eq!(
+            requested_mime(&json!({ "output_format": "webp" })),
+            "image/webp"
         );
     }
 

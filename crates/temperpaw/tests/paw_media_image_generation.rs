@@ -438,6 +438,23 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
         wasm.contains("const ALLOWED_MODELS"),
         "OpenRouter renderer must allow-list models"
     );
+
+    // The picture's File is created before the paid call, so a permission or
+    // workspace problem fails before any OpenRouter credit is spent.
+    let body = wasm
+        .split("fn generate_and_store(")
+        .nth(1)
+        .expect("OpenRouter renderer must have generate_and_store");
+    let created = body
+        .find("create_image_file(")
+        .expect("generate_and_store must create the File");
+    let paid = body
+        .find("call_openrouter(")
+        .expect("generate_and_store must call OpenRouter");
+    assert!(
+        created < paid,
+        "the File must be created before the paid OpenRouter call"
+    );
     assert!(
         build_script.contains("openrouter_image_generate"),
         "build.sh must build and package the OpenRouter module"
