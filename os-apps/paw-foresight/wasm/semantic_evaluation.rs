@@ -168,11 +168,17 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         }
         _ => return Err("Unsupported semantic function".into()),
     };
+    // The comparison sample answers relative novelty, not causal support,
+    // event likelihood or decision value. Keep each task's own prior feedback,
+    // actual prerequisites and all source evidence; unrelated competitors are
+    // not assumptions or evidence for those other judgments.
+    if task["function"] != "evaluate_novelty" {
+        comparisons.clear();
+    }
     let is_world = field(node, "kind") == "world";
     if is_world && task["function"] == "estimate_likelihood" {
         // Joint-event likelihood needs its defining components and explicit counters,
         // not the novelty comparison sample or decision-utility scores.
-        comparisons.clear();
         for prerequisite in &mut prerequisites {
             for field in ["assessment", "evaluations"] {
                 if let Some(values) = prerequisite[field].as_object_mut() {
@@ -404,6 +410,36 @@ mod tests {
 #[cfg(test)]
 mod comparison_tests {
     use super::*;
+    #[test]
+    fn unrelated_competitors_only_affect_relative_novelty() {
+        let snapshot = json!({"world":{"question":"How does work change?"},"nodes":[{"Id":"h","kind":"scenario","statement":"Target event","mechanism":"Its mechanism","edges":"[]"},{"Id":"other","kind":"scenario","statement":"Other event","mechanism":"Other mechanism","edges":"[]"},{"Id":"source","kind":"evidence","statement":"Observed claim with limits","edges":"[]"}]});
+        let mut changed = snapshot.clone();
+        changed["nodes"][1]["mechanism"] = json!("Different competing mechanism");
+        for function in [
+            "classify_gap",
+            "estimate_likelihood",
+            "decision_value",
+            "evaluate_novelty",
+        ] {
+            let p = json!({"cursor":0,"tasks":[{"nodeId":"h","function":function}],"baseline":{"unknowns":["Unresolved source limitation"]},"results":{"h":{"classify_gap":"evidence"}},"evaluations":{"h":{"classify_gap":{"type":"choice","selected":"evidence"}}}});
+            let before = request(&snapshot, &p).unwrap();
+            let after = request(&changed, &p).unwrap();
+            assert_eq!(
+                before["state"]["source_evidence"],
+                after["state"]["source_evidence"]
+            );
+            assert_eq!(before["state"]["assessment"], p["results"]["h"]);
+            assert_eq!(before["state"]["evaluations"], p["evaluations"]["h"]);
+            if function == "evaluate_novelty" {
+                assert_ne!(before, after);
+                assert_eq!(before["state"]["comparisons"][0]["Id"], "other");
+            } else {
+                assert_eq!(before, after);
+                assert_eq!(before["state"]["comparisons"], json!([]));
+            }
+        }
+    }
+
     #[test]
     fn comparison_sample_includes_recent_and_relevant_mechanisms() {
         let mut nodes:Vec<_>=(0..40).map(|i|json!({"Id":format!("h{i}"),"kind":"scenario","statement":if i==15{"semiconductor supply bottleneck"}else{"different unrelated path"},"edges":"[]"})).collect();
