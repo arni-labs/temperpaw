@@ -4,7 +4,8 @@
 # (IOA guards cannot compare strings, so the action is the route):
 # - Generate: the OpenAI Codex subscription, behind the provider auth gate.
 # - GenerateWithOpenRouter: OpenRouter's image API with the openrouter_api_key
-#   tenant secret, no auth gate; default model xAI Grok Imagine.
+#   tenant secret, no auth gate; default model xAI Grok Imagine, and three
+#   more allow-listed models (GPT Image, Nano Banana, Seedream).
 # The entity stays media/provider generic so further providers add a module
 # and an action without changing the request/result fields.
 
@@ -182,7 +183,7 @@ kind = "input"
 from = ["Created", "Failed"]
 to = "Generating"
 params = ["prompt", "media_type", "operation", "provider", "model", "size", "quality", "output_format", "background", "workspace_id", "output_path"]
-hint = "Start a media generation request through OpenRouter's image API (API key, no subscription auth). model: leave empty for the default, 'x-ai/grok-imagine-image-2.0'; only allow-listed models (or the operator's configured default) are drawn, since every picture is paid from the tenant's OpenRouter credit, and the result's model says which drew; pass provider 'openrouter'. A non-square size is sent as an aspect ratio; quality and background are not sent."
+hint = "Start a media generation request through OpenRouter's image API (API key, no subscription auth). model: leave empty for the default, 'x-ai/grok-imagine-image-2.0', or name one of 'openai/gpt-image-2.5-sunburst', 'google/gemini-3.1-flash-image' or 'bytedance-seed/seedream-5-0-pro'; only those (or the operator's configured default) are drawn, since every picture is paid from the tenant's OpenRouter credit, and the result's model says which drew; pass provider 'openrouter'. A non-square size is sent as an aspect ratio; quality and background are not sent."
 
 [[action.triggers]]
 name = "generate_openrouter_image"
