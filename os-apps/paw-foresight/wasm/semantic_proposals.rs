@@ -151,7 +151,7 @@ pub fn finish(
         for endpoint in endpoints.as_array_mut().unwrap() {
             endpoint["status"] = json!("imagined");
         }
-        program["endpoint_search"] = json!({"status":"imagined","endpoints":endpoints,"routes":[],"amendments":[],"rounds":[]});
+        program["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":1,"endpoints":endpoints,"routes":[],"amendments":[],"rounds":[]});
         program["stage"] = json!("exploration");
     }
     program["endpoint_proposal_history"]

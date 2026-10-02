@@ -268,6 +268,7 @@ pub fn add_routes(
     old: &Value,
     generated: &Value,
 ) -> Result<Value, String> {
+    super::backward::validate(old, generated)?;
     let mut search = old["endpoint_search"].clone();
     if !search.is_object() {
         return Err("Imagine endpoints before generating prerequisites".into());
@@ -870,6 +871,19 @@ mod tests {
         let program = json!({"world_search_contract":1,"round":0,"baseline":{"as_of":"2026-10-01","observed":[{"claim":"Observed initial condition","evidence_ids":["source"]}],"assumptions":[],"unknowns":[]},"endpoint_search":{"status":"imagined","endpoints":[{"id":"e","original_statement":"Original world","commitments":[{"id":"c","statement":"An unusual future outcome by 2030"}]}],"routes":[],"amendments":[],"rounds":[]},"results":{"root":{"classify_claim_role":"event","classify_temporal":"future_change"},"target":{"classify_claim_role":"event","classify_temporal":"future_change"}},"evaluations":{}});
         let route = json!({"id":"r","endpoint_id":"e","commitment_id":"c","component_ids":["root","target"],"target_component_id":"target","chain":[{"id":"link","from_ids":["root"],"to_id":"target","mechanism":"The prerequisite enables the target","by":"2029-01-01"}],"grounding_evidence_ids":["source"],"root_connections":[{"component_id":"root","evidence_ids":["source"],"mechanism":"Observed capacity could be expanded"}],"alternative_to":null,"amendment_id":null});
         (snapshot, program, route)
+    }
+    #[test]
+    fn oversized_or_unselected_backward_batch_cannot_mutate_snapshot() {
+        let (before, mut program, route) = fixture();
+        program["endpoint_search"]["backward_batch_contract"] = json!(1);
+        let mut after = before.clone();
+        let oversized = json!({"routes":vec![route.clone();4]});
+        assert!(add_routes(&before, &mut after, &program, &oversized).unwrap_err().contains("exceeds 3 routes"));
+        assert_eq!(after, before);
+        let mut outside = route;
+        outside["commitment_id"] = json!("not-selected");
+        assert!(add_routes(&before, &mut after, &program, &json!({"routes":[outside]})).unwrap_err().contains("outside"));
+        assert_eq!(after, before);
     }
     #[test]
     fn producer_fixture_preserves_amendment_nodes_and_route_receipts() {

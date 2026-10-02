@@ -1625,6 +1625,9 @@ fn expand_with_baseline(
     phase: &str,
     old: &Value,
 ) -> Result<Option<Value>, String> {
+    if phase == "backward" {
+        core::backward::validate(old, generated)?;
+    }
     let mut candidate = snapshot.clone();
     expand(&mut candidate, generated, phase, old)?;
     let refresh = if matches!(phase, "explore" | "challenge" | "backward") {
