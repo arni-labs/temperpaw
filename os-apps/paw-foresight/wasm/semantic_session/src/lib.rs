@@ -65,19 +65,27 @@ fn retry_count(state: &Value) -> u64 {
 }
 fn polling_diagnostic(state: &Value, session: &Value, polls: u64) -> String {
     let program = core::parse(core::field(state, "program_json")).unwrap_or(Value::Null);
-    let correction = &program["response_correction"];
+    let correction_kind = if core::field(state, "phase") == "compose"
+        && program["composition_correction"].is_object()
+    {
+        "composition_correction"
+    } else {
+        "response_correction"
+    };
+    let correction = &program[correction_kind];
     let error: String = core::field(correction, "validation_error")
         .chars()
         .take(1200)
         .collect();
     let fields = session.get("fields").unwrap_or(session);
     format!(
-        "Reasoning phase exhausted its reserved polling budget; saved work is preserved. Session={} status={} polls={} turn_count={} provider_auth_status={} correction_attempt={} validation_error={}",
+        "Reasoning phase exhausted its reserved polling budget; saved work is preserved. Session={} status={} polls={} turn_count={} provider_auth_status={} correction_kind={} correction_attempt={} validation_error={}",
         core::field(state, "reasoning_session_id"),
         core::field(session, "Status"),
         polls,
         fields.get("turn_count").unwrap_or(&Value::Null),
         core::field(session, "provider_auth_status"),
+        correction_kind,
         correction.get("attempt").unwrap_or(&Value::Null),
         error
     )
@@ -200,6 +208,22 @@ mod retry_tests {
         ] {
             assert!(message.contains(expected), "{message}");
         }
+    }
+    #[test]
+    fn composition_timeout_reports_recorded_graph_rejection() {
+        let state = json!({"phase":"compose","reasoning_session_id":"late-composer","program_json":json!({"composition_correction":{"attempt":2,"validation_error":"Reconstructed world omitted or changed a selected causal link"}}).to_string()});
+        let message = polling_diagnostic(&state, &json!({"Status":"CallingProvider"}), 10);
+        assert!(message.contains("correction_kind=composition_correction"));
+        assert!(message.contains("correction_attempt=2"));
+        assert!(message.contains("omitted or changed a selected causal link"));
+        let mut invalid_json = state.clone();
+        invalid_json["program_json"] = json!({"response_correction":{"attempt":1}})
+            .to_string()
+            .into();
+        assert!(
+            polling_diagnostic(&invalid_json, &json!({}), 10)
+                .contains("correction_kind=response_correction correction_attempt=1")
+        );
     }
     #[test]
     fn only_explicit_transient_provider_statuses_retry() {

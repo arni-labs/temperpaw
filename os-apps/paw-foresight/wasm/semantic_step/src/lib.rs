@@ -253,7 +253,16 @@ fn challenge_due(snapshot: &Value, program: &Value, upcoming_transitions: u64) -
 // This is a planning estimate, not a promise about an unseen generated payload.
 fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let mut scratch = core::plan(snapshot["nodes"].as_array().ok_or("Missing nodes")?)?;
-    for key in ["baseline", "batch_byte_cap", "evidence_ids", "round"] {
+    for key in [
+        "baseline",
+        "batch_byte_cap",
+        "batch_byte_caps",
+        "endpoint_proposal_contract",
+        "world_search_contract",
+        "stage",
+        "evidence_ids",
+        "round",
+    ] {
         if !program[key].is_null() {
             scratch[key] = program[key].clone();
         }

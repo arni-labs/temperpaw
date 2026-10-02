@@ -1022,6 +1022,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     core::endpoints::preserve_omitted_originals(old, &mut generated);
+    core::endpoints::assemble_composition(old, &mut generated)?;
     core::endpoints::validate_composition(old, &generated)?;
     let baseline = if old["baseline"].is_object() {
         &old["baseline"]
@@ -1214,7 +1215,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         .collect();
     let errors: Vec<_> = active
         .iter()
-        .filter_map(|node| core::search::validate_world(node, &updated).err())
+        .filter_map(|node| core::endpoints::validate_world(node, &updated, old).err())
         .collect();
     if !errors.is_empty() {
         return Err(errors.join("\n"));
@@ -1273,6 +1274,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "historical_search_guidance",
         "exploration_admission",
         "batch_byte_cap",
+        "batch_byte_caps",
         "http_calls",
         "transition_count",
         "evidence_ids",
@@ -1650,6 +1652,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "historical_search_guidance",
         "exploration_admission",
         "batch_byte_cap",
+        "batch_byte_caps",
         "world_revision",
         "world_refinement",
         "world_audits",
@@ -1761,7 +1764,7 @@ fn optional_composition_fallback(
         let world = nodes
             .iter()
             .find(|n| n["Id"] == *id && n["kind"] == "world" && n["archived"] != true)?;
-        core::search::validate_world(world, snapshot).ok()?;
+        core::endpoints::validate_world(world, snapshot, old).ok()?;
     }
     let exhausted = old["composition_correction"]["attempt"]
         .as_u64()

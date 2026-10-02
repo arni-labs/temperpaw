@@ -14,17 +14,45 @@ impl Batch {
         }
     }
 }
+// Learned byte limits are conservative proxies for provider token limits. A
+// route payload and a world audit have different encodings; contract 2 learns
+// each independently and retains it when that native domain is revisited.
+fn domain(program: &Value) -> &'static str {
+    match program["stage"].as_str() {
+        Some("proposals") => "proposals",
+        Some("worlds") => "worlds",
+        Some("routes") => "routes",
+        Some("exploration") if super::endpoints::enabled(program) => "routes",
+        _ => "events",
+    }
+}
+fn byte_cap(program: &Value) -> usize {
+    let value = if program["endpoint_proposal_contract"] == 2 {
+        &program["batch_byte_caps"][domain(program)]
+    } else {
+        &program["batch_byte_cap"]
+    };
+    value.as_u64().unwrap_or(128 * 1024).min(128 * 1024) as usize
+}
 /// A provider-confirmed token overflow only changes packing, never context or tasks.
 pub fn reduce_cap(program: &mut Value, batch: &Batch) -> bool {
     if batch.tasks.len() <= 1 {
         return false;
     }
-    let old = program["batch_byte_cap"].as_u64().unwrap_or(128 * 1024) as usize;
+    let old = byte_cap(program);
     let next = old.min(batch.request.to_string().len()) / 2;
     if next == 0 || next >= old {
         return false;
     }
-    program["batch_byte_cap"] = json!(next);
+    if program["endpoint_proposal_contract"] == 2 {
+        let domain = domain(program);
+        if !program["batch_byte_caps"].is_object() {
+            program["batch_byte_caps"] = json!({});
+        }
+        program["batch_byte_caps"][domain] = json!(next);
+    } else {
+        program["batch_byte_cap"] = json!(next);
+    }
     true
 }
 /// Validation policy is local engine metadata, never part of the Jev API payload.
@@ -34,10 +62,7 @@ fn provider_request(individual: &Value) -> Value {
     request
 }
 pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Batch, String> {
-    let cap = program["batch_byte_cap"]
-        .as_u64()
-        .unwrap_or(128 * 1024)
-        .min(128 * 1024) as usize;
+    let cap = byte_cap(program);
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let tasks = program["tasks"].as_array().ok_or("Missing tasks")?;
     let first = tasks.get(cursor).ok_or("Task cursor exhausted")?;
@@ -202,6 +227,46 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
         let response=json!({"model":response["model"],"answers":{"result":response["answers"][batch.question_key(index)]}});
         Ok((super::validate(request,&response)?,super::evaluation_value(request,&response)?,response))
     }).collect()
+}
+
+#[cfg(test)]
+mod domain_cap_tests {
+    use super::*;
+    #[test]
+    fn independent_domain_backoff_persists_and_legacy_cap_is_unchanged() {
+        let batch = Batch {
+            request: json!({"payload":"x".repeat(10000)}),
+            tasks: vec![json!({}), json!({})],
+            individual: vec![],
+        };
+        let mut program =
+            json!({"endpoint_proposal_contract":2,"world_search_contract":1,"stage":"exploration"});
+        assert_eq!(domain(&program), "routes");
+        assert!(reduce_cap(&mut program, &batch));
+        let route_cap = byte_cap(&program);
+        assert!(route_cap < 128 * 1024);
+        program["stage"] = json!("worlds");
+        assert_eq!(byte_cap(&program), 128 * 1024);
+        assert!(reduce_cap(&mut program, &batch));
+        assert!(reduce_cap(&mut program, &batch));
+        assert!(byte_cap(&program) < route_cap);
+        program["stage"] = json!("routes");
+        assert_eq!(byte_cap(&program), route_cap);
+        assert!(program["batch_byte_cap"].is_null());
+        let mut legacy =
+            json!({"endpoint_proposal_contract":1,"stage":"worlds","batch_byte_cap":47456});
+        assert_eq!(byte_cap(&legacy), 47456);
+        assert!(reduce_cap(&mut legacy, &batch));
+        assert!(legacy["batch_byte_cap"].as_u64().unwrap() < 47456);
+        assert!(legacy["batch_byte_caps"].is_null());
+        let single = Batch {
+            tasks: vec![json!({})],
+            ..batch
+        };
+        let original = program.clone();
+        assert!(!reduce_cap(&mut program, &single));
+        assert_eq!(program, original);
+    }
 }
 #[cfg(test)]
 mod tests {

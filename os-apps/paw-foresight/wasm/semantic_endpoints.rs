@@ -848,6 +848,113 @@ pub fn preserve_omitted_originals(program: &Value, generated: &mut Value) {
 
 /// Composition binds every original endpoint; a weakened descendant is labelled
 /// explicitly and cannot replace the original commitment by changing prose.
+/// A selected route is the authority for its graph. Composition supplies prose,
+/// not a second independently authored copy of already validated prerequisites.
+pub fn assemble_composition(program: &Value, generated: &mut Value) -> Result<(), String> {
+    if !enabled(program) {
+        return Ok(());
+    }
+    let mut assembled = generated.clone();
+    let worlds = assembled["worlds"]
+        .as_array_mut()
+        .ok_or("Missing reconstructed worlds")?;
+    for world in worlds {
+        let original = endpoint(program, field(world, "endpoint_id"))?;
+        let compact = ["statement", "component_ids", "chain", "commitment_bindings"]
+            .iter()
+            .any(|key| world.get(*key).is_none());
+        let selected = list(&world["selected_route_ids"], 48)?;
+        let mut components = BTreeSet::new();
+        let mut links = BTreeMap::new();
+        let mut bindings = BTreeMap::new();
+        for id in selected {
+            let route = program["endpoint_search"]["routes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r["id"] == id && r["endpoint_id"] == original["id"])
+                .ok_or_else(|| {
+                    format!("Selected route {id} is unknown or belongs to another endpoint")
+                })?;
+            let claim = commitment(original, field(route, "commitment_id"))?;
+            let binding = json!({"commitment_id":claim["id"],"component_id":route["target_component_id"],"amendment_id":route["amendment_id"]});
+            if let Some(prior) = bindings.insert(field(claim, "id").to_owned(), binding.clone()) {
+                if compact {
+                    return Err(format!(
+                        "Select exactly one route for commitment {}; alternative routes are not conjunctive prerequisites",
+                        field(claim, "id")
+                    ));
+                }
+                if prior != binding {
+                    return Err(format!(
+                        "Selected routes disagree on target or amendment for commitment {}; select compatible routes",
+                        field(claim, "id")
+                    ));
+                }
+            }
+            for component in list(&route["component_ids"], MAX_WORLD_COMPONENTS)? {
+                components.insert(component);
+            }
+            for link in route["chain"]
+                .as_array()
+                .ok_or("Stored route has no causal chain")?
+            {
+                let id = field(link, "id").to_owned();
+                if let Some(prior) = links.insert(id.clone(), link.clone())
+                    && prior != *link
+                {
+                    return Err(format!("Selected routes disagree on causal link {id}"));
+                }
+            }
+        }
+        if bindings.len() != original["commitments"].as_array().unwrap().len() {
+            return Err("Selected routes must account for every original commitment".into());
+        }
+        let canonical = json!({"statement":original["original_statement"],"component_ids":components.into_iter().collect::<Vec<_>>(),"chain":links.into_values().collect::<Vec<_>>(),"commitment_bindings":bindings.into_values().collect::<Vec<_>>()});
+        for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
+            if let Some(supplied) = world.get(key) {
+                // Ordering is not meaning; duplicates and changed records still reject.
+                let normalized = |value: &Value| {
+                    if let Some(items) = value.as_array() {
+                        let mut items = items.clone();
+                        items.sort_by_key(Value::to_string);
+                        Value::Array(items)
+                    } else {
+                        value.clone()
+                    }
+                };
+                if normalized(supplied) != normalized(&canonical[key]) {
+                    return Err(format!(
+                        "World {}: supplied {key} conflicts with selected stored routes; omit engine-owned fields",
+                        field(world, "endpoint_id")
+                    ));
+                }
+            }
+            world[key] = canonical[key].clone();
+        }
+    }
+    // Keep the original validators, including amendment provenance and omission rules.
+    validate_composition(program, &assembled)?;
+    *generated = assembled;
+    Ok(())
+}
+
+/// The larger bound applies only to the exact union checked against stored routes,
+/// never merely because the submitted world claims an endpoint identity.
+pub fn validate_world(world: &Value, snapshot: &Value, program: &Value) -> Result<(), String> {
+    if !enabled(program) {
+        return search::validate_world(world, snapshot);
+    }
+    let original = endpoint(program, field(world, "endpoint_id"))?;
+    let scoped = json!({"world_search_contract":1,"endpoint_search":{
+        "endpoints":[original],"routes":program["endpoint_search"]["routes"],
+        "amendments":program["endpoint_search"]["amendments"]}});
+    let mut checked = json!({"worlds":[world]});
+    assemble_composition(&scoped, &mut checked)?;
+    // At most eight commitments, each with one <=24-link route. Dedup may shrink it.
+    search::validate_world_with_chain_limit(world, snapshot, 8 * 24)
+}
+
 pub fn validate_composition(program: &Value, generated: &Value) -> Result<(), String> {
     if !enabled(program) {
         return Ok(());
@@ -1520,6 +1627,108 @@ mod tests {
         let unchanged = generated.clone();
         preserve_omitted_originals(&program, &mut generated);
         assert_eq!(generated, unchanged);
+    }
+
+    #[test]
+    fn stored_route_union_can_exceed_legacy_chain_bound_without_trusting_markers() {
+        let snapshot = json!({"world":{"last_ingest_date":"2026-10-01","target_date":"2030-12-31"}});
+        let components: Vec<_> = (0..26).map(|i|json!(format!("n{i}"))).collect();
+        let links: Vec<_> = (0..25).map(|i|json!({"id":format!("l{i}"),"from_ids":[format!("n{i}")],"to_id":format!("n{}",i+1),"mechanism":"Earlier capacity enables the next step","by":"2029-01-01"})).collect();
+        let mut routes = vec![];
+        let mut commitments = vec![];
+        for (i, (start, end)) in [(0,10),(10,20),(20,25)].into_iter().enumerate() {
+            commitments.push(json!({"id":format!("c{i}"),"statement":"Original defining commitment"}));
+            routes.push(json!({"id":format!("r{i}"),"endpoint_id":"e","commitment_id":format!("c{i}"),"target_component_id":format!("n{end}"),"component_ids":components[start..=end],"chain":links[start..end],"amendment_id":null}));
+            search::validate_chain(routes.last().unwrap(), &snapshot).unwrap();
+        }
+        let program = json!({"world_search_contract":1,"endpoint_search":{"endpoints":[{"id":"e","original_statement":"Frozen bold world","commitments":commitments}],"routes":routes,"amendments":[]}});
+        let mut generated = json!({"worlds":[{"endpoint_id":"e","selected_route_ids":["r0","r1","r2"],"assumptions":[],"facets":[
+            {"id":"a","title":"First changes","description":"First interacting changes","component_ids":components[0..10]},
+            {"id":"b","title":"Next changes","description":"Next interacting changes","component_ids":components[10..20]},
+            {"id":"c","title":"Later changes","description":"Later interacting changes","component_ids":components[20..26]}
+        ]}]});
+        assemble_composition(&program, &mut generated).unwrap();
+        let world = &generated["worlds"][0];
+        validate_world(world, &snapshot, &program).unwrap();
+        assert!(search::validate_world(world, &snapshot).unwrap_err().contains("24"));
+        assert!(validate_world(world, &snapshot, &json!({})).is_err());
+        let mut forged = world.clone();
+        forged["chain"][0]["mechanism"] = json!("Forged mechanism");
+        assert!(validate_world(&forged, &snapshot, &program).unwrap_err().contains("conflicts"));
+        for violation in ["cycle", "date"] {
+            let mut invalid_program = program.clone();
+            let link = &mut invalid_program["endpoint_search"]["routes"][0]["chain"][0];
+            if violation == "cycle" { link["from_ids"] = json!(["n25"]); } else { link["by"] = json!("2031-01-01"); }
+            let mut invalid_world = world.clone();
+            for key in ["statement","component_ids","chain","commitment_bindings"] { invalid_world.as_object_mut().unwrap().remove(key); }
+            let mut draft = json!({"worlds":[invalid_world]});
+            assemble_composition(&invalid_program, &mut draft).unwrap();
+            assert!(validate_world(&draft["worlds"][0], &snapshot, &invalid_program).is_err());
+        }
+    }
+
+    #[test]
+    fn selected_routes_assemble_exact_shared_graph_and_reject_conflicts() {
+        let (_, mut p, r) = fixture();
+        let mut second = r.clone();
+        second["id"] = json!("r2");
+        second["commitment_id"] = json!("c2");
+        p["endpoint_search"]["endpoints"][0]["commitments"].as_array_mut().unwrap()
+            .push(json!({"id":"c2","statement":"Second commitment"}));
+        p["endpoint_search"]["routes"] = json!([r, second]);
+        let compact = json!({"worlds":[{"endpoint_id":"e","selected_route_ids":["r","r2"]}]});
+        let mut full = compact.clone();
+        assemble_composition(&p, &mut full).unwrap();
+        assert_eq!(full["worlds"][0]["component_ids"], json!(["root", "target"]));
+        assert_eq!(full["worlds"][0]["chain"].as_array().unwrap().len(), 1);
+        assert_eq!(full["worlds"][0]["commitment_bindings"].as_array().unwrap().len(), 2);
+        assert_eq!(full["worlds"][0]["statement"], "Original world");
+        for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
+            let mut changed = full.clone();
+            changed["worlds"][0][key] = json!("changed");
+            let before = changed.clone();
+            assert!(assemble_composition(&p, &mut changed).unwrap_err().contains(key));
+            assert_eq!(changed, before);
+        }
+        let mut changed = compact.clone();
+        changed["worlds"][0]["selected_route_ids"] = json!(["missing"]);
+        assert!(assemble_composition(&p, &mut changed).unwrap_err().contains("missing"));
+        let mut alternate = p["endpoint_search"]["routes"][0].clone();
+        alternate["id"] = json!("alt");
+        p["endpoint_search"]["routes"].as_array_mut().unwrap().push(alternate);
+        let mut changed = compact.clone();
+        changed["worlds"][0]["selected_route_ids"] = json!(["r", "r2", "alt"]);
+        assert!(assemble_composition(&p, &mut changed).unwrap_err().contains("exactly one"));
+        p["world_search_contract"] = Value::Null;
+        let before = changed.clone();
+        assemble_composition(&p, &mut changed).unwrap();
+        assert_eq!(changed, before);
+    }
+
+    #[test]
+    #[ignore = "requires explicit local captured checkpoint"]
+    fn captured_food_selected_routes_roundtrip() {
+        let path = std::env::var("FORESIGHT_COMPOSITION_FIXTURE").unwrap();
+        let captured: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let p = &captured["program"];
+        let worlds: Vec<_> = captured["snapshot"]["nodes"].as_array().unwrap().iter()
+            .filter(|n| n["kind"] == "world" && n["archived"] != true).cloned().collect();
+        assert_eq!(worlds.len(), 2);
+        let mut compact = json!({"worlds":worlds});
+        preserve_omitted_originals(p, &mut compact);
+        let full = compact.clone();
+        for world in compact["worlds"].as_array_mut().unwrap() {
+            for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
+                world.as_object_mut().unwrap().remove(key);
+            }
+        }
+        assemble_composition(p, &mut compact).unwrap();
+        // Legacy payload must agree exactly (array order may differ).
+        let mut checked_full = full;
+        assemble_composition(p, &mut checked_full).unwrap();
+        assert_eq!(compact, checked_full);
+        assert_eq!(compact["worlds"][0]["component_ids"].as_array().unwrap().len(), 14);
+        assert_eq!(compact["worlds"][1]["component_ids"].as_array().unwrap().len(), 10);
     }
 
     #[test]

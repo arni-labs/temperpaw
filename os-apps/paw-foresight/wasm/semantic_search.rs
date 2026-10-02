@@ -54,6 +54,15 @@ pub(crate) fn date(value: &str) -> bool {
 
 /// Facets must account for the defining events; causal links must form a dated DAG.
 pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
+    validate_world_with_chain_limit(world, snapshot, 24)
+}
+
+// Only the endpoint owner may widen this after checking the stored route union.
+pub(super) fn validate_world_with_chain_limit(
+    world: &Value,
+    snapshot: &Value,
+    chain_limit: usize,
+) -> Result<(), String> {
     let components: BTreeSet<_> = ids(&world["component_ids"])?.into_iter().collect();
     if components.len() < 3 {
         return Err("A multifaceted world needs at least three defining events".into());
@@ -88,16 +97,24 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
     if assumptions.iter().any(|v| !text(v, 600)) {
         return Err("Invalid world assumption".into());
     }
-    validate_chain(world, snapshot)
+    validate_chain_with_limit(world, snapshot, chain_limit)
 }
 
 /// Validate causal dates, references and DAG structure for worlds or smaller routes.
 pub fn validate_chain(world: &Value, snapshot: &Value) -> Result<(), String> {
+    validate_chain_with_limit(world, snapshot, 24)
+}
+
+fn validate_chain_with_limit(
+    world: &Value,
+    snapshot: &Value,
+    chain_limit: usize,
+) -> Result<(), String> {
     let components: BTreeSet<_> = ids(&world["component_ids"])?.into_iter().collect();
     let links = world["chain"]
         .as_array()
-        .filter(|v| v.len() <= 24)
-        .ok_or("World needs zero to twenty-four claimed causal links")?;
+        .filter(|v| v.len() <= chain_limit)
+        .ok_or_else(|| format!("World needs zero to {chain_limit} claimed causal links"))?;
     let horizon = field(&snapshot["world"], "target_date");
     let baseline = field(&snapshot["world"], "last_ingest_date");
     let mut graph: BTreeMap<&str, BTreeSet<&str>> =
@@ -376,6 +393,97 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
 }
 
 /// Provider view removes repeated canonical task IDs, not audit judgments.
+// A provider needs the logical conditions and outcomes of the selected routes,
+// not another copy of the execution-address graph used to produce each receipt.
+// The persisted audit is untouched. Keep unknown fields so future semantic
+// additions cannot disappear merely because this request projection is older.
+fn request_route_audits(mut selected: Value) -> Value {
+    for route in selected
+        .get_mut("routes")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        for check in route
+            .get_mut("audit")
+            .and_then(|a| a.get_mut("checks"))
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(check) = check.as_object_mut() {
+                check.remove("id");
+            }
+            if let Some(branch) = check.get_mut("branch_state").and_then(Value::as_object_mut) {
+                for key in [
+                    "id",
+                    "world_id",
+                    "link_id",
+                    "parent_state_ids",
+                    "baseline_ref",
+                ] {
+                    branch.remove(key);
+                }
+                for history in branch
+                    .get_mut("history")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(history) = history.as_object_mut() {
+                        history.remove("state_id");
+                        history.remove("link_id");
+                    }
+                }
+            }
+        }
+    }
+    // Repeated logical branch contexts are byte-identical, so store each once.
+    // References are scoped to this selected-route object, never external state.
+    let mut counts = BTreeMap::<String, usize>::new();
+    if let Some(routes) = selected.get("routes").and_then(Value::as_array) {
+        for route in routes {
+            for check in route["audit"]["checks"].as_array().into_iter().flatten() {
+                if let Some(branch) = check.get("branch_state").filter(|v| v.is_object()) {
+                    *counts.entry(branch.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    let repeated: BTreeMap<_, _> = counts
+        .into_iter()
+        .filter(|(value, count)| *count > 1 && value.len() > 128)
+        .enumerate()
+        .map(|(i, (value, _))| (value, format!("b{i}")))
+        .collect();
+    let mut contexts = serde_json::Map::new();
+    if let Some(routes) = selected.get_mut("routes").and_then(Value::as_array_mut) {
+        for route in routes {
+            for check in route
+                .get_mut("audit")
+                .and_then(|a| a.get_mut("checks"))
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                let Some(branch) = check.get_mut("branch_state") else {
+                    continue;
+                };
+                if let Some(key) = repeated.get(&branch.to_string()) {
+                    contexts
+                        .entry(key.clone())
+                        .or_insert_with(|| branch.clone());
+                    *branch = json!({"exact_context_ref":key});
+                }
+            }
+        }
+    }
+    if !contexts.is_empty() {
+        selected["exact_branch_contexts"] = Value::Object(contexts);
+    }
+    selected
+}
+
 pub fn compact_world_audit(world: &Value, program: &Value) -> Value {
     let audit = audit_world(world, program);
     let components = world["component_ids"]
@@ -396,7 +504,7 @@ pub fn compact_world_audit(world: &Value, program: &Value) -> Value {
             json!([check["kind"], indices, check["result"]])
         })
         .collect();
-    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"probability_coherence":audit["probability_coherence"],"selected_routes":audit["selected_routes"],"encoding":"Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
+    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"probability_coherence":audit["probability_coherence"],"selected_routes":request_route_audits(audit["selected_routes"].clone()),"encoding":"A branch_state exact_context_ref is an exact substitution from selected_routes.exact_branch_contexts. Selected-route checks omit execution receipt IDs and state-address pointers; their exact outcomes, root connections, dates, signed conditions, assignments, unresolved parents and causal history are retained. Complete execution receipts remain in the persisted audit. Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
 }
 
 /// Round-robin distances cover the frontier before spending remaining budget on near duplicates.
@@ -945,6 +1053,178 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provider_route_projection_preserves_semantics_without_execution_addresses() {
+        let selected = json!({"status":"unresolved", "routes":[{"route_id":"r", "root_connections":[{"status":"unresolved","question":"Unknown bridge"}],"audit":{"status":"unresolved","checks":[{"id":"receipt", "kind":"check_causal_link", "subject_ids":["a","b"], "result":"uncertain", "probability":0.4, "future_semantic_field":"preserved", "branch_state":{"id":"state", "world_id":"world", "link_id":"link", "parent_state_ids":["parent"], "baseline_ref":"baseline", "as_of":"2030-01-01", "condition":"a and not c", "assignments":{"a":true,"c":false}, "unassigned_parent_ids":["unknown"], "history":[{"state_id":"parent", "link_id":"earlier", "from_ids":["a"], "to_id":"b", "by":"2029-01-01"}]}}]}}]});
+        let original = selected.clone();
+        let projected = request_route_audits(selected.clone());
+        let mut expected = selected.clone();
+        let check = &mut expected["routes"][0]["audit"]["checks"][0];
+        check.as_object_mut().unwrap().remove("id");
+        for key in [
+            "id",
+            "world_id",
+            "link_id",
+            "parent_state_ids",
+            "baseline_ref",
+        ] {
+            check["branch_state"].as_object_mut().unwrap().remove(key);
+        }
+        for key in ["state_id", "link_id"] {
+            check["branch_state"]["history"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        assert_eq!(projected, expected);
+        assert_eq!(selected, original);
+        let mut duplicate = selected.clone();
+        duplicate["routes"]
+            .as_array_mut()
+            .unwrap()
+            .push(selected["routes"][0].clone());
+        let compact = request_route_audits(duplicate);
+        let mut restored = compact.clone();
+        let contexts = restored
+            .as_object_mut()
+            .unwrap()
+            .remove("exact_branch_contexts")
+            .unwrap();
+        for route in restored["routes"].as_array_mut().unwrap() {
+            for check in route["audit"]["checks"].as_array_mut().unwrap() {
+                let key = check["branch_state"]["exact_context_ref"].as_str().unwrap();
+                check["branch_state"] = contexts[key].clone();
+            }
+        }
+        let mut expected_duplicate = expected.clone();
+        expected_duplicate["routes"]
+            .as_array_mut()
+            .unwrap()
+            .push(expected["routes"][0].clone());
+        assert_eq!(restored, expected_duplicate);
+        assert_eq!(request_route_audits(original.clone()), projected);
+        for absent in [
+            Value::Null,
+            json!({}),
+            json!({"routes":[{"audit":null}, {"audit":{"checks":[{"branch_state":null},{}]}}]}),
+        ] {
+            assert_eq!(request_route_audits(absent.clone()), absent);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires private captured city composition via FORESIGHT_CITY_COMPOSITION_CAPTURE"]
+    fn captured_city_scalar_requests_fit_without_losing_semantic_inputs() {
+        let path = std::env::var("FORESIGHT_CITY_COMPOSITION_CAPTURE").unwrap();
+        let capture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let original = capture.clone();
+        let mut snapshot = capture["snapshot"].clone();
+        let program = &capture["program"];
+        let mut generated: Value = serde_json::from_str(
+            program["composition_correction"]["rejected_draft"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        super::super::references_for_endpoints::References::new(&snapshot)
+            .unwrap()
+            .resolve_generated(&mut generated);
+        super::super::endpoints::assemble_composition(program, &mut generated).unwrap();
+        let mut count = 0;
+        let mut largest = 0;
+        let mut all_tasks = Vec::new();
+        let mut world_ids = Vec::new();
+        for mut world in generated["worlds"].as_array().unwrap().clone() {
+            world["Id"] = world["id"].clone();
+            world["kind"] = json!("world");
+            world["edges"] = json!(
+                world["component_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|id| json!({"kind":"requires","to_id":id}))
+                    .collect::<Vec<_>>()
+            )
+            .to_string()
+            .into();
+            snapshot["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(world.clone());
+            all_tasks.extend(world_tasks(&world));
+            world_ids.push(world["Id"].clone());
+            for function in ["estimate_likelihood", "classify_gap", "decision_value"] {
+                let task = json!({"nodeId":world["Id"],"function":function,"depth":0});
+                let request =
+                    super::super::evaluation::request_task(&snapshot, program, &task).unwrap();
+                let size = request.to_string().len();
+                assert!(size <= 128 * 1024);
+                largest = largest.max(size);
+                count += 1;
+                assert_eq!(request["state"]["baseline"], program["baseline"]);
+                let sources = super::super::evidence::active_sources(&snapshot);
+                let supplied = request["state"]["source_evidence"].as_array().unwrap();
+                assert_eq!(sources.len(), supplied.len());
+                for (source, supplied) in sources.iter().zip(supplied) {
+                    for key in [
+                        "Id",
+                        "statement",
+                        "source_quote",
+                        "quote",
+                        "sources",
+                        "source_refs",
+                        "evidence_metadata",
+                        "source_correction",
+                        "projection_period",
+                        "provenance",
+                    ] {
+                        let source = source.get("fields").unwrap_or(source);
+                        assert_eq!(supplied.get(key), source.get(key), "source field {key}");
+                    }
+                }
+                assert_eq!(
+                    request["state"]["counter_hypotheses"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    world["counter_ids"].as_array().unwrap().len()
+                );
+                let audit = compact_world_audit(&world, program);
+                assert_eq!(request["state"]["world_audit"], audit);
+            }
+        }
+        all_tasks.extend(world_set_tasks(&world_ids));
+        let mut full_program = program.clone();
+        full_program["active_world_ids"] = json!(world_ids);
+        full_program["stage"] = json!("worlds");
+        let mut by_kind = BTreeMap::<String, usize>::new();
+        for task in &all_tasks {
+            *by_kind.entry(field(task, "function").into()).or_default() += 1;
+        }
+        eprintln!(
+            "Captured audit kinds={by_kind:?}; byte cap={}",
+            program["batch_byte_cap"]
+        );
+        for pass in [0, 1] {
+            full_program["world_pass"] = json!(pass);
+            let admission = refinement_admission(&snapshot, &full_program, &all_tasks);
+            assert!(admission.get("planning_error").is_none(), "{admission}");
+            eprintln!("Captured full audit planning, pass {pass}: {admission}");
+        }
+        let mut diagnostic = full_program.clone();
+        diagnostic["endpoint_proposal_contract"] = json!(2);
+        diagnostic["batch_byte_caps"] = json!({"routes":47456});
+        let new_admission = refinement_admission(&snapshot, &diagnostic, &all_tasks);
+        assert_eq!(new_admission["admitted"], true);
+        assert_eq!(new_admission["estimated_batches"], 19);
+        eprintln!(
+            "Counterfactual contract2 world domain (not applied to captured legacy run): {new_admission}"
+        );
+        assert_eq!(count, 9);
+        assert_eq!(capture, original);
+        eprintln!("Captured city: {count} scalar requests fit; largest={largest} bytes");
+    }
+
     fn fixture() -> (Value, Value) {
         let world = json!({"Id":"w","component_ids":["a","b","c"],"facets":[{"id":"f1","title":"One","description":"First consequence","component_ids":["a"]},{"id":"f2","title":"Two","description":"Second consequence","component_ids":["b"]},{"id":"f3","title":"Three","description":"Third consequence","component_ids":["c"]}],"assumptions":[],"chain":[{"id":"ab","from_ids":["a"],"to_id":"b","mechanism":"A enables B","by":"2027-02-01"},{"id":"bc","from_ids":["b"],"to_id":"c","mechanism":"B enables C","by":"2027-09-01"}]});
         let mut world = world;
