@@ -107,5 +107,16 @@ unseen candidate questions. Baseline comparator answers remain sealed.
 
 Additional final-answer fixes preserve omitted original endpoints and recorded
 reasons, and carry selected path barriers into final audits. A new estimate must
-not erase an existing grounding failure. These backend changes are committed
-but not yet activated while the two runs above remain active.
+not erase an existing grounding failure. Both tests subsequently failed composition because omitted originals lacked
+writer-supplied receipts: games recorded 9 routes, 336 Jev judgments and 127 HTTP
+requests; food recorded 9 routes, 381 judgments and 116 requests. Native active
+run listing was empty afterward. No completed answer or comparison win exists.
+
+The engine now derives omission receipts from saved route coverage. New initial
+batches cover one original's complete commitment set within unchanged byte/node
+bounds, and omit unused forward-ranking checks. The previous declaration-order
+three-commitment batches explain why later originals had no routes. Transition
+cost is a likely search limit (127 provider requests alone require at least 254
+Evaluate/Recorded transitions), but the exact terminal admission reason was not
+available in the visible UI. A fresh deployed run must establish whether these
+changes deliver a complete, useful answer.

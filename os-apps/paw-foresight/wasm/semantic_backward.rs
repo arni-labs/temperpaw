@@ -6,7 +6,10 @@ pub const MAX_COMMITMENTS: usize = 3;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 pub fn enabled(program: &Value) -> bool {
-    program["endpoint_search"]["backward_batch_contract"] == 1
+    matches!(
+        program["endpoint_search"]["backward_batch_contract"].as_u64(),
+        Some(1 | 2)
+    )
 }
 
 /// Deterministic from persisted state: retries select the same obligations.
@@ -45,7 +48,32 @@ pub fn batch(program: &Value) -> Value {
         }
     }
     obligations.sort_by_key(|(priority, attempts, _)| (*priority, *attempts));
-    json!({"contract":1,"commitments":obligations.into_iter().take(MAX_COMMITMENTS).map(|(_,_,v)|v).collect::<Vec<_>>(),"limits":{"routes":MAX_COMMITMENTS,"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}})
+    let complete_original = program["endpoint_search"]["backward_batch_contract"] == 2
+        && obligations
+            .first()
+            .is_some_and(|(priority, _, _)| *priority == 0);
+    let selected: Vec<Value> = if complete_original {
+        // One coherent original per initial turn. Do not fragment every world
+        // before there is any complete set of commitments to reconstruct.
+        let endpoint = obligations[0].2["endpoint_id"].clone();
+        obligations
+            .into_iter()
+            .filter(|(priority, _, item)| *priority == 0 && item["endpoint_id"] == endpoint)
+            .map(|(_, _, item)| item)
+            .collect()
+    } else {
+        obligations
+            .into_iter()
+            .take(MAX_COMMITMENTS)
+            .map(|(_, _, item)| item)
+            .collect()
+    };
+    let route_limit = if program["endpoint_search"]["backward_batch_contract"] == 1 {
+        MAX_COMMITMENTS
+    } else {
+        selected.len()
+    };
+    json!({"contract":program["endpoint_search"]["backward_batch_contract"],"mode":if complete_original {"complete_original"} else {"alternatives"},"commitments":selected,"limits":{"routes":route_limit,"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}})
 }
 
 /// Called before any route mutations. Historical runs retain their old contract.
@@ -56,11 +84,13 @@ pub fn validate(program: &Value, generated: &Value) -> Result<(), String> {
     if generated.to_string().len() > MAX_RESPONSE_BYTES {
         return Err("Backward batch exceeds 64 KiB; return only the selected commitments and concise shared pieces".into());
     }
+    let selected = batch(program);
+    let route_limit = selected["limits"]["routes"].as_u64().unwrap_or(0) as usize;
     for (key, max) in [
-        ("routes", MAX_COMMITMENTS),
+        ("routes", route_limit),
         ("hypotheses", 24),
         ("research_evidence", 8),
-        ("amendments", MAX_COMMITMENTS),
+        ("amendments", route_limit),
         ("branches", 24),
     ] {
         if generated[key]
@@ -70,7 +100,6 @@ pub fn validate(program: &Value, generated: &Value) -> Result<(), String> {
             return Err(format!("Backward batch exceeds {max} {key}"));
         }
     }
-    let selected = batch(program);
     let mut seen = BTreeSet::new();
     for route in generated["routes"].as_array().into_iter().flatten() {
         let obligation = selected["commitments"]
@@ -108,6 +137,22 @@ pub fn validate(program: &Value, generated: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// World-first routing chooses obligations by coverage and failed mechanisms,
+/// not forward-search novelty/value rankings. Keep every factual and causal check.
+pub fn retain_route_assessments(program: &mut Value) {
+    if program["world_search_contract"] == 1
+        && program["endpoint_search"]["backward_batch_contract"] == 2
+        && let Some(tasks) = program["tasks"].as_array_mut()
+    {
+        tasks.retain(|task| {
+            !matches!(
+                task["function"].as_str(),
+                Some("evaluate_novelty" | "decision_value")
+            )
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +188,75 @@ mod tests {
             first["commitments"][0]["commitment_id"]
         );
     }
+    #[test]
+    fn complete_original_batches_cover_six_worlds_in_six_turns_before_alternatives() {
+        let mut p = program();
+        p["endpoint_search"]["backward_batch_contract"] = json!(2);
+        for round in 0..6 {
+            let selected = batch(&p);
+            assert_eq!(selected["mode"], "complete_original");
+            assert_eq!(selected["commitments"].as_array().unwrap().len(), 8);
+            assert_eq!(selected["limits"]["hypotheses"], 24);
+            let routes: Vec<_> = selected["commitments"].as_array().unwrap().iter().enumerate().map(|(i,c)| {
+                assert_eq!(c["endpoint_id"], format!("e{round}"));
+                json!({"id":format!("r{round}_{i}"),"endpoint_id":c["endpoint_id"],"commitment_id":c["commitment_id"],"status":"unresolved"})
+            }).collect();
+            validate(&p, &json!({"routes":routes})).unwrap();
+            p["endpoint_search"]["routes"]
+                .as_array_mut()
+                .unwrap()
+                .extend(routes);
+        }
+        let alternatives = batch(&p);
+        assert_eq!(alternatives["mode"], "alternatives");
+        assert_eq!(alternatives["commitments"].as_array().unwrap().len(), 3);
+        assert!(
+            alternatives["commitments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["reason"] == "unresolved_route")
+        );
+        assert!(validate(&p, &json!({"routes":vec![json!({});4]})).is_err());
+    }
+
+    #[test]
+    fn route_planning_removes_only_unused_rankings_and_preserves_legacy() {
+        let functions = [
+            "classify_claim_role",
+            "classify_temporal",
+            "classify_gap",
+            "estimate_likelihood",
+            "estimate_conditional",
+            "check_transition",
+            "evaluate_novelty",
+            "decision_value",
+        ];
+        let mut p = json!({"world_search_contract":1,"endpoint_search":{"backward_batch_contract":2},"tasks":functions.iter().map(|f|json!({"function":f})).collect::<Vec<_>>()});
+        let original = p.clone();
+        retain_route_assessments(&mut p);
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 6);
+        for function in &functions[..6] {
+            assert!(
+                p["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|t| t["function"] == *function)
+            );
+        }
+        let mut legacy = original.clone();
+        legacy["world_search_contract"] = json!(0);
+        let before = legacy.clone();
+        retain_route_assessments(&mut legacy);
+        assert_eq!(legacy, before);
+        let mut v1 = original;
+        v1["endpoint_search"]["backward_batch_contract"] = json!(1);
+        let before = v1.clone();
+        retain_route_assessments(&mut v1);
+        assert_eq!(v1, before);
+    }
+
     #[test]
     fn rejects_oversized_outside_and_duplicate_responses_without_changing_state() {
         let p = program();

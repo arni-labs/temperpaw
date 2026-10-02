@@ -693,6 +693,58 @@ pub fn selected_route_audit(world: &Value, program: &Value) -> Option<Value> {
     Some(json!({"status":status,"routes":routes}))
 }
 
+/// Omission is observable native state, not a fact the writer must invent.
+/// Keep every unselected original and derive its limits from recorded routes.
+pub fn preserve_omitted_originals(program: &Value, generated: &mut Value) {
+    if !enabled(program) {
+        return;
+    }
+    let mut omitted = vec![];
+    for endpoint in program["endpoint_search"]["endpoints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if generated["worlds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|world| world["endpoint_id"] == endpoint["id"])
+        {
+            continue;
+        }
+        let mut missing = 0;
+        let mut unchecked = 0;
+        let mut checked = 0;
+        let mut blocked = 0;
+        for commitment in endpoint["commitments"].as_array().into_iter().flatten() {
+            let routes: Vec<_> = program["endpoint_search"]["routes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|route| {
+                    route["endpoint_id"] == endpoint["id"]
+                        && route["commitment_id"] == commitment["id"]
+                })
+                .collect();
+            if routes.is_empty() {
+                missing += 1;
+            } else if routes
+                .iter()
+                .any(|route| route["status"] == "checked" && route["amendment_id"].is_null())
+            {
+                checked += 1;
+            } else if routes.iter().all(|route| route["status"] == "blocked") {
+                blocked += 1;
+            } else {
+                unchecked += 1;
+            }
+        }
+        omitted.push(json!({"endpoint_id":endpoint["id"],"reason":format!("This original world was not reconstructed. Of its defining commitments, {checked} have a checked unchanged route, {missing} have no recorded route, {blocked} have only blocked routes, and {unchecked} have unresolved checks or only amended routes. Its original text is preserved; no whole-world estimate was produced for it.")}));
+    }
+    generated["unreconstructed_endpoints"] = json!(omitted);
+}
+
 /// Composition binds every original endpoint; a weakened descendant is labelled
 /// explicitly and cannot replace the original commitment by changing prose.
 pub fn validate_composition(program: &Value, generated: &Value) -> Result<(), String> {
@@ -1206,6 +1258,31 @@ mod tests {
             "Original world"
         );
     }
+    #[test]
+    fn native_omission_receipts_do_not_allow_discarding_connected_originals() {
+        let (_, mut program, _) = fixture();
+        let mut generated = json!({"worlds":[],"unreconstructed_endpoints":[{"endpoint_id":"e","reason":"Invented explanation"}]});
+        preserve_omitted_originals(&program, &mut generated);
+        assert!(
+            generated["unreconstructed_endpoints"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("1 have no recorded route")
+        );
+        validate_composition(&program, &generated).unwrap();
+        program["endpoint_search"]["endpoints"][0]["status"] = json!("evaluated");
+        preserve_omitted_originals(&program, &mut generated);
+        assert!(
+            validate_composition(&program, &generated)
+                .unwrap_err()
+                .contains("fully connected")
+        );
+        program["world_search_contract"] = Value::Null;
+        let unchanged = generated.clone();
+        preserve_omitted_originals(&program, &mut generated);
+        assert_eq!(generated, unchanged);
+    }
+
     #[test]
     fn composition_rejects_silent_commitment_weakening_and_accounts_for_omissions() {
         let (_, mut p, r) = fixture();

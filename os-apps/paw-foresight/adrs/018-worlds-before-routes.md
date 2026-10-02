@@ -59,15 +59,21 @@ trajectories. The classifications are fallible critique, not proof of novelty.
 Rejected proposals and actual judgments remain visible; at most two revisions
 use the original run's remaining resources before explicit quality exhaustion.
 
-New accepted sets request backward paths in deterministic batches of at most
-three commitments. Missing paths come first, then least-explored unresolved
-alternatives. All original worlds and shared components remain in context;
-batching limits generation work rather than narrowing the original ideas.
-Responses outside the selected commitments or above the per-turn bounds are
-rejected before mutation. Existing time and transition limits remain unchanged.
-This addresses an oversized-work hypothesis; only a fresh live run can establish
-whether it resolves the observed timeout. Historical accepted sets retain their
-original contract.
+Initial three-commitment batches recorded paths but spent the available search
+on the first two originals. New accepted sets request one original's missing
+commitments together (at most eight), with at most 24 new shared hypotheses and
+64 KiB of response. Alternative-route turns retain the three-commitment limit.
+This makes a complete original the initial unit of work without increasing the
+run's time, polling or transition limits. Historical accepted sets retain their
+recorded selection contract. The backward scheduler does not use forward-search
+novelty/value rankings, so new sets omit those two redundant per-piece tasks;
+factual, temporal, likelihood and causal checks remain.
+
+Both next live tests also failed when the composer omitted unexplored originals
+without supplying omission receipts. The engine now derives those receipts from
+the saved commitment and route records. It cannot discard a fully connected
+original or fabricate a reconstructed world or estimate. This repairs structural
+bookkeeping; fresh deployed results must still establish useful completion.
 
 The next live pass showed that critique alone could accept still-incremental
 ideas. First imagination therefore receives only the original question, horizon,

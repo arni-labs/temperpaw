@@ -804,6 +804,7 @@ fn baseline_correction(old: &Value, error: &str) -> Result<Value, String> {
 fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
+    core::endpoints::preserve_omitted_originals(old, &mut generated);
     core::endpoints::validate_composition(old, &generated)?;
     let baseline = if old["baseline"].is_object() {
         &old["baseline"]
@@ -1466,6 +1467,8 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         .push(receipt);
     if !core::endpoints::enabled(old) {
         core::defer_recorded_rankings(&mut program, old);
+    } else {
+        core::backward::retain_route_assessments(&mut program);
     }
     let current_evidence = evidence_ids(snapshot);
     let previous_evidence: std::collections::BTreeSet<_> = old["evidence_ids"]
@@ -2134,7 +2137,12 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(omitted);
-        generated["unreconstructed_endpoints"] = json!([{"endpoint_id":"unreached-original","reason":"No evaluated path reached this original commitment set."}]);
+        // Reproduce the live failure: the model omits an original and supplies
+        // no omission receipt, even though the native graph knows its limits.
+        generated
+            .as_object_mut()
+            .unwrap()
+            .remove("unreconstructed_endpoints");
         let route_node = old["endpoint_search"]["routes"][0]["world_node_id"]
             .as_str()
             .unwrap()
