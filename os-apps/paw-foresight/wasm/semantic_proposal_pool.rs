@@ -6,6 +6,9 @@ use super::super::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+/// Shared by imaginative generation and the relation checks that judge it.
+pub const WORLD_CHANGE_SEMANTICS: &str = "A world changes what becomes possible or impossible to do or experience, or how the relevant system actually works, with interacting consequences that answer the user's question. Social or economic arrangements matter when they change those capabilities, experiences or causal operation; they are not required. A new tool, process or medium can be a defining mechanism when its capabilities change the whole answer. Renaming a device, adding decorative scenes or changing ownership does not by itself establish a consequential change. Distinct worlds may share tools or institutions while producing materially different capabilities, experiences and causal paths.";
+
 pub fn enabled(program: &Value) -> bool {
     program["endpoint_proposal_contract"] == 2
 }
@@ -602,8 +605,8 @@ pub fn request(attempt: &Value, t: &Value) -> Result<Value, String> {
                 .collect();
             (
                 json!({"baseline":attempt["baseline"],"analogue":e["contrast"]["present_analogue"],"frontier_challenge":e["contrast"]["frontier_challenge"],"source_evidence":sources,"defining_commitments":e["commitments"].as_array().into_iter().flatten().filter(|c|e["contrast"]["defining_commitment_ids"].as_array().is_some_and(|ids|ids.contains(&c["id"]))).collect::<Vec<_>>(),"consequences":e["contrast"]["consequences"]}),
-                json!({"changed_arrangement":"Cited present analogue is supported in its actual scope, and the defining commitments specify a materially different organizing arrangement with dependent consequences. Adoption counts only when it changes the arrangement, not merely availability or prevalence.","present_or_adoption_only":"The defining mechanism already exists in the compared setting or only price, distribution, prevalence, packaging or convenience changes without a different organizing relationship.","unsupported_analogue":"The cited material does not substantiate the claimed present analogue or necessary scope contrast; absence of evidence is not evidence of novelty.","unresolved":"A consequential present-relative change is not established."}),
-                "Challenge the chosen analogue against ALL supplied source findings: an uncited stronger present match overrides a weak selected comparison. Check each defining commitment against the strongest relevant existing organizing arrangement, including the present frontier rather than only average adoption. A supported example does not establish that it is closest. A currently published report may project future outcomes: its publication and forecast are evidence only of what the source reports, not that the projected arrangement exists. Preserve claim_type, provenance, source_correction, observation dates and textual qualifications; do not classify a projected outcome as a present counterexample. Reported queries are researcher self-report, not independently verified search or proof of absence. If necessary comparison coverage remains unknown, choose unresolved. Preserve scope/date caveats. Do not award novelty for low probability, future dates, narrative length, or unsupported claims about today's absence. A durable old arrangement under changed conditions may qualify if its new consequential relationship is explicit.",
+                json!({"changed_arrangement":"Cited present analogue is supported in its actual scope, and the defining commitments specify materially changed capabilities, experiences or causal operation with dependent consequences. Institutional change is not required. Adoption counts when it enables such a change, not merely greater availability or prevalence.","present_or_adoption_only":"The defining mechanism and its claimed capabilities or experiences already exist in the compared setting, or only price, distribution, prevalence, packaging or convenience changes without a consequential difference in what becomes possible or how it works.","unsupported_analogue":"The cited material does not substantiate the claimed present analogue or necessary scope contrast; absence of evidence is not evidence of novelty.","unresolved":"A consequential present-relative change is not established."}),
+                "Challenge the chosen analogue against ALL supplied source findings: an uncited stronger present match overrides a weak selected comparison. Check each defining commitment against the strongest relevant existing capabilities, experiences and causal mechanisms, including the present frontier rather than only average adoption. A supported example does not establish that it is closest. A currently published report may project future outcomes: its publication and forecast are evidence only of what the source reports, not that the projected arrangement exists. Preserve claim_type, provenance, source_correction, observation dates and textual qualifications; do not classify a projected outcome as a present counterexample. Reported queries are researcher self-report, not independently verified search or proof of absence. If necessary comparison coverage remains unknown, choose unresolved. Preserve scope/date caveats. Do not award novelty for low probability, future dates, narrative length, or unsupported claims about today's absence. A familiar mechanism under changed conditions may qualify if its newly enabled capabilities or consequences are explicit and supported by the present comparison.",
             )
         }
         "check_proposal_dependence" => (
@@ -613,12 +616,15 @@ pub fn request(attempt: &Value, t: &Value) -> Result<Value, String> {
         ),
         "check_proposal_pair" => (
             json!({"left":e,"right":endpoint(field(t,"other_endpoint_id"))?}),
-            json!({"distinct_arrangements":"The two defining mechanisms organize the answer differently and imply different dependent consequences. Overlap is allowed, but the distinction survives removing devices, topic labels and decorative scenes.","complementary_slices":"These are compatible features/topics of the same organizing arrangement rather than different answers to the whole question.","same_arrangement":"Same organizing mechanism and consequences under different wording.","unresolved":"A consequential distinction is not specified."}),
-            "Compare defining relationships and their consequences, not topical coverage. Do not demand logical incompatibility. Ask what whole-answer distinction remains if both named tools exist in the same household or setting.",
+            json!({"distinct_arrangements":"The worlds give materially different whole answers through changed capabilities, experiences or causal operation and their dependent consequences. They may share institutions or tools. The distinction survives removing labels and decorative prose; do not remove the substantive mechanism being compared.","complementary_slices":"These are complementary features or topics without materially different whole answers in capability, experience or causal operation.","same_arrangement":"Same defining capabilities, experiences, causal operation and consequences under different wording.","unresolved":"A consequential distinction is not specified."}),
+            "Compare what becomes possible to do or experience, how it works and the interacting consequences. Do not demand different business models, ownership, institutions or logical incompatibility. Sharing a tool or institution does not make two materially different experiences or causal paths the same world.",
         ),
         _ => return Err("Unknown pool relation".into()),
     };
     state["world"] = attempt["world"].clone();
+    let instructions = if matches!(field(t, "function"), "check_proposal_change" | "check_proposal_pair") {
+        format!("{WORLD_CHANGE_SEMANTICS}\n\n{instructions}")
+    } else { instructions.to_owned() };
     Ok(
         json!({"model":super::super::MODEL,"state":state,"questions":{"result":{"type":"choice","instructions":instructions,"criteria":criteria}},"validation":{"selection_policy":"provider_argmax"}}),
     )
@@ -1133,6 +1139,31 @@ mod tests {
             .unwrap_err()
             .contains("actual commitment"));
     }
+    #[test]
+    fn capability_and_experience_definition_reaches_change_and_pair_requests() {
+        let (_, p) = pool();
+        let attempt = &p["endpoint_proposal_attempt"];
+        let endpoints = attempt["endpoints"].as_array().unwrap();
+        for function in ["check_proposal_change", "check_proposal_pair"] {
+            let task = json!({"function":function,"endpoint_id":endpoints[0]["id"],"other_endpoint_id":endpoints[1]["id"]});
+            let wire = request(attempt, &task).unwrap();
+            let question = &wire["questions"]["result"];
+            assert!(question["instructions"].as_str().unwrap().starts_with(WORLD_CHANGE_SEMANTICS));
+            let category = if function == "check_proposal_change" {"changed_arrangement"} else {"distinct_arrangements"};
+            assert!(question["criteria"][category].as_str().unwrap().contains("capabilities, experiences or causal operation"));
+            assert!(!question.to_string().contains("survives removing devices"));
+            if function == "check_proposal_change" {
+                assert_eq!(wire["state"]["frontier_challenge"], endpoints[0]["contrast"]["frontier_challenge"]);
+                assert!(!wire["state"]["source_evidence"].as_array().unwrap().is_empty());
+                assert!(question["criteria"].get("unsupported_analogue").is_some());
+                assert!(question["criteria"].get("unresolved").is_some());
+            } else {
+                assert_eq!(wire["state"]["left"], endpoints[0]);
+                assert_eq!(wire["state"]["right"], endpoints[1]);
+            }
+        }
+    }
+
     #[test]
     fn defining_commitments_can_form_acyclic_dependent_consequences() {
         let (snapshot, _, candidates) = fixture();
