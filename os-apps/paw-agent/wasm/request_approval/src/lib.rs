@@ -5,7 +5,7 @@
 //! from the agent's state, registers the GovernanceDecision callback,
 //! and then tries to notify the human through the bound channel session.
 //!
-//! Notification is best-effort only after callback registration succeeds.
+//! Callback registration and notification failures preserve the human approval pause.
 //! A session without a channel binding must still be able to wait for
 //! approval via the dashboard or API.
 
@@ -82,6 +82,7 @@ fn log_approval_event(ctx: &Context, level: &str, message: &str, event: Approval
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
+    let mut pending_approval: Option<(String, Option<String>)> = None;
     let result = (|| -> Result<(), String> {
         let ctx = Context::from_host()?;
         let fields = ctx
@@ -178,46 +179,58 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         // Register callback before notifying humans so an approval click cannot
         // outpace callback wiring and strand the waiting session.
-        match register_gd_callback(&ctx, &temper_api_url, tenant, session_id, decision_id) {
-            Ok(()) => log_approval_event(
-                &ctx,
-                "info",
-                "temperpaw.approval callback registered",
-                ApprovalObservability {
-                    operation: "register_callback",
-                    outcome: "success",
-                    delivery: "not_applicable",
-                    decision_id,
-                    session_id,
-                    agent_id,
-                    parent_session_id,
-                    active_plan_id,
-                    action: action_desc,
-                    ..ApprovalObservability::default()
-                },
-            ),
-            Err(error) => {
-                log_approval_event(
-                    &ctx,
-                    "warn",
-                    "temperpaw.approval callback registration failed",
-                    ApprovalObservability {
-                        operation: "register_callback",
-                        outcome: "error",
-                        delivery: "not_applicable",
-                        reason: "register_callback_failed",
-                        decision_id,
-                        session_id,
-                        agent_id,
-                        parent_session_id,
-                        active_plan_id,
-                        action: action_desc,
-                        ..ApprovalObservability::default()
-                    },
-                );
-                return Err(error);
-            }
-        }
+        let callback_error =
+            match register_gd_callback(&ctx, &temper_api_url, tenant, session_id, decision_id) {
+                Ok(()) => {
+                    log_approval_event(
+                        &ctx,
+                        "info",
+                        "temperpaw.approval callback registered",
+                        ApprovalObservability {
+                            operation: "register_callback",
+                            outcome: "success",
+                            delivery: "not_applicable",
+                            decision_id,
+                            session_id,
+                            agent_id,
+                            parent_session_id,
+                            active_plan_id,
+                            action: action_desc,
+                            ..ApprovalObservability::default()
+                        },
+                    );
+                    None
+                }
+                Err(error) => {
+                    log_approval_event(
+                        &ctx,
+                        "warn",
+                        "temperpaw.approval callback registration failed",
+                        ApprovalObservability {
+                            operation: "register_callback",
+                            outcome: "error",
+                            delivery: "not_applicable",
+                            reason: "register_callback_failed",
+                            decision_id,
+                            session_id,
+                            agent_id,
+                            parent_session_id,
+                            active_plan_id,
+                            action: action_desc,
+                            ..ApprovalObservability::default()
+                        },
+                    );
+                    ctx.log("warn", &error);
+                    Some(error)
+                }
+            };
+        pending_approval = Some((decision_id.to_string(), callback_error.clone()));
+        let set_success_result = |action: &str, body: &Value| {
+            set_success_result(
+                action,
+                &approval_result(body.clone(), callback_error.as_deref()),
+            );
+        };
 
         // Find the ChannelSession for this agent. Sessions without a channel
         // binding can still be approved via dashboard/API, so do not fail the
@@ -419,44 +432,48 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             return Ok(());
         }
 
-        let pending_decision =
-            match fetch_pending_decision(&ctx, &temper_api_url, tenant, decision_id) {
-                Ok(decision) => decision,
-                Err(error) => {
-                    log_approval_event(
-                        &ctx,
-                        "warn",
-                        "temperpaw.approval decision lookup failed",
-                        ApprovalObservability {
-                            operation: "lookup_decision",
-                            outcome: "error",
-                            delivery: "not_applicable",
-                            reason: "decision_lookup_failed",
-                            decision_id,
-                            session_id,
-                            agent_id,
-                            parent_session_id,
-                            active_plan_id,
-                            bound_agent_id: &bound_agent_id,
-                            channel_id,
-                            thread_id,
-                            action: action_desc,
-                            ..ApprovalObservability::default()
-                        },
-                    );
-                    ctx.log(
-                        "warn",
-                        &format!(
-                            "notify_approval: decision detail lookup failed for {decision_id}: {error}"
-                        ),
-                    );
-                    None
-                }
-            };
+        let pending_decision = match fetch_pending_decision(
+            &ctx,
+            &temper_api_url,
+            tenant,
+            decision_id,
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                log_approval_event(
+                    &ctx,
+                    "warn",
+                    "temperpaw.approval decision lookup failed",
+                    ApprovalObservability {
+                        operation: "lookup_decision",
+                        outcome: "error",
+                        delivery: "not_applicable",
+                        reason: "decision_lookup_failed",
+                        decision_id,
+                        session_id,
+                        agent_id,
+                        parent_session_id,
+                        active_plan_id,
+                        bound_agent_id: &bound_agent_id,
+                        channel_id,
+                        thread_id,
+                        action: action_desc,
+                        ..ApprovalObservability::default()
+                    },
+                );
+                ctx.log(
+                    "warn",
+                    &format!(
+                        "notify_approval: decision detail lookup failed for {decision_id}: {error}"
+                    ),
+                );
+                None
+            }
+        };
 
         // Build the approval message with scoped buttons.
         // custom_id uses the platform's decision ID (PD-xxx).
-        let content = format_approval_content(
+        let mut content = format_approval_content(
             decision_id,
             agent_id,
             action_desc,
@@ -464,6 +481,9 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             pending_decision.as_ref(),
         );
 
+        if let Some(error) = &callback_error {
+            content.push_str(&format!("\n\nAutomatic session resumption is unavailable: {error}. Your decision still requires human approval; after deciding, authorized callback recovery is needed to resume this paused session."));
+        }
         let body = json!({
             "thread_id": thread_id,
             "content": content,
@@ -630,9 +650,36 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     })();
 
     if let Err(error) = result {
-        set_error_result(&error);
+        if let Some((decision_id, callback_error)) = pending_approval {
+            set_success_result(
+                "",
+                &approval_result(
+                    json!({
+                        "status":"waiting_for_out_of_band_approval",
+                        "decision_id":decision_id,
+                        "delivery":"failed",
+                        "notification_error":error
+                    }),
+                    callback_error.as_deref(),
+                ),
+            );
+        } else {
+            set_error_result(&error);
+        }
     }
     0
+}
+
+fn approval_result(mut body: Value, callback_error: Option<&str>) -> Value {
+    body["callback_registered"] = json!(callback_error.is_none());
+    if let Some(error) = callback_error {
+        body["status"] = json!("waiting_for_out_of_band_approval");
+        body["callback_error"] = json!(error);
+        body["recovery_required"] = json!(
+            "Human decision and authorized callback recovery; no automatic resume is available."
+        );
+    }
+    body
 }
 
 /// Query the GovernanceDecision entity by pending_decision_id in temper-system
