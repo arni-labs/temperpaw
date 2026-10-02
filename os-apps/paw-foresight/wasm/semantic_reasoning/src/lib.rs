@@ -95,7 +95,7 @@ fn challenge_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     Ok(input)
 }
 
-const IMAGINE_PROMPT: &str = r#"Imagine a few rich, sharply different endpoint worlds answering the user's question at its horizon. Work from the sourced present, then imagine consequential futures before choosing prerequisites. Do not assemble worlds from a ranked list of little predictions. No prescribed axes, optimistic/pessimistic template or topic quotas. Show recognizable daily experiences and interacting changes in who does what, what becomes unnecessary and what new possibilities appear. A bold endpoint is a conjecture, not a confident forecast. Keep dated present observations distinct from new future commitments. Each endpoint needs separable load-bearing commitments stated as observable future events with scope and horizon. These are preliminary proposals. Actual Jev proposal-quality judgments will compare their exact distinguishing commitments to the sourced present and the whole set to one another before acceptance. Use proposal_quality_history as recorded critique: revise the consequential trajectories, not merely wording, scenes or dates. Only accepted original texts will be frozen; subsequent search must find routes or explicitly account for changes. Resource envelope is two to six endpoints and three to eight commitments per endpoint, not a story formula.
+const IMAGINE_PROMPT: &str = r#"Imagine a few rich, sharply different endpoint worlds answering the user's question at its horizon. Begin with the original question and imagine bold alternative whole future arrangements before choosing prerequisites. Follow their interacting consequences far enough to change how people live, what they can do and what they no longer need. A familiar workflow with extra gadgets or faster tools is not by itself a new arrangement. Let the possibilities emerge from the question; do not assemble worlds from a ranked list of little predictions. Plausibility and connections to the sourced present are tested after proposal, not presumed here. No prescribed axes, optimistic/pessimistic template or topic quotas. Show recognizable daily experiences and interacting changes in who does what, what becomes unnecessary and what new possibilities appear. A bold endpoint is a conjecture, not a confident forecast. These are imagined possibilities, not researched observations; do not invent citations or claim their novelty has already been established. Each endpoint needs separable load-bearing commitments stated as observable future events with scope and horizon. These are preliminary proposals. Actual Jev proposal-quality judgments will compare their exact distinguishing commitments to the sourced present and the whole set to one another before acceptance. Use proposal_quality_history as recorded critique: revise the consequential trajectories, not merely wording, scenes or dates. Only accepted original texts will be frozen; subsequent search must find routes or explicitly account for changes. Resource envelope is two to six endpoints and three to eight commitments per endpoint, not a story formula.
 Return JSON only: {"endpoints":[{"id":"short-ascii-id","title":"<=100 characters","original_statement":"joint imagined outcome <=1000 characters","original_narrative":"multifaceted everyday world <=2400 characters","commitments":[{"id":"local-commitment-id","statement":"specific scoped future commitment <=1000 characters"}],"signals":["1–8 signals <=240 characters"],"falsifiers":["1–8 falsifiers <=240 characters"]}]}. Do not generate hypothesis nodes, component IDs or probabilities in this phase."#;
 const BACKWARD_PROMPT: &str = r#"Work BACKWARD from the immutable imagined endpoints in endpoint_search. For the selected load-bearing commitments in backward_batch (or all commitments for a legacy run without that field), ask what would need to hold and what different routes could connect the researched present to it. Use existing candidate refs for exactly shared pieces; do not rewrite or duplicate the same proposition to get another score. Develop interacting prerequisites and alternatives, not only a list of recommendations. Low likelihood is not permission to replace an unusual endpoint with today's consensus. A failed or incomplete route asks for another mechanism before any amendment. Preserve uncertainty and conflicting evidence. A root_connection states a proposed bridge from cited present evidence to a conjectural prerequisite; source existence is never proof. If no bridge can be specified, keep an explicit unresolved_question instead of inventing evidence.
 Return JSON with hypotheses, branches, research_evidence, continue_exploring, exploration_note, routes and amendments. Each new hypothesis is {id:"unique short ASCII ID, not ref_",title:"distinct future claim",statement:"self-contained observable future event with scope and horizon",branch_id:"optional existing or new branch ID; omit when unconditional",mechanism:"causal path and assumptions",requires:["visible evidence/candidate ref or new hypothesis/evidence ID"],scene:"imagined everyday consequence",signal:"observable early sign",falsifier:"what undermines the mechanism",evidence_note:"observed versus conjectural",research_question:"unanswered premise"}. Source findings follow the supplied research contract; omit new findings when none were retrieved. Branches follow the signed condition contract. Empty arrays are valid for unchanged pieces. Each route: {id:"unique ASCII ID",endpoint_id:"original endpoint id",commitment_id:"original commitment id",target_component_id:"existing ref or new hypothesis ID",component_ids:["2–12 candidate refs/new IDs including target"],chain:[{id:"unique link id",from_ids:["prerequisite candidate IDs"],to_id:"consequence candidate ID",by:"calendar date inside horizon",mechanism:"<=800 chars"}],root_connections:[{component_id:"each root candidate exactly once",evidence_ids:["supplied or same-response source IDs; empty means unresolved frontier"],mechanism:"proposed bridge from present <=800 chars",unresolved_question:"required <=400 chars if no evidence connection"}],grounding_evidence_ids:["source refs kept separate from conjectural prerequisites"],alternative_to:null or "previous route ID for this same original commitment",amendment_id:null or "explicit amendment ID"}. Every component must lead to this route's target through the declared DAG. Every target's statement must exactly equal its original commitment (or explicit replacement). Routes may share components across worlds. Different mechanisms must get new route IDs; prior routes are immutable. When backward_batch is supplied, address only its selected commitments, at most one route each, using its exact alternative_to when supplied. Its limits are hard ceilings, not targets: at most3 routes,24 new hypotheses,8 new evidence records,3 amendments,24 branches and64 KiB total JSON. Other endpoint commitments remain context for shared reuse, not work requested in this turn. Missing commitments are scheduled in subsequent turns even if continue_exploring is false. Keep each response small enough to complete; do not generate every world’s routes at once. Legacy runs without backward_batch allow at most48 routes. Focus Jev work on connected paths and bottlenecks. Reuse checked components when their meaning, evidence and conditions are unchanged.
@@ -330,6 +330,35 @@ fn research_enabled(phase: &str, snapshot: &Value) -> bool {
         && core::field(&snapshot["world"], "hindcast_mode") == "false"
 }
 
+// Imagination starts from the user's question. Research remains available to the
+// separate Jev critique and backward search, not as an agenda for the proposer.
+fn imagine_input(snapshot: &Value, program: &Value) -> Value {
+    let world = &snapshot["world"];
+    let history: Vec<_> = program["endpoint_proposal_history"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|attempt| {
+            json!({
+                "attempt": attempt["attempt"],
+                "status": attempt["status"],
+                "reason": attempt["reason"],
+                "endpoints": attempt["endpoints"],
+                "checks": attempt["checks"]
+            })
+        })
+        .collect();
+    json!({
+        "world": {
+            "description": world["description"],
+            "target_date": world["target_date"],
+            "last_ingest_date": world["last_ingest_date"],
+            "hindcast_mode": world["hindcast_mode"]
+        },
+        "proposal_quality_history": history
+    })
+}
+
 fn setup(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
@@ -347,7 +376,7 @@ fn setup(ctx: &Context) -> Result<(), String> {
         _ => return Err("Unknown reasoning phase".into()),
     };
     let mut input = if phase == "imagine" {
-        references::References::new(&snapshot)?.project(&json!({"world":snapshot["world"],"baseline":program["baseline"],"scope_review":program["scope_review"],"observed_evidence":references::evidence_snapshot(&snapshot)["nodes"]}))
+        imagine_input(&snapshot, &program)
     } else if phase == "synthesize" {
         world_writing_input(&snapshot, &program)?
     } else if phase == "challenge" {
@@ -363,9 +392,6 @@ fn setup(ctx: &Context) -> Result<(), String> {
     if phase == "backward" && core::backward::enabled(&program) {
         input["backward_batch"] =
             references::References::new(&snapshot)?.project(&core::backward::batch(&program));
-    }
-    if phase == "imagine" {
-        input["proposal_quality_history"] = program["endpoint_proposal_history"].clone();
     }
     input["response_correction"] = program["response_correction"].clone();
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
@@ -445,6 +471,47 @@ mod reasoning_tests {
 
     mod outlook_contract {
         include!("../../semantic_outlook.rs");
+    }
+
+    #[test]
+    fn imagination_input_follows_question_not_research_agenda() {
+        let snapshot = json!({"world":{"description":"How will people eat in 2035? Only consider cities.","target_date":"2035-12-31","last_ingest_date":"2026-10-02","hindcast_mode":"false","research_summary":"unrequested agenda"},"nodes":[{"Id":"source","kind":"evidence","statement":"First source topic"}]});
+        let program = json!({"baseline":{"observed":[{"claim":"First topic"}]},"scope_review":{"evidence_scope":"narrow coverage"}});
+        let first = imagine_input(&snapshot, &program);
+        let mut changed_snapshot = snapshot.clone();
+        changed_snapshot["nodes"] =
+            json!([{"Id":"other","kind":"evidence","statement":"Completely different topic"}]);
+        changed_snapshot["world"]["research_summary"] = json!("Another agenda");
+        let changed_program = json!({"baseline":{"observed":[{"claim":"Another topic"}]},"scope_review":{"evidence_scope":"different coverage"}});
+        assert_eq!(first, imagine_input(&changed_snapshot, &changed_program));
+        assert_eq!(
+            first["world"]["description"],
+            snapshot["world"]["description"]
+        );
+        changed_snapshot["world"]["description"] = json!("How will children learn in 2035?");
+        assert_ne!(first, imagine_input(&changed_snapshot, &changed_program));
+        for field in ["baseline", "scope_review", "observed_evidence", "nodes"] {
+            assert!(first.get(field).is_none());
+        }
+    }
+
+    #[test]
+    fn imagination_revision_retains_exact_proposals_and_jev_critique_without_baseline() {
+        let endpoints = json!([{"id":"original","original_statement":"Exact original commitment","original_narrative":"The imagined world"}]);
+        let checks = json!([{"endpoint_id":"original","result":"present_or_adoption_only","critique":"Exact criterion from the recorded judgment","evaluation":{"type":"choice","selected":"present_or_adoption_only","answer":{"choice":"present_or_adoption_only","probabilities":{"present_or_adoption_only":0.7,"consequential_change":0.3}}}}]);
+        let program = json!({"endpoint_proposal_history":[{"attempt":1,"status":"revision_requested","reason":"proposal_quality","endpoints":endpoints,"checks":checks,"baseline":{"observed":[{"claim":"BASELINE_SENTINEL"}]},"source_evidence_ids":["SOURCE_SENTINEL"]}]});
+        let input = imagine_input(
+            &json!({"world":{"description":"Original question"}}),
+            &program,
+        );
+        assert_eq!(input["proposal_quality_history"][0]["endpoints"], endpoints);
+        assert_eq!(input["proposal_quality_history"][0]["checks"], checks);
+        assert!(!input.to_string().contains("BASELINE_SENTINEL"));
+        assert!(!input.to_string().contains("SOURCE_SENTINEL"));
+        assert_eq!(
+            program["endpoint_proposal_history"][0]["baseline"]["observed"][0]["claim"],
+            "BASELINE_SENTINEL"
+        );
     }
 
     #[test]
