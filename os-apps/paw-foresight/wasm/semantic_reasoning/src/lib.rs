@@ -575,7 +575,11 @@ fn setup(ctx: &Context) -> Result<(), String> {
         }
     }
     input["response_correction"] = program["response_correction"].clone();
-    if phase == "synthesize" {
+    // Proposal history repeats exact request context across checks and attempts.
+    // Reuse the writer's reversible encoding; persisted history is unchanged.
+    if phase == "synthesize"
+        || input["proposal_quality_history"].as_array().is_some_and(|history| !history.is_empty())
+    {
         input = share_writer_values(input);
     }
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
