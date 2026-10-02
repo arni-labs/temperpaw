@@ -2091,6 +2091,7 @@ mod tests {
         references::References::new(&snapshot)
             .unwrap()
             .resolve_generated(&mut generated);
+        old["baseline"] = generated["baseline"].clone();
         old["world_search_contract"] = json!(1);
         old["endpoint_search"] =
             json!({"status":"searching","endpoints":[],"routes":[],"amendments":[],"rounds":[]});
