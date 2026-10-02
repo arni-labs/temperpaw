@@ -210,8 +210,10 @@ actually means. Check recent first-hand demonstrations, current product behavior
 observed practice, as well as research. Separate current observations from user-supplied
 assumptions and unknowns. Do not mistake an older study or an adoption average for the
 present at the frontier. Do not universalize a user's own workflow to everyone. If a tool
-or habit already exists in this setting, investigate its NEXT consequences rather than
-predicting its arrival. State the additional change a future hypothesis would entail.
+or habit already exists in this setting, verify what it already does, where it is used and
+its current limits. Record what the evidence establishes today and what remains unknown.
+This phase establishes the present. Later world generation proposes imagined futures and
+works backward from them; do not create your own inferred future EventNodes here.
 
 Build an open research map that can support genuinely different causal futures. Let the
 question and discovered evidence determine what to investigate. There is no prescribed
@@ -221,8 +223,9 @@ of evidence, not the boundary of the research. Explore observed changes, contest
 weak signals, counterexamples and emerging mechanisms when they bear on this question.
 Distinguish an observation from its interpretation and from a hypothesis about the future.
 A source's prediction is evidence that the source made that prediction, not that it is true.
-Identify competing causal explanations and novel hypotheses worth testing. Preserve
-contradictions, uncertainty, missing evidence and the reasons a finding could mislead us.
+Identify competing causal explanations of observed findings and unanswered research
+questions. Preserve contradictions, uncertainty, missing evidence and the reasons a finding
+could mislead us.
 Do not turn a disagreement or an unsourced possibility into an established fact.
 
 Look beyond announcements and company talking points. When relevant, seek what people
@@ -231,9 +234,9 @@ Do not assume today's jobs, tools and habits survive unchanged. Follow evidence 
 make something disappear or become ordinary, and look for reasons that change might fail.
 Those are questions to investigate, not required conclusions or a fixed list of futures.
 Write findings in plain language with concrete people, actions, dates and limits. Translate
-necessary technical terms. Avoid corporate jargon and news-digest summaries. For each
-inferred future, explain what a person would notice in daily life and why it could happen;
-keep this imagined possibility separate from the observations that motivated it.
+necessary technical terms. Avoid corporate jargon and news-digest summaries. Describe what
+people actually do now and the limits of the evidence. Leave imagined everyday scenes,
+future outcomes and proposed paths to the later world-generation phase.
 
 {research}
 --- BEGIN CORPUS ---
@@ -260,21 +263,19 @@ source true or a forecast observed. A report published now may project outcomes 
 those are forecast horizons, never observation_period dates. State explicitly
 what the source projects and keep its forecast horizon in the statement. Use null
 observation dates when no historical observation period is supplied; never put the future
-horizon in observation_period. Hypothesis nodes need no evidence_json.
-Use provenance observed, contested, weak_signal, or hypothesis to identify the claim's
+horizon in observation_period. A sourced forecast is a report of what its source predicts,
+not an observed future outcome; retain its attribution, assumptions and horizon.
+Use provenance observed, contested, or weak_signal to identify the source claim's
 status. Use determined only for an actually fixed fact. Leave probability empty for research
 claims: unknown does not mean 0.5 and sourced does not mean 1.0. A genuinely quoted,
 quantified forecast may use provenance market or authored with its stated probability;
 identify whose estimate it is, its horizon and its conditions in the statement.
-Keep the source claim and your future interpretation in separate nodes. An observed,
-contested or weak_signal statement must not append what this could mean for future work,
-income or behavior. Save that inference separately with provenance hypothesis, even when
-it feels obvious. The later search must be able to reject your interpretation without
-rejecting the source observation that prompted it.
-Hypotheses may cite their motivating evidence, but explicitly say they are inferred and
-unverified; never fabricate a source for the hypothesis. If no source was available, say so
-and use an empty source_refs array. Preserve enough actual source content to let subsequent
-evaluations assess what was observed. Across all findings, quote no more than25 words total
+An observed, contested or weak_signal statement must not append your inference about
+future work, income or behavior. Do not save inferred future hypotheses in this research
+phase, even when they feel obvious. Preserve unresolved questions and missing evidence in
+the research map instead. Do not invent findings to fill gaps or a node count; if a source
+cannot be inspected, record that limitation honestly. Preserve enough actual source content
+to let subsequent evaluations assess what was observed. Across all findings, quote no more than25 words total
 from any one source URL; additional findings can paraphrase with the source reference. Do not pad the map to a target count or collapse
 conflicting observations to one consensus. Group only genuinely redundant findings.
 
@@ -283,7 +284,7 @@ findings, inspect the saved EventNodes, then continue investigating. Avoid one m
 script; check action results before moving on. You have an operational turn budget, so leave
 time to save partial findings and report remaining research questions honestly.
 Verify saved nodes with temper.list("EventNodes", "world_id eq '{world_id}'").
-Write the research map, competing explanations, new hypotheses, evidence limitations and
+Write the research map, competing explanations of observations, evidence limitations and
 unanswered questions using temper.write("/skeleton.md", "<research map markdown>").
 This legacy filename is storage only; it does not constrain the substance of the research.
 Do NOT create Files, Directories, or Workspaces yourself. Save the returned file_id.
@@ -655,7 +656,7 @@ mod tests {
             "temper.web_search",
             "temper.web_fetch",
             "competing causal explanations",
-            "observed, contested, weak_signal, or hypothesis",
+            "observed, contested, or weak_signal",
             "Leave probability empty",
             "\"uncertainty_axes\": \"[]\"",
             "SeedComplete",
@@ -674,6 +675,17 @@ mod tests {
                 "research regressed to {obsolete}"
             );
         }
+    }
+
+    #[test]
+    fn world_first_research_does_not_generate_future_candidates() {
+        let prompt = open_research_prompt("w", "a", "Any question", "2030", "2026", "", false);
+        assert!(prompt.contains("do not create your own inferred future EventNodes here"));
+        assert!(prompt.contains("A sourced forecast is a report of what its source predicts"));
+        assert!(prompt.contains("never observation_period dates"));
+        assert!(!prompt.contains("Save that inference separately with provenance hypothesis"));
+        assert!(!prompt.contains("novel hypotheses worth testing"));
+        assert!(!prompt.contains("For each inferred future"));
     }
 
     #[test]
