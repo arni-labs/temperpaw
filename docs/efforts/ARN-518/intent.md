@@ -1,4 +1,34 @@
-# ARN-518: Observable continuous learning in Foresight
+# ARN-518: Bold worlds with searched paths from the present
+
+## Current accepted outcome — 2 October 2026
+
+An ordinary question produces a variety of imaginative, materially different worlds.
+Generate the worlds first, decompose their defining commitments, and search backward
+for plausible chains from the sourced present. When a route fails, explore a different
+mechanism rather than quietly weakening the imagined destination. Share unchanged
+components and exact-context Jev evaluations across routes. Preserve original worlds,
+explicit amendments, source provenance, assumptions and unresolved gaps. Show this
+working in the deployed UI with readable whole-world answers, graph/matrix exploration,
+causal paths and estimates whose limitations are clear.
+
+The prior deployed game-making answer ran successfully but mostly described existing
+practices. Functional completion did not meet this creative outcome. Restore the
+world-first commitment of ADR-002/004 through the current native lifecycle; see
+[ADR-018](../../../os-apps/paw-foresight/adrs/018-worlds-before-routes.md).
+
+Compare the actual output with a strongly prompted GPT-6 Astra baseline at extra-high
+effort, using frozen cross-domain questions and blind quality comparisons. Retain
+failures and losing outputs. Distinguish imaginative quality, causal support, factual
+fidelity and readability from predictive accuracy. Do not claim general superiority
+or calibration without the corresponding evidence. Existing forecasting and learning
+capabilities must remain intact.
+
+Continue PR526 in arni-labs/temperpaw and PR121 in arni-labs/deep-sci-fi. Only the
+dedicated Railway acceptance deployment and Vercel preview are authorized release
+targets for this work; main and Genesis promotion remain deferred.
+
+The sections below preserve the earlier learning objective and starting evidence;
+they do not override this accepted correction or establish present delivery.
 
 ## User outcome
 
