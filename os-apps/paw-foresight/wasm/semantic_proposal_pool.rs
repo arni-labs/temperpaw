@@ -307,21 +307,34 @@ pub fn validate_contrast(endpoint: &Value, snapshot: &Value) -> Result<(), Strin
         .filter(|a| !a.is_empty() && a.len() <= 3)
         .ok_or("Contrast needs one to three dependent consequences")?;
     let mut seen = BTreeSet::new();
+    let mut dependencies = vec![];
     for relation in consequences {
         let consequence = relation["commitment_id"]
             .as_str()
             .ok_or("Missing consequence commitment")?;
-        if !known.contains(consequence)
-            || defining.contains(&consequence)
-            || !seen.insert(consequence)
-        {
+        if !known.contains(consequence) || !seen.insert(consequence) {
             return Err("Dependent consequence must name a distinct actual commitment".into());
         }
         let parents = ids(&relation["depends_on"])?;
-        if parents.iter().any(|id| !defining.contains(id)) {
-            return Err("Consequence must depend on the declared defining commitments".into());
+        if parents.iter().any(|id| !known.contains(id) || *id == consequence) {
+            return Err("Consequence parents must be actual commitments distinct from their consequence".into());
         }
         text(&relation["mechanism"], 600)?;
+        dependencies.push((consequence, parents));
+    }
+    // A defining implication can also be a downstream consequence. Validate
+    // the declared graph itself instead of forcing those roles to be disjoint.
+    let mut remaining = known;
+    while !remaining.is_empty() {
+        let next = remaining.iter().copied().find(|id| {
+            dependencies.iter().all(|(consequence, parents)| {
+                consequence != id || parents.iter().all(|parent| !remaining.contains(parent))
+            })
+        });
+        match next {
+            Some(id) => { remaining.remove(id); }
+            None => return Err("Dependent consequence graph must not contain a cycle".into()),
+        }
     }
     Ok(())
 }
@@ -1120,6 +1133,48 @@ mod tests {
             .unwrap_err()
             .contains("actual commitment"));
     }
+    #[test]
+    fn defining_commitments_can_form_acyclic_dependent_consequences() {
+        let (snapshot, _, candidates) = fixture();
+        let mut endpoint = candidates[0].clone();
+        endpoint["commitments"] = json!([
+            {"id":"c1","statement":"First defining change"},
+            {"id":"c2","statement":"Second defining change"},
+            {"id":"c3","statement":"Their interacting defining consequence"},
+            {"id":"c4","statement":"A further defining consequence"}
+        ]);
+        endpoint["contrast"] = contrast(&endpoint, &snapshot["nodes"][0]["Id"]);
+        endpoint["contrast"]["defining_commitment_ids"] = json!(["c1","c2","c3","c4"]);
+        endpoint["contrast"]["consequences"] = json!([
+            {"commitment_id":"c3","depends_on":["c1","c2"],"mechanism":"The first two changes jointly enable the third"},
+            {"commitment_id":"c4","depends_on":["c1","c2","c3"],"mechanism":"Their combined effects enable the fourth"}
+        ]);
+        assert!(validate_contrast(&endpoint, &snapshot).is_ok());
+        let task = json!({"function":"check_proposal_dependence","endpoint_id":endpoint["id"],"relation_index":1});
+        let state = request(&json!({"endpoints":[endpoint.clone()]}), &task).unwrap();
+        assert_eq!(state["state"]["relation"], endpoint["contrast"]["consequences"][1]);
+        // Intermediate dependencies need not have the separate defining role.
+        let mut intermediate = endpoint.clone();
+        intermediate["contrast"]["defining_commitment_ids"] = json!(["c1","c2"]);
+        assert!(validate_contrast(&intermediate, &snapshot).is_ok());
+        let mut invalid = endpoint.clone();
+        invalid["contrast"]["consequences"][0]["depends_on"] = json!(["c3"]);
+        assert!(validate_contrast(&invalid, &snapshot).unwrap_err().contains("distinct"));
+        invalid["contrast"]["consequences"][0]["depends_on"] = json!(["missing"]);
+        assert!(validate_contrast(&invalid, &snapshot).unwrap_err().contains("actual commitments"));
+        invalid["contrast"]["consequences"][0]["depends_on"] = json!(["c4"]);
+        assert!(validate_contrast(&invalid, &snapshot).unwrap_err().contains("cycle"));
+        invalid = endpoint.clone();
+        invalid["contrast"]["consequences"].as_array_mut().unwrap().push(json!({"commitment_id":"c1","depends_on":["c4"],"mechanism":"Circular third edge"}));
+        assert!(validate_contrast(&invalid, &snapshot).unwrap_err().contains("cycle"));
+        invalid = endpoint.clone();
+        invalid["contrast"]["consequences"][1] = invalid["contrast"]["consequences"][0].clone();
+        assert!(validate_contrast(&invalid, &snapshot).unwrap_err().contains("distinct actual"));
+        invalid = endpoint;
+        invalid["contrast"]["consequences"][0]["mechanism"] = json!("x".repeat(601));
+        assert!(validate_contrast(&invalid, &snapshot).is_err());
+    }
+
     #[test]
     fn one_of_ten_viable_candidates_develops_once_before_fresh_admission() {
         let (s, old, mut candidates) = fixture();
