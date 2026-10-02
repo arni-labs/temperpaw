@@ -520,6 +520,8 @@ fn should_retry_stream_failure(
 #[derive(Default)]
 struct SseDataDecoder {
     pending: Vec<u8>,
+    // Bytes already searched for a newline in the retained partial line.
+    scanned: usize,
 }
 
 impl SseDataDecoder {
@@ -535,22 +537,26 @@ impl SseDataDecoder {
     fn drain_complete_lines(&mut self, include_partial: bool) -> Vec<String> {
         let mut events = Vec::new();
         let mut consumed = 0;
-        while let Some(offset) = self.pending[consumed..]
+        let mut scan_from = self.scanned;
+        while let Some(offset) = self.pending[scan_from..]
             .iter()
             .position(|byte| *byte == b'\n')
         {
-            let newline = consumed + offset;
+            let newline = scan_from + offset;
             let line = String::from_utf8_lossy(&self.pending[consumed..newline]);
             push_sse_data_line(line.trim_end_matches('\r'), &mut events);
             consumed = newline + 1;
+            scan_from = consumed;
         }
         self.pending.drain(..consumed);
+        self.scanned = self.pending.len();
 
         if include_partial {
             let line = String::from_utf8_lossy(&self.pending)
                 .trim_end_matches('\r')
                 .to_string();
             self.pending.clear();
+            self.scanned = 0;
             push_sse_data_line(&line, &mut events);
         }
 
@@ -5729,5 +5735,26 @@ mod incremental_count_tests {
             }
             assert_eq!(a.output_items[0]["arguments"], "{\"text\":\"é🦀\"}");
         }
+    }
+}
+
+#[cfg(test)]
+mod incremental_sse_tests {
+    use super::*;
+    #[test]
+    fn fragmented_long_unicode_lines_keep_exact_events_and_scan_only_new_bytes() {
+        let first=format!("data: {}\r\n",json!({"text":"未来🌍".repeat(20_000)}));
+        let second="data: second\n\ndata: final";
+        let mut decoder=SseDataDecoder::default();
+        let mut events=vec![];
+        for chunk in first.as_bytes().chunks(127) {
+            events.extend(decoder.push_chunk(chunk));
+            assert_eq!(decoder.scanned,decoder.pending.len());
+        }
+        for chunk in second.as_bytes().chunks(3) {events.extend(decoder.push_chunk(chunk));}
+        events.extend(decoder.finish());
+        assert_eq!(events,vec![first.trim().strip_prefix("data: ").unwrap(),"second","final"]);
+        assert!(decoder.pending.is_empty());
+        assert_eq!(decoder.scanned,0);
     }
 }

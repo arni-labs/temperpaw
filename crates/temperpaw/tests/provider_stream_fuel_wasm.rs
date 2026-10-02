@@ -8,6 +8,9 @@ use temper_wasm::{
     StreamRegistry, WasmEngine, WasmHost, WasmInvocationContext, WasmResourceLimits,
 };
 struct Provider {
+    output_bytes: usize,
+    chunk_bytes: usize,
+    emit_deltas: bool,
     calls: std::sync::Mutex<Vec<Value>>,
     request: std::sync::Mutex<Vec<u8>>,
     response: std::sync::Mutex<Vec<u8>>,
@@ -59,7 +62,7 @@ impl WasmHost for Provider {
     ) -> Result<Vec<u8>, temper_wasm::http_stream::StreamError> {
         {
             let mut r = self.response.lock().unwrap();
-            let n = r.len().min(8192);
+            let n = r.len().min(self.chunk_bytes);
             Ok(r.drain(..n).collect())
         }
     }
@@ -77,9 +80,9 @@ impl WasmHost for Provider {
         assert!(url.contains("fixture.invalid"));
         let mut calls = self.calls.lock().unwrap();
         calls.push(serde_json::from_slice(body).unwrap());
-        let size: usize = 50_000;
+        let size = self.output_bytes;
         let mut response = String::new();
-        for _ in 0..size / 2 {
+        for _ in 0..if self.emit_deltas { size / 2 } else { 0 } {
             response.push_str(&format!(
                 "data: {}\n\n",
                 json!({"type":"response.output_text.delta","delta":"ab"})
@@ -99,7 +102,13 @@ impl WasmHost for Provider {
         Err(format!("unexpected ordinary HTTP {url}"))
     }
 }
-async fn invoke(engine: &WasmEngine, hash: &str) -> (String, Value, Vec<Value>) {
+async fn invoke(
+    engine: &WasmEngine,
+    hash: &str,
+    output_bytes: usize,
+    chunk_bytes: usize,
+    emit_deltas: bool,
+) -> (String, Value, Vec<Value>) {
     let mut prepared = json!({"version":1,"messages":[{"role":"user","content":"Compose a detailed answer"}],"tools":[],"system_prompt":"test","system_prompt_hash":"hash","system_prompt_file_id":"","conversation_file_id":"","session_file_id":"","session_leaf_id":"","workspace_id":"","use_session_tree":false,"context_tokens":1,"context_bytes":1,"entries_loaded":1,"content_files_loaded":0});
     if let Ok(path) = std::env::var("FORESIGHT_PROVIDER_SESSION_FIXTURE") {
         let session: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -130,6 +139,9 @@ async fn invoke(engine: &WasmEngine, hash: &str) -> (String, Value, Vec<Value>) 
         http_request: None,
     };
     let host = Arc::new(Provider {
+        output_bytes,
+        chunk_bytes,
+        emit_deltas,
         calls: std::sync::Mutex::new(vec![]),
         request: std::sync::Mutex::new(vec![]),
         response: std::sync::Mutex::new(vec![]),
@@ -155,7 +167,7 @@ async fn invoke(engine: &WasmEngine, hash: &str) -> (String, Value, Vec<Value>) 
 async fn streamed_composition_fuel() {
     let engine = WasmEngine::new().unwrap();
     let hash=engine.compile_and_cache(&std::fs::read(std::env::var("FORESIGHT_PROVIDER_WASM").unwrap_or_else(|_|format!("{}/../../os-apps/paw-agent/wasm/provider_caller/target/wasm32-unknown-unknown/release/provider_caller.wasm",env!("CARGO_MANIFEST_DIR")))).unwrap()).unwrap();
-    let (a, p, r) = invoke(&engine, &hash).await;
+    let (a, p, r) = invoke(&engine, &hash, 50_000, 8192, true).await;
     println!(
         "action={a} calls={} paramsbytes={}",
         r.len(),
@@ -166,4 +178,21 @@ async fn streamed_composition_fuel() {
         serde_json::from_str(p["provider_response_inline_json"].as_str().unwrap()).unwrap();
     assert_eq!(artifact["content"][0]["text"], "ab".repeat(25_000));
     assert_eq!(r.len(), 1);
+}
+
+#[tokio::test]
+async fn fragmented_completed_frame_keeps_exact_output_with_same_fuel() {
+    let engine = WasmEngine::new().unwrap();
+    let artifact = std::env::var("FORESIGHT_PROVIDER_WASM").unwrap_or_else(|_| format!("{}/../../os-apps/paw-agent/wasm/provider_caller/target/wasm32-unknown-unknown/release/provider_caller.wasm", env!("CARGO_MANIFEST_DIR")));
+    let hash = engine
+        .compile_and_cache(&std::fs::read(artifact).unwrap())
+        .unwrap();
+    // A valid completed SSE frame can contain the whole answer; network chunks
+    // need not align with SSE lines or JSON tokens. No output is omitted.
+    let (action, params, calls) = invoke(&engine, &hash, 100_000, 16, false).await;
+    assert_eq!(action, "ProviderResponseReady");
+    let artifact: Value =
+        serde_json::from_str(params["provider_response_inline_json"].as_str().unwrap()).unwrap();
+    assert_eq!(artifact["content"][0]["text"], "ab".repeat(50_000));
+    assert_eq!(calls.len(), 1);
 }
