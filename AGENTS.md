@@ -11,7 +11,7 @@ If Stack AGENTS.md is already loaded by the harness, use that copy. Otherwise re
 
 > Project-specific rules only. Global rules come from the stack (`arni-labs/stack` AGENTS.md), which every harness loads separately - nothing global is repeated here. `CLAUDE.md` is a symlink to this file.
 
-TemperPaw is the agent OS built on [Temper](https://github.com/nerdsane/temper), developed in tandem with it. It is Temper-native: ALL functionality is built as Temper apps (entity specs, WASM integrations, Cedar policies). There is no separate orchestration layer. If an existing Temper capability cannot satisfy the task, identify the concrete limitation; do not expand into kernel work without authorization.
+TemperPaw is the agent OS built on [Temper](https://github.com/arni-labs/temper), developed in tandem with it. It is Temper-native: ALL functionality is built as Temper apps (entity specs, WASM integrations, Cedar policies). There is no separate orchestration layer. If an existing Temper capability cannot satisfy the task, identify the concrete limitation; do not expand into kernel work without authorization.
 
 ## Commands
 
@@ -37,6 +37,10 @@ If state changes, it is an entity. If logic runs on a state change, it is a WASM
 | Calling external APIs from Rust | WASM with secrets from `[integration.config]` |
 | Background watchers for agent completion | Agents self-report; HeartbeatMonitor handles timeouts |
 | Orchestration in `crates/temperpaw/` | Orchestration in `os-apps/*/wasm/` |
+
+## Spec syntax
+
+Specs use the current Temper syntax: expression guards, statement effects, `[[action.triggers]]` with typed `args`, `terminal = [...]` and typed initials (ADR-0179 to ADR-0181 in `arni-labs/temper`). The pinned kernel rejects the old forms. Convert an old file with `temper migrate-predicates` from an `arni-labs/temper` build and verify it before publishing; Stack's `temper-developer` skill has the rules and commands. Build Genesis-managed apps on their current Genesis head, which is already converted.
 
 ## WASM integration rules
 
