@@ -41,6 +41,12 @@ fn transient_provider_error(error: &str) -> bool {
     {
         return false;
     }
+    // Foresight reasoning exposes only search/fetch tools (or no tools). A fresh
+    // phase can repeat those reads after a terminal truncated response; never
+    // treat arbitrary stream/parser failures or authorization errors as transient.
+    if error == "openai codex stream failed after visible output or final attempt: openai sse stream ended before response.completed" {
+        return true;
+    }
     [429, 500, 502, 503, 504].iter().any(|status| {
         [
             format!("api returned {status}"),
@@ -216,6 +222,18 @@ mod retry_tests {
                 .contains("correction_kind=response_correction correction_attempt=1")
         );
     }
+    #[test]
+    fn only_observed_terminal_sse_truncation_retries() {
+        let observed = "OpenAI Codex stream failed after visible output or final attempt: OpenAI SSE stream ended before response.completed";
+        assert!(transient_provider_error(observed));
+        for suffix in ["permission denied", "HTTP 401", "authentication failed", "insufficient quota", "billing", "validation failed"] {
+            assert!(!transient_provider_error(&format!("{observed}: {suffix}")));
+        }
+        for other in ["OpenAI SSE stream ended before response.completed", "OpenAI Codex stream failed after visible output or final attempt: invalid JSON", "OpenAI Codex stream failed after visible output: connection reset"] {
+            assert!(!transient_provider_error(other));
+        }
+    }
+
     #[test]
     fn only_explicit_transient_provider_statuses_retry() {
         for status in [429, 500, 502, 503, 504] {
