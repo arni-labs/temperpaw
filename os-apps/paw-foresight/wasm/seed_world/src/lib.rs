@@ -20,7 +20,7 @@ const WEB_TOOLS: &str = ",temper_web_search,temper_web_fetch";
 fn session_create_error(name: &str, status: u16, body: &str) -> String {
     let prefix = format!("create Session for {name} failed (HTTP {status})");
     if body.len() > 64 * 1024 {
-        return format!("{prefix}: response detail exceeds 64KiB bound");
+        return format!("{prefix}: response detail exceeds 64 KiB bound");
     }
     let Ok(value) = serde_json::from_str::<Value>(body) else {
         return prefix;
@@ -275,7 +275,7 @@ future work, income or behavior. Do not save inferred future hypotheses in this 
 phase, even when they feel obvious. Preserve unresolved questions and missing evidence in
 the research map instead. Do not invent findings to fill gaps or a node count; if a source
 cannot be inspected, record that limitation honestly. Preserve enough actual source content
-to let subsequent evaluations assess what was observed. Across all findings, quote no more than25 words total
+to let subsequent evaluations assess what was observed. Across all findings, quote no more than 25 words total
 from any one source URL; additional findings can paraphrase with the source reference. Do not pad the map to a target count or collapse
 conflicting observations to one consensus. Group only genuinely redundant findings.
 
@@ -697,7 +697,7 @@ mod tests {
             "indexed-excerpt evidence",
             "weak_signal",
             "only when actually discovered",
-            "no more than25 words total",
+            "no more than 25 words total",
         ] {
             assert!(prompt.contains(required), "missing {required}");
         }

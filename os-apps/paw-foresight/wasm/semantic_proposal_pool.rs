@@ -35,43 +35,64 @@ pub fn admits(remaining: u64, reasoning_turns: u64, questions: usize) -> bool {
             + 8
 }
 
-pub fn receive(snapshot: &Value, old: &Value, endpoints: Vec<Value>) -> Result<Value, String> {
+pub fn receive(_snapshot: &Value, old: &Value, endpoints: Vec<Value>) -> Result<Value, String> {
     if serde_json::to_vec(&endpoints)
         .map_err(|e| e.to_string())?
         .len()
         > 64 * 1024
     {
-        return Err("Compact candidate or enriched endpoint response exceeds64 KiB".into());
+        return Err("Compact candidate or enriched endpoint response exceeds 64 KiB".into());
     }
     let mut program = old.clone();
     if old["proposal_pool"]["stage"] == "enrich" {
+        if old["proposal_pool"]["development"]["status"] == "completed" {
+            return Err("Candidate development runs once before freezing".into());
+        }
         let selected = old["proposal_pool"]["selected_ids"]
             .as_array()
             .ok_or("Missing selected candidates")?;
         if endpoints.len() != selected.len() {
-            return Err("Enrich every selected candidate exactly once".into());
+            return Err("Develop every selected candidate exactly once".into());
         }
-        for endpoint in &endpoints {
+        let mut seen = BTreeSet::new();
+        let mut developed = endpoints;
+        let mut originals = vec![];
+        for endpoint in &mut developed {
             let original = old["proposal_pool"]["candidates"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .find(|e| e["id"] == endpoint["id"] && selected.contains(&e["id"]))
                 .ok_or("Unknown selected candidate")?;
-            for key in ["original_statement", "commitments", "contrast"] {
-                if endpoint[key] != original[key] {
-                    return Err(format!(
-                        "Enrichment must preserve selected candidate {key} exactly; do not drop or weaken its defining change"
-                    ));
-                }
+            if !seen.insert(endpoint["id"].clone().to_string()) {
+                return Err("Duplicate developed candidate".into());
             }
+            originals.push(original.clone());
+            // Development can change the arrangement, so old contrast bindings are
+            // not authoritative even when the generator copies them back verbatim.
+            endpoint
+                .as_object_mut()
+                .ok_or("Invalid developed candidate")?
+                .remove("contrast");
         }
-        return schedule(snapshot, &program, endpoints, "enriched");
+        program["proposal_pool"]["development"] =
+            json!({"status":"completed","originals":originals,"developed":developed});
+        program["proposal_pool"]["candidates"] = json!(developed);
+        program["proposal_pool"]["stage"] = json!("contrast");
+        program["endpoint_proposal_attempt"]["status"] = json!("developed_contrast_required");
+        program["tasks"] = json!([]);
+        program["cursor"] = json!(0);
+        program["stage"] = json!("proposals");
+        program
+            .as_object_mut()
+            .unwrap()
+            .remove("response_correction");
+        return Ok(program);
     }
     if old["proposal_pool"].is_object() {
         return Err("Candidate pool is already being examined".into());
     }
-    program["proposal_pool"] = json!({"stage":"contrast","candidates":endpoints,"selected_ids":[],"selection_receipts":[],"research_attempts":0});
+    program["proposal_pool"] = json!({"stage":"contrast","analogue_challenge_contract":1,"candidates":endpoints,"selected_ids":[],"selection_receipts":[],"research_attempts":0});
     program["tasks"] = json!([]);
     program["cursor"] = json!(0);
     program["stage"] = json!("proposals");
@@ -105,6 +126,125 @@ fn ids(v: &Value) -> Result<Vec<&str>, String> {
                 .ok_or("Invalid or duplicate contrast ID".into())
         })
         .collect()
+}
+
+// A researcher report is inspectable evidence of their comparison, not proof
+// that a query ran or that the closest possible analogue has been found.
+fn validate_frontier_challenge(endpoint: &Value, snapshot: &Value) -> Result<(), String> {
+    let contrast = &endpoint["contrast"];
+    let challenge = &contrast["frontier_challenge"];
+    if !challenge.is_object() {
+        return Err(
+            "Missing strongest-present comparison; report unknown rather than certify novelty"
+                .into(),
+        );
+    }
+    let mut bounded = challenge.clone();
+    bounded["query_provenance"] = json!("researcher_report_not_verified_against_tool_trace");
+    if bounded.to_string().len() > 2400 {
+        return Err("Keep each frontier comparison receipt within 2400 bytes; share research and use concise comparisons".into());
+    }
+    let queries = challenge["reported_queries"]
+        .as_array()
+        .filter(|v| v.len() <= 3)
+        .ok_or("Strongest-present comparison needs bounded reported_queries")?;
+    for query in queries {
+        text(query, 240)?;
+    }
+    if !matches!(
+        challenge["research_basis"].as_str(),
+        Some("live_research" | "frozen_corpus" | "unavailable")
+    ) {
+        return Err("Invalid strongest-present research basis".into());
+    }
+    if challenge["research_basis"] != "unavailable" && queries.is_empty() {
+        return Err(
+            "Report the mechanism-level research queries, shared across candidates when applicable"
+                .into(),
+        );
+    }
+    let defining = ids(&contrast["defining_commitment_ids"])?;
+    let comparisons = challenge["comparisons"]
+        .as_array()
+        .filter(|v| v.len() == defining.len())
+        .ok_or(
+            "Compare every defining commitment against the strongest supplied present evidence",
+        )?;
+    let mut seen = BTreeSet::new();
+    let sources = evidence::active_sources(snapshot);
+    for row in comparisons {
+        let id = field(row, "commitment_id");
+        if !defining.contains(&id) || !seen.insert(id) {
+            return Err("Unknown or duplicate frontier comparison commitment".into());
+        }
+        if !matches!(
+            row["result"].as_str(),
+            Some("already_present" | "different_arrangement" | "unknown")
+        ) {
+            return Err("Invalid frontier comparison result".into());
+        }
+        text(&row["present_match"], 160)?;
+        text(&row["remaining_difference"], 160)?;
+        let refs = row["evidence_ids"]
+            .as_array()
+            .filter(|v| v.len() <= 3)
+            .ok_or("Invalid frontier evidence IDs")?;
+        if row["result"] != "unknown"
+            && (refs.is_empty() || challenge["research_basis"] == "unavailable")
+        {
+            return Err(
+                "A resolved present comparison requires source findings; otherwise report unknown"
+                    .into(),
+            );
+        }
+        for id in refs {
+            let source = sources
+                .iter()
+                .find(|n| {
+                    n["Id"] == *id
+                        && !evidence::is_projection(n)
+                        && n["evidence_metadata"]["kind"] == "finding"
+                })
+                .ok_or(
+                    "Frontier comparison needs active present findings, not leads or projections",
+                )?;
+            evidence::validate(&source["evidence_metadata"])?;
+            evidence::within_vantage(
+                &source["evidence_metadata"],
+                field(&snapshot["world"], "last_ingest_date"),
+            )?;
+        }
+    }
+    Ok(())
+}
+fn frontier_status(endpoint: &Value) -> &'static str {
+    let challenge = &endpoint["contrast"]["frontier_challenge"];
+    if challenge.is_null() {
+        return "not_examined";
+    }
+    let Some(rows) = challenge["comparisons"].as_array() else {
+        return "unresolved";
+    };
+    if challenge["research_basis"] == "unavailable" || rows.iter().any(|r| r["result"] == "unknown")
+    {
+        "unresolved"
+    } else if rows.iter().any(|r| r["result"] == "different_arrangement") {
+        "different_arrangement"
+    } else {
+        "already_present"
+    }
+}
+fn frontier_admissible(endpoint: &Value, required: bool) -> bool {
+    let challenge = &endpoint["contrast"]["frontier_challenge"];
+    if challenge.is_null() {
+        return !required;
+    }
+    let Some(rows) = challenge["comparisons"].as_array() else {
+        return false;
+    };
+    challenge["research_basis"] != "unavailable"
+        && rows.iter().all(|r| r["result"] != "unknown")
+        && rows.iter().any(|r| r["result"] == "different_arrangement")
 }
 
 pub fn validate_contrast(endpoint: &Value, snapshot: &Value) -> Result<(), String> {
@@ -188,7 +328,7 @@ pub fn validate_contrast(endpoint: &Value, snapshot: &Value) -> Result<(), Strin
 
 pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Value, String> {
     if generated.to_string().len() > 64 * 1024 {
-        return Err("Candidate contrast response exceeds64 KiB".into());
+        return Err("Candidate contrast response exceeds 64 KiB".into());
     }
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
@@ -199,21 +339,30 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
         .filter_map(|r| r["id"].as_str().map(str::to_owned))
         .collect();
     let round = old["round"].as_u64().unwrap_or(0) + 1;
-    for contrast in generated["proposal_contrasts"]
-        .as_array_mut()
-        .into_iter()
-        .flatten()
-    {
-        for id in contrast["contrast"]["present_analogue"]["evidence_ids"]
-            .as_array_mut()
-            .into_iter()
-            .flatten()
-        {
-            if let Some(local) = id.as_str().filter(|id| local_sources.contains(*id)) {
-                *id = json!(format!("r{round}-{local}"));
+    fn resolve_local_evidence(value: &mut Value, key: &str, locals: &BTreeSet<String>, round: u64) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    resolve_local_evidence(value, key, locals, round);
+                }
             }
+            Value::Array(values) => {
+                for value in values {
+                    resolve_local_evidence(value, key, locals, round);
+                }
+            }
+            Value::String(id) if key == "evidence_ids" && locals.contains(id) => {
+                *id = format!("r{round}-{id}")
+            }
+            _ => (),
         }
     }
+    resolve_local_evidence(
+        &mut generated["proposal_contrasts"],
+        "",
+        &local_sources,
+        round,
+    );
     let contrasts = generated["proposal_contrasts"]
         .as_array()
         .ok_or("Return proposal_contrasts for every supplied candidate")?;
@@ -267,6 +416,13 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
             .ok_or("Unknown contrasted candidate")?;
         e["contrast"] = row["contrast"].clone();
         validate_contrast(e, snapshot)?;
+        if old["proposal_pool"]["analogue_challenge_contract"] == 1
+            || !e["contrast"]["frontier_challenge"].is_null()
+        {
+            validate_frontier_challenge(e, snapshot)?;
+            e["contrast"]["frontier_challenge"]["query_provenance"] =
+                json!("researcher_report_not_verified_against_tool_trace");
+        }
     }
     let priority=generated["comparison_priority"].as_array().ok_or("Return comparison_priority containing every candidate ID once, ordered by strongest distinct organizing arrangements")?;
     let mut order = BTreeSet::new();
@@ -425,17 +581,16 @@ pub fn request(attempt: &Value, t: &Value) -> Result<Value, String> {
             "Check exact proposition coverage, not general thematic resemblance. A claim about distribution does not cover a separate change in production or interoperability. Do not invent or weaken the missing commitment.",
         ),
         "check_proposal_change" => {
-            let source_ids = e["contrast"]["present_analogue"]["evidence_ids"].as_array();
             let sources: Vec<_> = attempt["source_evidence"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|n| source_ids.is_some_and(|ids| ids.contains(&n["Id"])))
+                .filter(|n| n["evidence_metadata"]["kind"] == "finding")
                 .collect();
             (
-                json!({"baseline":attempt["baseline"],"analogue":e["contrast"]["present_analogue"],"source_evidence":sources,"defining_commitments":e["commitments"].as_array().into_iter().flatten().filter(|c|e["contrast"]["defining_commitment_ids"].as_array().is_some_and(|ids|ids.contains(&c["id"]))).collect::<Vec<_>>(),"consequences":e["contrast"]["consequences"]}),
+                json!({"baseline":attempt["baseline"],"analogue":e["contrast"]["present_analogue"],"frontier_challenge":e["contrast"]["frontier_challenge"],"source_evidence":sources,"defining_commitments":e["commitments"].as_array().into_iter().flatten().filter(|c|e["contrast"]["defining_commitment_ids"].as_array().is_some_and(|ids|ids.contains(&c["id"]))).collect::<Vec<_>>(),"consequences":e["contrast"]["consequences"]}),
                 json!({"changed_arrangement":"Cited present analogue is supported in its actual scope, and the defining commitments specify a materially different organizing arrangement with dependent consequences. Adoption counts only when it changes the arrangement, not merely availability or prevalence.","present_or_adoption_only":"The defining mechanism already exists in the compared setting or only price, distribution, prevalence, packaging or convenience changes without a different organizing relationship.","unsupported_analogue":"The cited material does not substantiate the claimed present analogue or necessary scope contrast; absence of evidence is not evidence of novelty.","unresolved":"A consequential present-relative change is not established."}),
-                "Compare only the explicit defining commitments to the supported closest present analogue. Preserve scope/date caveats. Do not award novelty for low probability, future dates, narrative length, or unsupported claims about today's absence. A durable old arrangement under changed conditions may qualify if its new consequential relationship is explicit.",
+                "Challenge the chosen analogue against ALL supplied source findings: an uncited stronger present match overrides a weak selected comparison. Check each defining commitment against the strongest relevant existing organizing arrangement, including the present frontier rather than only average adoption. A supported example does not establish that it is closest. A currently published report may project future outcomes: its publication and forecast are evidence only of what the source reports, not that the projected arrangement exists. Preserve claim_type, provenance, source_correction, observation dates and textual qualifications; do not classify a projected outcome as a present counterexample. Reported queries are researcher self-report, not independently verified search or proof of absence. If necessary comparison coverage remains unknown, choose unresolved. Preserve scope/date caveats. Do not award novelty for low probability, future dates, narrative length, or unsupported claims about today's absence. A durable old arrangement under changed conditions may qualify if its new consequential relationship is explicit.",
             )
         }
         "check_proposal_dependence" => (
@@ -500,10 +655,12 @@ pub fn finish(
     if a["pool_stage"] == "pairs" {
         let remaining =
             super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
+        let developed = p["proposal_pool"]["development"]["status"] == "completed";
+        let remaining_reasoning_turns = if developed { 2 } else { 4 };
         let max_selected = (remaining.saturating_sub(32) / REASONING_TRANSITION_RESERVE)
-            .saturating_sub(3)
+            .saturating_sub(remaining_reasoning_turns)
             .min(5) as usize;
-        p["proposal_pool"]["selection_budget"] = json!({"remaining_transitions":remaining,"max_selected":max_selected,"reserved_reasoning_turns_per_selected_world":1,"enrichment_composition_writing_turns":3,"evaluation_tail":32});
+        p["proposal_pool"]["selection_budget"] = json!({"remaining_transitions":remaining,"max_selected":max_selected,"reserved_reasoning_turns_per_selected_world":1,"development_research_composition_writing_turns":remaining_reasoning_turns,"evaluation_tail":32});
         let mut selected = vec![];
         // At most twelve candidates: exhaustively select the largest compatible
         // subset, not a greedy first-fit cluster. Ties retain stable input order.
@@ -531,8 +688,20 @@ pub fn finish(
         p["proposal_pool"]["selected_ids"] = json!(selected);
         p["proposal_pool"]["selection_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"selected":selected.contains(&e["id"]),"reason":if selected.contains(&e["id"]){"pairwise_distinct_set"}else{"not_in_bounded_distinct_set"}})).collect::<Vec<_>>());
         if selected.len() >= 3 {
-            p["proposal_pool"]["stage"] = json!("enrich");
-            p["endpoint_proposal_attempt"]["status"] = json!("enrichment_requested");
+            if developed {
+                let accepted: Vec<_> = candidates
+                    .iter()
+                    .filter(|e| selected.contains(&e["id"]))
+                    .cloned()
+                    .collect();
+                p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
+                p["endpoint_proposal_attempt"]["status"] = json!("accepted");
+                p["proposal_pool"]["stage"] = json!("accepted");
+                p["stage"] = json!("exploration");
+            } else {
+                p["proposal_pool"]["stage"] = json!("enrich");
+                p["endpoint_proposal_attempt"]["status"] = json!("development_requested");
+            }
             return Ok(());
         }
     } else {
@@ -540,6 +709,10 @@ pub fn finish(
             .iter()
             .filter(|e| {
                 e["contrast"]["present_analogue"]["status"] == "supported"
+                    && frontier_admissible(
+                        e,
+                        p["proposal_pool"]["analogue_challenge_contract"] == 1,
+                    )
                     && checks
                         .iter()
                         .filter(|c| c["task"]["endpoint_id"] == e["id"])
@@ -547,15 +720,8 @@ pub fn finish(
             })
             .cloned()
             .collect();
-        if a["pool_stage"] == "enriched" && viable.len() == candidates.len() {
-            p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"endpoints":candidates,"routes":[],"amendments":[],"rounds":[]});
-            p["endpoint_proposal_attempt"]["status"] = json!("accepted");
-            p["proposal_pool"]["stage"] = json!("accepted");
-            p["stage"] = json!("exploration");
-            return Ok(());
-        }
         if a["pool_stage"] == "individual" {
-            p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
+            p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
         }
         if a["pool_stage"] == "individual" && viable.len() >= 3 {
             let shortlist = viable;
@@ -569,8 +735,14 @@ pub fn finish(
             let cost = check_transitions(snapshot, &paired)?;
             let remaining =
                 super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
-            paired["proposal_pool"]["pair_admission"] = json!({"remaining_transitions":remaining,"check_transitions":cost,"reserved_tail":reserve()+REASONING_TRANSITION_RESERVE+32,"admitted":remaining>=cost+reserve()+REASONING_TRANSITION_RESERVE+32});
-            if remaining < cost + reserve() + REASONING_TRANSITION_RESERVE + 32 {
+            let development_turns = if p["proposal_pool"]["development"]["status"] == "completed" {
+                0
+            } else {
+                2
+            };
+            let reserved_tail = reserve() + development_turns * REASONING_TRANSITION_RESERVE + 32;
+            paired["proposal_pool"]["pair_admission"] = json!({"remaining_transitions":remaining,"check_transitions":cost,"reserved_tail":reserved_tail,"admitted":remaining>=cost+reserved_tail});
+            if remaining < cost + reserved_tail {
                 paired["endpoint_proposal_attempt"]["status"] = json!("unresolved");
                 paired["proposal_pool"]["stage"] = json!("unresolved");
                 paired["proposal_pool"]["selection_receipts"]=json!(paired["endpoint_proposal_attempt"]["endpoints"].as_array().unwrap().iter().map(|e|json!({"endpoint_id":e["id"],"selected":false,"reason":"not_examined_budget"})).collect::<Vec<_>>());
@@ -608,7 +780,7 @@ mod tests {
         (snapshot, p, raw["endpoints"].as_array().unwrap().clone())
     }
     fn contrast(e: &Value, source: &Value) -> Value {
-        json!({"present_analogue":{"statement":"Scoped current arrangement from the supplied report","status":"supported","evidence_ids":[source]},"defining_commitment_ids":[e["commitments"][0]["id"]],"consequences":[{"commitment_id":e["commitments"][1]["id"],"depends_on":[e["commitments"][0]["id"]],"mechanism":"The defining arrangement changes how this consequence is produced"}]})
+        json!({"present_analogue":{"statement":"Scoped current arrangement from the supplied report","status":"supported","evidence_ids":[source]},"defining_commitment_ids":[e["commitments"][0]["id"]],"frontier_challenge":{"research_basis":"live_research","reported_queries":["current organizing mechanism and existing alternatives"],"comparisons":[{"commitment_id":e["commitments"][0]["id"],"result":"different_arrangement","present_match":"Strongest scoped present finding","remaining_difference":"The proposed organizing relationship differs","evidence_ids":[source]}]},"consequences":[{"commitment_id":e["commitments"][1]["id"],"depends_on":[e["commitments"][0]["id"]],"mechanism":"The defining arrangement changes how this consequence is produced"}]})
     }
     fn pool() -> (Value, Value) {
         let (s, p, mut candidates) = fixture();
@@ -649,6 +821,152 @@ mod tests {
             _ => "distinct_arrangements",
         }
         .into()
+    }
+
+    #[test]
+    fn source_forecasts_keep_their_qualifications_and_compact_eight_claims_fit() {
+        let (mut snapshot, program) = pool();
+        let mut report = snapshot["nodes"][0].clone();
+        report["Id"] = json!("forecast-report");
+        report["claim_type"] = json!("source_projection");
+        report["statement"] = json!(
+            "A report published today projects an arrangement for 2040; it is not an observed outcome."
+        );
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(report.clone());
+        let candidates = program["proposal_pool"]["candidates"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let next = schedule(&snapshot, &program, candidates.clone(), "individual").unwrap();
+        let task = next["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["function"] == "check_proposal_change")
+            .unwrap();
+        let request = request(&next["endpoint_proposal_attempt"], task).unwrap();
+        assert!(
+            request["state"]["source_evidence"]
+                .as_array()
+                .unwrap()
+                .contains(&report)
+        );
+        assert!(
+            request["questions"]["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("not that the projected arrangement exists")
+        );
+        let mut candidate = candidates[0].clone();
+        candidate["contrast"]["frontier_challenge"]["comparisons"][0]["evidence_ids"] =
+            json!([report["Id"]]);
+        assert!(validate_frontier_challenge(&candidate, &snapshot).is_err());
+        let ids: Vec<_> = (0..8).map(|i| format!("defining-{i}")).collect();
+        candidate["contrast"]["defining_commitment_ids"] = json!(ids);
+        candidate["contrast"]["frontier_challenge"]["comparisons"]=json!(ids.iter().map(|id|json!({"commitment_id":id,"result":"different_arrangement","present_match":"Current relationship","remaining_difference":"Changed relationship","evidence_ids":[snapshot["nodes"][0]["Id"]]})).collect::<Vec<_>>());
+        validate_frontier_challenge(&candidate, &snapshot).unwrap();
+        assert!(
+            candidate["contrast"]["frontier_challenge"]
+                .to_string()
+                .len()
+                < 2400
+        );
+    }
+
+    #[test]
+    fn stronger_uncited_present_match_blocks_false_novelty_and_changes_cache_context() {
+        let (mut snapshot, mut program) = pool();
+        record(&mut program, pass);
+        finish(&snapshot, &mut program, false, false).unwrap();
+        let candidates = program["proposal_pool"]["candidates"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let unchanged = schedule(&snapshot, &program, candidates.clone(), "individual").unwrap();
+        assert!(unchanged["tasks"].as_array().unwrap().is_empty());
+        let mut strong = snapshot["nodes"][0].clone();
+        strong["Id"] = json!("stronger-present-match");
+        strong["statement"] = json!(
+            "The proposed organizing relationship already operates today, including its reusable components, rights and distribution."
+        );
+        snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(strong.clone());
+        let changed = schedule(&snapshot, &program, candidates.clone(), "individual").unwrap();
+        assert_eq!(changed["tasks"].as_array().unwrap().len(), candidates.len());
+        assert!(
+            changed["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| t["function"] == "check_proposal_change")
+        );
+        let request = request(&changed["endpoint_proposal_attempt"], &changed["tasks"][0]).unwrap();
+        assert!(
+            request["state"]["source_evidence"]
+                .as_array()
+                .unwrap()
+                .contains(&strong)
+        );
+        assert!(
+            !request["state"]["analogue"]["evidence_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&strong["Id"])
+        );
+        let mut candidates = candidates;
+        let first = candidates[0]["id"].clone();
+        candidates[0]["contrast"]["frontier_challenge"]["comparisons"][0]["result"] =
+            json!("already_present");
+        candidates[0]["contrast"]["frontier_challenge"]["comparisons"][0]["evidence_ids"] =
+            json!([strong["Id"]]);
+        validate_frontier_challenge(&candidates[0], &snapshot).unwrap();
+        let mut checked = schedule(&snapshot, &program, candidates, "individual").unwrap();
+        record(&mut checked, pass); // Even an erroneous positive model label cannot erase the known present match.
+        finish(&snapshot, &mut checked, false, false).unwrap();
+        let receipt = checked["proposal_pool"]["candidate_receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["endpoint_id"] == first)
+            .unwrap();
+        assert_eq!(receipt["admissible"], false);
+        assert_eq!(receipt["frontier_comparison_status"], "already_present");
+    }
+
+    #[test]
+    fn missing_present_comparison_is_unresolved_not_novel_or_impossible() {
+        let (snapshot, program) = pool();
+        let mut candidates = program["proposal_pool"]["candidates"]
+            .as_array()
+            .unwrap()
+            .clone();
+        for candidate in &mut candidates {
+            let row = &mut candidate["contrast"]["frontier_challenge"]["comparisons"][0];
+            row["result"] = json!("unknown");
+            row["evidence_ids"] = json!([]);
+            row["remaining_difference"] = json!("Targeted present comparison is still missing.");
+            validate_frontier_challenge(candidate, &snapshot).unwrap();
+        }
+        let mut updated = program.clone();
+        updated["proposal_pool"]["candidates"] = json!(candidates);
+        let mut p = schedule(&snapshot, &updated, candidates.clone(), "individual").unwrap();
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert_eq!(p["proposal_pool"]["stage"], "unresolved");
+        assert_eq!(p["proposal_pool"]["candidates"], json!(candidates));
+        let mut missing = candidates[0].clone();
+        missing["contrast"]
+            .as_object_mut()
+            .unwrap()
+            .remove("frontier_challenge");
+        assert!(validate_frontier_challenge(&missing, &snapshot).is_err());
+        assert!(!frontier_admissible(&missing, true));
+        assert!(frontier_admissible(&missing, false)); // Older saved pool contract remains understood.
     }
 
     #[test]
@@ -798,14 +1116,76 @@ mod tests {
             .cloned()
             .collect();
         let mut changed = originals.clone();
-        changed[0]["commitments"][0]["statement"] = json!("An easier different prediction");
-        assert!(receive(&s, &p, changed).unwrap_err().contains("preserve"));
-        let mut enriched = receive(&s, &p, originals.clone()).unwrap();
+        changed[0]["original_statement"] =
+            json!("A substantively different arrangement with new interacting consequences");
+        changed[0]["commitments"][0]["statement"] = json!("A changed load-bearing future event");
+        let developed = receive(&s, &p, changed.clone()).unwrap();
+        assert_eq!(developed["proposal_pool"]["stage"], "contrast");
+        assert!(developed["endpoint_search"].is_null());
+        assert!(
+            developed["proposal_pool"]["candidates"][0]["contrast"].is_null(),
+            "Stale contrast from the generator must not transfer"
+        );
+        assert_eq!(
+            developed["proposal_pool"]["development"]["originals"],
+            json!(originals)
+        );
+        let contrast_reply = |candidates: &[Value]| json!({"proposal_contrasts":candidates.iter().map(|e|json!({"endpoint_id":e["id"],"contrast":contrast(e,&s["nodes"][0]["Id"])})).collect::<Vec<_>>(),"comparison_priority":candidates.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()});
+        let changed_context = contrasts(&s, &developed, &contrast_reply(&changed)).unwrap();
+        assert!(
+            changed_context["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["function"] == "check_proposal_change"
+                    && t["endpoint_id"] == changed[0]["id"]),
+            "Changed defining event cannot reuse old approval"
+        );
+        let mut unapproved = changed_context.clone();
+        finish(&s, &mut unapproved, false, false).unwrap();
+        assert!(
+            unapproved["endpoint_search"].is_null(),
+            "Missing new checks cannot freeze changed commitments"
+        );
+        let mut changed_checked = changed_context;
+        record(&mut changed_checked, pass);
+        finish(&s, &mut changed_checked, true, false).unwrap();
+        assert_eq!(changed_checked["proposal_pool"]["stage"], "pairs");
+        assert!(
+            changed_checked["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["function"] == "check_proposal_pair"
+                    && (t["endpoint_id"] == changed[0]["id"]
+                        || t["other_endpoint_id"] == changed[0]["id"])),
+            "Changed worlds need fresh pair distinction"
+        );
+        record(&mut changed_checked, pass);
+        finish(&s, &mut changed_checked, true, false).unwrap();
+        assert_eq!(changed_checked["proposal_pool"]["stage"], "accepted");
+        assert_eq!(
+            changed_checked["endpoint_search"]["endpoints"][0]["commitments"],
+            changed[0]["commitments"]
+        );
+        assert_ne!(changed_checked["proposal_pool"]["stage"], "enrich");
+        let mut repeated = developed.clone();
+        repeated["proposal_pool"]["stage"] = json!("enrich");
+        assert!(
+            receive(&s, &repeated, originals.clone())
+                .unwrap_err()
+                .contains("once")
+        );
+        let unchanged = receive(&s, &p, originals.clone()).unwrap();
+        let mut enriched = contrasts(&s, &unchanged, &contrast_reply(&originals)).unwrap();
         assert_eq!(
             enriched["tasks"],
             json!([]),
-            "identical requests reuse exact validated receipts"
+            "Unchanged exact requests may reuse recorded checks after explicit contrast reconciliation"
         );
+        finish(&s, &mut enriched, true, false).unwrap();
+        assert_eq!(enriched["proposal_pool"]["stage"], "pairs");
+        assert_eq!(enriched["tasks"], json!([]));
         finish(&s, &mut enriched, true, false).unwrap();
         assert_eq!(
             enriched["endpoint_search"]["endpoints"]
@@ -816,16 +1196,18 @@ mod tests {
         );
         let mut new_baseline = p.clone();
         new_baseline["baseline"]["unknowns"] = json!(["New evidence changes the comparison scope"]);
-        let changed_context = receive(&s, &new_baseline, originals).unwrap();
+        let development = receive(&s, &new_baseline, originals.clone()).unwrap();
+        let refreshed = contrasts(&s, &development, &contrast_reply(&originals)).unwrap();
         assert!(
-            changed_context["tasks"]
+            refreshed["tasks"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|t| t["function"] == "check_proposal_change")
+                .any(|t| t["function"] == "check_proposal_change"),
+            "Changed baseline context invalidates cached present-relative judgments"
         );
         if let Ok(path) = std::env::var("FORESIGHT_POOL_FIXTURE") {
-            std::fs::write(path,serde_json::to_string_pretty(&json!({"snapshot":s,"individual":p["endpoint_proposal_history"][0],"pairs":p["endpoint_proposal_history"][1],"program":enriched,"disclosure":"Real producer state from deterministic Jev response fixtures; not live semantic validation."})).unwrap()).unwrap();
+            std::fs::write(path,serde_json::to_string_pretty(&json!({"snapshot":s,"individual":p["endpoint_proposal_history"][0],"pairs":p["endpoint_proposal_history"][1],"program":enriched,"developed_program":changed_checked,"disclosure":"Real producer state from deterministic Jev response fixtures; not live semantic validation."})).unwrap()).unwrap();
         }
     }
     #[test]
