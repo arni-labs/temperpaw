@@ -44,10 +44,16 @@ fn fresh_world_supplies_empty_resume_to_native_spawn() {
             .iter()
             .any(|p| p.name() == "resume_run_id")
     );
+    let resume = world
+        .state
+        .iter()
+        .find(|v| v.name == "resume_run_id")
+        .unwrap();
+    assert_eq!(resume.initial, "");
     let table = temper_jit::table::TransitionTable::from_ioa_source(&source["World"]);
     let mut state: temper_server::entity_actor::EntityState = serde_json::from_value(json!({
         "entity_type":"World", "entity_id":"new-world", "status":"Active", "item_count":0,
-        "booleans":{"semantic_exploration_requested":true}, "fields":{"resume_run_id":""}
+        "booleans":{"semantic_exploration_requested":true}, "fields":{"resume_run_id":resume.initial}
     }))
     .unwrap();
     let result = temper_server::entity_actor::process_action(
