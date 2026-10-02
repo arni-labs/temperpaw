@@ -16,6 +16,7 @@ initial = "Preregistered"
 # state timeout. Resolved is transient (scored in the same ingest pass, but
 # kept distinct so the outcome and its grading are separately auditable).
 allow_indefinite_states = ["Preregistered", "Resolved"]
+terminal = ["Scored"]
 
 # --- State Variables ---
 
@@ -101,10 +102,3 @@ from = ["Preregistered"]
 to = "Scored"
 params = ["outcome_source_refs"]
 hint = "Question became unresolvable (ambiguous, superseded). Recorded, not graded. System principals only."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ScoredIsFinal"
-when = ["Scored"]
-assert = "no_further_transitions"

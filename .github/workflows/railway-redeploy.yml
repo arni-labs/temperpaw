@@ -192,7 +192,7 @@ jobs:
           response="$(jq -n \
             --arg serviceId "${RAILWAY_SERVICE_ID}" \
             --arg environmentId "${RAILWAY_ENVIRONMENT_ID}" \
-            --arg image "ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}" \
+            --arg image "ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}" \
             '{
               query: "mutation($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }",
               variables: { serviceId: $serviceId, environmentId: $environmentId, input: { source: { image: $image } } }
@@ -200,7 +200,7 @@ jobs:
           if jq -e '.errors' >/dev/null <<<"${response}"; then
             jq -r '.errors[0].message' <<<"${response}" >&2; exit 1
           fi
-          echo "service source set to ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}"
+          echo "service source set to ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"
 
       - name: Start the deployment
         id: started
@@ -224,7 +224,7 @@ jobs:
           STARTED: ${{ steps.started.outputs.deployment_id }}
         run: |
           set -euo pipefail
-          target="ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}"
+          target="ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"
           for attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
             # A poll that does not answer is "not known yet" and costs one attempt.
             node="$(jq -n --arg serviceId "${RAILWAY_SERVICE_ID}" \

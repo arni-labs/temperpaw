@@ -24,6 +24,7 @@ initial = "Created"
 # ADR-0050 migration TODO: Created / Provisioning / Checkpointing still need
 # a timeout or a tighter justification. Ready is no longer on this list.
 allow_indefinite_states = ["Created", "Provisioning", "CopyUnknown", "Checkpointing", "Sleeping"]
+terminal = ["Destroyed"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -197,7 +198,6 @@ kind = "input"
 from = ["Ready"]
 to = "Sleeping"
 hint = "Suspend the VM. Tensorlake stops compute; the disk stays so Wake can resume."
-effect = [{ type = "trigger", name = "computer_sleep" }]
 
 [[action.triggers]]
 name = "computer_sleep"
@@ -226,7 +226,6 @@ kind = "input"
 from = ["Sleeping", "Ready"]
 to = "Ready"
 hint = "Resume the VM. ~1s if it was suspended; no-op if it is already running."
-effect = [{ type = "trigger", name = "computer_wake" }]
 
 [[action.triggers]]
 name = "computer_wake"
@@ -273,7 +272,6 @@ kind = "input"
 from = ["Ready", "Sleeping", "Created", "Leased", "Copying"]
 to = "Terminating"
 hint = "Tear the VM down: fires computer_terminate on the sandbox (was a bare transition before — the VM was never actually torn down)."
-effect = [{ type = "trigger", name = "computer_terminate" }]
 
 [[action.triggers]]
 name = "computer_terminate"
@@ -312,9 +310,7 @@ kind = "input"
 from = ["Ready"]
 to = "Ready"
 hint = "Spawn a governed child Computer that is a live copy of this one (e.g. a per-review copy of arni-big)."
-effect = [
-  { type = "spawn", entity_type = "Computer", entity_id_source = "{uuid}", initial_action = "ProvisionFromCopy", copy_fields = "machine_id,provider,cpu_cores,memory_gb,storage_gb,base_image,project_harness_id,description" },
-]
+effect = ["spawn('Computer', 'ProvisionFromCopy', copy(machine_id, provider, cpu_cores, memory_gb, storage_gb, base_image, project_harness_id, description))"]
 
 # The child starts one named provider copy. The API may time out after creating
 # it, so failure preserves an uncertain state for GET-only reconciliation. The
@@ -326,7 +322,6 @@ from = ["Created"]
 to = "Provisioning"
 params = ["machine_id", "provider", "cpu_cores", "memory_gb", "storage_gb", "base_image", "project_harness_id", "description"]
 hint = "Child copy: record the source machine + inherited spec, then START the live copy (async)."
-effect = [{ type = "trigger", name = "computer_copy_start" }]
 
 [[action.triggers]]
 name = "computer_copy_start"
@@ -347,7 +342,6 @@ kind = "input"
 from = ["CopyUnknown"]
 to = "CopyUnknown"
 hint = "Read the named copy after an uncertain response; never create a second copy or terminate the source."
-effect = [{ type = "trigger", name = "computer_copy_start" }]
 
 [[action.triggers]]
 name = "computer_copy_start"
@@ -392,7 +386,6 @@ kind = "input"
 from = ["Copying"]
 to = "Copying"
 hint = "Poll the copy once (computer_copy_poll). Self-loop in reset_on so each poll re-arms the next tick; a not-ready poll reports an empty callback (no transition)."
-effect = [{ type = "trigger", name = "computer_copy_poll" }]
 
 [[action.triggers]]
 name = "computer_copy_poll"
@@ -433,7 +426,6 @@ kind = "input"
 from = ["Copying"]
 to = "Terminating"
 hint = "The copy never became ready — terminate the leaked copy sandbox (machine_id is the copy's, not the source's)."
-effect = [{ type = "trigger", name = "computer_terminate" }]
 
 [[action.triggers]]
 name = "computer_terminate"
@@ -476,8 +468,3 @@ reset_on = ["Heartbeat"]
 state = "Terminating"
 after_seconds = 300
 on_timeout = "TerminateComplete"
-
-[[invariant]]
-name = "DestroyedIsFinal"
-when = ["Destroyed"]
-assert = "no_further_transitions"

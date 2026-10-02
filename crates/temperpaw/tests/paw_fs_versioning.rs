@@ -19,9 +19,9 @@ fn paw_fs_specs_use_inline_triggers_and_explicit_counter_assignment() {
 
     for needle in [
         "name = \"last_version_id\"",
-        "type = \"set_counter_from_param\", var = \"size_bytes\", param = \"size_bytes\"",
+        "\"size_bytes = params.size_bytes\"",
         "name = \"file_stream_updated_creates_version\"",
-        "[action.triggers.params_from]",
+        "[action.triggers.args]",
         "file_id = \"Id\"",
         "version_number = \"version_count\"",
         "previous_version_id = \"previous_version_id\"",
@@ -32,15 +32,15 @@ fn paw_fs_specs_use_inline_triggers_and_explicit_counter_assignment() {
         );
     }
     assert!(
-        !file_spec.contains("type = \"spawn\", entity_type = \"FileVersion\""),
+        !file_spec.contains("spawn('FileVersion'"),
         "file spec should not create FileVersion via spawn after the inline trigger hard cut"
     );
 
     for needle in [
         "name = \"mime_type\"",
         "name = \"previous_version_id\"",
-        "type = \"set_counter_from_param\", var = \"version_number\", param = \"version_number\"",
-        "type = \"set_counter_from_param\", var = \"size_bytes\", param = \"size_bytes\"",
+        "\"version_number = params.version_number\"",
+        "\"size_bytes = params.size_bytes\"",
     ] {
         assert!(
             file_version_spec.contains(needle),
@@ -48,8 +48,7 @@ fn paw_fs_specs_use_inline_triggers_and_explicit_counter_assignment() {
         );
     }
 
-    let needle =
-        "type = \"set_counter_from_param\", var = \"quota_limit\", param = \"quota_limit\"";
+    let needle = "\"quota_limit = params.quota_limit\"";
     assert!(
         workspace_spec.contains(needle),
         "workspace spec should contain {needle}"

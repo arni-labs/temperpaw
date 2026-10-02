@@ -451,11 +451,11 @@ fn railway_deploy_dockerfile_uses_image_tag_variable() {
         "Dockerfile.deploy must declare IMAGE_TAG so Railway deployments can select the exact verified GHCR image"
     );
     assert!(
-        deploy_dockerfile.contains("FROM ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}"),
-        "Dockerfile.deploy must pull ghcr.io/nerdsane/temperpaw using IMAGE_TAG instead of a hard-coded tag"
+        deploy_dockerfile.contains("FROM ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"),
+        "Dockerfile.deploy must pull ghcr.io/arni-labs/temperpaw using IMAGE_TAG instead of a hard-coded tag"
     );
     assert!(
-        !deploy_dockerfile.contains("ghcr.io/nerdsane/temperpaw:edge"),
+        !deploy_dockerfile.contains("ghcr.io/arni-labs/temperpaw:edge"),
         "Dockerfile.deploy must not hard-code edge because production proofs require a pinned image tag"
     );
     assert!(

@@ -10,6 +10,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Scanning"]
+terminal = ["Complete", "Failed"]
 
 [[state]]
 name = "project_harness_id"
@@ -29,12 +30,12 @@ initial = ""
 [[state]]
 name = "monitors_created"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "monitors_updated"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "error_message"
@@ -70,13 +71,3 @@ from = ["Scanning"]
 to = "Failed"
 params = ["error_message"]
 hint = "Record the failure message for an incomplete scan."
-
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

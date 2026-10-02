@@ -42,7 +42,7 @@ initial = ""
 [[state]]
 name = "priority"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "cedar_enabled"

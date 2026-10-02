@@ -104,7 +104,7 @@ initial = "{}"
 [[state]]
 name = "record_present"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "artifact_ref"
@@ -114,14 +114,14 @@ initial = ""
 [[state]]
 name = "artifact_file_ready"
 type = "bool"
-initial = "false"
+initial = false
 
 [[action]]
 name = "AttachProofFile"
 kind = "input"
 from = ["Drafting", "Ready", "Recorded"]
 params = ["artifact_ref"]
-effect = "set artifact_file_ready true"
+effect = ["artifact_file_ready = true"]
 hint = "Name the Temper File (HTML or JSON via $value) that is this proof artifact. Vercel/GitHub are not the record."
 
 [[action.triggers]]
@@ -138,7 +138,7 @@ temper_api_url = "{secret:temper_api_url}"
 name = "RetractProofFile"
 kind = "input"
 from = ["Drafting", "Ready", "Recorded"]
-effect = "set artifact_file_ready false"
+effect = ["artifact_file_ready = false"]
 hint = "Callback: the named proof File was missing or not Ready."
 
 [[action]]
@@ -178,7 +178,6 @@ kind = "input"
 from = ["Drafting"]
 to = "Drafting"
 params = ["comment_body"]
-effect = [{ type = "trigger", name = "proof_record_ingest" }]
 hint = "Parse a GitHub comment body for this packet's proof record; record_ingest returns IngestProof + fields when the record is valid."
 
 [[action.triggers]]
@@ -197,7 +196,7 @@ kind = "input"
 from = ["Drafting"]
 to = "Recorded"
 params = ["commit", "changed_surface", "blast_radius", "features", "tests", "independent_verifier"]
-effect = [{ type = "set_bool", var = "record_present", value = "true" }]
+effect = ["record_present = true"]
 hint = "Write the decoded proof.json record (commit, changed surface, blast radius, features, tests, independent verifier) and mark it Recorded."
 
 # Superseded is terminal: it retires THIS packet once a newer packet has recorded
@@ -212,11 +211,10 @@ hint = "Supersede this packet when a newer proof for a later head has been recor
 
 [[invariant]]
 name = "ProofRecorded"
-when = ["Recorded", "Superseded"]
-assert = "record_present"
+assert = "status in ['Recorded', 'Superseded'] => record_present"
 
 [[state_timeout]]
 state = "Drafting"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { residual_risks = "ProofPacket was not marked ready within 24h." }
+args = { residual_risks = "'ProofPacket was not marked ready within 24h.'" }

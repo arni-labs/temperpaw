@@ -78,7 +78,7 @@ initial = ""
 [[state]]
 name = "claimed"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "patrol_run_id"
@@ -93,7 +93,7 @@ initial = ""
 [[state]]
 name = "model_investigation"
 type = "bool"
-initial = "false"
+initial = false
 
 [[action]]
 name = "Configure"
@@ -109,7 +109,7 @@ kind = "input"
 from = ["Queued"]
 to = "Claimed"
 params = ["worker_id"]
-effect = "set claimed true"
+effect = ["claimed = true"]
 hint = "A registered worker claims this run. Cedar restricts which worker principal can claim."
 
 [[action]]
@@ -117,8 +117,7 @@ name = "StartLocal"
 kind = "input"
 from = ["Claimed"]
 to = "Running"
-guard = "is_true claimed"
-effect = [{ type = "trigger", name = "worker_run_started" }]
+guard = "claimed"
 hint = "Start local Codex on the registered worker host."
 
 [[action.triggers]]
@@ -160,7 +159,6 @@ kind = "input"
 from = ["Running"]
 to = "Done"
 params = ["result_summary", "proof_packet_id", "branch_name"]
-effect = [{ type = "trigger", name = "worker_run_finished" }]
 hint = "Worker self-reports successful completion with proof."
 
 [[action.triggers]]
@@ -177,7 +175,6 @@ kind = "input"
 from = ["Claimed", "Running", "WaitingForCloudApproval", "CloudApproved"]
 to = "Failed"
 params = ["error_message"]
-effect = [{ type = "trigger", name = "worker_run_failed" }]
 hint = "Worker self-reports a failed run."
 
 [[action.triggers]]
@@ -200,40 +197,40 @@ hint = "Timeout safety when a worker stalls or disappears."
 state = "Queued"
 after_seconds = 86400
 on_timeout = "Timeout"
-params = { error_message = "WorkerRun remained queued for 24h." }
+args = { error_message = "'WorkerRun remained queued for 24h.'" }
 
 [[state_timeout]]
 state = "Claimed"
 after_seconds = 3600
 on_timeout = "Timeout"
-params = { error_message = "WorkerRun remained claimed for 1h without starting." }
+args = { error_message = "'WorkerRun remained claimed for 1h without starting.'" }
 
 [[state_timeout]]
 state = "Running"
 after_seconds = 21600
 on_timeout = "Timeout"
-params = { error_message = "WorkerRun ran for 6h without self-reporting." }
+args = { error_message = "'WorkerRun ran for 6h without self-reporting.'" }
 
 [[state_timeout]]
 state = "WaitingForCloudApproval"
 after_seconds = 86400
 on_timeout = "Timeout"
-params = { error_message = "WorkerRun cloud overflow approval was not resolved within 24h." }
+args = { error_message = "'WorkerRun cloud overflow approval was not resolved within 24h.'" }
 
 [[state_timeout]]
 state = "CloudApproved"
 after_seconds = 21600
 on_timeout = "Timeout"
-params = { error_message = "WorkerRun cloud overflow stayed approved for 6h without dispatch." }
+args = { error_message = "'WorkerRun cloud overflow stayed approved for 6h without dispatch.'" }
 
 [[action]]
 name = "ConfigureModelInvestigation"
 kind = "input"
 from = ["Queued"]
 to = "Queued"
-guard = "is_false claimed"
+guard = "!claimed"
 params = ["patrol_run_id", "task", "branch_name", "worktree_path", "allowed_worker_id", "provider_id", "runner_kind"]
-effect = "set model_investigation true"
+effect = ["model_investigation = true"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -244,7 +241,7 @@ name = "ReportInvestigation"
 kind = "input"
 from = ["Running"]
 to = "Done"
-guard = "is_true model_investigation"
+guard = "model_investigation"
 params = ["result_summary", "evidence_json"]
 
 [[action.constraints]]
@@ -259,10 +256,10 @@ target_entity = "PatrolRun"
 target_action = "CompleteModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "patrol_run_id"
+kind = "field"
+id_field = "patrol_run_id"
 
-[action.triggers.params_from]
+[action.triggers.args]
 expected_worker_run_id = "Id"
 summary = "result_summary"
 evidence_json = "evidence_json"
@@ -272,7 +269,7 @@ name = "FailInvestigation"
 kind = "input"
 from = ["Claimed", "Running"]
 to = "Failed"
-guard = "is_true model_investigation"
+guard = "model_investigation"
 params = ["error_message"]
 
 [[action.triggers]]
@@ -283,10 +280,10 @@ target_entity = "PatrolRun"
 target_action = "FailModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "patrol_run_id"
+kind = "field"
+id_field = "patrol_run_id"
 
-[action.triggers.params_from]
+[action.triggers.args]
 expected_worker_run_id = "Id"
 error_message = "error_message"
 
@@ -295,7 +292,7 @@ name = "ReplayInvestigationResult"
 kind = "input"
 from = ["Done"]
 to = "Done"
-guard = "is_true model_investigation"
+guard = "model_investigation"
 params = []
 
 [[action.triggers]]
@@ -306,10 +303,10 @@ target_entity = "PatrolRun"
 target_action = "CompleteModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "patrol_run_id"
+kind = "field"
+id_field = "patrol_run_id"
 
-[action.triggers.params_from]
+[action.triggers.args]
 expected_worker_run_id = "Id"
 summary = "result_summary"
 evidence_json = "evidence_json"
@@ -320,7 +317,7 @@ name = "ReplayInvestigationFailure"
 kind = "input"
 from = ["Failed", "TimedOut"]
 to = "Failed"
-guard = "is_true model_investigation"
+guard = "model_investigation"
 params = []
 
 [[action.triggers]]
@@ -331,9 +328,9 @@ target_entity = "PatrolRun"
 target_action = "FailModelInvestigation"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "patrol_run_id"
+kind = "field"
+id_field = "patrol_run_id"
 
-[action.triggers.params_from]
+[action.triggers.args]
 expected_worker_run_id = "Id"
 error_message = "error_message"

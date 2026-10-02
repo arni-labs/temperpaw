@@ -11,7 +11,7 @@ initial = ""
 [[state]]
 name = "sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "kind"
@@ -135,141 +135,85 @@ initial = ""
 
 [[field_invariant]]
 name = "KindMustBeKnown"
-when = { not = { field = "Kind", absent = true } }
-require = { any_of = [
-  { field = "Kind", equals = "user.message" },
-  { field = "Kind", equals = "user.interrupt" },
-  { field = "Kind", equals = "user.tool_confirmation" },
-  { field = "Kind", equals = "user.custom_tool_result" },
-  { field = "Kind", equals = "agent.message" },
-  { field = "Kind", equals = "agent.thinking" },
-  { field = "Kind", equals = "agent.tool_use" },
-  { field = "Kind", equals = "agent.tool_result" },
-  { field = "Kind", equals = "agent.mcp_tool_use" },
-  { field = "Kind", equals = "agent.mcp_tool_result" },
-  { field = "Kind", equals = "agent.custom_tool_use" },
-  { field = "Kind", equals = "session.status_rescheduling" },
-  { field = "Kind", equals = "session.status_running" },
-  { field = "Kind", equals = "session.status_idle" },
-  { field = "Kind", equals = "session.status_terminated" },
-] }
 message = "SessionEvent.Kind must be one of the managed-agents event kinds"
+assert = "Kind != null => Kind in ['user.message', 'user.interrupt', 'user.tool_confirmation', 'user.custom_tool_result', 'agent.message', 'agent.thinking', 'agent.tool_use', 'agent.tool_result', 'agent.mcp_tool_use', 'agent.mcp_tool_result', 'agent.custom_tool_use', 'session.status_rescheduling', 'session.status_running', 'session.status_idle', 'session.status_terminated']"
 
 [[field_invariant]]
 name = "UserToolConfirmationRequiresToolUseId"
-when = { field = "Kind", equals = "user.tool_confirmation" }
-require = { not = { field = "ToolUseId", empty = true } }
 message = "user.tool_confirmation must reference ToolUseId"
+assert = "Kind == 'user.tool_confirmation' => !empty(ToolUseId)"
 
 [[field_invariant]]
 name = "UserToolConfirmationRequiresResult"
-when = { field = "Kind", equals = "user.tool_confirmation" }
-require = { not = { field = "ConfirmationResult", empty = true } }
 message = "user.tool_confirmation must set ConfirmationResult"
+assert = "Kind == 'user.tool_confirmation' => !empty(ConfirmationResult)"
 
 [[field_invariant]]
 name = "UserCustomToolResultRequiresCustomToolUseId"
-when = { field = "Kind", equals = "user.custom_tool_result" }
-require = { not = { field = "CustomToolUseId", empty = true } }
 message = "user.custom_tool_result must reference CustomToolUseId"
+assert = "Kind == 'user.custom_tool_result' => !empty(CustomToolUseId)"
 
 [[field_invariant]]
 name = "AgentToolUseRequiresName"
-when = { field = "Kind", equals = "agent.tool_use" }
-require = { not = { field = "ToolName", empty = true } }
 message = "agent.tool_use must set ToolName"
+assert = "Kind == 'agent.tool_use' => !empty(ToolName)"
 
 [[field_invariant]]
 name = "AgentToolResultRequiresToolUseId"
-when = { field = "Kind", equals = "agent.tool_result" }
-require = { not = { field = "ToolUseId", empty = true } }
 message = "agent.tool_result must reference ToolUseId"
+assert = "Kind == 'agent.tool_result' => !empty(ToolUseId)"
 
 [[field_invariant]]
 name = "AgentMcpToolUseRequiresServerAndTool"
-when = { field = "Kind", equals = "agent.mcp_tool_use" }
-require = { all_of = [
-  { not = { field = "McpServerName", empty = true } },
-  { not = { field = "ToolName", empty = true } },
-] }
 message = "agent.mcp_tool_use must set McpServerName and ToolName"
+assert = "Kind == 'agent.mcp_tool_use' => !empty(McpServerName) && !empty(ToolName)"
 
 [[field_invariant]]
 name = "AgentMcpToolResultRequiresMcpToolUseId"
-when = { field = "Kind", equals = "agent.mcp_tool_result" }
-require = { not = { field = "McpToolUseId", empty = true } }
 message = "agent.mcp_tool_result must reference McpToolUseId"
+assert = "Kind == 'agent.mcp_tool_result' => !empty(McpToolUseId)"
 
 [[field_invariant]]
 name = "AgentCustomToolUseRequiresName"
-when = { field = "Kind", equals = "agent.custom_tool_use" }
-require = { not = { field = "ToolName", empty = true } }
 message = "agent.custom_tool_use must set ToolName"
+assert = "Kind == 'agent.custom_tool_use' => !empty(ToolName)"
 
 [[field_invariant]]
 name = "ConfirmationResultMustBeKnown"
-when = { not = { field = "ConfirmationResult", absent = true } }
-require = { any_of = [
-  { field = "ConfirmationResult", equals = "allow" },
-  { field = "ConfirmationResult", equals = "deny" },
-] }
 message = "ConfirmationResult must be allow or deny"
+assert = "ConfirmationResult != null => ConfirmationResult in ['allow', 'deny']"
 
 [[field_invariant]]
 name = "EvaluatedPermissionMustBeKnown"
-when = { not = { field = "EvaluatedPermission", absent = true } }
-require = { any_of = [
-  { field = "EvaluatedPermission", equals = "allow" },
-  { field = "EvaluatedPermission", equals = "ask" },
-  { field = "EvaluatedPermission", equals = "deny" },
-] }
 message = "EvaluatedPermission must be allow, ask, or deny"
+assert = "EvaluatedPermission != null => EvaluatedPermission in ['allow', 'ask', 'deny']"
 
 [[field_invariant]]
 name = "IdleRequiresStopReason"
-when = { field = "Kind", equals = "session.status_idle" }
-require = { not = { field = "StopReason", empty = true } }
 message = "session.status_idle must set StopReason"
+assert = "Kind == 'session.status_idle' => !empty(StopReason)"
 
 [[field_invariant]]
 name = "StopReasonMustBeKnown"
-when = { not = { field = "StopReason", absent = true } }
-require = { any_of = [
-  { field = "StopReason", equals = "user_input_required" },
-  { field = "StopReason", equals = "tool_confirmation_required" },
-  { field = "StopReason", equals = "custom_tool_required" },
-] }
 message = "SessionEvent.StopReason must be one of the documented idle reasons"
+assert = "StopReason != null => StopReason in ['user_input_required', 'tool_confirmation_required', 'custom_tool_required']"
 
 [[field_invariant]]
 name = "ConfirmationOrCustomIdleRequiresEventIds"
-when = { all_of = [
-  { field = "Kind", equals = "session.status_idle" },
-  { any_of = [
-    { field = "StopReason", equals = "tool_confirmation_required" },
-    { field = "StopReason", equals = "custom_tool_required" },
-  ] },
-] }
-require = { not = { field = "StopReasonEventIds", empty = true } }
 message = "session.status_idle with confirmation/custom tool stop reason must set StopReasonEventIds"
+assert = "Kind == 'session.status_idle' && StopReason in ['tool_confirmation_required', 'custom_tool_required'] => !empty(StopReasonEventIds)"
 
 [[field_invariant]]
 name = "TerminatedRequiresTerminationReason"
-when = { field = "Kind", equals = "session.status_terminated" }
-require = { not = { field = "TerminationReason", empty = true } }
 message = "session.status_terminated must set TerminationReason"
+assert = "Kind == 'session.status_terminated' => !empty(TerminationReason)"
 
 [[field_invariant]]
 name = "TerminationReasonMustBeKnown"
-when = { not = { field = "TerminationReason", absent = true } }
-require = { any_of = [
-  { field = "TerminationReason", equals = "cancelled" },
-  { field = "TerminationReason", equals = "error" },
-] }
 message = "SessionEvent.TerminationReason must be cancelled or error"
+assert = "TerminationReason != null => TerminationReason in ['cancelled', 'error']"
 
 [[field_invariant]]
 name = "ErrorFieldsRequireSessionEventKinds"
-when = { not = { field = "ErrorKind", empty = true } }
-require = { field = "Kind", equals = "session.status_idle" }
 message = "ErrorKind is currently only used on idle error events"
+assert = "!empty(ErrorKind) => Kind == 'session.status_idle'"

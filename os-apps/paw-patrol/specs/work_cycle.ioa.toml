@@ -43,7 +43,7 @@ initial = ""
 [[state]]
 name = "plan_revision_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "risk_lane"
@@ -83,52 +83,52 @@ initial = ""
 [[state]]
 name = "has_plan"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "worker_done"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "review_passed"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "evaluation_passed"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "proof_attached"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "e2e_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "human_start_approval_required"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "human_start_approved"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "human_completion_approval_required"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "human_completion_approved"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "approval_summary"
@@ -173,7 +173,7 @@ initial = ""
 [[state]]
 name = "release_configured"
 type = "bool"
-initial = "false"
+initial = false
 
 [[action]]
 name = "Configure"
@@ -197,7 +197,7 @@ kind = "input"
 from = ["Planning"]
 to = "Planned"
 params = ["plan_summary"]
-effect = "set has_plan true"
+effect = ["has_plan = true"]
 hint = "Write the plan before worker implementation starts."
 
 [[action]]
@@ -205,10 +205,7 @@ name = "RevisePlan"
 kind = "input"
 from = ["Planned", "AwaitingHumanStartApproval", "InProgress"]
 params = ["plan_summary"]
-effect = [
-  { type = "set_bool", var = "has_plan", value = true },
-  { type = "increment", var = "plan_revision_count" }
-]
+effect = ["has_plan = true", "plan_revision_count += 1"]
 hint = "Revise the visible WorkCycle plan after Codex plan-mode exploration without changing the current work state."
 
 [[action]]
@@ -217,7 +214,7 @@ kind = "input"
 from = ["Planned"]
 to = "AwaitingHumanStartApproval"
 params = ["approval_summary"]
-effect = "set human_start_approval_required true"
+effect = ["human_start_approval_required = true"]
 hint = "Pause high-risk work before any WorkerRun is queued."
 
 [[action]]
@@ -226,7 +223,7 @@ kind = "input"
 from = ["AwaitingHumanStartApproval"]
 to = "Planned"
 params = ["approval_summary"]
-effect = [{ type = "set_bool", var = "human_start_approved", value = true }, { type = "trigger", name = "human_start_approved" }]
+effect = ["human_start_approved = true"]
 hint = "Human approval allowing high-risk work to be queued for the local Codex worker."
 
 [[action.triggers]]
@@ -244,7 +241,7 @@ name = "StartWork"
 kind = "input"
 from = ["Planned"]
 to = "InProgress"
-guard = "is_true has_plan"
+guard = "has_plan"
 hint = "Start implementation only after a plan exists."
 
 [[action]]
@@ -261,7 +258,7 @@ kind = "input"
 from = ["InProgress"]
 to = "Testing"
 params = ["implementer_worker_run_id"]
-effect = "set worker_done true"
+effect = ["worker_done = true"]
 hint = "Record implementer completion and move to verification."
 
 [[action]]
@@ -270,7 +267,7 @@ kind = "input"
 from = ["Reviewing"]
 to = "Reviewing"
 params = ["e2e_summary"]
-effect = "set e2e_ok true"
+effect = ["e2e_ok = true"]
 hint = "Record targeted live or end-to-end verification evidence."
 
 [[action]]
@@ -278,7 +275,7 @@ name = "SubmitForReview"
 kind = "input"
 from = ["Testing"]
 to = "Reviewing"
-guard = "is_true worker_done"
+guard = "worker_done"
 hint = "Submit the worker output for independent review."
 
 [[action]]
@@ -295,7 +292,7 @@ kind = "input"
 from = ["Reviewing"]
 to = "Reviewing"
 params = ["reviewer_run_id"]
-effect = "set review_passed true"
+effect = ["review_passed = true"]
 hint = "Reviewer approved after inspecting diff, proof, and relevant tests."
 
 [[action]]
@@ -304,14 +301,7 @@ kind = "input"
 from = ["Reviewing"]
 to = "InProgress"
 params = ["error_message"]
-effect = [
-  { type = "set_bool", var = "review_passed", value = false },
-  { type = "set_bool", var = "worker_done", value = false },
-  { type = "set_bool", var = "evaluation_passed", value = false },
-  { type = "set_bool", var = "proof_attached", value = false },
-  { type = "set_bool", var = "e2e_ok", value = false },
-  { type = "trigger", name = "work_cycle_changes_requested" }
-]
+effect = ["review_passed = false", "worker_done = false", "evaluation_passed = false", "proof_attached = false", "e2e_ok = false"]
 hint = "Reviewer requests changes; implementation must resume."
 
 [[action.triggers]]
@@ -339,11 +329,8 @@ kind = "input"
 from = ["Reviewing"]
 to = "Proving"
 params = ["evaluation_run_id"]
-effect = "set evaluation_passed true"
-guard = [
-  { type = "is_true", var = "review_passed" },
-  { type = "is_true", var = "e2e_ok" }
-]
+effect = ["evaluation_passed = true"]
+guard = "review_passed && e2e_ok"
 hint = "All required automated gates passed after reviewer approval."
 
 [[action]]
@@ -352,7 +339,7 @@ kind = "input"
 from = ["Proving"]
 to = "Proving"
 params = ["proof_packet_id"]
-effect = "set proof_attached true"
+effect = ["proof_attached = true"]
 hint = "Attach the human-readable and machine-readable proof packet."
 
 [[action]]
@@ -361,7 +348,7 @@ kind = "input"
 from = ["Proving"]
 to = "AwaitingHumanCompletionApproval"
 params = ["approval_summary"]
-effect = "set human_completion_approval_required true"
+effect = ["human_completion_approval_required = true"]
 hint = "Pause high-risk completion after reviewer, evaluator, and proof gates pass."
 
 [[action]]
@@ -370,7 +357,7 @@ kind = "input"
 from = ["AwaitingHumanCompletionApproval"]
 to = "Proving"
 params = ["approval_summary"]
-effect = [{ type = "set_bool", var = "human_completion_approved", value = true }, { type = "trigger", name = "human_completion_approved" }]
+effect = ["human_completion_approved = true"]
 hint = "Human approval allowing high-risk proof-ready work to complete."
 
 [[action.triggers]]
@@ -386,13 +373,7 @@ name = "Complete"
 kind = "input"
 from = ["Proving"]
 to = "Complete"
-guard = [
-  { type = "is_true", var = "review_passed" },
-  { type = "is_true", var = "evaluation_passed" },
-  { type = "is_true", var = "proof_attached" },
-  { type = "is_true", var = "e2e_ok" }
-]
-effect = [{ type = "trigger", name = "work_cycle_completed" }]
+guard = "review_passed && evaluation_passed && proof_attached && e2e_ok"
 hint = "Complete only when review, evaluation, proof, and live/E2E evidence are all attached."
 
 [[action.triggers]]
@@ -414,15 +395,11 @@ temper_api_url = "{secret:temper_api_url}"
 name = "work_cycle_completed_requests_release"
 kind = "entity"
 principal = "patrol-release-service"
-to_state = "Complete"
 target_entity = "ReleaseRun"
 target_action = "Request"
+guard = "status == 'Complete' && release_configured"
 
-[action.triggers.guard]
-type = "bool_true"
-field = "release_configured"
-
-[action.triggers.params_from]
+[action.triggers.args]
 work_cycle_id = "Id"
 repo = "release_repo"
 pr_number = "release_pr_number"
@@ -432,14 +409,14 @@ max_checks = "release_max_checks"
 expected_head_sha = "release_expected_head_sha"
 
 [action.triggers.resolve_target]
-type = "create"
+kind = "create"
 
 [[action]]
 name = "ConfigureRelease"
 kind = "input"
 from = ["Planning", "Planned", "InProgress", "Testing", "Reviewing", "Proving"]
 params = ["release_repo", "release_pr_number", "release_computer_id", "release_health_url", "release_max_checks", "release_expected_head_sha"]
-effect = "set release_configured true"
+effect = ["release_configured = true"]
 hint = "Name the PR, computer, and health URL that Complete will release through (ReleaseRun). Optionally bind release_expected_head_sha to a reviewed commit. Does not change the work state."
 
 [[action]]
@@ -454,46 +431,46 @@ hint = "Fail this work cycle visibly."
 state = "Planning"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed Planning for 24h." }
+args = { error_message = "'WorkCycle stayed Planning for 24h.'" }
 
 [[state_timeout]]
 state = "Planned"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed Planned for 24h." }
+args = { error_message = "'WorkCycle stayed Planned for 24h.'" }
 
 [[state_timeout]]
 state = "AwaitingHumanStartApproval"
 after_seconds = 604800
 on_timeout = "Fail"
-params = { error_message = "WorkCycle awaited human start approval for 7d." }
+args = { error_message = "'WorkCycle awaited human start approval for 7d.'" }
 
 [[state_timeout]]
 state = "InProgress"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed InProgress for 24h." }
+args = { error_message = "'WorkCycle stayed InProgress for 24h.'" }
 
 [[state_timeout]]
 state = "Testing"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed Testing for 6h." }
+args = { error_message = "'WorkCycle stayed Testing for 6h.'" }
 
 [[state_timeout]]
 state = "Reviewing"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed Reviewing for 24h." }
+args = { error_message = "'WorkCycle stayed Reviewing for 24h.'" }
 
 [[state_timeout]]
 state = "Proving"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { error_message = "WorkCycle stayed Proving for 6h." }
+args = { error_message = "'WorkCycle stayed Proving for 6h.'" }
 
 [[state_timeout]]
 state = "AwaitingHumanCompletionApproval"
 after_seconds = 604800
 on_timeout = "Fail"
-params = { error_message = "WorkCycle awaited human completion approval for 7d." }
+args = { error_message = "'WorkCycle awaited human completion approval for 7d.'" }

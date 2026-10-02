@@ -6,6 +6,7 @@ initial = "Draft"
 strict_action_params = true
 # Durable records may wait indefinitely; work in progress has explicit timeouts.
 allow_indefinite_states = ["Draft","Active"]
+terminal = ["Retired"]
 
 [[state]]
 name = "application_id"
@@ -45,7 +46,7 @@ initial = ""
 [[state]]
 name = "revision_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Register"
@@ -81,7 +82,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = [{ name = "source_revision", type = "string" }, { name = "entry_points", type = "string" }, { name = "resource_ids", type = "string" }, { name = "outcome_definitions", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "expected_sequence", type = "counter" }]
-effect = [{ type = "increment", var = "revision_sequence" }]
+effect = ["revision_sequence += 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -110,8 +111,3 @@ params = [{ name = "provenance_ref", type = "string" }]
 [[action.constraints]]
 kind = "param_nonempty"
 param = "provenance_ref"
-
-[[invariant]]
-name = "RetiredFlowIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"

@@ -45,33 +45,25 @@ initial = ""
 
 [[field_invariant]]
 name = "KindMustBeKnown"
-when = { not = { field = "Kind", absent = true } }
-require = { any_of = [
-  { field = "Kind", equals = "github_repository" },
-  { field = "Kind", equals = "file" },
-] }
 message = "SessionResource.Kind must be github_repository or file"
+assert = "Kind != null => Kind in ['github_repository', 'file']"
 
 [[field_invariant]]
 name = "GitHubResourceRequiresUrl"
-when = { field = "Kind", equals = "github_repository" }
-require = { not = { field = "RepositoryUrl", empty = true } }
 message = "github_repository SessionResource rows must set RepositoryUrl"
+assert = "Kind == 'github_repository' => !empty(RepositoryUrl)"
 
 [[field_invariant]]
 name = "GitHubResourceRequiresMountPath"
-when = { field = "Kind", equals = "github_repository" }
-require = { not = { field = "MountPath", empty = true } }
 message = "github_repository SessionResource rows must set MountPath"
+assert = "Kind == 'github_repository' => !empty(MountPath)"
 
 [[field_invariant]]
 name = "FileResourceRequiresFileId"
-when = { field = "Kind", equals = "file" }
-require = { not = { field = "FileId", empty = true } }
 message = "file SessionResource rows must set FileId"
+assert = "Kind == 'file' => !empty(FileId)"
 
 [[field_invariant]]
 name = "FileResourceRequiresMountPath"
-when = { field = "Kind", equals = "file" }
-require = { not = { field = "MountPath", empty = true } }
 message = "file SessionResource rows must set MountPath"
+assert = "Kind == 'file' => !empty(MountPath)"

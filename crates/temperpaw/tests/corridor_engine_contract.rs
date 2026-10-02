@@ -39,6 +39,18 @@ fn states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+fn terminal_states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
+    automaton(spec, path)
+        .get("terminal")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn actions(spec: &toml::Value) -> Vec<&toml::value::Table> {
     spec.get("action")
         .and_then(|v| v.as_array())
@@ -242,10 +254,9 @@ fn forecast_is_immutable_once_registered() {
         );
     }
 
-    let text = read(&path);
     assert!(
-        text.contains("no_further_transitions"),
-        "Forecast spec must pin Scored as final via invariant"
+        terminal_states(&spec, &path).contains("Scored"),
+        "Forecast spec must pin Scored as terminal"
     );
 }
 
@@ -304,10 +315,10 @@ fn event_node_confirmation_is_peer_gated_and_resolution_is_final() {
         );
     }
 
-    let text = read(&path);
+    let terminal = terminal_states(&spec, &path);
     assert!(
-        text.contains("no_further_transitions"),
-        "EventNode Resolved/Retired must be final"
+        terminal.contains("Resolved") && terminal.contains("Retired"),
+        "EventNode Resolved/Retired must be terminal"
     );
 }
 
@@ -657,7 +668,7 @@ fn world_active_self_heals_when_claims_terminal_but_canonical_unset() {
         "ResumeWorldCascade is an Active self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
@@ -716,7 +727,7 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
         "ResumeSeed is a Seeding self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
@@ -770,7 +781,7 @@ fn endpoint_under_repair_self_heals_when_claims_terminal_but_unscored() {
         "ResumeEndpointScoring is an UnderRepair self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));

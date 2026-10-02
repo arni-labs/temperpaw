@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-temper-wasm-sdk = { git = "https://github.com/nerdsane/temper.git", rev = "43f9379cc51545b9a47b8a28ccb202c31957a0e9" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }
 wasm-helpers = { path = "../wasm-helpers" }
 serde_json = "1"
 
@@ -31,4 +31,4 @@ serde_json = "1"
 # fail `kernel_round_trip_keeps_the_jcs_contract_fields` — see ADR-0035
 # section 17.
 [dev-dependencies]
-temper-ots = { git = "https://github.com/nerdsane/temper.git", rev = "43f9379cc51545b9a47b8a28ccb202c31957a0e9" }
+temper-ots = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }

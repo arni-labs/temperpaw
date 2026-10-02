@@ -46,7 +46,7 @@ initial = ""
 [[state]]
 name = "agree"
 type = "bool"
-initial = "false"
+initial = false
 
 [[action]]
 name = "Record"
@@ -62,7 +62,7 @@ kind = "input"
 from = ["Recorded"]
 to = "Recorded"
 params = ["temper_verdict", "ci_verdict"]
-effect = [{ type = "set_bool", var = "agree", value = "true" }]
+effect = ["agree = true"]
 hint = "Record the Temper and CI verdicts for this gate and that they agree, in one write."
 
 [[action]]
@@ -71,5 +71,5 @@ kind = "input"
 from = ["Recorded"]
 to = "Recorded"
 params = ["temper_verdict", "ci_verdict"]
-effect = [{ type = "set_bool", var = "agree", value = "false" }]
+effect = ["agree = false"]
 hint = "Record the Temper and CI verdicts for this gate and that they disagree, in one write."

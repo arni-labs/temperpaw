@@ -97,7 +97,7 @@ fn emitter_spec_version_matches_the_app_manifest() {
 #[test]
 fn every_terminal_action_emits_a_trajectory() {
     let spec = session_spec();
-    let emit = "{ type = \"trigger\", name = \"emit_ots_trajectory\" }";
+    let emit = "[[action.triggers]]\nname = \"emit_ots_trajectory\"\n";
     for action in [
         "FinalizeResult",
         "FinalizeResultNoReply",

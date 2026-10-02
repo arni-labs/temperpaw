@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
-      TEMPER_REPO: nerdsane/temper
+      TEMPER_REPO: arni-labs/temper
       BOT_IDENTITY: rita-aga   # the identity that authors bump commits + PRs
     steps:
       - name: Guard the token
@@ -59,7 +59,7 @@ jobs:
           # uniformity check below would pass vacuously on a manifest with zero
           # matches (e.g. paw-codex-worker silently losing its pin).
           for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'nerdsane/temper\.git' "$f" || true)
+            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
             if [ "$c" -eq 0 ]; then echo "::error::$f carries no temper.git dependency pin"; exit 1; fi
           done
 
@@ -67,7 +67,7 @@ jobs:
           # BOTH manifests, and require it to be uniform - a rev scoped to any other
           # git dep must not poison it, and a half-drifted paw-codex-worker pin must
           # fail loudly rather than half-bump.
-          REVS=$(grep -hE 'nerdsane/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
+          REVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
             | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
           n=$(printf '%s\n' "$REVS" | grep -c . || true)
           if [ "$n" -ne 1 ]; then
@@ -141,15 +141,15 @@ jobs:
           # 1. bump the rev ONLY on the temper.git dependency lines of both manifests
           #    (line-scoped so no other dep sharing the sha could be touched).
           for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            sed -i "/nerdsane\/temper\.git/s/${CUR}/${NEW}/g" "$f"
+            sed -i "/arni-labs\/temper\.git/s/${CUR}/${NEW}/g" "$f"
           done
           # after bump: each manifest still carries a temper.git pin AND every
           # temper.git dep in BOTH manifests is exactly NEW.
           for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'nerdsane/temper\.git' "$f" || true)
+            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
             if [ "$c" -eq 0 ]; then echo "::error::$f lost its temper.git pin during the bump"; exit 1; fi
           done
-          NREVS=$(grep -hE 'nerdsane/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
+          NREVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
             | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
           if [ "$NREVS" != "$NEW" ]; then
             echo "::error::after bump the temper pin is not uniformly $NEW: ${NREVS:-none}"; exit 1; fi
@@ -158,7 +158,7 @@ jobs:
           #    deps a pure sed would miss and break --locked). Derive the crate list
           #    from the temper.git dependency KEYS in the manifests - no hardcoded
           #    list to drift when temper adds/removes a pinned crate.
-          PKGS=$(grep -hE 'nerdsane/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
+          PKGS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
             | sed -E 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/' | sort -u)
           PKG_ARGS=""
           for c in $PKGS; do PKG_ARGS="$PKG_ARGS -p $c"; done

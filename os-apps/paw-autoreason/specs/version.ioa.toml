@@ -14,6 +14,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created"]
+terminal = ["Ready"]
 
 [[state]]
 name = "round_id"
@@ -53,10 +54,3 @@ from = ["Created"]
 to = "Ready"
 params = ["content_file_id"]
 hint = "Mark version as ready for judging."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ReadyIsFinal"
-when = ["Ready"]
-assert = "no_further_transitions"

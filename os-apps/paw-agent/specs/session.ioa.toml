@@ -75,7 +75,7 @@ initial = ""
 [[state]]
 name = "turn_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_turns"
@@ -85,12 +85,12 @@ initial = "20"
 [[state]]
 name = "input_tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "output_tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "cost_cents"
@@ -110,7 +110,7 @@ initial = ""
 [[state]]
 name = "has_result"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "error_message"
@@ -180,12 +180,12 @@ initial = "[]"
 [[state]]
 name = "sandbox_allow_mcp_servers"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "sandbox_allow_package_managers"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "sandbox_packages_json"
@@ -195,7 +195,7 @@ initial = "[]"
 [[state]]
 name = "provision_check_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_provision_checks"
@@ -221,19 +221,13 @@ initial = "temper_create,temper_get,temper_list,temper_action,temper_patch,tempe
 name = "system_prompt"
 type = "string"
 initial = ""
-# Agent persona / behavior prompt. Audit-trail data for the session lifetime,
-# so no TTL; raise the inline ceiling to 128KB (declared explicitly so future
-# edits won't silently fall below the value). See temper ADR-0045.
-overflow_inline_max_bytes = "131072"
+overflow_inline_max_bytes = 131072
 
 [[state]]
 name = "user_message"
 type = "string"
 initial = ""
-# Initial user prompt. Up to a few hundred KB in practice (foresight judge,
-# long research pastes). Audit-trail data → no TTL; ceiling declared for
-# explicitness. See temper ADR-0045.
-overflow_inline_max_bytes = "131072"
+overflow_inline_max_bytes = 131072
 
 [[state]]
 name = "conversation"
@@ -260,7 +254,7 @@ initial = ""
 [[state]]
 name = "context_tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "prepared_context_file_id"
@@ -272,22 +266,22 @@ name = "prepared_context_inline_json"
 type = "string"
 initial = ""
 query_indexed = false
-overflow_inline_max_bytes = "131072"
+overflow_inline_max_bytes = 131072
 
 [[state]]
 name = "prepared_context_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "prepared_context_entries_loaded"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "prepared_context_content_files_loaded"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "provider_response_file_id"
@@ -299,17 +293,17 @@ name = "provider_response_inline_json"
 type = "string"
 initial = ""
 query_indexed = false
-overflow_inline_max_bytes = "131072"
+overflow_inline_max_bytes = 131072
 
 [[state]]
 name = "provider_request_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "provider_response_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- State Variables: Provider Auth Gate ---
 
@@ -332,12 +326,12 @@ initial = ""
 [[state]]
 name = "provider_auth_retry_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "compaction_auth_retry_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- State Variables: Compaction (Phase 3) ---
 
@@ -354,7 +348,7 @@ initial = "10000"
 [[state]]
 name = "compaction_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "compaction_model"
@@ -410,7 +404,7 @@ initial = "[]"
 [[state]]
 name = "follow_up_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_follow_ups"
@@ -469,7 +463,7 @@ initial = ""
 [[state]]
 name = "trajectory_retry_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- State Variables: Tool Hooks (Phase 6) ---
 
@@ -493,7 +487,7 @@ initial = "[]"
 [[state]]
 name = "session_depth"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- State Variables: Heartbeat + Progress ---
 
@@ -515,7 +509,7 @@ initial = "300"
 [[state]]
 name = "progress_token"
 type = "counter"
-initial = "0"
+initial = 0
 query_indexed = false
 
 [[state]]
@@ -570,7 +564,7 @@ initial = ""
 [[state]]
 name = "recovery_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- State Variables: Tool-Call Checkpointing (TemperPaw Track 1 Phase 3) ---
 
@@ -581,7 +575,7 @@ initial = "0"
 [[state]]
 name = "checkpoint_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- Actions: Core Session Loop ---
 
@@ -591,7 +585,7 @@ kind = "input"
 from = ["Created"]
 params = ["system_prompt", "user_message", "model", "provider", "provider_options_json", "temperature", "max_turns", "tools_enabled", "workdir", "sandbox_url", "sandbox_id", "sandbox_provider", "sandbox_networking_type", "sandbox_allowed_hosts_json", "sandbox_allow_mcp_servers", "sandbox_allow_package_managers", "sandbox_packages_json", "temper_api_url", "soul_id", "agent_id", "reply_channel_id", "reply_thread_id", "reply_channel_entity_id", "reply_channel_type", "reply_route_source", "parent_session_id", "session_depth", "max_follow_ups", "hook_policy", "reserve_tokens", "keep_recent_tokens", "compaction_model", "heartbeat_timeout_seconds", "project_harness_id", "project_id", "workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized", "prepared_context_file_id", "prepared_context_inline_json", "system_prompt_hash", "system_prompt_file_id", "session_mode", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
 hint = "Configure session. Auto-provisions after configuration. Resume fields (workspace_id, conversation_file_id, session_file_id, session_leaf_id) are accepted so continuations carry prior conversation state. Optional reply route fields preserve channel delivery context for terminal replies; optional GenAI parent trace fields preserve inbound distributed trace context."
-effect = [{ type = "schedule", action = "ProvisionWorkspace", delay_seconds = 0 }]
+effect = ["schedule('ProvisionWorkspace', 0)"]
 
 [[action]]
 name = "ProvisionWorkspace"
@@ -599,7 +593,6 @@ kind = "input"
 from = ["Created"]
 to = "Provisioning"
 hint = "Start workspace provisioning (sandbox is lazy — ADR-0022). Triggers workspace_provisioner WASM."
-effect = [{ type = "trigger", name = "provision_workspace" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -621,7 +614,6 @@ from = ["Provisioning"]
 to = "PreparingContext"
 params = ["workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized"]
 hint = "Workspace provisioned. Start the bounded context preparation stage. Sandbox provisioned lazily on demand (ADR-0022)."
-effect = [{ type = "trigger", name = "prepare_context" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -645,7 +637,6 @@ kind = "input"
 from = ["Created"]
 to = "Provisioning"
 hint = "Start sandbox provisioning. Used by Resume flow only (lazy sandbox bypasses this for new sessions)."
-effect = [{ type = "trigger", name = "provision_sandbox" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -673,10 +664,7 @@ from = ["Provisioning"]
 to = "Provisioning"
 params = ["sandbox_url", "sandbox_id", "sandbox_provider"]
 hint = "Sandbox exists but is still booting. Persist connection details and schedule another readiness check."
-effect = [
-  { type = "increment", var = "provision_check_count" },
-  { type = "schedule", action = "CheckSandboxReady", delay_seconds = 5 },
-]
+effect = ["provision_check_count += 1", "schedule('CheckSandboxReady', 5)"]
 
 [[action]]
 name = "CheckSandboxReady"
@@ -685,7 +673,13 @@ from = ["Provisioning"]
 to = "Provisioning"
 params = []
 hint = "Retry sandbox readiness check after a bounded delay."
-effect = [{ type = "trigger", name = "provision_sandbox" }]
+
+[[action.triggers]]
+name = "provision_sandbox"
+kind = "wasm"
+module = "sandbox_provisioner"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", sandbox_url = "{secret:sandbox_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}" }
 
 [[action]]
 name = "SandboxReady"
@@ -694,7 +688,13 @@ from = ["Provisioning"]
 to = "PreparingContext"
 params = ["sandbox_url", "sandbox_id", "sandbox_provider", "workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized"]
 hint = "Callback from sandbox provisioner. Sets sandbox connection, TemperFS workspace/file/manifest/session, and starts bounded context preparation."
-effect = [{ type = "trigger", name = "prepare_context" }]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "ContextReady"
@@ -703,7 +703,6 @@ from = ["PreparingContext"]
 to = "EnsuringProviderAuth"
 params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "context_tokens", "system_prompt_hash", "system_prompt_file_id"]
 hint = "Prepared context artifact is ready. Persist artifact references and ensure provider auth before calling the provider."
-effect = [{ type = "trigger", name = "ensure_provider_auth" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -728,7 +727,14 @@ from = ["PreparingContext"]
 to = "CallingProvider"
 params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Prepared context artifact is ready and this provider does not require Codex OAuth. Persist skipped auth fields and call the LLM provider."
-effect = [{ type = "trigger", name = "call_provider" }]
+
+[[action.triggers]]
+name = "call_provider"
+kind = "wasm"
+module = "provider_caller"
+on_failure = "Fail"
+llm = true
+config = { anthropic_api_key = "{secret:anthropic_api_key}", openai_api_key = "{secret:openai_api_key}", openai_codex_access_token = "{secret:openai_codex_access_token}", openai_codex_refresh_token = "{secret:openai_codex_refresh_token}", openai_codex_expires_at_ms = "{secret:openai_codex_expires_at_ms}", openai_codex_account_id = "{secret:openai_codex_account_id}", openai_codex_token = "{secret:openai_codex_token}", openrouter_api_key = "{secret:openrouter_api_key}", huggingface_api_key = "{secret:huggingface_api_key}", hf_token = "{secret:hf_token}", fireworks_api_key = "{secret:fireworks_api_key}", sakana_fugu_api_key = "{secret:sakana_fugu_api_key}", openai_compatible_api_key = "{secret:openai_compatible_api_key}", openai_compatible_headers_json = "{secret:openai_compatible_headers_json}", anthropic_api_url = "https://api.anthropic.com/v1/messages", openai_api_url = "https://api.openai.com/v1/responses", openai_codex_api_url = "https://chatgpt.com/backend-api/codex/responses", openrouter_api_url = "{secret:openrouter_api_url}", huggingface_api_url = "{secret:huggingface_api_url}", fireworks_api_url = "{secret:fireworks_api_url}", sakana_fugu_api_url = "{secret:sakana_fugu_api_url}", openai_compatible_api_url = "{secret:openai_compatible_api_url}", local_openai_api_url = "{secret:local_openai_api_url}", anthropic_auth_mode = "auto", openrouter_site_url = "", openrouter_app_name = "temperpaw-agent", default_llm_provider = "{secret:llm_provider}", default_llm_model = "{secret:llm_model}", temper_api_url = "{secret:temper_api_url}", timeout_secs = "600", max_response_bytes = "4194304", max_memory = "268435456", provider_caller_budget_ms = "600000", provider_initial_heartbeat_enabled = "false" }
 
 
 [[action]]
@@ -738,7 +744,6 @@ from = ["EnsuringProviderAuth"]
 to = "CallingProvider"
 params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Codex provider auth is fresh, or this provider does not need Codex OAuth. Call the LLM provider."
-effect = [{ type = "trigger", name = "call_provider" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -795,10 +800,7 @@ to = "EnsuringProviderAuth"
 params = ["provider_auth_error"]
 guard = "provider_auth_retry_count < 1"
 hint = "Provider returned an expired Codex token error. Force one token refresh before retrying the provider call."
-effect = [
-  { type = "increment", var = "provider_auth_retry_count" },
-  { type = "trigger", name = "force_provider_auth_refresh" }
-]
+effect = ["provider_auth_retry_count += 1"]
 
 [[action.triggers]]
 name = "force_provider_auth_refresh"
@@ -820,7 +822,6 @@ from = ["CallingProvider"]
 to = "ApplyingProviderResponse"
 params = ["provider_response_file_id", "provider_response_inline_json", "provider_request_bytes", "provider_response_bytes"]
 hint = "Provider response artifact is ready. Apply the response back into Session state."
-effect = [{ type = "trigger", name = "apply_provider_response" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -844,12 +845,7 @@ from = ["ApplyingProviderResponse"]
 to = "Executing"
 params = ["pending_tool_calls", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
 hint = "LLM returned tool_use blocks. Record token usage, transition to Executing, and run tools."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "increment", var = "context_tokens" },
-  { type = "trigger", name = "run_tools" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1", "context_tokens += 1"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -898,10 +894,14 @@ from = ["Executing"]
 to = "PreparingContext"
 params = ["pending_tool_calls", "conversation", "session_leaf_id", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "sandbox_url", "sandbox_id", "sandbox_provider", "system_prompt_hash", "system_prompt_file_id", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Tool results received. Increment turn, transition to PreparingContext, and assemble the next bounded provider turn."
-effect = [
-  { type = "increment", var = "turn_count" },
-  { type = "trigger", name = "prepare_context" }
-]
+effect = ["turn_count += 1"]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "CheckpointToolBatch"
@@ -910,10 +910,14 @@ from = ["Executing"]
 to = "Executing"
 params = ["pending_tool_calls", "pending_tool_context", "repl_file_id", "session_leaf_id"]
 hint = "monty_repl reached a tool-batch checkpoint boundary inside run_tools. Persist partial results via `pending_tool_context` and re-dispatch run_tools with the remainder. Self-loop on Executing; increments checkpoint_count for the runaway guard. See TemperPaw Track 1 Phase 3 / temperpaw#66."
-effect = [
-  { type = "increment", var = "checkpoint_count" },
-  { type = "trigger", name = "run_tools" }
-]
+effect = ["checkpoint_count += 1"]
+
+[[action.triggers]]
+name = "run_tools"
+kind = "wasm"
+module = "monty_repl"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}", timeout_secs = "900", max_fuel = "120000000000", max_memory = "268435456", max_response_bytes = "16777216", spawn_session_wait_timeout_ms = "840000", max_sync_file_bytes = "61440", max_sync_files = "64", sync_exclude = "__pycache__,node_modules,.git,.next,dist,build,target,coverage,venv,.venv", normal_repl_state_max_bytes = "524288", persist_tool_spans_file = "true", dd_api_key = "{secret:dd_api_key}", dd_app_key = "{secret:dd_app_key}", dd_site = "{secret:dd_site}", railway_token = "{secret:railway_token}", railway_project_id = "{secret:railway_project_id}", railway_environment_id = "{secret:railway_environment_id}", railway_service_id = "{secret:railway_service_id}", vercel_token = "{secret:vercel_token}" }
 
 # --- Actions: Compaction (Phase 3) ---
 
@@ -924,11 +928,7 @@ from = ["PreparingContext"]
 to = "EnsuringCompactionAuth"
 params = ["input_tokens", "output_tokens", "context_tokens", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id"]
 hint = "Context preparation detected that the bounded context budget was exceeded. Ensure provider auth before compaction."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "trigger", name = "ensure_compaction_auth" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1"]
 
 [[action.triggers]]
 name = "ensure_compaction_auth"
@@ -950,9 +950,6 @@ from = ["EnsuringCompactionAuth"]
 to = "Compacting"
 params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
 hint = "Codex compaction auth is fresh, or this provider does not need Codex OAuth. Trigger compaction."
-effect = [
-  { type = "trigger", name = "compact_context" }
-]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -999,10 +996,7 @@ to = "EnsuringCompactionAuth"
 params = ["provider_auth_error"]
 guard = "compaction_auth_retry_count < 1"
 hint = "Compaction LLM returned an expired Codex token error. Force one token refresh before retrying compaction."
-effect = [
-  { type = "increment", var = "compaction_auth_retry_count" },
-  { type = "trigger", name = "force_compaction_auth_refresh" }
-]
+effect = ["compaction_auth_retry_count += 1"]
 
 [[action.triggers]]
 name = "force_compaction_auth_refresh"
@@ -1024,10 +1018,14 @@ from = ["Compacting"]
 to = "PreparingContext"
 params = ["session_leaf_id", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "compaction_skipped_reason", "compaction_skipped_leaf_id"]
 hint = "Compaction finished or explicitly skipped. Resume bounded context preparation with the compacted session tree, or with a skip marker that prevents re-running the same impossible compaction."
-effect = [
-  { type = "increment", var = "compaction_count" },
-  { type = "trigger", name = "prepare_context" }
-]
+effect = ["compaction_count += 1"]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 # --- Actions: Steering (Phase 4) ---
 
@@ -1038,12 +1036,7 @@ from = ["ApplyingProviderResponse"]
 to = "Steering"
 params = ["input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json"]
 hint = "LLM returned end_turn. Check for queued steering messages before completing."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "increment", var = "context_tokens" },
-  { type = "trigger", name = "check_steering" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1", "context_tokens += 1"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -1066,11 +1059,14 @@ to = "PreparingContext"
 params = ["session_leaf_id", "steering_messages", "conversation"]
 guard = "follow_up_count < 100"
 hint = "Steering message found. Inject into conversation and continue. Dynamic max_follow_ups enforced by steering_checker."
-effect = [
-  { type = "increment", var = "turn_count" },
-  { type = "increment", var = "follow_up_count" },
-  { type = "trigger", name = "prepare_context" }
-]
+effect = ["turn_count += 1", "follow_up_count += 1"]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "FinalizeResult"
@@ -1079,11 +1075,7 @@ from = ["Steering"]
 to = "Completed"
 params = ["result", "conversation", "session_leaf_id", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "No steering messages queued. Set result and complete."
-effect = [
-  { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["has_result = true"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -1122,10 +1114,13 @@ from = ["Steering"]
 to = "Completed"
 params = ["result", "conversation", "session_leaf_id", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Direct no-reply steering completion. Set result, complete, and emit trajectory without invoking reply delivery."
-effect = [
-  { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["has_result = true"]
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 
 [[action]]
@@ -1158,7 +1153,6 @@ from = ["Executing"]
 to = "WaitingForApproval"
 params = ["active_plan_id", "pending_tool_context"]
 hint = "Pause session until Plan is approved. Triggered by agent after SubmitForReview."
-effect = [{ type = "trigger", name = "notify_plan_approval_needed" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -1180,7 +1174,13 @@ from = ["WaitingForApproval"]
 to = "PreparingContext"
 params = ["session_mode", "tools_enabled", "pre_plan_tools_enabled"]
 hint = "Plan approved. Switch to execute mode and resume bounded context preparation."
-effect = [{ type = "trigger", name = "prepare_context" }]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "ResumeWithPlanChanges"
@@ -1189,11 +1189,14 @@ from = ["WaitingForApproval"]
 to = "PreparingContext"
 params = ["session_leaf_id", "conversation"]
 hint = "Plan changes requested. Inject reviewer feedback and resume the planning loop."
-effect = [
-  { type = "increment", var = "turn_count" },
-  { type = "increment", var = "follow_up_count" },
-  { type = "trigger", name = "prepare_context" }
-]
+effect = ["turn_count += 1", "follow_up_count += 1"]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 # --- Actions: Cedar Approval Pause-Resume ---
 
@@ -1204,7 +1207,6 @@ from = ["Executing"]
 to = "WaitingForApproval"
 params = ["pending_decision_id", "pending_tool_context"]
 hint = "Cedar denied a tool call. Session pauses cleanly until human approves via Discord."
-effect = [{ type = "trigger", name = "notify_approval_needed" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -1225,7 +1227,13 @@ kind = "input"
 from = ["WaitingForApproval"]
 to = "Executing"
 hint = "Human approved the Cedar decision. Resume tool execution with same pending_tool_calls."
-effect = [{ type = "trigger", name = "run_tools" }]
+
+[[action.triggers]]
+name = "run_tools"
+kind = "wasm"
+module = "monty_repl"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}", timeout_secs = "900", max_fuel = "120000000000", max_memory = "268435456", max_response_bytes = "16777216", spawn_session_wait_timeout_ms = "840000", max_sync_file_bytes = "61440", max_sync_files = "64", sync_exclude = "__pycache__,node_modules,.git,.next,dist,build,target,coverage,venv,.venv", normal_repl_state_max_bytes = "524288", persist_tool_spans_file = "true", dd_api_key = "{secret:dd_api_key}", dd_app_key = "{secret:dd_app_key}", dd_site = "{secret:dd_site}", railway_token = "{secret:railway_token}", railway_project_id = "{secret:railway_project_id}", railway_environment_id = "{secret:railway_environment_id}", railway_service_id = "{secret:railway_service_id}", vercel_token = "{secret:vercel_token}" }
 
 # --- Actions: Legacy direct completion (backward compat for max_follow_ups=0) ---
 
@@ -1236,13 +1244,20 @@ from = ["ApplyingProviderResponse", "Executing"]
 to = "Completed"
 params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Session complete. Triggered by LLM end_turn or agent calling temper.done(result)."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
+
+[[action.triggers]]
+name = "deliver_reply"
+kind = "wasm"
+module = "agent_reply"
+on_failure = "DeliveryFailed"
+config = { temper_api_url = "{secret:temper_api_url}" }
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 [[action]]
 name = "RecordResultNoReply"
@@ -1251,12 +1266,13 @@ from = ["ApplyingProviderResponse"]
 to = "Completed"
 params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Direct no-route Session complete. Set result and emit trajectory without invoking terminal reply delivery."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 [[action]]
 name = "RecordResultInlineReply"
@@ -1265,12 +1281,13 @@ from = ["ApplyingProviderResponse"]
 to = "Completed"
 params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Inline CLI/TUI reply already recorded on the Channel. Set result and emit trajectory without invoking terminal reply delivery."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-  { type = "set_bool", var = "has_result", value = "true" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 # --- Actions: Heartbeat + ProgressMade ---
 
@@ -1287,9 +1304,7 @@ kind = "input"
 from = ["PreparingContext", "EnsuringProviderAuth", "CallingProvider", "ApplyingProviderResponse", "Executing", "EnsuringCompactionAuth", "Compacting", "Recovering"]
 params = ["last_progress_at"]
 hint = "Signal real forward progress (received first LLM chunk, completed a tool batch, wrote a context chunk, etc). Self-loop; increments progress_token and resets the state_timeout clock for the current state. Contrast with Heartbeat (liveness-only, does NOT reset timeouts)."
-effect = [
-  { type = "increment", var = "progress_token" },
-]
+effect = ["progress_token += 1"]
 
 [[action]]
 name = "TimeoutFail"
@@ -1298,10 +1313,19 @@ from = ["PreparingContext", "EnsuringProviderAuth", "CallingProvider", "Applying
 to = "Failed"
 params = ["error_message"]
 hint = "Session timed out — no heartbeat within timeout period."
-effect = [
-  { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+
+[[action.triggers]]
+name = "deliver_reply"
+kind = "wasm"
+module = "agent_reply"
+on_failure = "DeliveryFailed"
+config = { temper_api_url = "{secret:temper_api_url}" }
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 # --- Actions: Failure, Cancellation, Resume ---
 
@@ -1312,10 +1336,19 @@ from = ["Created", "Provisioning", "PreparingContext", "EnsuringProviderAuth", "
 to = "Failed"
 params = ["error_message"]
 hint = "Mark session run as failed."
-effect = [
-  { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+
+[[action.triggers]]
+name = "deliver_reply"
+kind = "wasm"
+module = "agent_reply"
+on_failure = "DeliveryFailed"
+config = { temper_api_url = "{secret:temper_api_url}" }
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 [[action]]
 name = "Cancel"
@@ -1323,10 +1356,19 @@ kind = "input"
 from = ["Created", "Provisioning", "PreparingContext", "EnsuringProviderAuth", "CallingProvider", "ApplyingProviderResponse", "Executing", "EnsuringCompactionAuth", "Compacting", "Steering", "WaitingForApproval", "Recovering"]
 to = "Cancelled"
 hint = "Cancel session execution."
-effect = [
-  { type = "trigger", name = "deliver_reply" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+
+[[action.triggers]]
+name = "deliver_reply"
+kind = "wasm"
+module = "agent_reply"
+on_failure = "DeliveryFailed"
+config = { temper_api_url = "{secret:temper_api_url}" }
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 [[action]]
 name = "DeliveryFailed"
@@ -1368,10 +1410,13 @@ kind = "input"
 from = ["Completed", "Failed", "Cancelled"]
 guard = "trajectory_retry_count < 1"
 hint = "Manually retry OTS emission once after a prior failure. Guarded to a single retry; further failures wait for Evolution Engine sweep."
-effect = [
-  { type = "increment", var = "trajectory_retry_count" },
-  { type = "trigger", name = "emit_ots_trajectory" }
-]
+effect = ["trajectory_retry_count += 1"]
+
+[[action.triggers]]
+name = "emit_ots_trajectory"
+kind = "wasm"
+module = "emit_ots_trajectory"
+config = { temper_api_url = "{secret:temper_api_url}", spec_version = "paw-agent@0.1.0" }
 
 # --- Actions: Session Recovery (ADR-0025) ---
 
@@ -1383,10 +1428,7 @@ to = "Recovering"
 params = ["error_message"]
 guard = "recovery_count < 3"
 hint = "Server restart detected. Enter recovery state to repair session tree before resuming. Max 3 attempts."
-effect = [
-  { type = "increment", var = "recovery_count" },
-  { type = "trigger", name = "recover_session" },
-]
+effect = ["recovery_count += 1"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -1408,7 +1450,13 @@ from = ["Recovering"]
 to = "PreparingContext"
 params = ["session_leaf_id"]
 hint = "Session tree repaired after restart. Re-enter bounded context preparation."
-effect = [{ type = "trigger", name = "prepare_context" }]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "ResumeFromCheckpoint"
@@ -1417,7 +1465,13 @@ from = ["Recovering"]
 to = "Executing"
 params = ["pending_tool_calls", "pending_tool_context", "repl_file_id", "session_leaf_id"]
 hint = "Session was in an active tool-call checkpoint when the server restarted. Resume directly into tool execution with the preserved pending_tool_context instead of re-entering the LLM loop. See TemperPaw Track 1 Phase 3 follow-up (session_recoverer mid-turn resume)."
-effect = [{ type = "trigger", name = "run_tools" }]
+
+[[action.triggers]]
+name = "run_tools"
+kind = "wasm"
+module = "monty_repl"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}", timeout_secs = "900", max_fuel = "120000000000", max_memory = "268435456", max_response_bytes = "16777216", spawn_session_wait_timeout_ms = "840000", max_sync_file_bytes = "61440", max_sync_files = "64", sync_exclude = "__pycache__,node_modules,.git,.next,dist,build,target,coverage,venv,.venv", normal_repl_state_max_bytes = "524288", persist_tool_spans_file = "true", dd_api_key = "{secret:dd_api_key}", dd_app_key = "{secret:dd_app_key}", dd_site = "{secret:dd_site}", railway_token = "{secret:railway_token}", railway_project_id = "{secret:railway_project_id}", railway_environment_id = "{secret:railway_environment_id}", railway_service_id = "{secret:railway_service_id}", vercel_token = "{secret:vercel_token}" }
 
 [[action]]
 name = "Resume"
@@ -1426,7 +1480,13 @@ from = ["Created"]
 to = "Provisioning"
 params = ["sandbox_url", "sandbox_id", "sandbox_provider", "workspace_id", "conversation_file_id", "file_manifest_id", "session_file_id", "session_leaf_id", "session_entries_materialized"]
 hint = "Resume session from saved state. Transitions to Provisioning for workspace restore."
-effect = [{ type = "trigger", name = "restore_workspace" }]
+
+[[action.triggers]]
+name = "restore_workspace"
+kind = "wasm"
+module = "workspace_restorer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}" }
 
 # --- Actions: Per-state wake-up (ADR-0039) -----------------------------------
 #
@@ -1451,50 +1511,64 @@ name = "ResumeTools"
 kind = "input"
 from = ["Executing"]
 hint = "Wake a stalled run_tools. Self-loop. Fired by route_message when a DM arrives on an Executing session whose last_progress_at is stale."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "run_tools" },
-]
+effect = ["progress_token += 1"]
+
+[[action.triggers]]
+name = "run_tools"
+kind = "wasm"
+module = "monty_repl"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", tensorlake_api_key = "{secret:tensorlake_api_key}", sandbox_provider = "{secret:sandbox_provider}", modal_token_id = "{secret:modal_token_id}", modal_token_secret = "{secret:modal_token_secret}", modal_bridge_url = "{secret:modal_bridge_url}", timeout_secs = "900", max_fuel = "120000000000", max_memory = "268435456", max_response_bytes = "16777216", spawn_session_wait_timeout_ms = "840000", max_sync_file_bytes = "61440", max_sync_files = "64", sync_exclude = "__pycache__,node_modules,.git,.next,dist,build,target,coverage,venv,.venv", normal_repl_state_max_bytes = "524288", persist_tool_spans_file = "true", dd_api_key = "{secret:dd_api_key}", dd_app_key = "{secret:dd_app_key}", dd_site = "{secret:dd_site}", railway_token = "{secret:railway_token}", railway_project_id = "{secret:railway_project_id}", railway_environment_id = "{secret:railway_environment_id}", railway_service_id = "{secret:railway_service_id}", vercel_token = "{secret:vercel_token}" }
 
 [[action]]
 name = "ResumeProvider"
 kind = "input"
 from = ["CallingProvider"]
 hint = "Wake a stalled call_provider. Self-loop."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "call_provider" },
-]
+effect = ["progress_token += 1"]
+
+[[action.triggers]]
+name = "call_provider"
+kind = "wasm"
+module = "provider_caller"
+on_failure = "Fail"
+llm = true
+config = { anthropic_api_key = "{secret:anthropic_api_key}", openai_api_key = "{secret:openai_api_key}", openai_codex_access_token = "{secret:openai_codex_access_token}", openai_codex_refresh_token = "{secret:openai_codex_refresh_token}", openai_codex_expires_at_ms = "{secret:openai_codex_expires_at_ms}", openai_codex_account_id = "{secret:openai_codex_account_id}", openai_codex_token = "{secret:openai_codex_token}", openrouter_api_key = "{secret:openrouter_api_key}", huggingface_api_key = "{secret:huggingface_api_key}", hf_token = "{secret:hf_token}", fireworks_api_key = "{secret:fireworks_api_key}", sakana_fugu_api_key = "{secret:sakana_fugu_api_key}", openai_compatible_api_key = "{secret:openai_compatible_api_key}", openai_compatible_headers_json = "{secret:openai_compatible_headers_json}", anthropic_api_url = "https://api.anthropic.com/v1/messages", openai_api_url = "https://api.openai.com/v1/responses", openai_codex_api_url = "https://chatgpt.com/backend-api/codex/responses", openrouter_api_url = "{secret:openrouter_api_url}", huggingface_api_url = "{secret:huggingface_api_url}", fireworks_api_url = "{secret:fireworks_api_url}", sakana_fugu_api_url = "{secret:sakana_fugu_api_url}", openai_compatible_api_url = "{secret:openai_compatible_api_url}", local_openai_api_url = "{secret:local_openai_api_url}", anthropic_auth_mode = "auto", openrouter_site_url = "", openrouter_app_name = "temperpaw-agent", default_llm_provider = "{secret:llm_provider}", default_llm_model = "{secret:llm_model}", temper_api_url = "{secret:temper_api_url}", timeout_secs = "600", max_response_bytes = "4194304", max_memory = "268435456", provider_caller_budget_ms = "600000", provider_initial_heartbeat_enabled = "false" }
 
 [[action]]
 name = "ResumeContext"
 kind = "input"
 from = ["PreparingContext"]
 hint = "Wake a stalled prepare_context. Self-loop."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "prepare_context" },
-]
+effect = ["progress_token += 1"]
+
+[[action.triggers]]
+name = "prepare_context"
+kind = "wasm"
+module = "context_preparer"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}", max_live_context_bytes = "50331648", max_memory = "268435456", context_prepare_budget_ms = "120000" }
 
 [[action]]
 name = "ResumeCompacting"
 kind = "input"
 from = ["Compacting"]
 hint = "Wake a stalled compact_context. Self-loop."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "compact_context" },
-]
+effect = ["progress_token += 1"]
+
+[[action.triggers]]
+name = "compact_context"
+kind = "wasm"
+module = "context_compactor"
+on_failure = "Fail"
+config = { anthropic_api_key = "{secret:anthropic_api_key}", openai_api_key = "{secret:openai_api_key}", openai_codex_access_token = "{secret:openai_codex_access_token}", openai_codex_refresh_token = "{secret:openai_codex_refresh_token}", openai_codex_expires_at_ms = "{secret:openai_codex_expires_at_ms}", openai_codex_account_id = "{secret:openai_codex_account_id}", openai_codex_token = "{secret:openai_codex_token}", openrouter_api_key = "{secret:openrouter_api_key}", huggingface_api_key = "{secret:huggingface_api_key}", hf_token = "{secret:hf_token}", fireworks_api_key = "{secret:fireworks_api_key}", sakana_fugu_api_key = "{secret:sakana_fugu_api_key}", openai_compatible_api_key = "{secret:openai_compatible_api_key}", openai_compatible_headers_json = "{secret:openai_compatible_headers_json}", anthropic_api_url = "https://api.anthropic.com/v1/messages", openai_api_url = "https://api.openai.com/v1/responses", openai_codex_api_url = "https://chatgpt.com/backend-api/codex/responses", openrouter_api_url = "{secret:openrouter_api_url}", huggingface_api_url = "{secret:huggingface_api_url}", fireworks_api_url = "{secret:fireworks_api_url}", sakana_fugu_api_url = "{secret:sakana_fugu_api_url}", openai_compatible_api_url = "{secret:openai_compatible_api_url}", local_openai_api_url = "{secret:local_openai_api_url}", temper_api_url = "{secret:temper_api_url}", timeout_secs = "120" }
 
 [[action]]
 name = "ResumeSteering"
 kind = "input"
 from = ["Steering"]
 hint = "Wake a stalled check_steering. Self-loop from the Steering state where steering-specific processing is active."
-effect = [
-  { type = "increment", var = "progress_token" },
-  { type = "trigger",   name = "check_steering" },
-]
+effect = ["progress_token += 1"]
 
 # --- Invariants ---
 
@@ -1515,11 +1589,17 @@ modal_token_id = "{secret:modal_token_id}"
 modal_token_secret = "{secret:modal_token_secret}"
 modal_bridge_url = "{secret:modal_bridge_url}"
 
+[[action.triggers]]
+name = "check_steering"
+kind = "wasm"
+module = "steering_checker"
+on_failure = "Fail"
+config = { temper_api_url = "{secret:temper_api_url}" }
+
 
 [[invariant]]
 name = "CompletedHasResult"
-when = ["Completed"]
-assert = "has_result"
+assert = "status in ['Completed'] => has_result"
 
 # Note: Completed/Failed/Cancelled are terminal for the session loop, but
 # DeliveryFailed is a valid self-loop action from terminal states to record
@@ -1527,83 +1607,82 @@ assert = "has_result"
 
 [[invariant]]
 name = "TurnCountNonNegative"
-when = ["Created", "Provisioning", "PreparingContext", "EnsuringProviderAuth", "CallingProvider", "ApplyingProviderResponse", "Executing", "EnsuringCompactionAuth", "Compacting", "Steering", "WaitingForApproval", "Recovering", "Completed", "Failed", "Cancelled"]
-assert = "turn_count >= 0"
+assert = "status in ['Created', 'Provisioning', 'PreparingContext', 'EnsuringProviderAuth', 'CallingProvider', 'ApplyingProviderResponse', 'Executing', 'EnsuringCompactionAuth', 'Compacting', 'Steering', 'WaitingForApproval', 'Recovering', 'Completed', 'Failed', 'Cancelled'] => turn_count >= 0"
 
 [[state_timeout]]
 state = "Created"
 after_seconds = 60
 on_timeout = "Fail"
-params = { error_message = "session Configure never arrived within 60s" }
+args = { error_message = "'session Configure never arrived within 60s'" }
 
 [[state_timeout]]
 state = "Provisioning"
 after_seconds = 180
 on_timeout = "TimeoutFail"
 reset_on = ["ProvisionPending"]
-params = { error_message = "workspace/sandbox provisioning did not complete within 180s" }
+args = { error_message = "'workspace/sandbox provisioning did not complete within 180s'" }
 
 [[state_timeout]]
 state = "PreparingContext"
 after_seconds = 120
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade", "ResumeContext"]
-params = { error_message = "context preparation did not complete within 120s" }
+args = { error_message = "'context preparation did not complete within 120s'" }
 
 [[state_timeout]]
 state = "EnsuringProviderAuth"
 after_seconds = 60
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade"]
-params = { error_message = "provider auth check did not complete within 60s" }
+args = { error_message = "'provider auth check did not complete within 60s'" }
 
 [[state_timeout]]
 state = "CallingProvider"
 after_seconds = 600
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade", "ResumeProvider"]
-params = { error_message = "provider call made no progress within 600s" }
+args = { error_message = "'provider call made no progress within 600s'" }
 
 [[state_timeout]]
 state = "ApplyingProviderResponse"
 after_seconds = 60
 on_timeout = "TimeoutFail"
-params = { error_message = "applying provider response did not complete within 60s" }
+args = { error_message = "'applying provider response did not complete within 60s'" }
 
 [[state_timeout]]
 state = "Executing"
 after_seconds = 300
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade", "CheckpointToolBatch", "ResumeTools"]
-params = { error_message = "tool execution made no progress for 300s" }
+args = { error_message = "'tool execution made no progress for 300s'" }
 
 [[state_timeout]]
 state = "Steering"
 after_seconds = 60
 on_timeout = "TimeoutFail"
 reset_on = ["ResumeSteering"]
-params = { error_message = "steering check did not complete within 60s" }
+args = { error_message = "'steering check did not complete within 60s'" }
 
 [[state_timeout]]
 state = "EnsuringCompactionAuth"
 after_seconds = 60
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade"]
-params = { error_message = "compaction auth check did not complete within 60s" }
+args = { error_message = "'compaction auth check did not complete within 60s'" }
 
 [[state_timeout]]
 state = "Compacting"
 after_seconds = 300
 on_timeout = "TimeoutFail"
 reset_on = ["ProgressMade", "ResumeCompacting"]
-params = { error_message = "context compaction did not complete within 300s" }
+args = { error_message = "'context compaction did not complete within 300s'" }
 
 [[state_timeout]]
 state = "Recovering"
 after_seconds = 120
 on_timeout = "Fail"
 max_occurrences = 3
-params = { error_message = "recovery did not complete within 120s" }
+args = { error_message = "'recovery did not complete within 120s'" }
 
 # ============================================================================
 # ADR-0036 / ADR-0051: admission control caps

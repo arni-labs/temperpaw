@@ -10,7 +10,7 @@ allow_indefinite_states = ["Draft","Failed","Paused"]
 [[state]]
 name = "scheduled_refresh"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "source_kind"
@@ -60,12 +60,12 @@ initial = ""
 [[state]]
 name = "sync_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "failure_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observation_id"
@@ -125,7 +125,7 @@ initial = ""
 [[state]]
 name = "observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Configure"
@@ -156,8 +156,8 @@ name = "Refresh"
 kind = "input"
 from = ["Idle","Ready","Failed"]
 to = "Collecting"
-guard = [{ type = "max_count", var = "failure_count", max = 3 }]
-effect = [{ type = "set_bool", var = "scheduled_refresh", value = false }, { type = "increment", var = "sync_sequence" }, { type = "trigger", name = "dsf_model_collect" }]
+guard = "failure_count < 3"
+effect = ["scheduled_refresh = false", "sync_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_model_collect"
@@ -172,8 +172,8 @@ name = "RefreshIfDue"
 kind = "internal"
 from = ["Idle","Ready"]
 to = "Collecting"
-guard = [{ type = "max_count", var = "failure_count", max = 3 }]
-effect = [{ type = "set_bool", var = "scheduled_refresh", value = true }, { type = "increment", var = "sync_sequence" }, { type = "trigger", name = "dsf_model_collect" }]
+guard = "failure_count < 3"
+effect = ["scheduled_refresh = true", "sync_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_model_collect"
@@ -201,7 +201,7 @@ kind = "input"
 from = ["Collecting"]
 to = "Failed"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
-effect = [{ type = "increment", var = "failure_count" }]
+effect = ["failure_count += 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -213,7 +213,7 @@ name = "CollectionTimedOut"
 kind = "internal"
 from = ["Collecting"]
 to = "Failed"
-effect = [{ type = "increment", var = "failure_count" }]
+effect = ["failure_count += 1"]
 
 [[action]]
 name = "Pause"
@@ -226,7 +226,7 @@ name = "Resume"
 kind = "input"
 from = ["Paused"]
 to = "Idle"
-effect = [{ type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }]
+effect = ["failure_count -= 1", "failure_count -= 1", "failure_count -= 1"]
 
 [[action]]
 name = "CollectionSucceeded"
@@ -234,7 +234,7 @@ kind = "input"
 from = ["Collecting"]
 to = "Ready"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "schedule_at", action = "Refresh", field = "next_due_at" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -275,9 +275,7 @@ kind = "entity"
 target_entity = "DsfObservation"
 target_action = "RecordMeasured"
 
-[action.triggers.params]
-
-[action.triggers.params_from]
+[action.triggers.args]
 subject_id = "resource_id"
 source = "source_id"
 source_event_id = "source_event_id"
@@ -293,8 +291,8 @@ observed_configuration = "observed_configuration"
 observed_revision = "observed_revision"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "observation_id"
+kind = "create_if_missing"
 
 [[action]]
 name = "CollectionAbsent"
@@ -302,7 +300,7 @@ kind = "input"
 from = ["Collecting"]
 to = "Ready"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "schedule_at", action = "Refresh", field = "next_due_at" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -343,9 +341,7 @@ kind = "entity"
 target_entity = "DsfObservation"
 target_action = "RecordAbsent"
 
-[action.triggers.params]
-
-[action.triggers.params_from]
+[action.triggers.args]
 subject_id = "resource_id"
 source = "source_id"
 source_event_id = "source_event_id"
@@ -359,8 +355,8 @@ evidence_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "observation_id"
+kind = "create_if_missing"
 
 [[action]]
 name = "CollectionInaccessible"
@@ -368,7 +364,7 @@ kind = "input"
 from = ["Collecting"]
 to = "Failed"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "error_message", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "increment", var = "failure_count" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count += 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -405,9 +401,7 @@ kind = "entity"
 target_entity = "DsfObservation"
 target_action = "RecordInaccessible"
 
-[action.triggers.params]
-
-[action.triggers.params_from]
+[action.triggers.args]
 subject_id = "resource_id"
 source = "source_id"
 source_event_id = "source_event_id"
@@ -421,8 +415,8 @@ evidence_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "observation_id"
+kind = "create_if_missing"
 
 [[action]]
 name = "CollectionStale"
@@ -430,7 +424,7 @@ kind = "input"
 from = ["Collecting"]
 to = "Ready"
 params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "decrement", var = "failure_count" }, { type = "schedule_at", action = "Refresh", field = "next_due_at" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -471,9 +465,7 @@ kind = "entity"
 target_entity = "DsfObservation"
 target_action = "RecordStale"
 
-[action.triggers.params]
-
-[action.triggers.params_from]
+[action.triggers.args]
 subject_id = "resource_id"
 source = "source_id"
 source_event_id = "source_event_id"
@@ -487,8 +479,8 @@ evidence_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "observation_id"
+kind = "create_if_missing"
 
 [[state_timeout]]
 state = "Collecting"

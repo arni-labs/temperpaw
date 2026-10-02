@@ -159,40 +159,40 @@ hint = "Cancel a case before implementation work proceeds."
 state = "New"
 after_seconds = 86400
 on_timeout = "Cancel"
-params = { escalation_reason = "FactoryCase stayed New for 24h without opening." }
+args = { escalation_reason = "'FactoryCase stayed New for 24h without opening.'" }
 
 [[state_timeout]]
 state = "Triaging"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase stayed in Triaging for 24h." }
+args = { escalation_reason = "'FactoryCase stayed in Triaging for 24h.'" }
 
 [[state_timeout]]
 state = "Scoped"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase stayed Scoped for 24h without queued work." }
+args = { escalation_reason = "'FactoryCase stayed Scoped for 24h without queued work.'" }
 
 [[state_timeout]]
 state = "Queued"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase was queued for 24h without worker progress." }
+args = { escalation_reason = "'FactoryCase was queued for 24h without worker progress.'" }
 
 [[state_timeout]]
 state = "InProgress"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase stayed InProgress for 24h." }
+args = { escalation_reason = "'FactoryCase stayed InProgress for 24h.'" }
 
 [[state_timeout]]
 state = "Reviewing"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase stayed Reviewing for 24h." }
+args = { escalation_reason = "'FactoryCase stayed Reviewing for 24h.'" }
 
 [[state_timeout]]
 state = "Proving"
 after_seconds = 21600
 on_timeout = "Escalate"
-params = { escalation_reason = "FactoryCase stayed Proving for 6h." }
+args = { escalation_reason = "'FactoryCase stayed Proving for 6h.'" }

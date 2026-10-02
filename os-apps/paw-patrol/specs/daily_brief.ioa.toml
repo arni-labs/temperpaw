@@ -66,7 +66,6 @@ kind = "input"
 from = ["Collecting"]
 to = "Collecting"
 params = ["brief_date"]
-effect = [{ type = "trigger", name = "daily_brief_started" }]
 hint = "Start collecting the daily Patrol brief."
 
 [[action.triggers]]
@@ -125,10 +124,10 @@ hint = "Daily brief generation or publication failed."
 state = "Collecting"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { error_message = "DailyBrief stayed Collecting for 6h." }
+args = { error_message = "'DailyBrief stayed Collecting for 6h.'" }
 
 [[state_timeout]]
 state = "Ready"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "DailyBrief stayed Ready for 24h without publication." }
+args = { error_message = "'DailyBrief stayed Ready for 24h without publication.'" }

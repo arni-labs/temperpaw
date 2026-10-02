@@ -293,6 +293,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -443,7 +453,7 @@ dependencies = [
 [[package]]
 name = "temper-ots"
 version = "0.1.0"
-source = "git+https://github.com/nerdsane/temper.git?rev=43f9379cc51545b9a47b8a28ccb202c31957a0e9#43f9379cc51545b9a47b8a28ccb202c31957a0e9"
+source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
 dependencies = [
  "chrono",
  "serde",
@@ -455,12 +465,13 @@ dependencies = [
 [[package]]
 name = "temper-runtime"
 version = "0.1.0"
-source = "git+https://github.com/nerdsane/temper.git?rev=43f9379cc51545b9a47b8a28ccb202c31957a0e9#43f9379cc51545b9a47b8a28ccb202c31957a0e9"
+source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
 dependencies = [
  "anyhow",
  "chrono",
  "serde",
  "serde_json",
+ "temper-spec",
  "thiserror",
  "tokio",
  "toml",
@@ -469,9 +480,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "temper-spec"
+version = "0.1.0"
+source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
+dependencies = [
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
 name = "temper-wasm-sdk"
 version = "0.1.0"
-source = "git+https://github.com/nerdsane/temper.git?rev=43f9379cc51545b9a47b8a28ccb202c31957a0e9#43f9379cc51545b9a47b8a28ccb202c31957a0e9"
+source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
 dependencies = [
  "serde",
  "serde_json",

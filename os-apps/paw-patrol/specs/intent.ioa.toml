@@ -127,11 +127,11 @@ hint = "Optional intake: create an Effort from this request. Direct Effort creat
 name = "intent_accepted_creates_effort"
 kind = "entity"
 principal = "patrol-intake-service"
-to_state = "Accepted"
 target_entity = "Effort"
 target_action = "Seed"
+guard = "status == 'Accepted'"
 
-[action.triggers.params_from]
+[action.triggers.args]
 intent_id = "Id"
 intent_ref = "intent_ref"
 factory_case_id = "factory_case_id"
@@ -142,7 +142,7 @@ repo = "repo"
 branch = "branch"
 
 [action.triggers.resolve_target]
-type = "create"
+kind = "create"
 
 [[action]]
 name = "LinkPmIssue"
@@ -171,10 +171,10 @@ hint = "Return a Rejected request to optional triage."
 state = "Submitted"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { triage_summary = "Intent was not triaged within 24h." }
+args = { triage_summary = "'Intent was not triaged within 24h.'" }
 
 [[state_timeout]]
 state = "Triaged"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { triage_summary = "Intent was not accepted or rejected within 24h." }
+args = { triage_summary = "'Intent was not accepted or rejected within 24h.'" }

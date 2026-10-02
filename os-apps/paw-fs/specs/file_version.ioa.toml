@@ -13,6 +13,7 @@ initial = "Current"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Current"]
+terminal = ["Superseded"]
 
 # --- State Variables ---
 
@@ -24,7 +25,7 @@ initial = ""
 [[state]]
 name = "version_number"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "content_hash"
@@ -39,7 +40,7 @@ initial = ""
 [[state]]
 name = "size_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "previous_version_id"
@@ -59,10 +60,7 @@ kind = "input"
 from = ["Current"]
 to = "Current"
 params = ["file_id", "version_number", "content_hash", "mime_type", "size_bytes", "previous_version_id", "created_by"]
-effect = [
-  { type = "set_counter_from_param", var = "version_number", param = "version_number" },
-  { type = "set_counter_from_param", var = "size_bytes", param = "size_bytes" },
-]
+effect = ["version_number = params.version_number", "size_bytes = params.size_bytes"]
 hint = "Create a new file version record with content metadata."
 
 [[action.triggers]]
@@ -72,12 +70,12 @@ principal = "file-service"
 target_entity = "File"
 target_action = "RecordVersion"
 
-[action.triggers.params_from]
+[action.triggers.args]
 last_version_id = "Id"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "file_id"
+kind = "field"
+id_field = "file_id"
 
 [[action]]
 name = "Supersede"
@@ -93,19 +91,10 @@ name = "FileVersionSupersededEvent"
 kind = "output"
 hint = "Emitted when a file version is superseded."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "SupersededIsFinal"
-when = ["Superseded"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "VersionNumberNonNegative"
-when = ["Current", "Superseded"]
-assert = "version_number >= 0"
+assert = "status in ['Current', 'Superseded'] => version_number >= 0"
 
 [[invariant]]
 name = "SizeBytesNonNegative"
-when = ["Current", "Superseded"]
-assert = "size_bytes >= 0"
+assert = "status in ['Current', 'Superseded'] => size_bytes >= 0"

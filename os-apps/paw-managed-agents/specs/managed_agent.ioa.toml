@@ -8,6 +8,7 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active"]
+terminal = ["Archived"]
 
 [[state]]
 name = "name"
@@ -48,7 +49,7 @@ initial = "standard"
 [[state]]
 name = "version"
 type = "counter"
-initial = "1"
+initial = 1
 
 [[state]]
 name = "inner_agent_id"
@@ -78,10 +79,6 @@ kind = "input"
 from = ["Active"]
 params = ["Name", "Description", "System", "ModelId", "Provider", "ProviderOptionsJson", "ModelSpeed", "Metadata"]
 hint = "Update the managed-agent configuration and increment its version."
-effect = [
-  { type = "increment", field = "version" },
-  { type = "trigger", name = "update_managed_agent" },
-]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -110,29 +107,15 @@ params = ["ArchivedAt"]
 hint = "Archive this managed agent."
 
 [[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"
-
-[[invariant]]
 name = "VersionIsPositive"
-when = ["Active", "Archived"]
-assert = "version >= 1"
+assert = "status in ['Active', 'Archived'] => version >= 1"
 
 [[field_invariant]]
 name = "ModelSpeedMustBeKnown"
-when = { not = { field = "ModelSpeed", absent = true } }
-require = { any_of = [
-  { field = "ModelSpeed", equals = "standard" },
-  { field = "ModelSpeed", equals = "fast" },
-] }
 message = "ManagedAgent.ModelSpeed must be standard or fast"
+assert = "ModelSpeed != null => ModelSpeed in ['standard', 'fast']"
 
 [[field_invariant]]
 name = "ArchivedRequiresArchivedAt"
-when = { field = "Status", equals = "Archived" }
-require = { any_of = [
-  { not = { field = "archived_at", empty = true } },
-  { not = { field = "ArchivedAt", empty = true } },
-] }
 message = "Archived managed agents must set ArchivedAt"
+assert = "Status == 'Archived' => !empty(archived_at) || !empty(ArchivedAt)"

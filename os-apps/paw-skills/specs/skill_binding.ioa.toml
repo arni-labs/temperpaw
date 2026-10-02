@@ -6,6 +6,7 @@ states = ["Created", "Active", "Archived"]
 initial = "Created"
 
 allow_indefinite_states = ["Created", "Active"]
+terminal = ["Archived"]
 
 [[state]]
 name = "package_id"
@@ -76,8 +77,3 @@ kind = "input"
 from = ["Active"]
 to = "Archived"
 hint = "Archive this package binding."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

@@ -6,6 +6,7 @@ states = ["Draft", "Active", "Refreshing", "Retired", "RetrySelectedValidating",
 initial = "Draft"
 strict_action_params = true
 allow_indefinite_states = ["Draft", "Active", "Refreshing", "RetrySelectedValidating", "RetrySelectedReady", "RetrySelectedExecuting", "RetrySelectedUnknown", "RetrySelectedReconciling", "RetrySelectedObserved", "RetrySelectedVerifying", "RetrySelectedBlocked", "RetrySelectedFailed"]
+terminal = ["Retired"]
 
 [[state]]
 name = "application_id"
@@ -225,72 +226,72 @@ initial = ""
 [[state]]
 name = "model_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "operation_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "execution_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "reconciliation_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "verification_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "refresh_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "collected_observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "collected_expected_resource_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observation_available"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "provider_known"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "operation_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "retry_selected_verified"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "coverage"
@@ -338,7 +339,7 @@ name = "ReviseModel"
 kind = "input"
 from = ["Active"]
 params = [{ name = "expected_model_sequence", type = "counter" }, { name = "name", type = "string" }, { name = "source_repository", type = "string" }, { name = "dependency_ids", type = "string" }, { name = "config_ref", type = "string" }, { name = "config_sha256", type = "string" }, { name = "allowed_operations", type = "string" }, { name = "model_provenance_ref", type = "string" }]
-effect = [{ type = "increment", var = "model_sequence" }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "retry_selected_verified", value = false }]
+effect = ["model_sequence += 1", "operation_verified = false", "retry_selected_verified = false"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -363,15 +364,15 @@ kind = "input"
 from = ["Active"]
 params = []
 to = "Active"
-effect = [{ type = "decrement", var = "operation_sequence" }]
-guard = [{ type = "max_count", var = "operation_sequence", max = 1 }]
+effect = ["operation_sequence -= 1"]
+guard = "operation_sequence < 1"
 
 [[action]]
 name = "Observe"
 kind = "input"
 from = ["Active", "Refreshing", "RetrySelectedValidating", "RetrySelectedReady", "RetrySelectedExecuting", "RetrySelectedUnknown", "RetrySelectedReconciling", "RetrySelectedObserved", "RetrySelectedVerifying", "RetrySelectedBlocked", "RetrySelectedFailed"]
 params = [{ name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "outcome", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "increment", var = "observed_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "set_bool", var = "observation_available", value = true }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms", "observation_available = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -400,7 +401,7 @@ name = "ObserveUnavailable"
 kind = "input"
 from = ["Active", "Refreshing", "RetrySelectedValidating", "RetrySelectedReady", "RetrySelectedExecuting", "RetrySelectedUnknown", "RetrySelectedReconciling", "RetrySelectedObserved", "RetrySelectedVerifying", "RetrySelectedBlocked", "RetrySelectedFailed"]
 params = [{ name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "outcome", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }]
-effect = [{ type = "increment", var = "observed_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }, { type = "set_bool", var = "observation_available", value = false }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms", "observation_available = false"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -430,7 +431,7 @@ kind = "input"
 from = ["Active"]
 params = []
 to = "Refreshing"
-effect = [{ type = "increment", var = "refresh_sequence" }, { type = "trigger", name = "dsf_media_collect" }]
+effect = ["refresh_sequence += 1"]
 
 [[action.triggers]]
 name = "dsf_media_collect"
@@ -465,7 +466,7 @@ kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }, { name = "collected_observed_configuration", type = "string" }, { name = "collected_observed_revision", type = "string" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -500,10 +501,11 @@ target_entity = "DsfObservation"
 target_action = "RecordMediaPipelineMeasured"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfMediaPipeline'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -519,16 +521,13 @@ source = "config_ref"
 observed_configuration = "collected_observed_configuration"
 observed_revision = "collected_observed_revision"
 
-[action.triggers.params]
-subject_type = "DsfMediaPipeline"
-
 [[action]]
 name = "CollectionAbsent"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -563,10 +562,11 @@ target_entity = "DsfObservation"
 target_action = "RecordMediaPipelineAbsent"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfMediaPipeline'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -580,16 +580,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfMediaPipeline"
-
 [[action]]
 name = "CollectionInaccessible"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -624,10 +621,11 @@ target_entity = "DsfObservation"
 target_action = "RecordMediaPipelineInaccessible"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfMediaPipeline'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -641,16 +639,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfMediaPipeline"
-
 [[action]]
 name = "CollectionStale"
 kind = "input"
 from = ["Refreshing"]
 params = [{ name = "expected_refresh_sequence", type = "counter" }, { name = "error_message", type = "string" }, { name = "collected_observation_id", type = "string" }, { name = "collected_source_event_id", type = "string" }, { name = "collected_query", type = "string" }, { name = "collected_window_start", type = "string" }, { name = "collected_window_end", type = "string" }, { name = "collected_sample_kind", type = "string" }, { name = "collected_outcome", type = "string" }, { name = "collected_summary", type = "string" }, { name = "collected_evidence_ref", type = "string" }, { name = "collected_observed_at_ms", type = "counter" }, { name = "collected_expected_resource_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_counter_from_param", var = "collected_observed_at_ms", param = "collected_observed_at_ms" }, { type = "set_counter_from_param", var = "collected_expected_resource_sequence", param = "collected_expected_resource_sequence" }]
+effect = ["collected_observed_at_ms = params.collected_observed_at_ms", "collected_expected_resource_sequence = params.collected_expected_resource_sequence"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -685,10 +680,11 @@ target_entity = "DsfObservation"
 target_action = "RecordMediaPipelineStale"
 
 [action.triggers.resolve_target]
-type = "create_if_missing"
 id_field = "collected_observation_id"
+kind = "create_if_missing"
 
-[action.triggers.params_from]
+[action.triggers.args]
+subject_type = "'DsfMediaPipeline'"
 source_event_id = "collected_source_event_id"
 query = "collected_query"
 window_start = "collected_window_start"
@@ -702,16 +698,13 @@ expected_resource_sequence = "collected_expected_resource_sequence"
 subject_id = "Id"
 source = "config_ref"
 
-[action.triggers.params]
-subject_type = "DsfMediaPipeline"
-
 [[action]]
 name = "RetrySelected"
 kind = "input"
 from = ["Active"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }, { name = "effort_id", type = "string" }, { name = "request_revision", type = "string" }, { name = "request_configuration", type = "string" }, { name = "proof_ref", type = "string" }, { name = "selected_generation_ids", type = "string" }, { name = "cost_authority_ref", type = "string" }]
 to = "RetrySelectedValidating"
-effect = [{ type = "increment", var = "operation_sequence" }, { type = "set_bool", var = "provider_known", value = false }, { type = "set_bool", var = "operation_verified", value = false }, { type = "set_bool", var = "retry_selected_verified", value = false }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "execution_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "trigger", name = "dsf_media_retry_selected_validate" }]
+effect = ["operation_sequence += 1", "provider_known = false", "operation_verified = false", "retry_selected_verified = false", "execution_attempts -= 1", "execution_attempts -= 1", "execution_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -784,7 +777,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedValidationBlocked"
@@ -834,7 +827,6 @@ kind = "input"
 from = ["RetrySelectedBlocked"]
 params = []
 to = "RetrySelectedValidating"
-effect = [{ type = "trigger", name = "dsf_media_retry_selected_validate" }]
 
 [[action.triggers]]
 name = "dsf_media_retry_selected_validate"
@@ -850,8 +842,8 @@ kind = "input"
 from = ["RetrySelectedReady"]
 params = []
 to = "RetrySelectedExecuting"
-effect = [{ type = "increment", var = "execution_attempts" }, { type = "trigger", name = "dsf_media_retry_selected_execute" }]
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+effect = ["execution_attempts += 1"]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.triggers]]
 name = "dsf_media_retry_selected_execute"
@@ -867,7 +859,7 @@ kind = "input"
 from = ["RetrySelectedExecuting"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -895,7 +887,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedExecutionUncertain"
@@ -920,8 +912,8 @@ kind = "input"
 from = ["RetrySelectedUnknown"]
 params = []
 to = "RetrySelectedReconciling"
-effect = [{ type = "increment", var = "reconciliation_attempts" }, { type = "trigger", name = "dsf_media_retry_selected_observe" }]
-guard = [{ type = "max_count", var = "reconciliation_attempts", max = 20 }]
+effect = ["reconciliation_attempts += 1"]
+guard = "reconciliation_attempts < 20"
 
 [[action.triggers]]
 name = "dsf_media_retry_selected_observe"
@@ -937,7 +929,7 @@ kind = "input"
 from = ["RetrySelectedReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "provider_execution_id", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedObserved"
-effect = [{ type = "set_bool", var = "provider_known", value = true }]
+effect = ["provider_known = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -965,7 +957,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedProviderAbsent"
@@ -973,7 +965,7 @@ kind = "input"
 from = ["RetrySelectedReconciling"]
 params = [{ name = "operation_key", type = "string" }, { name = "absence_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedReady"
-guard = [{ type = "max_count", var = "execution_attempts", max = 3 }, { type = "is_false", var = "provider_known" }]
+guard = "execution_attempts < 3 && !provider_known"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -997,7 +989,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedExecute"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedObservationFailed"
@@ -1022,8 +1014,8 @@ kind = "input"
 from = ["RetrySelectedObserved"]
 params = []
 to = "RetrySelectedVerifying"
-effect = [{ type = "increment", var = "verification_attempts" }, { type = "trigger", name = "dsf_media_retry_selected_verify" }]
-guard = [{ type = "max_count", var = "verification_attempts", max = 40 }, { type = "is_true", var = "provider_known" }]
+effect = ["verification_attempts += 1"]
+guard = "verification_attempts < 40 && provider_known"
 
 [[action.triggers]]
 name = "dsf_media_retry_selected_verify"
@@ -1039,7 +1031,7 @@ kind = "input"
 from = ["RetrySelectedVerifying"]
 params = [{ name = "operation_key", type = "string" }, { name = "verified_resource_id", type = "string" }, { name = "verified_revision", type = "string" }, { name = "provider_evidence_ref", type = "string" }, { name = "flow_evidence_ref", type = "string" }, { name = "telemetry_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "Active"
-effect = [{ type = "set_bool", var = "operation_verified", value = true }, { type = "set_bool", var = "retry_selected_verified", value = true }]
+effect = ["operation_verified = true", "retry_selected_verified = true"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1117,7 +1109,7 @@ kind = "input"
 from = ["RetrySelectedObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "error_message", type = "string" }, { name = "failure_evidence_ref", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedFailed"
-guard = [{ type = "min_count", var = "verification_attempts", min = 40 }]
+guard = "verification_attempts >= 40"
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1189,7 +1181,7 @@ kind = "input"
 from = ["RetrySelectedUnknown"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedUnknown"
-effect = [{ type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }, { type = "decrement", var = "reconciliation_attempts" }]
+effect = ["reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1", "reconciliation_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1209,7 +1201,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedReconcile"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedResumeVerification"
@@ -1217,7 +1209,7 @@ kind = "input"
 from = ["RetrySelectedObserved"]
 params = [{ name = "operation_key", type = "string" }, { name = "expected_operation_sequence", type = "counter" }]
 to = "RetrySelectedObserved"
-effect = [{ type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }, { type = "decrement", var = "verification_attempts" }]
+effect = ["verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1", "verification_attempts -= 1"]
 
 [[action.constraints]]
 kind = "param_equals_field"
@@ -1237,7 +1229,7 @@ target_entity = "DsfMediaPipeline"
 target_action = "RetrySelectedVerify"
 
 [action.triggers.resolve_target]
-type = "same_id"
+kind = "same_id"
 
 [[action]]
 name = "RetrySelectedValidatingTimedOut"
@@ -1323,11 +1315,6 @@ state = "RetrySelectedVerifying"
 after_seconds = 300
 on_timeout = "RetrySelectedVerifyingTimedOut"
 max_occurrences = 40
-
-[[invariant]]
-name = "RetiredIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"
 
 [[invariant]]
 name = "BoundedWrites"

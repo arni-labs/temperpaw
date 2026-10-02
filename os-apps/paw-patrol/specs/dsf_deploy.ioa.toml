@@ -72,12 +72,12 @@ initial = ""
 [[state]]
 name = "check_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "degraded_streak"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "revert_sha"
@@ -100,7 +100,6 @@ kind = "input"
 from = ["Requested"]
 to = "Merging"
 params = ["effort_id", "repo", "pr_number", "computer_id", "health_url", "max_checks", "expected_head_sha"]
-effect = [{ type = "trigger", name = "dsf_deploy_merge" }]
 hint = "Merge the DSF PR on the named computer, then watch health_url."
 
 [[action.triggers]]
@@ -121,13 +120,13 @@ concurrent_entity_set = "DsfDeploys"
 state = "Merging"
 after_seconds = 600
 on_timeout = "Fail"
-params = { error_message = "DsfDeploy stayed Merging for 10m (merge callback lost)." }
+args = { error_message = "'DsfDeploy stayed Merging for 10m (merge callback lost).'" }
 
 [[state_timeout]]
 state = "Requested"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "DsfDeploy was not Requested within 24h." }
+args = { error_message = "'DsfDeploy was not Requested within 24h.'" }
 
 [[action]]
 name = "MergeSucceeded"
@@ -148,10 +147,7 @@ name = "Check"
 kind = "input"
 from = ["Watching"]
 to = "Watching"
-effect = [
-  { type = "increment", var = "check_count" },
-  { type = "trigger", name = "dsf_deploy_check" }
-]
+effect = ["check_count += 1"]
 hint = "One probe of health_url on the computer."
 
 [[action.triggers]]
@@ -174,7 +170,7 @@ kind = "input"
 from = ["Watching"]
 to = "Watching"
 params = ["observed_sha", "degraded_streak"]
-effect = [{ type = "set_counter_from_param", var = "degraded_streak", param = "degraded_streak" }]
+effect = ["degraded_streak = params.degraded_streak"]
 hint = "Still rolling out, or briefly degraded."
 
 [[action]]
@@ -191,7 +187,6 @@ kind = "input"
 from = ["Watching"]
 to = "Unhealthy"
 params = ["reason", "observed_sha"]
-effect = [{ type = "trigger", name = "dsf_deploy_rollback" }]
 hint = "Start git-revert rollback on the computer."
 
 [[action.triggers]]
@@ -212,7 +207,7 @@ concurrent_entity_set = "DsfDeploys"
 state = "Unhealthy"
 after_seconds = 600
 on_timeout = "Fail"
-params = { error_message = "DsfDeploy stayed Unhealthy for 10m (rollback callback lost)." }
+args = { error_message = "'DsfDeploy stayed Unhealthy for 10m (rollback callback lost).'" }
 
 [[action]]
 name = "RollbackPushed"

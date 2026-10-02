@@ -6,6 +6,7 @@ states = ["Requested", "Installing", "Installed", "Rejected", "Failed", "Archive
 initial = "Requested"
 
 allow_indefinite_states = ["Requested", "Installing", "Installed", "Rejected", "Failed"]
+terminal = ["Archived"]
 
 [[state]]
 name = "source_type"
@@ -114,7 +115,6 @@ from = ["Requested"]
 to = "Installing"
 params = ["approved_by"]
 hint = "Approve and start installing this skill package."
-effect = [{ type = "trigger", name = "install_skill" }]
 
 [[action.triggers]]
 name = "install_skill"
@@ -155,8 +155,3 @@ kind = "input"
 from = ["Installed", "Rejected", "Failed"]
 to = "Archived"
 hint = "Archive this installation record."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

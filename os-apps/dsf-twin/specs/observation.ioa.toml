@@ -6,6 +6,7 @@ states = ["Draft", "Measured", "Absent", "Inaccessible", "Stale"]
 initial = "Draft"
 strict_action_params = true
 allow_indefinite_states = ["Draft"]
+terminal = ["Measured", "Absent", "Inaccessible", "Stale"]
 
 [[state]]
 name = "subject_type"
@@ -65,7 +66,7 @@ initial = ""
 [[state]]
 name = "observed_at_ms"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "observed_configuration"
@@ -80,7 +81,7 @@ initial = ""
 [[state]]
 name = "expected_resource_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "RecordMeasured"
@@ -88,7 +89,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -124,7 +125,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -160,7 +161,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -196,7 +197,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -232,7 +233,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -263,16 +264,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfRailwayServiceInstance"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfRailwayServiceInstance"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -282,8 +281,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordRailwayServiceInstanceAbsent"
@@ -291,7 +290,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -322,24 +321,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfRailwayServiceInstance"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfRailwayServiceInstance"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordRailwayServiceInstanceInaccessible"
@@ -347,7 +344,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -378,24 +375,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfRailwayServiceInstance"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfRailwayServiceInstance"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordRailwayServiceInstanceStale"
@@ -403,7 +398,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -434,24 +429,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfRailwayServiceInstance"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfRailwayServiceInstance"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordVercelProjectMeasured"
@@ -459,7 +452,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -490,16 +483,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfVercelProject"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfVercelProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -509,8 +500,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordVercelProjectAbsent"
@@ -518,7 +509,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -549,24 +540,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfVercelProject"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfVercelProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordVercelProjectInaccessible"
@@ -574,7 +563,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -605,24 +594,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfVercelProject"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfVercelProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordVercelProjectStale"
@@ -630,7 +617,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -661,24 +648,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfVercelProject"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfVercelProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordSupabaseProjectMeasured"
@@ -686,7 +671,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -717,16 +702,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfSupabaseProject"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfSupabaseProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -736,8 +719,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordSupabaseProjectAbsent"
@@ -745,7 +728,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -776,24 +759,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfSupabaseProject"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfSupabaseProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordSupabaseProjectInaccessible"
@@ -801,7 +782,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -832,24 +813,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfSupabaseProject"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfSupabaseProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordSupabaseProjectStale"
@@ -857,7 +836,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -888,24 +867,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfSupabaseProject"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfSupabaseProject"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordCloudflareR2BucketMeasured"
@@ -913,7 +890,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -944,16 +921,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfCloudflareR2Bucket"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfCloudflareR2Bucket"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -963,8 +938,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordCloudflareR2BucketAbsent"
@@ -972,7 +947,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1003,24 +978,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfCloudflareR2Bucket"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfCloudflareR2Bucket"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordCloudflareR2BucketInaccessible"
@@ -1028,7 +1001,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1059,24 +1032,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfCloudflareR2Bucket"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfCloudflareR2Bucket"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordCloudflareR2BucketStale"
@@ -1084,7 +1055,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1115,24 +1086,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfCloudflareR2Bucket"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfCloudflareR2Bucket"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordDatadogMonitorMeasured"
@@ -1140,7 +1109,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1171,16 +1140,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfDatadogMonitor"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfDatadogMonitor"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -1190,8 +1157,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordDatadogMonitorAbsent"
@@ -1199,7 +1166,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1230,24 +1197,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfDatadogMonitor"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfDatadogMonitor"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordDatadogMonitorInaccessible"
@@ -1255,7 +1220,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1286,24 +1251,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfDatadogMonitor"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfDatadogMonitor"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordDatadogMonitorStale"
@@ -1311,7 +1274,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1342,24 +1305,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfDatadogMonitor"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfDatadogMonitor"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordMediaPipelineMeasured"
@@ -1367,7 +1328,7 @@ kind = "input"
 from = ["Draft"]
 to = "Measured"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1398,16 +1359,14 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfMediaPipeline"
 name = "project_resource_measured"
 kind = "entity"
 target_action = "Observe"
-target_entity = "DsfMediaPipeline"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "measured"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'measured'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
@@ -1417,8 +1376,8 @@ observed_revision = "observed_revision"
 outcome = "outcome"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordMediaPipelineAbsent"
@@ -1426,7 +1385,7 @@ kind = "input"
 from = ["Draft"]
 to = "Absent"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1457,24 +1416,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfMediaPipeline"
 name = "project_resource_absent"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfMediaPipeline"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "absent"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'absent'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordMediaPipelineInaccessible"
@@ -1482,7 +1439,7 @@ kind = "input"
 from = ["Draft"]
 to = "Inaccessible"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1513,24 +1470,22 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfMediaPipeline"
 name = "project_resource_inaccessible"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfMediaPipeline"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "inaccessible"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'inaccessible'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
+kind = "field"
+id_field = "subject_id"
 
 [[action]]
 name = "RecordMediaPipelineStale"
@@ -1538,7 +1493,7 @@ kind = "input"
 from = ["Draft"]
 to = "Stale"
 params = [{ name = "subject_type", type = "string" }, { name = "subject_id", type = "string" }, { name = "source", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_resource_sequence", type = "counter" }]
-effect = [{ type = "set_counter_from_param", var = "expected_resource_sequence", param = "expected_resource_sequence" }, { type = "set_counter_from_param", var = "observed_at_ms", param = "observed_at_ms" }]
+effect = ["expected_resource_sequence = params.expected_resource_sequence", "observed_at_ms = params.observed_at_ms"]
 
 [[action.constraints]]
 kind = "param_nonempty"
@@ -1569,26 +1524,19 @@ kind = "param_nonempty"
 param = "evidence_ref"
 
 [[action.triggers]]
+target_entity = "DsfMediaPipeline"
 name = "project_resource_stale"
 kind = "entity"
 target_action = "ObserveUnavailable"
-target_entity = "DsfMediaPipeline"
 principal = "dsf-factory-runtime"
 
-[action.triggers.params]
-coverage = "stale"
-
-[action.triggers.params_from]
+[action.triggers.args]
+coverage = "'stale'"
 observation_id = "Id"
 provenance_ref = "evidence_ref"
 observed_at_ms = "observed_at_ms"
 expected_sequence = "expected_resource_sequence"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "subject_id"
-
-[[invariant]]
-name = "RecordedObservationIsImmutable"
-when = ["Measured", "Absent", "Inaccessible", "Stale"]
-assert = "no_further_transitions"
+kind = "field"
+id_field = "subject_id"
