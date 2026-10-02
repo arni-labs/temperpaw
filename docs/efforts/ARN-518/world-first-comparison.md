@@ -13,7 +13,10 @@ This is a strong direct-answer baseline rather than a deliberately weak prompt.
 
 Frozen prompt SHA-256:
 `e05b5429932bc4a540679a99e746d127fafdf953fc1a38f04e9df1e965fd81ea`.
-Local execution artifacts: `/private/tmp/arn518-world-first/baseline/`.
+Frozen inputs: `/private/tmp/arn518-world-first/baseline/`. Baseline answers are
+written to the workspace-local `benchmark-artifacts/baseline/` directory because
+the baseline agent’s patch tool rejected writes outside its project boundary.
+No candidate output is supplied to that context.
 
 Questions, unchanged for both systems:
 
