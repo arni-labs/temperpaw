@@ -1268,6 +1268,28 @@ fn attach_world_probabilities(
             outstanding_audits += 1;
         }
     }
+    if core::endpoints::enabled(program) {
+        let mut omitted = vec![];
+        for original in program["endpoint_search"]["endpoints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if answer["outcomes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|outcome| outcome["endpoint_id"] == original["id"])
+            {
+                continue;
+            }
+            let receipt = program["unreconstructed_endpoints"].as_array().into_iter().flatten()
+                .find(|receipt|receipt["endpoint_id"]==original["id"])
+                .ok_or("Final answer omitted an original endpoint without a recorded reconstruction limit")?;
+            omitted.push(json!({"endpoint_id":original["id"],"reason":receipt["reason"],"original_endpoint":original}));
+        }
+        answer["unreconstructed_endpoints"] = json!(omitted);
+    }
     let probability_warnings: Vec<String> = answer["outcomes"].as_array().into_iter().flatten()
         .flat_map(|o| o["audit"]["probability_coherence"]["findings"].as_array().into_iter().flatten())
         .map(|f| format!("Independent estimates conflict: whole world {:.1}% exceeds a required event at {:.1}%; raw estimates are unchanged, not calibrated.", f["joint_probability"].as_f64().unwrap()*100.0, f["component_probability"].as_f64().unwrap()*100.0)).collect();
@@ -2104,6 +2126,20 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+        let mut omitted = old["endpoint_search"]["endpoints"][0].clone();
+        omitted["id"] = json!("unreached-original");
+        omitted["status"] = json!("unresolved");
+        old["endpoint_search"]["endpoints"]
+            .as_array_mut()
+            .unwrap()
+            .push(omitted);
+        generated["unreconstructed_endpoints"] = json!([{"endpoint_id":"unreached-original","reason":"No evaluated path reached this original commitment set."}]);
+        let route_node = old["endpoint_search"]["routes"][0]["world_node_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        old["results"][route_node]["check_route_grounding"] = json!("conflict");
+        core::endpoints::finish_routes(&snapshot, &mut old);
         let program = compose(&mut snapshot, &generated, &old).unwrap();
         assert_eq!(program["active_world_ids"].as_array().unwrap().len(), 2);
         for id in program["active_world_ids"].as_array().unwrap() {
@@ -2122,6 +2158,14 @@ mod tests {
         assert_eq!(
             answer["outcomes"][0]["original_endpoint"],
             old["endpoint_search"]["endpoints"][0]
+        );
+        assert_eq!(
+            answer["unreconstructed_endpoints"][0]["original_endpoint"],
+            old["endpoint_search"]["endpoints"][2]
+        );
+        assert_eq!(
+            answer["outcomes"][0]["audit"]["selected_routes"]["status"],
+            "blocked"
         );
         if let Ok(path) = std::env::var("FORESIGHT_COMPOSE_FIXTURE") {
             std::fs::write(
@@ -2905,6 +2949,68 @@ mod tests {
         assert_eq!(
             attach_world_probabilities(&mut answer, &program, &snapshot).unwrap_err(),
             "Outcome must reference a composed world"
+        );
+    }
+
+    #[test]
+    fn final_answer_preserves_omitted_originals_and_selected_route_failures() {
+        let (mut snapshot, generated, old) = world_fixture();
+        let mut program = compose(&mut snapshot, &generated, &old).unwrap();
+        program["world_search_contract"] = json!(1);
+        let original = json!({"id":"omitted","title":"Unreached world","original_statement":"A bold original outcome","original_narrative":"Its exact imagined everyday life","commitments":[{"id":"c","statement":"An unchanged commitment"}],"signals":["Signal"],"falsifiers":["Failure"],"status":"unresolved"});
+        program["endpoint_search"] = json!({"endpoints":[{"id":"kept"},original],"routes":[{"id":"route-a","endpoint_id":"kept","commitment_id":"c","status":"blocked","root_connections":[{"component_id":"a","evidence_ids":["e"],"mechanism":"An unsupported proposed bridge"}],"audit":{"status":"conflicts_found","checks":[]}}]});
+        program["unreconstructed_endpoints"] =
+            json!([{"endpoint_id":"omitted","reason":"No connected path was found"}]);
+        let world = snapshot["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| n["Id"] == "world-r1-one")
+            .unwrap();
+        world["endpoint_id"] = json!("kept");
+        world["selected_route_ids"] = json!(["route-a"]);
+        for task in core::search::world_tasks(world) {
+            program["results"][core::field(&task, "nodeId")][core::field(&task, "function")] =
+                json!(if task["function"] == "estimate_likelihood" {
+                    "0.23"
+                } else {
+                    "supported"
+                });
+        }
+        let mut answer = json!({"schema":"foresight-worlds-v3","outcomes":[{"world_id":"world-r1-one"}],"unreconstructed_endpoints":[{"reason":"writer invented reason"}]});
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        assert_eq!(
+            answer["unreconstructed_endpoints"][0]["original_endpoint"],
+            original
+        );
+        assert_eq!(
+            answer["unreconstructed_endpoints"][0]["reason"],
+            "No connected path was found"
+        );
+        assert_eq!(answer["outcomes"][0]["audit"]["status"], "conflicts_found");
+        assert_eq!(
+            answer["outcomes"][0]["audit"]["selected_routes"]["status"],
+            "blocked"
+        );
+        assert_eq!(answer["outcomes"][0]["probability"], 0.23);
+        program["endpoint_search"]["routes"][0]["status"] = json!("unresolved");
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        assert_eq!(answer["outcomes"][0]["audit"]["status"], "uncertain");
+        assert_eq!(
+            answer["outcomes"][0]["audit"]["selected_routes"]["status"],
+            "unresolved"
+        );
+        program["endpoint_search"]["routes"] = json!([]);
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        let missing = &answer["outcomes"][0]["audit"]["selected_routes"]["routes"][0];
+        assert_eq!(missing["route_id"], "route-a");
+        assert_eq!(missing["status"], "unresolved");
+        assert!(missing["commitment_id"].is_null());
+        program["unreconstructed_endpoints"] = json!([]);
+        assert!(
+            attach_world_probabilities(&mut answer, &program, &snapshot)
+                .unwrap_err()
+                .contains("without a recorded reconstruction limit")
         );
     }
 

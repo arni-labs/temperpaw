@@ -354,6 +354,11 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
     }
     let probability_coherence = super::coherence::audit(world, program);
     unknown |= probability_coherence["status"] == "inconsistent";
+    let selected_routes = super::endpoints::selected_route_audit(world, program);
+    if let Some(routes) = &selected_routes {
+        conflict |= routes["status"] == "blocked";
+        unknown |= routes["status"] != "checked";
+    }
     let status = if conflict {
         "conflicts_found"
     } else if completed == 0 {
@@ -363,7 +368,11 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
     } else {
         "no_conflict_found"
     };
-    json!({"status":status,"planned_checks":checks.len(),"completed_checks":completed,"checks":checks,"probability_coherence":probability_coherence})
+    let mut audit = json!({"status":status,"planned_checks":checks.len(),"completed_checks":completed,"checks":checks,"probability_coherence":probability_coherence});
+    if let Some(routes) = selected_routes {
+        audit["selected_routes"] = routes;
+    }
+    audit
 }
 
 /// Provider view removes repeated canonical task IDs, not audit judgments.
@@ -387,7 +396,7 @@ pub fn compact_world_audit(world: &Value, program: &Value) -> Value {
             json!([check["kind"], indices, check["result"]])
         })
         .collect();
-    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"probability_coherence":audit["probability_coherence"],"encoding":"Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
+    json!({"status":audit["status"],"planned_checks":audit["planned_checks"],"completed_checks":audit["completed_checks"],"checks":checks,"probability_coherence":audit["probability_coherence"],"selected_routes":audit["selected_routes"],"encoding":"Each check is [kind, zero-based indices into state.node.component_ids, exact result]. Numeric conditional results are model estimates, not empirical causal effects."})
 }
 
 /// Round-robin distances cover the frontier before spending remaining budget on near duplicates.

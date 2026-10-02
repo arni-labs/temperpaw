@@ -661,6 +661,38 @@ pub fn alternative_needed(program: &Value) -> bool {
     false
 }
 
+/// Preserve the current recorded path limitations independently of fresh
+/// whole-world odds. Structural checks cannot clear a failed grounding check.
+pub fn selected_route_audit(world: &Value, program: &Value) -> Option<Value> {
+    if !enabled(program) || !world["endpoint_id"].is_string() || world["route_only"] == true {
+        return None;
+    }
+    let routes: Vec<_> = world["selected_route_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|id| {
+            let route = program["endpoint_search"]["routes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|route| route["id"] == *id && route["endpoint_id"] == world["endpoint_id"]);
+            json!({"route_id":id,"commitment_id":route.map(|r|r["commitment_id"].clone()),
+            "status":route.and_then(|r|r["status"].as_str()).unwrap_or("unresolved"),
+            "root_connections":route.map(|r|r["root_connections"].clone()).unwrap_or(json!([])),
+            "audit":route.map(|r|r["audit"].clone())})
+        })
+        .collect();
+    let status = if routes.iter().any(|r| r["status"] == "blocked") {
+        "blocked"
+    } else if !routes.is_empty() && routes.iter().all(|r| r["status"] == "checked") {
+        "checked"
+    } else {
+        "unresolved"
+    };
+    Some(json!({"status":status,"routes":routes}))
+}
+
 /// Composition binds every original endpoint; a weakened descendant is labelled
 /// explicitly and cannot replace the original commitment by changing prose.
 pub fn validate_composition(program: &Value, generated: &Value) -> Result<(), String> {
@@ -878,11 +910,19 @@ mod tests {
         program["endpoint_search"]["backward_batch_contract"] = json!(1);
         let mut after = before.clone();
         let oversized = json!({"routes":vec![route.clone();4]});
-        assert!(add_routes(&before, &mut after, &program, &oversized).unwrap_err().contains("exceeds 3 routes"));
+        assert!(
+            add_routes(&before, &mut after, &program, &oversized)
+                .unwrap_err()
+                .contains("exceeds 3 routes")
+        );
         assert_eq!(after, before);
         let mut outside = route;
         outside["commitment_id"] = json!("not-selected");
-        assert!(add_routes(&before, &mut after, &program, &json!({"routes":[outside]})).unwrap_err().contains("outside"));
+        assert!(
+            add_routes(&before, &mut after, &program, &json!({"routes":[outside]}))
+                .unwrap_err()
+                .contains("outside")
+        );
         assert_eq!(after, before);
     }
     #[test]
