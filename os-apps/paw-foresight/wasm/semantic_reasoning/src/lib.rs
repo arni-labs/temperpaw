@@ -105,7 +105,7 @@ Return hypotheses:[], branches:[], continue_exploring:false, exploration_note:"w
 If exact supplied failed relations expose a weak candidate, you may explicitly revise it: endpoint_revisions:[{endpoint_id,reason:"what failed and the consequential revision <=600 chars",replacement:complete endpoint in supplied shape retaining its id}]. Preserve ambition and devise a different arrangement rather than adding adjectives, likelihood claims or convenient adoption thresholds. Each revision is retained beside its original; nothing is silently overwritten. Do not invent a revision to fix missing evidence. Omit endpoint_revisions or use [] when unchanged. Return contrast bindings against revised commitments when revised. Keep each frontier_challenge receipt within 2400 bytes; use short comparison statements and shared queries rather than repeating source text. The whole response is capped at 64 KiB. Return all required baseline/scope reconciliation fields whenever adding findings, per the shared research contract."#;
 const ENRICH_PROMPT: &str = r#"Develop the selected provisional worlds into richer and more consequential future arrangements before anything is frozen. These are starting ideas, not statements you must preserve. Pursue their interacting consequences far enough to change how the activities in the user's question work and what becomes possible or unnecessary. Change the organizing relationships when that produces a stronger answer; Explicitly challenge whether the starting idea is merely a familiar workflow made faster, cheaper, more convenient or more tightly controlled. If it is, pursue further interacting implications or replace the arrangement; elaborating one scene is insufficient. Do not merely polish it or add adjectives. Preserve ambition when addressing recorded objections rather than retreating to an easier present-day arrangement. Keep the worlds meaningfully different from one another without prescribed axes or topics.
 Retain each selected candidate ID for provenance, but you may replace its original_statement, commitments and narrative. Express every new defining implication as an observable commitment; show how the changes interact in a recognizable daily experience. Do not invent current evidence, probability or validation. Your developed worlds will undergo present-analogue research, coverage, dependence and pairwise distinction checks again. Existing approvals do not automatically transfer. Return only the selected endpoints in the supplied endpoint shape. Omit contrast: the researcher must establish it against the developed commitments. This development turn runs once; originality and plausibility remain fallible judgments, not guarantees."#;
-const BACKWARD_PROMPT: &str = r#"Work BACKWARD from the immutable imagined endpoints in endpoint_search. For the selected load-bearing commitments in backward_batch (or all commitments for a legacy run without that field), ask what would need to hold and what different routes could connect the researched present to it. Use existing candidate refs for exactly shared pieces; do not rewrite or duplicate the same proposition to get another score. Develop interacting prerequisites and alternatives, not only a list of recommendations. Low likelihood is not permission to replace an unusual endpoint with today's consensus. A failed or incomplete route asks for another mechanism before any amendment. Preserve uncertainty and conflicting evidence. A root_connection states a proposed bridge from cited present evidence to a conjectural prerequisite; source existence is never proof. If no bridge can be specified, keep an explicit unresolved_question instead of inventing evidence.
+const BACKWARD_PROMPT: &str = r#"Work BACKWARD from the immutable imagined endpoints in endpoint_search. For the selected load-bearing commitments in backward_batch (or all commitments for a legacy run without that field), ask what would need to hold and what different routes could connect the researched present to it. Use existing candidate refs for exactly shared pieces; do not rewrite or duplicate the same proposition to get another score. Develop interacting prerequisites and alternatives, not only a list of recommendations. Proposed routes for an original must form a compatible joint causal graph with the unchanged routes for its other commitments. State explicit sufficient milestone timing across shared components; by dates are deadlines, so a later prerequisite deadline does not establish it occurs early enough for an earlier dependent milestone. Refine the proposed dates or mechanism explicitly; never silently rewrite evaluated stored routes. Low likelihood is not permission to replace an unusual endpoint with today's consensus. A failed or incomplete route asks for another mechanism before any amendment. Preserve uncertainty and conflicting evidence. A root_connection states a proposed bridge from cited present evidence to a conjectural prerequisite; source existence is never proof. If no bridge can be specified, keep an explicit unresolved_question instead of inventing evidence.
 Return JSON with hypotheses, branches, research_evidence, continue_exploring, exploration_note, routes and amendments. Each new hypothesis is {id:"unique short ASCII ID, not ref_",title:"distinct future claim",statement:"self-contained observable future event with scope and horizon",branch_id:"optional existing or new branch ID; omit when unconditional",mechanism:"causal path and assumptions",requires:["visible evidence/candidate ref or new hypothesis/evidence ID"],scene:"imagined everyday consequence",signal:"observable early sign",falsifier:"what undermines the mechanism",evidence_note:"observed versus conjectural",research_question:"unanswered premise"}. Source findings follow the supplied research contract; omit new findings when none were retrieved. Branches follow the signed condition contract. Empty arrays are valid for unchanged pieces. Each route: {id:"unique ASCII ID",endpoint_id:"original endpoint id",commitment_id:"original commitment id",target_component_id:"existing ref or new hypothesis ID",component_ids:["2–12 candidate refs/new IDs including target"],chain:[{id:"unique link id",from_ids:["prerequisite candidate IDs"],to_id:"consequence candidate ID",by:"calendar date inside horizon",mechanism:"<=800 chars"}],root_connections:[{component_id:"each root candidate exactly once",evidence_ids:["supplied or same-response source IDs; empty means unresolved frontier"],mechanism:"proposed bridge from present <=800 chars",unresolved_question:"required <=400 chars if no evidence connection"}],grounding_evidence_ids:["source refs kept separate from conjectural prerequisites"],alternative_to:null or "previous route ID for this same original commitment",amendment_id:null or "explicit amendment ID"}. Only catalog nodes with kind scenario or revision, or newly declared hypotheses, may appear in component_ids, target_component_id or chain. Never use evidence/research_evidence refs as causal-chain nodes. Cite observations in root_connections.evidence_ids or grounding_evidence_ids and define the conjectural bridge separately as a hypothesis; do not turn a sourced observation into a future claim by relabeling it. Every component must lead to this route's target through the declared DAG. Every target's statement must exactly equal its original commitment (or explicit replacement). Routes may share components across worlds. Different mechanisms must get new route IDs; prior routes are immutable. When backward_batch is supplied, address only its selected commitments, at most one route each, using its exact alternative_to when supplied. Its limits are hard ceilings, not targets. For complete_original, supply a compact connected initial route for each selected commitment of that one original world, reusing shared prerequisites and existing pieces; the selected set has at most8 commitments. For alternatives, at most3 selected commitments are requested. Return at most one route and amendment per selected commitment,24 new hypotheses,8 new evidence records,24 branches and64 KiB total JSON. Keep route prose concise and spend detail on the causal mechanism. Do not shorten a necessary causal chain to fit: retain honest unresolved frontiers when a bridge is not yet supported. Initial coverage comes before further detailed alternatives for already covered commitments. Other endpoint commitments remain context for shared reuse, not work requested in this turn. Missing commitments are scheduled in subsequent turns even if continue_exploring is false. Keep each response small enough to complete; do not generate every world’s routes at once. Legacy runs without backward_batch allow at most48 routes. Focus Jev work on connected paths and bottlenecks. Reuse checked components when their meaning, evidence and conditions are unchanged.
 An optional amendment is {id,endpoint_id,commitment_id,original_text:"exact frozen commitment",replacement_text:"explicit proposed change <=1000 chars",reason:"why <=800 chars",evidence_ids:["source refs"]}. Jev will separately judge semantic drift. Weakening a commitment must not be disguised as repairing its route. Always first explore an alternative for a failed route. New research findings require complete reconciled baseline and scope_review, preserving prior claims or giving explicit cited baseline_dispositions. Return continue_exploring false only when further backward search lacks a useful next mechanism; leave unresolved endpoints visible. Never score your own worlds or fabricate Jev judgments."#;
 
@@ -120,7 +120,7 @@ Return JSON ONLY: {"shared_question":"<=800 characters; the same central questio
 
 Choose 2–6 distinct worlds, a compact answer rather than a quota to fill. Use only exact IDs from composition_candidates.component_ids for defining components. Other catalog nodes remain context or challenges; their presence in the catalog does not make them eligible components. composition_candidates.excluded explains observed, mixed or currently unevaluated claims; never bypass these restrictions by renaming a claim. Challenges may use exact existing hypothesis refs. A component is a defining future change, not merely a source citation. Do not pick unrelated claims to make a story look rich. Preserve any selected components’ inherited hypothetical branch conditions. Do not combine contradictory conditions or add a premise as a required component when its branch requires it to fail by the same deadline. The engine attaches these signed conditions and evaluates their joint occurrence, not probability conditional on them being true. Do not invent new core events at this stage: they would bypass exploration. Build layered worlds, not lists of jobs or themed suggestions. Give each world 3–12 distinct facets: dimensions relevant to the question that emerge from its actual changes, without a prescribed topic list. Each facet links its defining components. Give 0–24 genuinely claimed causal links between components, each with a mechanism and date. Parallel developments need not have links between them. Claimed links must not create cycles. Separate contributory routes may share a consequence to_id and keep distinct link IDs. Combine from_ids in one link only when that mechanism actually requires them jointly; separate routes are neither exhaustive nor mutually exclusive. Ambiguous upstream routes remain unassumed unless directly required by the link under evaluation. Every component also belongs to a facet. Link dates must respect causal ordering. State assumptions separately. Use world_set_audit as the recorded set-level critique. If complementary_slices, revise overall trajectories rather than rename topical slices; retain uncertainty when the evidence cannot support distinct alternatives. If exploration_admission.admitted is false, exploration ended for its recorded resource limit, not established convergence; preserve that limitation. Use combination_search and world_audits as recorded model judgments: they are not proof. When prior worlds are challenged, construct revised worlds that address or openly retain the specific conflicts and unknowns. Never claim a check ran unless its actual result is supplied. If exploration is weak or stopped early, say so in the baseline unknowns and the narratives. Each world will receive its OWN fresh Jev evaluation of the whole joint event, including dependencies and counterevidence. Never supply probabilities or combine the component estimates yourself. These worlds may overlap; they are not a complete partition of every possible future."#;
 
-const ENDPOINT_COMPOSITION_RESPONSE: &str = r#"Reconstruct the imagined originals by selecting exactly ONE stored route per original commitment. Do not conjoin competing alternatives. The engine derives the frozen original statement, full component union, exact causal links and commitment bindings from these routes. Do not return statement, component_ids at world level, chain or commitment_bindings. No new core events or causal links may be authored during composition. Keep amendments explicit in prose; only recorded meaning-preserving amendments can bind a commitment. Unresolved routes remain unresolved, with their limitations explained honestly.
+const ENDPOINT_COMPOSITION_RESPONSE: &str = r#"Reconstruct originals using composition_route_bundles as structurally valid guidance, not a likelihood ranking. You may select another complete set of stored routes if their combined causal graph and milestone timing are compatible. Do not omit a commitment or combine conflicting alternatives. Bundle compatibility is only a structural check, not proof of grounding, plausibility or probability. Originals without a complete compatible selection remain unreconstructed. Each supplied bundle selects exactly ONE stored route per original commitment. Do not conjoin competing alternatives. The engine derives the frozen original statement, full component union, exact causal links and commitment bindings from these routes. Do not return statement, component_ids at world level, chain or commitment_bindings. No new core events or causal links may be authored during composition. Keep amendments explicit in prose; only recorded meaning-preserving amendments can bind a commitment. Unresolved routes remain unresolved, with their limitations explained honestly.
 Return JSON ONLY: {"shared_question":"<=800 characters","worlds":[{"id":"unique short ASCII ID, not ref_","endpoint_id":"existing original endpoint ID","selected_route_ids":["one existing route ID per original commitment"],"trajectory_answer":"<=1000 characters; overall trajectory answering the shared question","title":"<=100 characters; a clear claim people can picture","mechanism":"<=1200 characters; why these changes fit together and what could break them","counter_ids":["0–12 existing hypothesis refs challenging this world"],"facets":[{"id":"unique local ID <=80 characters","title":"<=100 characters","description":"<=800 characters; interacting changes","component_ids":["existing component refs from the selected route union"]}],"assumptions":["0–12 explicit assumptions <=600 characters each"],"scene":"<=600 characters; imagined everyday moment","narrative":"<=1200 characters; plausible path, who gains or struggles and a serious challenge","what_you_can_do":["0–4 practical steps <=240 characters each"],"signals":["1–8 signs <=240 characters each"],"falsifiers":["1–8 falsifiers <=240 characters each"]}]}.
 Choose 2–6 distinct worlds. Every selected route component must belong to a facet; give 3–12 facets that emerge from the actual world. Only composition_candidates.component_ids may define worlds. Preserve branch conditions and counterevidence. The engine retains the sourced baseline; do not recopy it. All existing comparison_frame and trajectory_binding requirements below still apply. Whole-world Jev estimates are computed afterwards; never supply probabilities. Worlds may overlap, and do not form an exhaustive partition. Preserve recorded resource limits and specific unresolved conflicts in the narrative. An original without a reconstructable path remains visible with its native omission receipt; never invent missing routes."#;
 
@@ -325,6 +325,23 @@ fn world_writing_input(snapshot: &Value, program: &Value) -> Result<Value, Strin
     }
     for world in &mut worlds {
         world["component_temporal"] = core::component_temporal(snapshot, program, world)?;
+        if let Some(original) = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|node| node["Id"] == world["Id"])
+        {
+            for key in [
+                "endpoint_id",
+                "selected_route_ids",
+                "grounding_evidence_ids",
+                "root_connections",
+            ] {
+                if let Some(value) = original.get(key) {
+                    world[key] = value.clone();
+                }
+            }
+        }
     }
     let all_evaluations = compact_evaluations(program);
     let mut evaluations = json!({});
@@ -332,14 +349,116 @@ fn world_writing_input(snapshot: &Value, program: &Value) -> Result<Value, Strin
         let id = core::field(world, "Id");
         evaluations[id] = all_evaluations[id].clone();
     }
+    let component_ids: std::collections::BTreeSet<_> = worlds
+        .iter()
+        .flat_map(|world| {
+            ["component_ids", "counter_ids"]
+                .into_iter()
+                .flat_map(move |key| world[key].as_array().into_iter().flatten())
+        })
+        .filter_map(Value::as_str)
+        .collect();
+    let superseded = core::evidence::superseded_ids(snapshot);
+    let sources: Vec<_> = snapshot["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| {
+            matches!(core::field(node, "kind"), "evidence" | "research_evidence")
+                && !superseded.contains(core::field(node, "Id"))
+        })
+        .collect();
+    let components: Vec<_> = node_catalog(snapshot)
+        .into_iter()
+        .filter(|node| component_ids.contains(core::field(node, "Id")))
+        .collect();
+    let mut audits = program["world_audits"].clone();
+    if let Some(items) = audits.as_object_mut() {
+        for audit in items.values_mut() {
+            // Reuse the provider projection: remove execution addresses only,
+            // retaining probabilities, exact signed conditions and causal history.
+            let projected = core::search::request_route_audits(json!({"routes":[{"audit":audit}]}));
+            *audit = projected["routes"][0]["audit"].clone();
+            audit["exact_branch_contexts"] = projected["exact_branch_contexts"].clone();
+            audit["selected_routes"] =
+                core::search::request_route_audits(audit["selected_routes"].clone());
+        }
+    }
     references::References::new(snapshot).map(|refs| {
         refs.project(&json!({
             "world":snapshot["world"], "baseline":program["baseline"], "scope_review":program["scope_review"], "scope_repair":program["scope_repair"], "worlds":worlds,
-            "world_audits":program["world_audits"], "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":core::search::world_set_reporting(&program["world_set_audit"]), "world_refinement":compact_world_refinement(program),
+            "components":components, "source_evidence":sources,
+            "endpoint_lineage":{"endpoints":program["endpoint_search"]["endpoints"],"amendments":program["endpoint_search"]["amendments"],"unreconstructed_endpoints":program["unreconstructed_endpoints"],"status":program["endpoint_search"]["status"]},
+            "audit_encoding":"branch_state.exact_context_ref substitutes an exact context from the enclosing audit or selected_routes.exact_branch_contexts. Execution addresses are omitted; all actual results, probabilities, signed conditions, dates and causal histories remain. Null results are uncompleted checks, never success. Source reports and projections are not proof of observed outcomes.",
+            "world_audits":audits, "world_set_audit":program["world_set_audit"], "world_set_audits":program["world_set_audits"], "world_set_reporting":core::search::world_set_reporting(&program["world_set_audit"]), "world_refinement":compact_world_refinement(program),
             "evaluations":evaluations, "stop_reason":program["stop_reason"], "exploration_admission":program["exploration_admission"],
             "evaluation_error":if program["stop_reason"] == "provider_error" {program["last_error"].clone()} else {Value::Null}, "exploration_note":program["exploration_note"]
         }))
     })
+}
+
+// Share exact repeated semantic values, never judgments merely sharing a node ID.
+// This is a reversible input encoding; persisted receipts are untouched.
+fn share_writer_values(mut input: Value) -> Value {
+    use std::collections::BTreeMap;
+    fn count(value: &Value, counts: &mut BTreeMap<String, usize>) {
+        if matches!(value, Value::Object(_) | Value::Array(_)) {
+            let key = value.to_string();
+            if key.len() >= 256 {
+                *counts.entry(key).or_default() += 1;
+            }
+        }
+        match value {
+            Value::Object(values) => values.values().for_each(|v| count(v, counts)),
+            Value::Array(values) => values.iter().for_each(|v| count(v, counts)),
+            _ => {}
+        }
+    }
+    fn encode(
+        value: &mut Value,
+        repeated: &BTreeMap<String, String>,
+        shared: &mut serde_json::Map<String, Value>,
+    ) {
+        let key = value.to_string();
+        if let Some(id) = repeated.get(&key) {
+            if !shared.contains_key(id) {
+                let mut definition = value.clone();
+                children(&mut definition, repeated, shared);
+                shared.insert(id.clone(), definition);
+            }
+            *value = json!({"writer_value_ref":id});
+        } else {
+            children(value, repeated, shared);
+        }
+    }
+    fn children(
+        value: &mut Value,
+        repeated: &BTreeMap<String, String>,
+        shared: &mut serde_json::Map<String, Value>,
+    ) {
+        match value {
+            Value::Object(values) => values
+                .values_mut()
+                .for_each(|v| encode(v, repeated, shared)),
+            Value::Array(values) => values.iter_mut().for_each(|v| encode(v, repeated, shared)),
+            _ => {}
+        }
+    }
+    let mut counts = BTreeMap::new();
+    count(&input, &mut counts);
+    let repeated = counts
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .enumerate()
+        .map(|(i, (value, _))| (value, format!("w{i}")))
+        .collect();
+    let mut shared = serde_json::Map::new();
+    children(&mut input, &repeated, &mut shared);
+    if !shared.is_empty() {
+        input["writer_shared_values"] = Value::Object(shared);
+        input["writer_reference_encoding"] = json!("An object containing only writer_value_ref is an exact substitution from writer_shared_values; definitions may refer to other definitions. Expand these references before interpreting facts, dates, conditions or results. Identical values share storage only; different conditions and judgments remain separate. These are local references, not external retrieval requests.");
+    }
+    input
 }
 
 fn research_enabled(phase: &str, snapshot: &Value) -> bool {
@@ -374,6 +493,21 @@ fn imagine_input(snapshot: &Value, program: &Value) -> Value {
         },
         "proposal_quality_history": history
     })
+}
+
+fn checked_composition_bundles(snapshot: &Value, program: &Value) -> Result<Value, String> {
+    let bundles = core::endpoints::composition_bundles(snapshot, program);
+    if bundles
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["status"] == "compatible")
+        .count()
+        < 2
+    {
+        return Err(format!("Fewer than two originals have examined complete compatible route bundles; saved proposals and evidence remain available. Explicit backward alternatives or timing refinements are needed: {bundles}"));
+    }
+    Ok(bundles)
 }
 
 fn setup(ctx: &Context) -> Result<(), String> {
@@ -419,16 +553,20 @@ fn setup(ctx: &Context) -> Result<(), String> {
     } else {
         reasoning_input(&snapshot, &program)?
     };
-    if core::endpoints::enabled(&program) && phase != "imagine" {
+    if core::endpoints::enabled(&program) && !matches!(phase, "imagine" | "synthesize") {
         input["world_search_contract"] = json!(1);
         input["endpoint_search"] =
             references::References::new(&snapshot)?.project(&program["endpoint_search"]);
+    }
+    if phase == "compose" && core::endpoints::enabled(&program) {
+        let bundles = checked_composition_bundles(&snapshot, &program)?;
+        input["composition_route_bundles"] = bundles;
     }
     if phase == "backward" && core::backward::enabled(&program) {
         input["backward_batch"] =
             references::References::new(&snapshot)?.project(&core::backward::batch(&program));
     }
-    if core::proposals::pool::enabled(&program) {
+    if core::proposals::pool::enabled(&program) && phase != "synthesize" {
         input["proposal_pool"] =
             references::References::new(&snapshot)?.project(&program["proposal_pool"]);
         if pool_research {
@@ -437,6 +575,9 @@ fn setup(ctx: &Context) -> Result<(), String> {
         }
     }
     input["response_correction"] = program["response_correction"].clone();
+    if phase == "synthesize" {
+        input = share_writer_values(input);
+    }
     if input.to_string().len() > MAX_REASONING_INPUT_BYTES {
         return Err("Reasoning context including unaccepted correction draft exceeds 3 MiB; no data was truncated".into());
     }
@@ -999,6 +1140,109 @@ mod reasoning_tests {
     }
 
     #[test]
+    fn writer_shares_only_exact_context_and_retains_different_conditional_results() {
+        let context = json!({"condition":{"kind":"all_occurring","event_ids":["a"]},"by":"2035-01-01","history":[{"claim":"Known causal premise with an explicitly hypothetical mechanism".repeat(5)}]});
+        let mut other = context.clone();
+        other["condition"]["kind"] = json!("not_all_occurring");
+        let input = json!({"checks":[
+            {"branch_state":context,"probability":0.2,"result":null},
+            {"branch_state":context,"probability":0.8,"result":"connected"},
+            {"branch_state":other,"probability":0.4,"result":"gap"}
+        ]});
+        let shared = share_writer_values(input);
+        assert_eq!(
+            shared["checks"][0]["branch_state"],
+            shared["checks"][1]["branch_state"]
+        );
+        assert_ne!(
+            shared["checks"][0]["branch_state"],
+            shared["checks"][2]["branch_state"]
+        );
+        assert_eq!(shared["checks"][0]["probability"], 0.2);
+        assert!(shared["checks"][0]["result"].is_null());
+        assert_eq!(shared["checks"][1]["probability"], 0.8);
+        assert_eq!(shared["checks"][2]["result"], "gap");
+    }
+
+    #[test]
+    #[ignore = "requires an authorized captured failed run"]
+    fn captured_synthesis_projection_preserves_results_and_reduces_context() {
+        let path = std::env::var("FORESIGHT_SYNTHESIS_CAPTURE").unwrap();
+        let capture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(capture["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let program: Value =
+            serde_json::from_str(capture["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let writer = world_writing_input(&snapshot, &program).unwrap();
+        let mut old = writer.clone();
+        old["world_audits"] = program["world_audits"].clone();
+        old["endpoint_search"] = program["endpoint_search"].clone();
+        old["proposal_pool"] = program["proposal_pool"].clone();
+        eprintln!(
+            "writer bytes {}, reconstructed previous raw context {}",
+            writer.to_string().len(),
+            old.to_string().len()
+        );
+        assert!(writer.to_string().len() < old.to_string().len() / 2);
+        assert_eq!(
+            writer["worlds"].as_array().unwrap().len(),
+            program["active_world_ids"].as_array().unwrap().len()
+        );
+        let refs = references::References::new(&snapshot).unwrap();
+        let expected = refs.project(&program["world_audits"]);
+        for (id, audit) in expected.as_object().unwrap() {
+            let actual = &writer["world_audits"][id];
+            assert_eq!(actual["status"], audit["status"]);
+            for (original, projected) in audit["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(actual["checks"].as_array().unwrap())
+            {
+                for key in ["kind", "probability", "result", "subject_ids"] {
+                    assert_eq!(projected[key], original[key]);
+                }
+            }
+        }
+        assert_eq!(writer["baseline"], refs.project(&program["baseline"]));
+        assert_eq!(
+            writer["endpoint_lineage"]["endpoints"],
+            refs.project(&program["endpoint_search"]["endpoints"])
+        );
+        let shared = share_writer_values(writer.clone());
+        fn expand(value: &Value, table: &Value) -> Value {
+            if value.as_object().is_some_and(|o| o.len() == 1) {
+                if let Some(id) = value["writer_value_ref"].as_str() {
+                    return expand(&table[id], table);
+                }
+            }
+            match value {
+                Value::Object(items) => Value::Object(
+                    items
+                        .iter()
+                        .filter(|(k, _)| {
+                            !matches!(
+                                k.as_str(),
+                                "writer_shared_values" | "writer_reference_encoding"
+                            )
+                        })
+                        .map(|(k, v)| (k.clone(), expand(v, table)))
+                        .collect(),
+                ),
+                Value::Array(items) => {
+                    Value::Array(items.iter().map(|v| expand(v, table)).collect())
+                }
+                _ => value.clone(),
+            }
+        }
+        assert_eq!(expand(&shared, &shared["writer_shared_values"]), writer);
+        eprintln!("exact shared writer bytes {}", shared.to_string().len());
+        if let Ok(output) = std::env::var("FORESIGHT_SYNTHESIS_OUTPUT") {
+            std::fs::write(output, serde_json::to_vec_pretty(&writer).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn synthesis_sees_actual_numeric_estimates_without_duplicate_answer_payloads() {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","statement":"Future"}]});
         let program = json!({"evaluations":{"h":{"estimate_likelihood":{"probability":0.37,"answer":{"noul":0.37}}}}});
@@ -1111,5 +1355,42 @@ mod reasoning_tests {
         assert!(SYNTHESIS_PROMPT.contains("overlapping_worlds"));
         assert!(SYNTHESIS_PROMPT.contains("own Jev estimate"));
         assert!(!SYNTHESIS_PROMPT.contains("summing EXACTLY1"));
+    }
+}
+
+#[cfg(test)]
+mod composition_bundle_input_tests {
+    use super::*;
+    #[test]
+    fn composer_requires_two_complete_native_bundles_before_launch() {
+        let snapshot = json!({"world":{"last_ingest_date":"2026-10-01","target_date":"2030-12-31"},"nodes":[{"Id":"root","kind":"scenario"},{"Id":"mid","kind":"scenario"},{"Id":"end","kind":"scenario"}]});
+        let mut program = json!({"world_search_contract":1,"endpoint_search":{"endpoints":[],"routes":[],"amendments":[]},"results":{}});
+        for id in ["root", "mid", "end"] {
+            program["results"][id] =
+                json!({"classify_claim_role":"event","classify_temporal":"future_change"});
+        }
+        for e in ["a", "b"] {
+            program["endpoint_search"]["endpoints"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":e,"commitments":[{"id":"c"}]}));
+            program["endpoint_search"]["routes"].as_array_mut().unwrap().push(json!({"id":format!("route-{e}"),"endpoint_id":e,"commitment_id":"c","component_ids":["root","mid","end"],"chain":[],"status":"checked","amendment_id":null}));
+        }
+        assert_eq!(
+            checked_composition_bundles(&snapshot, &program)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        program["endpoint_search"]["routes"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let error = checked_composition_bundles(&snapshot, &program).unwrap_err();
+        assert!(error.contains("Fewer than two"));
+        assert!(error.contains("incomplete"));
+        assert!(error.contains("saved proposals and evidence remain available"));
     }
 }

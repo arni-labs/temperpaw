@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_WORLD_COMPONENTS: usize = 32;
+mod bundles { include!("semantic_route_bundles.rs"); }
+pub use bundles::{composition_bundles, validate_selection};
+
 
 pub fn enabled(program: &Value) -> bool {
     program["world_search_contract"] == 1
@@ -460,6 +463,9 @@ pub fn add_routes(
     if !route_errors.is_empty() {
         return Err(route_errors.join("; "));
     }
+    // A locally valid route can conflict with the other commitments' routes.
+    // Check proposed joint paths before recording or evaluating any new route.
+    bundles::validate_proposed(after, &search, routes)?;
     let mut new_nodes:Vec<Value>=reply["amendments"].as_array().into_iter().flatten().map(|a|json!({"Id":format!("amendment-{}",field(a,"id")),"kind":"world","route_only":true,"archived":true,"statement":format!("Proposed amendment: {}",field(a,"replacement_text")),"amendment":a,"edges":"[]"})).collect();
     for route in routes {
         let id = identifier(&route["id"])?;
@@ -814,6 +820,17 @@ pub fn preserve_omitted_originals(program: &Value, generated: &mut Value) {
         {
             continue;
         }
+        if let Some(bundle) = program["composition_route_bundles"].as_array().into_iter().flatten()
+            .find(|b| b["endpoint_id"] == endpoint["id"] && b["status"] != "compatible") {
+            let reason = match field(bundle, "status") {
+                "incomplete" => "Some defining commitments still lack eligible routes; the original remains unresolved.",
+                "unexamined_limit" => "The bounded route search has not established a compatible set of paths. It has not shown that this future is impossible.",
+                _ if field(bundle, "reason").contains("nondecreasing") => "The stored route deadlines do not establish a consistent order across all commitments. The path needs explicit timing refinement; this does not show that the future is impossible.",
+                _ => "The stored paths do not yet form a consistent whole. Their graph needs explicit repair; this does not show that the future is impossible.",
+            };
+            omitted.push(json!({"endpoint_id":endpoint["id"],"reason":reason,"joint_route_receipt":bundle}));
+            continue;
+        }
         let mut missing = 0;
         let mut unchecked = 0;
         let mut checked = 0;
@@ -970,7 +987,9 @@ pub fn validate_composition(program: &Value, generated: &Value) -> Result<(), St
         if !worlds.iter().any(|w| w["endpoint_id"] == e["id"]) {
             let report=generated["unreconstructed_endpoints"].as_array().into_iter().flatten().find(|r|r["endpoint_id"]==e["id"]).ok_or("Every omitted endpoint needs an explicit unreconstructed receipt; originals remain visible")?;
             text(&report["reason"], 800)?;
-            if e["status"] == "evaluated" {
+            let joint_unavailable = program["composition_route_bundles"].as_array().into_iter().flatten()
+                .any(|b| b["endpoint_id"] == e["id"] && b["status"] != "compatible");
+            if e["status"] == "evaluated" && !joint_unavailable {
                 return Err("Cannot silently discard a fully connected original endpoint".into());
             }
         }

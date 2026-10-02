@@ -723,6 +723,56 @@ pub fn finish(
         if a["pool_stage"] == "individual" {
             p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
         }
+        // Failed initial comparisons should trigger creative development, not
+        // repeated research over unchanged arrangements. This is provisional:
+        // every changed claim still returns through the full admission checks.
+        if a["pool_stage"] == "individual"
+            && viable.len() < 3
+            && allow_retry
+            && p["proposal_pool"]["development"]["status"] != "completed"
+            && p["proposal_pool"]["research_attempts"]
+                .as_u64()
+                .unwrap_or(0)
+                < 3
+        {
+            let remaining =
+                super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
+            let count = (3..=candidates.len().min(5)).rev().find(|n| {
+                // One development and one contrast turn, one route turn per
+                // provisional world, composition/writing, and conservative scalar
+                // cost for the current individual relations plus every pair check.
+                let checks = 2 * n
+                    + candidates
+                        .iter()
+                        .take(*n)
+                        .map(|e| e["contrast"]["consequences"].as_array().map_or(0, Vec::len))
+                        .sum::<usize>()
+                    + n * (n - 1) / 2;
+                remaining >= (*n as u64 + 4) * REASONING_TRANSITION_RESERVE + 2 * checks as u64 + 32
+            });
+            p["proposal_pool"]["development_admission"] = json!({
+                "remaining_transitions":remaining,"admitted":count.is_some(),
+                "provisional_count":count,"research_attempts_remaining":3-p["proposal_pool"]["research_attempts"].as_u64().unwrap_or(0),
+                "semantics":"Provisional creative development, not novelty or plausibility acceptance. Estimate reserves fresh contrast, scalar checks for current relations and all pairs, route turns and final writing. Added relations remain subject to native admission; no run budget is reset."
+            });
+            if let Some(count) = count {
+                // Candidates are already ordered by the recorded fallible
+                // comparison_priority. Preserve that reason and all failed checks.
+                let selected: Vec<_> = candidates
+                    .iter()
+                    .take(count)
+                    .map(|e| e["id"].clone())
+                    .collect();
+                p["proposal_pool"]["selected_ids"] = json!(selected);
+                p["proposal_pool"]["selection_receipts"] = json!(candidates.iter().map(|e| json!({
+                    "endpoint_id":e["id"],"selected":selected.contains(&e["id"]),
+                    "reason":if selected.contains(&e["id"]){"provisional_development_after_failed_relations"}else{"outside_bounded_provisional_development"}
+                })).collect::<Vec<_>>());
+                p["proposal_pool"]["stage"] = json!("enrich");
+                p["endpoint_proposal_attempt"]["status"] = json!("development_requested");
+                return Ok(());
+            }
+        }
         if a["pool_stage"] == "individual" && viable.len() >= 3 {
             let shortlist = viable;
             p["proposal_pool"]["shortlist_ids"] = json!(
@@ -1014,7 +1064,12 @@ mod tests {
             _ => pass(t),
         });
         finish(&s, &mut p, true, false).unwrap();
-        assert_eq!(p["proposal_pool"]["stage"], "contrast");
+        assert_eq!(p["proposal_pool"]["stage"], "enrich");
+        assert!(p["proposal_pool"]["candidate_receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|receipt| receipt["admissible"] == false));
         assert!(p["endpoint_search"].is_null());
         let failures = p["proposal_pool"]["candidate_receipts"]
             .as_array()
@@ -1045,7 +1100,12 @@ mod tests {
         record(&mut p, pass);
         finish(&s, &mut p, true, false).unwrap();
         assert!(p["endpoint_search"].is_null());
-        assert_eq!(p["proposal_pool"]["stage"], "contrast");
+        assert_eq!(p["proposal_pool"]["stage"], "enrich");
+        assert!(p["proposal_pool"]["candidate_receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|receipt| receipt["admissible"] == false));
         let mut bad = p["proposal_pool"]["candidates"][0].clone();
         bad["contrast"]["present_analogue"]["status"] = json!("supported");
         bad["contrast"]["present_analogue"]["evidence_ids"] = json!([]);
@@ -1056,12 +1116,93 @@ mod tests {
         );
         bad["contrast"]["present_analogue"]["evidence_ids"] = json!([s["nodes"][0]["Id"]]);
         bad["contrast"]["defining_commitment_ids"] = json!(["unrepresented-protein-production"]);
-        assert!(
-            validate_contrast(&bad, &s)
-                .unwrap_err()
-                .contains("actual commitment")
+        assert!(validate_contrast(&bad, &s)
+            .unwrap_err()
+            .contains("actual commitment"));
+    }
+    #[test]
+    fn one_of_ten_viable_candidates_develops_once_before_fresh_admission() {
+        let (s, old, mut candidates) = fixture();
+        for i in 0..6 {
+            let mut e = candidates[0].clone();
+            e["id"] = json!(format!("provisional-{i}"));
+            candidates.push(e);
+        }
+        let response = |items: &[Value]| json!({"proposal_contrasts":items.iter().map(|e|json!({"endpoint_id":e["id"],"contrast":contrast(e,&s["nodes"][0]["Id"])})).collect::<Vec<_>>(),"comparison_priority":items.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()});
+        let mut p = contrasts(
+            &s,
+            &receive(&s, &old, candidates.clone()).unwrap(),
+            &response(&candidates),
+        )
+        .unwrap();
+        p["transition_count"] = json!(88);
+        let only = candidates[0]["id"].clone();
+        record(&mut p, |task| {
+            if task["function"] == "check_proposal_change" && task["endpoint_id"] != only {
+                "present_or_adoption_only".into()
+            } else {
+                pass(task)
+            }
+        });
+        let before = p.clone();
+        finish(&s, &mut p, true, false).unwrap();
+        assert_eq!(p["proposal_pool"]["stage"], "enrich");
+        assert_eq!(
+            p["proposal_pool"]["candidate_receipts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["admissible"] == true)
+                .count(),
+            1
+        );
+        assert_eq!(
+            p["proposal_pool"]["selected_ids"].as_array().unwrap().len(),
+            3
+        );
+        assert!(p["endpoint_search"].is_null());
+        if let Ok(path) = std::env::var("FORESIGHT_PROVISIONAL_FIXTURE") {
+            std::fs::write(path, serde_json::to_vec_pretty(&json!({"snapshot":s,"program":p,"disclosure":"Native producer state from deterministic Jev fixtures; provisional selection, not live acceptance."})).unwrap()).unwrap();
+        }
+        let selected = p["proposal_pool"]["selected_ids"].as_array().unwrap();
+        let developed: Vec<_> = candidates
+            .iter()
+            .filter(|e| selected.contains(&e["id"]))
+            .cloned()
+            .map(|mut e| {
+                e["commitments"][0]["statement"] =
+                    json!("A genuinely changed defining arrangement requiring a fresh check");
+                e
+            })
+            .collect();
+        let next = receive(&s, &p, developed.clone()).unwrap();
+        assert_eq!(
+            next["proposal_pool"]["research_attempts"],
+            before["proposal_pool"]["research_attempts"]
+        );
+        assert_eq!(next["transition_count"], 88);
+        let mut unchecked = contrasts(&s, &next, &response(&developed)).unwrap();
+        assert!(!unchecked["tasks"].as_array().unwrap().is_empty());
+        finish(&s, &mut unchecked, true, false).unwrap();
+        assert!(unchecked["endpoint_search"].is_null());
+        assert_ne!(
+            unchecked["proposal_pool"]["stage"], "enrich",
+            "Development may run only once"
+        );
+        let mut exhausted = before.clone();
+        exhausted["proposal_pool"]["research_attempts"] = json!(3);
+        finish(&s, &mut exhausted, true, false).unwrap();
+        assert_ne!(exhausted["proposal_pool"]["stage"], "enrich");
+        let mut late = before;
+        late["transition_count"] = json!(400);
+        finish(&s, &mut late, true, false).unwrap();
+        assert_ne!(late["proposal_pool"]["stage"], "enrich");
+        assert_eq!(
+            late["proposal_pool"]["development_admission"]["admitted"],
+            false
         );
     }
+
     #[test]
     fn breadth_shortlist_pair_distinction_enrichment_and_exact_cache() {
         let (s, mut p) = pool();

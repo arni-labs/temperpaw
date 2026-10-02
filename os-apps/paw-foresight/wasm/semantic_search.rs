@@ -105,7 +105,7 @@ pub fn validate_chain(world: &Value, snapshot: &Value) -> Result<(), String> {
     validate_chain_with_limit(world, snapshot, 24)
 }
 
-fn validate_chain_with_limit(
+pub(super) fn validate_chain_with_limit(
     world: &Value,
     snapshot: &Value,
     chain_limit: usize,
@@ -397,7 +397,7 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
 // not another copy of the execution-address graph used to produce each receipt.
 // The persisted audit is untouched. Keep unknown fields so future semantic
 // additions cannot disappear merely because this request projection is older.
-fn request_route_audits(mut selected: Value) -> Value {
+pub fn request_route_audits(mut selected: Value) -> Value {
     for route in selected
         .get_mut("routes")
         .and_then(Value::as_array_mut)

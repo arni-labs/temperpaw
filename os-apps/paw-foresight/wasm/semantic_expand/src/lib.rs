@@ -1019,6 +1019,14 @@ fn baseline_correction(snapshot: &Value, old: &Value, error: &str) -> Result<Val
 }
 
 fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value, String> {
+    let mut checked_program = old.clone();
+    if core::endpoints::enabled(old) {
+        checked_program["composition_route_bundles"] = core::endpoints::composition_bundles(snapshot, old);
+        for world in generated["worlds"].as_array().into_iter().flatten() {
+            core::endpoints::validate_selection(world, snapshot, old, &checked_program["composition_route_bundles"])?;
+        }
+    }
+    let old = &checked_program;
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     core::endpoints::preserve_omitted_originals(old, &mut generated);
