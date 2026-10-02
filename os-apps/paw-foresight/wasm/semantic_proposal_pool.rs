@@ -415,10 +415,21 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
         );
         *e = replacement;
     }
-    if contrasts.len() != candidates.len() {
-        return Err(
-            "Every candidate needs an explicit contrast, including unknown analogues".into(),
-        );
+    let allowed: BTreeSet<_> = candidates.iter().map(|candidate| field(candidate, "id")).collect();
+    let mut supplied = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for row in contrasts {
+        let id = field(row, "endpoint_id");
+        if !supplied.insert(id) {
+            duplicates.insert(id);
+        }
+    }
+    let missing: Vec<_> = allowed.difference(&supplied).copied().collect();
+    let extra: Vec<_> = supplied.difference(&allowed).copied().collect();
+    if !missing.is_empty() || !extra.is_empty() || !duplicates.is_empty() {
+        return Err(format!(
+            "Contrast targets must match the current candidate IDs exactly. Allowed: {allowed:?}; missing: {missing:?}; extra: {extra:?}; duplicate: {duplicates:?}. Historical and rejected candidates are not targets. Return proposal_contrasts and comparison_priority for the allowed IDs only, including unknown analogues."
+        ));
     }
     let mut seen = BTreeSet::new();
     for row in contrasts {
@@ -840,6 +851,24 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn contrast_targets_report_surplus_history_missing_and_duplicate_ids() {
+        let (snapshot, mut program) = pool();
+        let current = json!([{"id":"current-1"},{"id":"current-2"},{"id":"current-3"},{"id":"current-4"}]);
+        program["proposal_pool"]["candidates"] = current.clone();
+        let mut rows: Vec<Value> = current.as_array().unwrap().iter().map(|e|json!({"endpoint_id":e["id"],"contrast":{}})).collect();
+        rows.extend((1..=6).map(|i|json!({"endpoint_id":format!("historical-{i}"),"contrast":{}})));
+        let error = contrasts(&snapshot, &program, &json!({"proposal_contrasts":rows})).unwrap_err();
+        assert!(error.contains("missing: []"), "{error}");
+        assert!(error.contains("extra: [\"historical-1\""), "{error}");
+        assert!(error.contains("current-4"), "{error}");
+        assert!(error.contains("Historical and rejected candidates are not targets"));
+        let error = contrasts(&snapshot, &program, &json!({"proposal_contrasts":[{"endpoint_id":"current-1"},{"endpoint_id":"current-1"},{"endpoint_id":"current-2"},{"endpoint_id":"current-3"}]})).unwrap_err();
+        assert!(error.contains("missing: [\"current-4\"]"), "{error}");
+        assert!(error.contains("duplicate: {\"current-1\"}"), "{error}");
+        assert_eq!(program["proposal_pool"]["candidates"], current);
+    }
+
     fn fixture() -> (Value, Value, Vec<Value>) {
         let raw: Value =
             serde_json::from_str(include_str!("semantic_food_proposal_fixture.json")).unwrap();
