@@ -82,3 +82,30 @@ failure alongside the proposal-quality failure. No retry or clock reset was
 performed. The request for all backward routes in one generation is a workload
 hypothesis to test with bounded incremental batches, not a verified provider
 failure cause.
+
+## Second development pass
+
+Backend `222dd6e31` was deployed as Railway
+`90f3770b-939f-4f70-b798-45781e81cf13`, with all 70 manifest files matching
+and readiness 200. The normal form started games world
+`foresight-dbd62a8a-d97a-4f6f-8a22-e063e3f27099` and food world
+`foresight-717259e6-d662-4fc9-be9e-d95f28f23549`. Neither was restarted.
+
+Food exercised actual proposal rejection/revision, then saved three backward
+routes and reached 129 Jev judgments across 31 HTTP requests. This proves an
+incremental route batch completed, not a complete answer or resolved paths.
+The accepted games and food proposals still looked too incremental. In food,
+Jev accepted a revised thrift-cooking idea after its earlier form was rejected;
+the human assessment remains that the set falls short of the requested ambition.
+Provider acceptance is not the quality benchmark.
+
+This evidence motivated separating first imagination input from the research
+agenda, while retaining sourced Jev evaluation and backward search. Food was
+held out for `222dd6e31`; after using that result to improve the generator it is
+a development example for the next revision. Education and city living remain
+unseen candidate questions. Baseline comparator answers remain sealed.
+
+Additional final-answer fixes preserve omitted original endpoints and recorded
+reasons, and carry selected path barriers into final audits. A new estimate must
+not erase an existing grounding failure. These backend changes are committed
+but not yet activated while the two runs above remain active.

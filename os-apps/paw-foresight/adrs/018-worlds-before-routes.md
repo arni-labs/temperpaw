@@ -69,6 +69,19 @@ This addresses an oversized-work hypothesis; only a fresh live run can establish
 whether it resolves the observed timeout. Historical accepted sets retain their
 original contract.
 
+The next live pass showed that critique alone could accept still-incremental
+ideas. First imagination therefore receives only the original question, horizon,
+vantage date and hindcast setting; user constraints remain in the question.
+Research findings and scope summaries belong to the subsequent evaluator and
+route finder. Revision input preserves exact prior proposals and actual critique,
+without repeating the research agenda. This separates creative proposal from
+evidence testing; it does not establish creative superiority by itself.
+
+Completed answers also retain every omitted original with its recorded reason.
+Selected blocked routes remain conflicts in the final audit; unresolved or
+missing routes cannot appear clear. Raw Jev estimates are retained separately
+from path validity, and the UI exposes those limitations.
+
 ## Verification and delivery
 
 Behavioral checks must distinguish this flow from the replaced one: endpoints exist
