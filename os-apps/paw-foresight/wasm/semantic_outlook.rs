@@ -526,6 +526,7 @@ pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), Strin
         return Err("Missing present baseline or its limitations".into());
     }
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
+    let superseded = evidence_contract::superseded_ids(snapshot);
     for observation in observed {
         text(&observation["claim"], BASELINE_CLAIM_MAX)
             .map_err(|e| format!("baseline.observed.claim: {e}"))?;
@@ -542,6 +543,11 @@ pub fn validate_baseline(baseline: &Value, snapshot: &Value) -> Result<(), Strin
                 .iter()
                 .find(|n| n["Id"] == *id)
                 .ok_or("Unknown baseline evidence")?;
+            if superseded.contains(node["Id"].as_str().unwrap_or(""))
+                || evidence_contract::is_projection(node)
+            {
+                return Err("Superseded sources and source projections cannot establish present observations; retain projection claims in unknowns".into());
+            }
             let metadata = &node["evidence_metadata"];
             if !metadata.is_null() && metadata["kind"] != "legacy_unverified" {
                 evidence_contract::validate(metadata)?;

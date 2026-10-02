@@ -256,7 +256,11 @@ null dates unless its calendar bounds are known. Retrieval accepts YYYY-MM-DD. U
 from the current vantage or URL. These are different dates: a paper retrieved today can
 report a study from years ago. Search published_at is provider-reported metadata; check
 against the source before treating it as its publication date. No dated metadata makes a
-source true or a forecast observed. Hypothesis nodes need no evidence_json.
+source true or a forecast observed. A report published now may project outcomes years ahead:
+those are forecast horizons, never observation_period dates. State explicitly
+what the source projects and keep its forecast horizon in the statement. Use null
+observation dates when no historical observation period is supplied; never put the future
+horizon in observation_period. Hypothesis nodes need no evidence_json.
 Use provenance observed, contested, weak_signal, or hypothesis to identify the claim's
 status. Use determined only for an actually fixed fact. Leave probability empty for research
 claims: unknown does not mean 0.5 and sourced does not mean 1.0. A genuinely quoted,

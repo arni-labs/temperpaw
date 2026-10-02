@@ -121,6 +121,21 @@ fn commitment<'a>(endpoint: &'a Value, id: &str) -> Result<&'a Value, String> {
 }
 
 /// A connected authored path is not proof that its premises or mechanism hold.
+fn validate_root_connection(anchor: &Value) -> Result<Vec<String>, String> {
+    let refs = list(&anchor["evidence_ids"], 16)?;
+    if refs.is_empty() {
+        text(&anchor["unresolved_question"], 400)?;
+        // With no claimed bridge, an absent mechanism is honest. Any supplied
+        // mechanism must still satisfy the same size/type contract.
+        if !anchor["mechanism"].is_null() && anchor["mechanism"] != "" {
+            text(&anchor["mechanism"], 800)?;
+        }
+    } else {
+        text(&anchor["mechanism"], 800)?;
+    }
+    Ok(refs)
+}
+
 fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<(), String> {
     let endpoint = endpoint(program, field(route, "endpoint_id"))?;
     let claim = commitment(endpoint, field(route, "commitment_id"))?;
@@ -130,6 +145,7 @@ fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<()
         return Err("Route needs target and conjectural prerequisites".into());
     }
     let nodes = snapshot["nodes"].as_array().ok_or("Missing route graph")?;
+    let active_sources = super::evidence::active_sources(snapshot);
     for id in &components {
         if !nodes
             .iter()
@@ -163,10 +179,7 @@ fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<()
     }
     let grounds = list(&route["grounding_evidence_ids"], 16)?;
     for id in grounds {
-        if !nodes
-            .iter()
-            .any(|n| n["Id"] == id && matches!(field(n, "kind"), "evidence" | "research_evidence"))
-        {
+        if !active_sources.iter().any(|n| n["Id"] == id) {
             return Err("Route grounding must reference supplied evidence, separately from conjectural prerequisites".into());
         }
     }
@@ -242,15 +255,12 @@ fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<()
         if !roots.contains(root) || !covered.insert(root) {
             return Err("Root connection must name each conjectural root exactly once".into());
         }
-        text(&anchor["mechanism"], 800)?;
-        let refs = list(&anchor["evidence_ids"], 16)?;
-        if refs.is_empty() {
-            text(&anchor["unresolved_question"], 400)?;
-        }
+        let refs = validate_root_connection(anchor)?;
         for id in refs {
-            if !nodes.iter().any(|n| {
-                n["Id"] == id && matches!(field(n, "kind"), "evidence" | "research_evidence")
-            }) {
+            if !active_sources
+                .iter()
+                .any(|n| n["Id"] == id && !super::evidence::is_projection(n))
+            {
                 return Err("Root support must cite existing present evidence".into());
             }
         }
@@ -349,11 +359,10 @@ pub fn add_routes(
         }
         text(&amendment["replacement_text"], 1000)?;
         text(&amendment["reason"], 800)?;
+        let active_sources = super::evidence::active_sources(after);
         let refs = list(&amendment["evidence_ids"], 16)?;
         for id in refs {
-            if !after["nodes"].as_array().unwrap().iter().any(|n| {
-                n["Id"] == id && matches!(field(n, "kind"), "evidence" | "research_evidence")
-            }) {
+            if !active_sources.iter().any(|n| n["Id"] == id) {
                 return Err("Amendment citation is not supplied evidence".into());
             }
         }
@@ -429,7 +438,7 @@ pub fn amendment_request(snapshot: &Value, program: &Value, task: &Value) -> Res
         .flatten()
         .find(|a| a["id"] == task["amendment_id"])
         .ok_or("Unknown amendment task")?;
-    let mut request = json!({"model":super::MODEL,"state":{"world":snapshot["world"],"baseline":program["baseline"],"amendment":amendment,"evidence":snapshot["nodes"].as_array().into_iter().flatten().filter(|n|matches!(field(n,"kind"),"evidence"|"research_evidence")).collect::<Vec<_>>()},"question":{"type":"choice","instructions":"Compare the immutable original commitment and explicit amendment in their exact scopes. Does the revision retain the distinguishing commitment, weaken it toward an easier/common outcome, or change what world was imagined? Do not reward plausibility or higher odds. Missing clarity stays unresolved. This judges semantic drift, not truth or probability.","criteria":{"preserved":"The distinguishing endpoint commitment and scope remain intact.","weakened":"The revision relaxes or removes a load-bearing distinguishing commitment.","changed":"The revision changes the outcome or scope rather than providing another route to the same endpoint.","unresolved":"Meaning preservation cannot be established from the supplied definitions."}},"validation":{"selection_policy":"provider_argmax"}});
+    let mut request = json!({"model":super::MODEL,"state":{"world":snapshot["world"],"baseline":program["baseline"],"amendment":amendment,"evidence":super::evidence::active_sources(snapshot)},"question":{"type":"choice","instructions":"Compare the immutable original commitment and explicit amendment in their exact scopes. Does the revision retain the distinguishing commitment, weaken it toward an easier/common outcome, or change what world was imagined? Do not reward plausibility or higher odds. Missing clarity stays unresolved. This judges semantic drift, not truth or probability.","criteria":{"preserved":"The distinguishing endpoint commitment and scope remain intact.","weakened":"The revision relaxes or removes a load-bearing distinguishing commitment.","changed":"The revision changes the outcome or scope rather than providing another route to the same endpoint.","unresolved":"Meaning preservation cannot be established from the supplied definitions."}},"validation":{"selection_policy":"provider_argmax"}});
     let question = request.as_object_mut().unwrap().remove("question").unwrap();
     request["questions"] = json!({"result":question});
     if request.to_string().len() > 128 * 1024 {
@@ -461,7 +470,7 @@ pub fn grounding_request(snapshot: &Value, program: &Value, task: &Value) -> Res
         .flatten()
         .find(|n| n["Id"] == task["nodeId"] && n["route_only"] == true)
         .ok_or("Unknown route grounding task")?;
-    let mut request = json!({"model":super::MODEL,"state":{"world_question":snapshot["world"],"baseline":program["baseline"],"route":world,"components":snapshot["nodes"].as_array().into_iter().flatten().filter(|n|world["component_ids"].as_array().into_iter().flatten().any(|id|*id==n["Id"])).collect::<Vec<_>>(),"source_evidence":snapshot["nodes"].as_array().into_iter().flatten().filter(|n|matches!(field(n,"kind"),"evidence"|"research_evidence")).collect::<Vec<_>>()},"question":{"type":"choice","instructions":"Inspect each root_connection from sourced present conditions to a conjectural first prerequisite. Does its declared mechanism form an assessable bridge, contradict the present, or leave a substantive missing step? The existence of citations or graph connectivity is not evidence that the future occurs. Roots are conjectures, never facts. Explicit unresolved frontiers must remain gaps. Preserve scope and source qualifications.","criteria":{"connected":"Each root has a stated mechanism from supplied present conditions; this is assessable proposed connectivity, not demonstrated feasibility or truth.","gap":"At least one root has an explicit or substantive missing connection to present conditions.","conflict":"A declared bridge contradicts supplied present conditions within the same scope.","uncertain":"The supplied definitions or evidence do not establish the bridge's meaning or connectivity."}}});
+    let mut request = json!({"model":super::MODEL,"state":{"world_question":snapshot["world"],"baseline":program["baseline"],"route":world,"components":snapshot["nodes"].as_array().into_iter().flatten().filter(|n|world["component_ids"].as_array().into_iter().flatten().any(|id|*id==n["Id"])).collect::<Vec<_>>(),"source_evidence":super::evidence::active_sources(snapshot)},"question":{"type":"choice","instructions":"Inspect each root_connection from sourced present conditions to a conjectural first prerequisite. Does its declared mechanism form an assessable bridge, contradict the present, or leave a substantive missing step? The existence of citations or graph connectivity is not evidence that the future occurs. Roots are conjectures, never facts. Explicit unresolved frontiers must remain gaps. Preserve scope and source qualifications.","criteria":{"connected":"Each root has a stated mechanism from supplied present conditions; this is assessable proposed connectivity, not demonstrated feasibility or truth.","gap":"At least one root has an explicit or substantive missing connection to present conditions.","conflict":"A declared bridge contradicts supplied present conditions within the same scope.","uncertain":"The supplied definitions or evidence do not establish the bridge's meaning or connectivity."}}});
     let question = request.as_object_mut().unwrap().remove("question").unwrap();
     request["questions"] = json!({"result":question});
     if request.to_string().len() > 128 * 1024 {
@@ -577,10 +586,19 @@ pub fn finish_routes(snapshot: &Value, program: &mut Value) {
             .filter(|c| c["result"].is_string() || c["result"].is_number())
             .count();
         let conflict = checks.iter().any(|c| c["result"] == "conflict");
-        let uncertain = checks.iter().any(|c| {
-            c["result"].is_null() || matches!(c["result"].as_str(), Some("gap" | "uncertain"))
-        });
+        let unresolved_roots: Vec<_> = route["root_connections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|root| root["evidence_ids"].as_array().is_none_or(Vec::is_empty))
+            .map(|root| root["component_id"].clone())
+            .collect();
+        let uncertain = !unresolved_roots.is_empty()
+            || checks.iter().any(|c| {
+                c["result"].is_null() || matches!(c["result"].as_str(), Some("gap" | "uncertain"))
+            });
         let planned = checks.len();
+        audit["unresolved_root_ids"] = json!(unresolved_roots);
         audit["status"] = json!(if conflict {
             "conflicts_found"
         } else if completed == 0 {
@@ -956,6 +974,84 @@ mod tests {
         let route = json!({"id":"r","endpoint_id":"e","commitment_id":"c","component_ids":["root","target"],"target_component_id":"target","chain":[{"id":"link","from_ids":["root"],"to_id":"target","mechanism":"The prerequisite enables the target","by":"2029-01-01"}],"grounding_evidence_ids":["source"],"root_connections":[{"component_id":"root","evidence_ids":["source"],"mechanism":"Observed capacity could be expanded"}],"alternative_to":null,"amendment_id":null});
         (snapshot, program, route)
     }
+    #[test]
+    fn captured_unresolved_music_roots_remain_gaps_even_when_provider_says_connected() {
+        let roots: Vec<Value> =
+            serde_json::from_str(include_str!("semantic_unresolved_roots_fixture.json")).unwrap();
+        assert_eq!(roots.len(), 7);
+        for root in &roots {
+            validate_root_connection(root).unwrap();
+            let mut sourced = root.clone();
+            sourced["evidence_ids"] = json!(["source"]);
+            assert!(validate_root_connection(&sourced).is_err());
+        }
+        let (snapshot, mut program, mut route) = fixture();
+        route["root_connections"][0]["mechanism"] = json!("");
+        route["root_connections"][0]["evidence_ids"] = json!([]);
+        route["root_connections"][0]["unresolved_question"] =
+            roots[0]["unresolved_question"].clone();
+        let mut after = snapshot.clone();
+        program["endpoint_search"]=add_routes(&snapshot,&mut after,&program,&json!({"routes":[route],"amendments":[],"exploration_note":"Recorded explicit unresolved frontier"})).unwrap();
+        let node_id = program["endpoint_search"]["routes"][0]["world_node_id"]
+            .as_str()
+            .unwrap();
+        let world = after["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["Id"] == node_id)
+            .unwrap();
+        for task in route_tasks(world) {
+            let result = match field(&task, "function") {
+                "check_route_grounding" => "connected",
+                "check_transition" => "plausible",
+                _ => "0.4",
+            };
+            program["results"][field(&task, "nodeId")][field(&task, "function")] = json!(result);
+        }
+        finish_routes(&after, &mut program);
+        assert_eq!(
+            program["endpoint_search"]["routes"][0]["status"],
+            "unresolved"
+        );
+        assert_eq!(
+            program["endpoint_search"]["routes"][0]["audit"]["status"],
+            "uncertain"
+        );
+        assert!(alternative_needed(&program));
+        let mut invalid_chain = program["endpoint_search"]["routes"][0].clone();
+        invalid_chain["chain"][0]["mechanism"] = json!("");
+        assert!(validate_route(&invalid_chain, &after, &program).is_err());
+    }
+
+    #[test]
+    fn superseded_or_projection_sources_cannot_anchor_present_roots() {
+        let (mut snapshot, program, mut route) = fixture();
+        let mut corrected = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["Id"] == "source")
+            .unwrap()
+            .clone();
+        corrected["Id"] = json!("corrected-source");
+        corrected["claim_type"] = json!("source_projection");
+        corrected["source_correction"] = json!({"source_id":"source","corrected_source_id":"corrected-source","kind":"source_projection","verified":false});
+        snapshot["nodes"].as_array_mut().unwrap().push(corrected);
+        assert!(validate_route(&route, &snapshot, &program).is_err());
+        route["grounding_evidence_ids"] = json!(["corrected-source"]);
+        route["root_connections"][0]["evidence_ids"] = json!(["corrected-source"]);
+        assert!(
+            validate_route(&route, &snapshot, &program)
+                .unwrap_err()
+                .contains("present evidence")
+        );
+        route["root_connections"][0]["evidence_ids"] = json!([]);
+        route["root_connections"][0]["unresolved_question"] =
+            json!("The source only projects this future; what present evidence grounds the route?");
+        validate_route(&route, &snapshot, &program).unwrap();
+    }
+
     #[test]
     fn oversized_or_unselected_backward_batch_cannot_mutate_snapshot() {
         let (before, mut program, route) = fixture();

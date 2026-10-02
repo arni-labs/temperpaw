@@ -769,7 +769,7 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
             .cloned()
             .ok_or("Missing structural subject".to_owned())
     };
-    let mut state = json!({"world_question":snapshot["world"],"baseline":program["baseline"],"world":world,"source_evidence":nodes.iter().filter(|n|matches!(field(n,"kind"),"evidence"|"research_evidence")).collect::<Vec<_>>()});
+    let mut state = json!({"world_question":snapshot["world"],"baseline":program["baseline"],"world":world,"source_evidence":super::evidence::active_sources(snapshot)});
     if let Some(world) = world {
         state["previous_world_judgments"] = previous_world_judgments(program, world);
     }

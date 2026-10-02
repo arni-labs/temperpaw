@@ -120,3 +120,10 @@ cost is a likely search limit (127 provider requests alone require at least 254
 Evaluate/Recorded transitions), but the exact terminal admission reason was not
 available in the visible UI. A fresh deployed run must establish whether these
 changes deliver a complete, useful answer.
+
+
+## Pass 3: contract failures, no completed answers
+
+Revision `497c0726d` produced no completed answers across games, food, education, cities and music. Games and education exhausted correction polling because backward research emitted stored source records rather than the required response schema. Food and cities could not correct a projection horizon mistakenly stored as an observation period. Music rejected honest unsourced roots with empty mechanisms, despite the prompt permitting explicit unresolved questions. No quality comparison or frontier-model win is established. Education and cities have now informed debugging and are no longer untouched holdouts.
+
+The repair shares an exact research response contract, batches validation diagnostics, permits explicit append-only projection corrections while excluding superseded sources from active evidence, and accepts explicit unresolved roots without promoting them to connected paths. Existing uncertainties, original sources and run clocks remain preserved. Seven module suites passed (707 test executions; 32 ignored), seven WASM builds and clippy completed with warnings, and the rebuilt seed handler passed an actual WASM replay. Fresh deployed runs remain necessary.

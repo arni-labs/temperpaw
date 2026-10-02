@@ -6,9 +6,7 @@ pub const PREFIX: &str = "ref_";
 // Select observed evidence for a reasoning view; callers retain the full snapshot
 // reference namespace when projecting this view alongside existing hypotheses.
 pub fn evidence_snapshot(snapshot: &Value) -> Value {
-    json!({"world":snapshot["world"],"nodes":snapshot["nodes"].as_array().into_iter().flatten()
-        .filter(|node| matches!(node["kind"].as_str(),Some("evidence"|"research_evidence")))
-        .cloned().collect::<Vec<_>>()})
+    json!({"world":snapshot["world"],"nodes":crate::core::evidence::active_sources(snapshot)})
 }
 
 pub struct References {

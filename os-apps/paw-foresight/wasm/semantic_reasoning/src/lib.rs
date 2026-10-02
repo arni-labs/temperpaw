@@ -25,7 +25,7 @@ mod definitions {
 }
 
 const BASELINE_PROMPT: &str = r#"Establish the present before constructing futures. Answer the plain user question by mapping the relevant current system: what is observed, how the observed conditions interact, what is merely assumed and what remains unknown. Let dimensions emerge from the question and supplied sources; do not impose a topic checklist. Use only supplied evidence and exact visible evidence IDs. For evidence_contract v1, observed claims must cite evidence_metadata.kind=finding. Leads establish only that a source was located, not substantive facts; legacy_unverified records have not been checked under this contract. Retain these as unresolved research in unknowns, not observations. Empty observations are valid. Dates in evidence_metadata distinguish publication precision, observation period and retrieval; never replace a missing date with the research vantage. Indexed published_at is provider-reported and must be checked against the source before recording a publication date. Distinguish source claims from established facts, dates and scope, conflicting accounts, older baselines and current observations. Do not convert missing evidence into absence or certainty. Frozen hindcasts admit no knowledge beyond their vantage. Do not propose or forecast hypotheses yet. baseline.assumptions may contain only exact quotations of explicit constraints in world.description. Do not assume that existing arrangements persist or that replacement is out of scope unless the user said so. Present uncertainties belong in unknowns; conjectural causal premises belong in later hypothetical events and world assumptions. The original question is authoritative: evidence availability is not permission to narrow it or turn research gaps into user assumptions. Review whether your researched scope is narrower than requested. Aligned is a model judgment, never proof of comprehensive coverage. Copy every unresolved scope_review.limitations string exactly into baseline.unknowns, not assumptions about what the user meant.
-Return JSON ONLY: {"scope_review":{"requested_question":"exact original world.description","evidence_scope":"what the supplied evidence actually covers, <=800 characters","narrowing_basis":"value from scope contract","status":"value from scope contract","limitations":["remaining scope limits, each <=240 characters"]},"baseline":{"as_of":"exact world.last_ingest_date","observed":[{"claim":"dated scoped observation, including source limits, <=400 characters","evidence_ids":["1–16 actual supplied evidence node refs"]}],"assumptions":["exact verbatim quote of an explicit user constraint from world.description; omit model-invented limits, <=240 characters"],"unknowns":["missing or disputed present information, <=240 characters"]}}. Each list has 0–16 entries. Empty observations are legitimate if sources are insufficient; explain the limitation in unknowns. If baseline_correction is supplied, repair its specific validation error and return the complete JSON."#;
+Return JSON ONLY: {"scope_review":{"requested_question":"exact original world.description","evidence_scope":"what the supplied evidence actually covers, <=800 characters","narrowing_basis":"value from scope contract","status":"value from scope contract","limitations":["remaining scope limits, each <=240 characters"]},"baseline":{"as_of":"exact world.last_ingest_date","observed":[{"claim":"dated scoped observation, including source limits, <=400 characters","evidence_ids":["1–16 actual supplied evidence node refs"]}],"assumptions":["exact verbatim quote of an explicit user constraint from world.description; omit model-invented limits, <=240 characters"],"unknowns":["missing or disputed present information, <=240 characters"]}}. Each list has 0–16 entries. Empty observations are legitimate if sources are insufficient; explain the limitation in unknowns. If a supplied finding incorrectly records a future forecast horizon as observation_period, an explicit source correction is supported in this phase. Add source_corrections:[{source_id:"exact supplied ref_ ID",kind:"source_projection",reason:"why the supplied text is a projection, <=800 characters",source_refs:"copy the source's exact source_refs string unchanged",projection_period:{start:"copy original observation_period.start including null",end:"copy original observation_period.end including null"},evidence_metadata:{kind:"finding",publication_date:"copy original unchanged including null",observation_period:{start:null,end:null},retrieved_at:"copy original unchanged including null"}}]. Maximum16 corrections. This does not retrieve or verify new evidence: preserve source references, publication/retrieval dates, original source text and projected horizon exactly; never invent an observation date. Keep projected outcomes in baseline.unknowns, never baseline.observed. The engine appends a corrected projection source, retains original source text and correction provenance, and removes any proposed present observation citing that correction into an explicit limitation receipt. The corrected source stays available to later reasoning as projection evidence, not evidence the outcome happened. Leave room for one chronology limitation in the bounded baseline.unknowns list. A future publication date cannot be repaired this way; retain unavailable sources as unknowns. Omit source_corrections or return[] when no such correction is supported. If baseline_correction is supplied, repair its specific validation error and return the complete JSON."#;
 
 const SCOPE_REPAIR_PROMPT: &str = r#"Repair the specific source-driven scope narrowing in scope_review before constructing futures. The exact original world.description remains authoritative; no prescribed topics or coverage quota. Use available read-only search/fetch to investigate the missing scope, preserving dates, source limits and contradictory findings. No future hypotheses or new branches. Frozen hindcasts cannot retrieve new knowledge. A repair may remain limited; addressed is only your judgment, never coverage certification. The original baseline is retained in the engine receipt. Revise observations when the supplied source evidence supports a correction; preserve source/date qualifications and revise assumptions/unknowns so evidence availability is not presented as user intent. Copy every unresolved scope_review.limitations string exactly into baseline.unknowns. Return JSON only with hypotheses:[], branches:[], research_evidence:[{id:"unique local source ID",statement:"scoped retrieved finding",url:"exact HTTPS URL",quote:"short supporting text",evidence_metadata:{kind:"finding|lead",publication_date:null,observation_period:{start:null,end:null},retrieved_at:null},provenance:"observed|contested|weak_signal"}], continue_exploring:true, exploration_note, baseline (same schema), scope_review (full required schema and exact enum values in the scope contract below), and scope_disposition:{status:"value from scope_disposition contract",report:"what was checked and remains limited, <=1200 characters",evidence_ids:["actual existing source ref_ IDs or new research_evidence local IDs"]}. New findings require retrieved source text, exact HTTPS URL, quote <=25 words/200 characters, publication_date and observation_period distinct from retrieved_at; unknown dates stay null. Never infer findings from titles. On fetch failure report only supported indexed text with explicit limits. Return empty research_evidence when no support is obtained; do not invent evidence to finish the repair."#;
 
@@ -48,7 +48,8 @@ Reference contract: existing catalog nodes use exact ref_ identifiers; never rec
 
 Resource contract: at most128 TOTAL hypotheses plus research_evidence per batch; capacity5000 Jev calls,2048 nodes,64 rounds and one hour. These are limits, not targets or category counts. Continue while another round can add a materially different mechanism or resolve a consequential uncertainty. Stop with continue_exploring=false when it cannot, explaining why and what remains unknown. A budget stop means incomplete exploration, not convergence."#;
 
-const RESEARCH_CONTRACT: &str = r#"Research contract: use available read-only temper.web_search and temper.web_fetch. Prefer direct temper.web_fetch(url); web_fetch accepts only a URL. On failure, web_search result's text field may contain bounded source-extracted text. Report only claims and quotations actually contained in that returned text, never infer them from titles, URLs or search summaries. Label indexed-excerpt evidence, direct-fetch failure and date/context limits; use weak_signal when context remains unverified. Fetch smaller article/text-version URLs only when actually discovered. Keep publication dates distinct from retrieval dates, and old findings distinct from the observed present. For frozen hindcasts, return research_evidence=[] and use only supplied evidence within the vantage; later remembered knowledge is inadmissible. Report tool failures and contradictory evidence honestly. A citation or Jev label does not prove a future."#;
+const RESEARCH_CONTRACT: &str = r#"Research response JSON contract (applies to explore, challenge, scope repair and backward search): return research_evidence as an array of records with exactly this response shape: {"id":"unique local ASCII ID","statement":"scoped finding, nonempty and under2000 bytes","url":"one exact retrieved HTTPS URL","quote":"nonempty supporting excerpt, at most25 words and200 characters","evidence_metadata":{"kind":"finding or lead","publication_date":null,"observation_period":{"start":null,"end":null},"retrieved_at":null},"provenance":"observed or contested or weak_signal"}. Replace enum descriptions with one allowed value; dates follow the chronology contract, unknown dates remain null. These are response records, not stored catalog nodes: source_refs does not replace url, publication_date and observation_period belong inside evidence_metadata, kind belongs inside evidence_metadata, and direct_fetch is not a provenance value. Use finding only for actually retrieved substantive support, lead for source existence or incomplete retrieval. Return [] when there are no new reports. When correcting schema errors, preserve valid routes and content and repair every indexed field reported; do not repeat research merely to reformat already retrieved source content.
+Research contract: use available read-only temper.web_search and temper.web_fetch. Prefer direct temper.web_fetch(url); web_fetch accepts only a URL. On failure, web_search result's text field may contain bounded source-extracted text. Report only claims and quotations actually contained in that returned text, never infer them from titles, URLs or search summaries. Label indexed-excerpt evidence, direct-fetch failure and date/context limits; use weak_signal when context remains unverified. Fetch smaller article/text-version URLs only when actually discovered. Keep publication dates distinct from retrieval dates, and old findings distinct from the observed present. For frozen hindcasts, return research_evidence=[] and use only supplied evidence within the vantage; later remembered knowledge is inadmissible. Report tool failures and contradictory evidence honestly. A citation or Jev label does not prove a future."#;
 
 const CHALLENGE_PROMPT: &str = r#"Investigate existing or new conjectural premises that challenge the candidates' shared arrangement. A new premise is an ordinary hypothesis in this response, not observed evidence; include it and its consequences in the appropriate premises_challenged alternative group. Its new branch conditions may reference its same-batch ID. Bind consequences with branch_id; an unconditioned premise must not condition on itself. Preserve existing ancestry when extending an existing branch.
 
@@ -240,13 +241,15 @@ fn composition_candidates(snapshot: &Value, program: &Value) -> Value {
 
 fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
+    let superseded = core::evidence::superseded_ids(snapshot);
     let evidence: Vec<_> = nodes
         .iter()
         .filter(|node| {
-            !matches!(
-                core::field(node, "kind"),
-                "hypothesis" | "scenario" | "revision" | "option" | "world"
-            )
+            !superseded.contains(core::field(node, "Id"))
+                && !matches!(
+                    core::field(node, "kind"),
+                    "hypothesis" | "scenario" | "revision" | "option" | "world"
+                )
         })
         .collect();
     // Source rows retain their full payload once; catalog entries are compact
@@ -257,7 +260,10 @@ fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
         .collect();
     let catalog: Vec<_> = node_catalog(snapshot)
         .into_iter()
-        .filter(|node| !source_ids.contains(core::field(node, "Id")))
+        .filter(|node| {
+            !source_ids.contains(core::field(node, "Id"))
+                && !superseded.contains(core::field(node, "Id"))
+        })
         .collect();
     let mut input = json!({
         "world":snapshot["world"], "catalog":catalog, "branches":snapshot["branches"],
@@ -471,6 +477,22 @@ mod reasoning_tests {
 
     mod outlook_contract {
         include!("../../semantic_outlook.rs");
+    }
+
+    #[test]
+    fn superseded_source_cannot_leak_back_through_reasoning_catalog() {
+        let original = json!({"Id":"original","kind":"evidence","statement":"An incorrectly dated source","edges":"[]"});
+        let corrected = json!({"Id":"corrected","kind":"evidence","statement":"Source projection, not an observed outcome","claim_type":"source_projection","source_correction":{"source_id":"original","corrected_source_id":"corrected","kind":"source_projection","verified":false},"edges":"[]"});
+        let snapshot = json!({"world":{},"nodes":[original,corrected]});
+        let input = reasoning_input(&snapshot, &json!({})).unwrap();
+        assert_eq!(input["source_evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(input["source_evidence"][0]["Id"], "ref_0002");
+        assert_eq!(
+            input["source_evidence"][0]["source_correction"]["verified"],
+            false
+        );
+        assert_eq!(input["catalog"], json!([]));
+        assert_eq!(snapshot["nodes"][0], original);
     }
 
     #[test]

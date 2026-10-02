@@ -63,6 +63,26 @@ fn retry_count(state: &Value) -> u64 {
         .and_then(Value::as_u64)
         .unwrap_or(0)
 }
+fn polling_diagnostic(state: &Value, session: &Value, polls: u64) -> String {
+    let program = core::parse(core::field(state, "program_json")).unwrap_or(Value::Null);
+    let correction = &program["response_correction"];
+    let error: String = core::field(correction, "validation_error")
+        .chars()
+        .take(1200)
+        .collect();
+    let fields = session.get("fields").unwrap_or(session);
+    format!(
+        "Reasoning phase exhausted its reserved polling budget; saved work is preserved. Session={} status={} polls={} turn_count={} provider_auth_status={} correction_attempt={} validation_error={}",
+        core::field(state, "reasoning_session_id"),
+        core::field(session, "Status"),
+        polls,
+        fields.get("turn_count").unwrap_or(&Value::Null),
+        core::field(session, "provider_auth_status"),
+        correction.get("attempt").unwrap_or(&Value::Null),
+        error
+    )
+}
+
 fn check(ctx: &Context) -> Result<(), String> {
     let started = core::field(&ctx.entity_state, "started_at_ms")
         .parse::<u64>()
@@ -74,10 +94,11 @@ fn check(ctx: &Context) -> Result<(), String> {
         .as_u64()
         .unwrap_or(0);
     if polls > core::MAX_REASONING_POLLS {
-        return Err(
-            "Reasoning phase exhausted its reserved polling budget; saved work is preserved."
-                .into(),
-        );
+        return Err(polling_diagnostic(
+            &ctx.entity_state,
+            &json!({"Status":"not_read_after_budget"}),
+            polls,
+        ));
     }
     if core::transition_count(&ctx.entity_state) >= core::MAX_APP_TRANSITIONS {
         return Err("Native transition budget exhausted; saved work is preserved.".into());
@@ -97,7 +118,7 @@ fn check(ctx: &Context) -> Result<(), String> {
         .ok_or("Missing Temper URL")?;
     let r = ctx.http_call(
         "GET",
-        &format!("{api}/tdata/Sessions('{id}')?$select=Status,result,error_message,error"),
+        &format!("{api}/tdata/Sessions('{id}')?$select=Status,result,error_message,error,turn_count,provider_auth_status"),
         &[
             ("x-tenant-id".into(), ctx.tenant.clone()),
             ("x-temper-principal-kind".into(), "agent".into()),
@@ -142,7 +163,7 @@ fn check(ctx: &Context) -> Result<(), String> {
         }
         _ => {
             if polls >= core::MAX_REASONING_POLLS {
-                return Err("Reasoning phase exhausted its reserved polling budget; saved work is preserved.".into());
+                return Err(polling_diagnostic(&ctx.entity_state, &s, polls));
             }
             set_success_result("ReasoningPending", &json!({}));
         }
@@ -161,6 +182,25 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod retry_tests {
     use super::*;
+    #[test]
+    fn poll_exhaustion_identifies_session_state_and_shared_correction_budget() {
+        let state = json!({"reasoning_session_id":"session-current","program_json":json!({"response_correction":{"attempt":2,"validation_error":"research_evidence[0].url missing"}}).to_string()});
+        let message = polling_diagnostic(
+            &state,
+            &json!({"Status":"CallingProvider","turn_count":1,"provider_auth_status":"ready"}),
+            10,
+        );
+        for expected in [
+            "session-current",
+            "status=CallingProvider",
+            "polls=10",
+            "turn_count=1",
+            "correction_attempt=2",
+            "research_evidence[0].url missing",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
     #[test]
     fn only_explicit_transient_provider_statuses_retry() {
         for status in [429, 500, 502, 503, 504] {

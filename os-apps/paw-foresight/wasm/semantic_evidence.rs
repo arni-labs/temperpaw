@@ -111,6 +111,40 @@ pub fn parse(raw: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+/// Corrections are append-only. Original records stay in the audit snapshot
+/// but are no longer active evidence once their replacement is recorded.
+pub fn superseded_ids(snapshot: &Value) -> std::collections::BTreeSet<&str> {
+    snapshot["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| {
+            matches!(node["kind"].as_str(), Some("evidence" | "research_evidence"))
+                && node["source_correction"]["corrected_source_id"] == node["Id"]
+                && node["source_correction"]["kind"] == "source_projection"
+        })
+        .filter_map(|node| node["source_correction"]["source_id"].as_str())
+        .collect()
+}
+pub fn active_sources(snapshot: &Value) -> Vec<&Value> {
+    let superseded = superseded_ids(snapshot);
+    snapshot["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| {
+            matches!(
+                node["kind"].as_str(),
+                Some("evidence" | "research_evidence")
+            ) && !superseded.contains(node["Id"].as_str().unwrap_or(""))
+        })
+        .collect()
+}
+pub fn is_projection(node: &Value) -> bool {
+    node["claim_type"] == "source_projection"
+        || node["source_correction"]["kind"] == "source_projection"
+}
+
 pub fn single_source(refs: &Value) -> Result<(), String> {
     let refs: Value = match refs.as_str() {
         Some(raw) => serde_json::from_str(raw).map_err(|_| "Invalid source_refs")?,

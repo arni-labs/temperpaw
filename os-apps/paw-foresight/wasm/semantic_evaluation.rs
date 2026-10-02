@@ -16,6 +16,8 @@ fn digest(node: &Value) -> Value {
         "observed_at",
         "claim_type",
         "evidence_metadata",
+        "source_correction",
+        "projection_period",
         "evidence_note",
         "signal",
         "statement",
@@ -203,9 +205,8 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
     }
 
     let mut counter_hypotheses = vec![];
-    let evidence: Vec<_> = nodes
-        .iter()
-        .filter(|n| matches!(field(n, "kind"), "evidence" | "research_evidence"))
+    let evidence: Vec<_> = super::evidence::active_sources(snapshot)
+        .into_iter()
         .map(digest)
         .collect();
     if is_world {
