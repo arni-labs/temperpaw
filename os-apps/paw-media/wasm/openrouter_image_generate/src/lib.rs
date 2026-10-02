@@ -4,8 +4,9 @@
 //! OpenRouter's image API (`POST /api/v1/images`) with an API key held as a
 //! Temper secret, stores the image in PawFS, and records
 //! MediaGenerationRequest.RecordResult. No subscription auth gate: the key is
-//! the credential. The default model is xAI's Grok Imagine, the second model
-//! Katagami's art-style transfer test compares against the Codex renderer.
+//! the credential. The default model is xAI's Grok Imagine; Katagami's
+//! art-style transfer test also names GPT Image, Nano Banana and Seedream
+//! (ALLOWED_MODELS).
 
 use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
@@ -175,9 +176,16 @@ fn validate_request(fields: &Value) -> Result<(), String> {
 
 /// OpenRouter models a request may name. Every picture is paid from the
 /// tenant's OpenRouter credit, so a caller cannot pick an arbitrary (or
-/// arbitrarily expensive) model: only Grok Imagine, the second model of
-/// Katagami's earlier GPT Image and Grok gallery comparisons, or the operator's configured default.
-const ALLOWED_MODELS: &[&str] = &[DEFAULT_MODEL];
+/// arbitrarily expensive) model: only the newest model of each family
+/// Katagami's art-style transfer test draws with (Rita, 2026-10-02: Grok
+/// Imagine, GPT Image, Nano Banana and Seedream, ids from OpenRouter's image
+/// model list on 2026-10-02), or the operator's configured default.
+const ALLOWED_MODELS: &[&str] = &[
+    DEFAULT_MODEL,
+    "openai/gpt-image-2.5-sunburst",
+    "google/gemini-3.1-flash-image",
+    "bytedance-seed/seedream-5-0-pro",
+];
 
 /// The configured default (else Grok Imagine), or a requested "vendor/model"
 /// when it is allowed.
@@ -835,6 +843,26 @@ mod tests {
             "vendor/configured"
         );
         assert!(choose_model("openai/some-expensive-model", DEFAULT_MODEL).is_err());
+    }
+
+    #[test]
+    fn the_four_transfer_test_models_are_drawn_and_no_others() {
+        for model in [
+            "x-ai/grok-imagine-image-2.0",
+            "openai/gpt-image-2.5-sunburst",
+            "google/gemini-3.1-flash-image",
+            "bytedance-seed/seedream-5-0-pro",
+        ] {
+            assert_eq!(choose_model(model, DEFAULT_MODEL).as_deref(), Ok(model));
+        }
+        // Another tier of the same families is still refused before a paid call.
+        for model in [
+            "openai/gpt-image-2.5-flare",
+            "google/gemini-3-pro-image",
+            "bytedance-seed/seedream-5-0-flash",
+        ] {
+            assert!(choose_model(model, DEFAULT_MODEL).is_err(), "{model}");
+        }
     }
 
     #[test]
