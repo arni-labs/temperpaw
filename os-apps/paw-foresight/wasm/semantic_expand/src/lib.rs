@@ -1333,7 +1333,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         return Err(format!(
             "Proposed world set cannot fit its complete first audit pass: {}. Return a complete 2–6 world composition whose full audit plan fits the remaining capacity; preserve defining claims and do not omit required audits. A corrective reasoning phase may consume up to {} additional transitions, and the corrected proposal will be measured again against the then-current budget.",
             admission,
-            core::REASONING_TRANSITION_RESERVE,
+            core::REASONING_ADMISSION_RESERVE,
         ));
     }
     program["first_world_pass_admission"] = admission;

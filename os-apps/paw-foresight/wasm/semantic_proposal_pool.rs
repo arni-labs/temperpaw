@@ -1,7 +1,7 @@
 // Candidate exploration stays inside the existing imagine/explore/proposals lifecycle.
 // These checks are fallible model judgments, never novelty certificates.
 use super::super::{
-    REASONING_TRANSITION_RESERVE, evidence, field, references_for_endpoints as references,
+    REASONING_ADMISSION_RESERVE, evidence, field, references_for_endpoints as references,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -25,12 +25,12 @@ pub fn is_task(task: &Value) -> bool {
 // Keep three initial-world route turns plus composition/writing and a small
 // evaluation tail. This does not promise every alternative route will fit.
 pub fn reserve() -> u64 {
-    5 * REASONING_TRANSITION_RESERVE
+    5 * REASONING_ADMISSION_RESERVE
 }
 pub fn admits(remaining: u64, reasoning_turns: u64, questions: usize) -> bool {
     remaining
         >= reserve()
-            + reasoning_turns * REASONING_TRANSITION_RESERVE
+            + reasoning_turns * REASONING_ADMISSION_RESERVE
             + 2 * (questions as u64).div_ceil(8)
             + 8
 }
@@ -670,7 +670,7 @@ pub fn finish(
             super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
         let developed = p["proposal_pool"]["development"]["status"] == "completed";
         let remaining_reasoning_turns = if developed { 2 } else { 4 };
-        let max_selected = (remaining.saturating_sub(32) / REASONING_TRANSITION_RESERVE)
+        let max_selected = (remaining.saturating_sub(32) / REASONING_ADMISSION_RESERVE)
             .saturating_sub(remaining_reasoning_turns)
             .min(5) as usize;
         p["proposal_pool"]["selection_budget"] = json!({"remaining_transitions":remaining,"max_selected":max_selected,"reserved_reasoning_turns_per_selected_world":1,"development_research_composition_writing_turns":remaining_reasoning_turns,"evaluation_tail":32});
@@ -761,7 +761,7 @@ pub fn finish(
                         .map(|e| e["contrast"]["consequences"].as_array().map_or(0, Vec::len))
                         .sum::<usize>()
                     + n * (n - 1) / 2;
-                remaining >= (*n as u64 + 4) * REASONING_TRANSITION_RESERVE + 2 * checks as u64 + 32
+                remaining >= (*n as u64 + 4) * REASONING_ADMISSION_RESERVE + 2 * checks as u64 + 32
             });
             p["proposal_pool"]["development_admission"] = json!({
                 "remaining_transitions":remaining,"admitted":count.is_some(),
@@ -803,7 +803,7 @@ pub fn finish(
             } else {
                 2
             };
-            let reserved_tail = reserve() + development_turns * REASONING_TRANSITION_RESERVE + 32;
+            let reserved_tail = reserve() + development_turns * REASONING_ADMISSION_RESERVE + 32;
             paired["proposal_pool"]["pair_admission"] = json!({"remaining_transitions":remaining,"check_transitions":cost,"reserved_tail":reserved_tail,"admitted":remaining>=cost+reserved_tail});
             if remaining < cost + reserved_tail {
                 paired["endpoint_proposal_attempt"]["status"] = json!("unresolved");
@@ -1512,6 +1512,6 @@ mod tests {
         assert_eq!(reserve(), 220);
         assert!(admits(356, 2, 160));
         assert!(!admits(355, 2, 160));
-        assert!(2 * batches + 2 * REASONING_TRANSITION_RESERVE + reserve() < 342);
+        assert!(2 * batches + 2 * REASONING_ADMISSION_RESERVE + reserve() < 342);
     }
 }

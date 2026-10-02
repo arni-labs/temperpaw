@@ -1447,14 +1447,14 @@ mod tests {
         // Three reasoning phases (imagine and two backward turns), directed
         // route calls, and the untouched final-world/writer reserve. Candidate
         // assessment has its own share; no theoretical5000-call claim here.
-        let nominal = 3 * super::super::REASONING_TRANSITION_RESERVE + 2 * batches as u64;
+        let nominal = 3 * super::super::REASONING_ADMISSION_RESERVE + 2 * batches as u64;
         assert!(
-            nominal + 2 * super::super::REASONING_TRANSITION_RESERVE
+            nominal + 2 * super::super::REASONING_ADMISSION_RESERVE
                 < super::super::MAX_APP_TRANSITIONS
         );
         eprintln!(
             "world-first fanout:18routes,{tasks}Jevquestions,{batches}HTTPbatches,{nominal}transitions including3reasoningreserves;finalreserve={} remains",
-            2 * super::super::REASONING_TRANSITION_RESERVE
+            2 * super::super::REASONING_ADMISSION_RESERVE
         );
     }
 

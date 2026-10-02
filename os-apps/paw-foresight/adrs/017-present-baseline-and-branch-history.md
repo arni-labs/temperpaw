@@ -155,3 +155,21 @@ cycles and reversed unique-route dates; actual expansion preserves both captured
 links where the previous artifact rejects them. The replay uses the later saved
 catalog and assessments with local correction cursors cleared, not an untouched
 capture of the original failed execution.
+
+
+### Preserve active reasoning across the former ten-poll cutoff
+
+The ten shared polls still abandoned a third corrective Session while it was
+CallingProvider; that same Session completed after its parent failed. Poll count
+is now diagnostic only. The monitor continues checking the same child and consumes
+its completed result without launching a replacement merely for being slow.
+The original one-hour clock, 480-transition cap, 60-second poll cadence, bounded
+correction/provider-retry counts, and 900-second native state timeouts are unchanged.
+Completed results after the original deadline are still rejected.
+
+The unchanged 44-transition allowance is named `REASONING_ADMISSION_RESERVE`:
+it plans admission of optional work, not a guaranteed upper bound on active
+reasoning. Remaining transitions are rechecked before subsequent work; a slow
+child can use evaluation headroom and exhaust the overall run budget. This does
+not guarantee delivery or add model attempts. Earlier worst-case phase arithmetic
+above describes the superseded poll-count cutoff, not the current lifecycle.

@@ -68,9 +68,9 @@ fn next_phase(
         let remaining = core::transition_limit(&json!({"stage":"routes"}))
             .saturating_sub(core::transition_count(program));
         let allowed = exhausted.is_empty()
-            && remaining >= core::REASONING_TRANSITION_RESERVE + 16
+            && remaining >= core::REASONING_ADMISSION_RESERVE + 16
             && elapsed_ms < core::MAX_MS.saturating_sub(core::WORLD_TIME_RESERVE_MS + 120_000);
-        program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_TRANSITION_RESERVE+16,"alternative_required":needs_alternative});
+        program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_ADMISSION_RESERVE+16,"alternative_required":needs_alternative});
         if allowed && (needs_alternative || program["continue_exploring"] != false) {
             program["stage"] = json!("exploration");
             program["stop_reason"] = json!(if needs_alternative {
@@ -139,7 +139,7 @@ fn next_phase(
             let required = admission["required_transitions"]
                 .as_u64()
                 .unwrap_or(u64::MAX)
-                .saturating_add(core::REASONING_TRANSITION_RESERVE);
+                .saturating_add(core::REASONING_ADMISSION_RESERVE);
             revision_allowed = admission["admitted"] == true
                 && required <= admission["remaining_transitions"].as_u64().unwrap_or(0);
             admission["required_transitions"] = json!(required);
@@ -235,12 +235,12 @@ fn plan_combination_phase(
 fn challenge_due(snapshot: &Value, program: &Value, upcoming_transitions: u64) -> bool {
     let limit = core::transition_limit(program);
     let transitions = program["transition_count"].as_u64().unwrap_or(0);
-    let trigger = limit.saturating_sub(core::REASONING_TRANSITION_RESERVE + 32);
+    let trigger = limit.saturating_sub(core::REASONING_ADMISSION_RESERVE + 32);
     program["stage"] == "exploration"
         && program["baseline_status"] == "established"
         && program["independent_challenge"].is_null()
         && transitions.saturating_add(upcoming_transitions) >= trigger
-        && transitions.saturating_add(core::REASONING_TRANSITION_RESERVE) < limit
+        && transitions.saturating_add(core::REASONING_ADMISSION_RESERVE) < limit
         && snapshot["nodes"]
             .as_array()
             .into_iter()
@@ -283,11 +283,11 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
         batches += 1;
     }
     let evaluation_transitions = batches.saturating_mul(2);
-    let required = core::REASONING_TRANSITION_RESERVE + evaluation_transitions + 32;
+    let required = core::REASONING_ADMISSION_RESERVE + evaluation_transitions + 32;
     let remaining = core::transition_limit(program)
         .saturating_sub(program["transition_count"].as_u64().unwrap_or(0));
     Ok(
-        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"reasoning_reserve":core::REASONING_TRANSITION_RESERVE,"current_graph_evaluation_transitions":evaluation_transitions,"new_work_reserve":32,"estimated_batches":batches,"current_graph_tasks":task_count,"unseen_payload_bounded":false}),
+        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"reasoning_reserve":core::REASONING_ADMISSION_RESERVE,"current_graph_evaluation_transitions":evaluation_transitions,"new_work_reserve":32,"estimated_batches":batches,"current_graph_tasks":task_count,"unseen_payload_bounded":false}),
     )
 }
 
@@ -323,7 +323,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         let allowed = !stopped
             && calls < core::call_limit(&program)
             && elapsed < core::time_limit(&program).saturating_sub(120_000)
-            && remaining >= core::REASONING_TRANSITION_RESERVE + 32
+            && remaining >= core::REASONING_ADMISSION_RESERVE + 32
             && core::field(&snapshot["world"], "hindcast_mode") == "false";
         if allowed {
             set_success_result(
@@ -386,7 +386,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         let resource_exhausted =
             stopped || calls >= core::call_limit(&program) || elapsed >= core::time_limit(&program);
         let retry = !resource_exhausted
-            && remaining >= core::REASONING_TRANSITION_RESERVE + 16
+            && remaining >= core::REASONING_ADMISSION_RESERVE + 16
             && elapsed < core::time_limit(&program).saturating_sub(120_000);
         if core::proposals::pool::enabled(&program) {
             let global_remaining =
@@ -452,7 +452,7 @@ fn step(ctx: &Context) -> Result<(), String> {
                 .as_u64()
                 .unwrap_or(u64::MAX)
                 .saturating_mul(2)
-                .saturating_add(core::REASONING_TRANSITION_RESERVE + 2 + 4);
+                .saturating_add(core::REASONING_ADMISSION_RESERVE + 2 + 4);
             admission["retry_attempts_total"] = json!(2);
             admission
                 .as_object_mut()
@@ -518,7 +518,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         // A further generation phase can consume its full allowance before the
         // next step. Challenge now rather than jump over the reserved window.
         if phase == "explore"
-            && challenge_due(&snapshot, &program, core::REASONING_TRANSITION_RESERVE)
+            && challenge_due(&snapshot, &program, core::REASONING_ADMISSION_RESERVE)
         {
             program["independent_challenge"] =
                 json!({"status":"pending","trigger":"reserved_before_next_exploration"});
@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn independent_challenge_has_a_reserved_window_without_repeating_or_overrunning() {
         let limit = core::transition_limit(&json!({"stage":"exploration"}));
-        let trigger = limit - core::REASONING_TRANSITION_RESERVE - 32;
+        let trigger = limit - core::REASONING_ADMISSION_RESERVE - 32;
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});
         let mut p = json!({"stage":"exploration","baseline_status":"established","transition_count":trigger-1});
         assert!(!challenge_due(&snapshot, &p, 0));
@@ -652,7 +652,7 @@ mod tests {
         assert!(challenge_due(
             &snapshot,
             &p,
-            core::REASONING_TRANSITION_RESERVE
+            core::REASONING_ADMISSION_RESERVE
         ));
         p["transition_count"] = json!(trigger);
         assert!(challenge_due(&snapshot, &p, 0));
@@ -661,7 +661,7 @@ mod tests {
         p["independent_challenge"] = json!({"status":"completed"});
         assert!(!challenge_due(&snapshot, &p, 0));
         p["independent_challenge"] = Value::Null;
-        p["transition_count"] = json!(limit - core::REASONING_TRANSITION_RESERVE);
+        p["transition_count"] = json!(limit - core::REASONING_ADMISSION_RESERVE);
         assert!(!challenge_due(&snapshot, &p, 0));
         p["transition_count"] = json!(trigger);
         p["stage"] = json!("worlds");

@@ -145,7 +145,7 @@ fn metadata_exposes_exact_phase_reset_parameters() {
 }
 
 #[test]
-fn ten_poll_phase_counts_worst_case_success_and_timeout_without_reset() {
+fn active_phase_counts_late_completion_without_reset_or_duplicate_consumption() {
     let source = source().replacen("initial = \"Created\"", "initial = \"Choosing\"", 1);
     let spec: toml::Value = toml::from_str(&source).unwrap();
     for name in ["SpawnReasoning", "ReasoningPending"] {
@@ -181,7 +181,7 @@ fn ten_poll_phase_counts_worst_case_success_and_timeout_without_reset() {
             .iter()
             .any(|e| e.get("delay_seconds").and_then(toml::Value::as_integer) == Some(15))
     );
-    for timeout in [false, true] {
+    for additional_pending in [3, 4] {
         let mut actor = EntityActorHandler::new(
             "SemanticRun",
             "fixture",
@@ -213,33 +213,21 @@ fn ten_poll_phase_counts_worst_case_success_and_timeout_without_reset() {
             apply("LaunchReasoning", launch.clone());
             apply("SpawnReasoning", json!({}));
         }
-        for _ in 0..2 {
+        for _ in 0..additional_pending {
             apply("CheckReasoning", json!({}));
             apply("ReasoningPending", json!({}));
         }
         apply("CheckReasoning", json!({}));
-        let result = if timeout {
-            apply("ReasoningPending", json!({}));
-            apply("CheckReasoning", json!({}));
-            apply("Fail", json!({"error_message":"poll budget exhausted"}))
-        } else {
-            apply("ReasoningComplete", json!({"reasoning_result":"{}"}));
-            apply(
-                "Expanded",
-                json!({"snapshot_json":"{}","program_json":"{}","started_at_ms":"original"}),
-            )
-        };
-        assert_eq!(
-            result["counters"]["transition_count"],
-            if timeout { 40 } else { 39 }
+        apply("ReasoningComplete", json!({"reasoning_result":"{}"}));
+        let result = apply(
+            "Expanded",
+            json!({"snapshot_json":"{}","program_json":"{}","started_at_ms":"original"}),
         );
-        assert_eq!(
-            result["counters"]["reasoning_phase_polls"],
-            if timeout { 11 } else { 10 }
-        );
+        assert_eq!(result["counters"]["transition_count"], 35 + 2 * additional_pending);
+        assert_eq!(result["counters"]["reasoning_phase_polls"], 8 + additional_pending);
         assert_eq!(result["counters"]["reasoning_retry_count"], 3);
-        if !timeout {
-            assert_eq!(result["fields"]["started_at_ms"], "original");
-        }
+        assert_eq!(result["fields"]["started_at_ms"], "original");
+        assert!(actor.handle_message("CheckReasoning", "{}").is_err());
+        assert!(actor.handle_message("ReasoningComplete", "{}").is_err());
     }
 }

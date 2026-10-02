@@ -79,7 +79,7 @@ fn polling_diagnostic(state: &Value, session: &Value, polls: u64) -> String {
         .collect();
     let fields = session.get("fields").unwrap_or(session);
     format!(
-        "Reasoning phase exhausted its reserved polling budget; saved work is preserved. Session={} status={} polls={} turn_count={} provider_auth_status={} correction_kind={} correction_attempt={} validation_error={}",
+        "Reasoning session remains pending; existing work and original limits are preserved. Session={} status={} polls={} turn_count={} provider_auth_status={} correction_kind={} correction_attempt={} validation_error={}",
         core::field(state, "reasoning_session_id"),
         core::field(session, "Status"),
         polls,
@@ -101,13 +101,6 @@ fn check(ctx: &Context) -> Result<(), String> {
     let polls = ctx.entity_state["counters"]["reasoning_phase_polls"]
         .as_u64()
         .unwrap_or(0);
-    if polls > core::MAX_REASONING_POLLS {
-        return Err(polling_diagnostic(
-            &ctx.entity_state,
-            &json!({"Status":"not_read_after_budget"}),
-            polls,
-        ));
-    }
     if core::transition_count(&ctx.entity_state) >= core::MAX_APP_TRANSITIONS {
         return Err("Native transition budget exhausted; saved work is preserved.".into());
     }
@@ -170,9 +163,7 @@ fn check(ctx: &Context) -> Result<(), String> {
             return Err(format!("Reasoning session {id} did not complete: {error}"));
         }
         _ => {
-            if polls >= core::MAX_REASONING_POLLS {
-                return Err(polling_diagnostic(&ctx.entity_state, &s, polls));
-            }
+            ctx.log("info", &polling_diagnostic(&ctx.entity_state, &s, polls));
             set_success_result("ReasoningPending", &json!({}));
         }
     };
@@ -191,7 +182,7 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 mod retry_tests {
     use super::*;
     #[test]
-    fn poll_exhaustion_identifies_session_state_and_shared_correction_budget() {
+    fn pending_diagnostic_identifies_session_state_and_correction_history() {
         let state = json!({"reasoning_session_id":"session-current","program_json":json!({"response_correction":{"attempt":2,"validation_error":"research_evidence[0].url missing"}}).to_string()});
         let message = polling_diagnostic(
             &state,
@@ -210,7 +201,7 @@ mod retry_tests {
         }
     }
     #[test]
-    fn composition_timeout_reports_recorded_graph_rejection() {
+    fn pending_composition_reports_recorded_graph_rejection() {
         let state = json!({"phase":"compose","reasoning_session_id":"late-composer","program_json":json!({"composition_correction":{"attempt":2,"validation_error":"Reconstructed world omitted or changed a selected causal link"}}).to_string()});
         let message = polling_diagnostic(&state, &json!({"Status":"CallingProvider"}), 10);
         assert!(message.contains("correction_kind=composition_correction"));

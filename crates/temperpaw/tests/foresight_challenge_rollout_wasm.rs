@@ -210,10 +210,10 @@ async fn challenge_producer_binds_both_signs_and_preserves_joint_semantics() {
         "Matched synthetic two-consequence plan: old {}tasks/{}HTTP/{}transitions incl same reasoning reserve; new {}tasks/{}HTTP/{}transitions",
         old_program["tasks"].as_array().unwrap().len(),
         old_batches,
-        core::REASONING_TRANSITION_RESERVE + 2 * old_batches as u64,
+        core::REASONING_ADMISSION_RESERVE + 2 * old_batches as u64,
         cost_program["tasks"].as_array().unwrap().len(),
         new_batches,
-        core::REASONING_TRANSITION_RESERVE + 2 * new_batches as u64
+        core::REASONING_ADMISSION_RESERVE + 2 * new_batches as u64
     );
     let mut bad = generated.clone();
     bad["hypotheses"][1]["branch_id"] = json!("missing-branch");

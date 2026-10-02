@@ -301,8 +301,9 @@ pub fn plan(nodes: &[Value]) -> Result<Value, String> {
 }
 /// Missing classifications remain readable in historical runs; new plans classify first.
 pub const MAX_APP_TRANSITIONS: u64 = 480;
-pub const REASONING_TRANSITION_RESERVE: u64 = 44;
-pub const MAX_REASONING_POLLS: u64 = 10;
+/// Planning allowance for admitting new work, not a hard limit on an active child.
+/// Actual reasoning remains bounded by the original clock and total transitions.
+pub const REASONING_ADMISSION_RESERVE: u64 = 44;
 pub fn transition_count(state: &Value) -> u64 {
     state["counters"]["transition_count"]
         .as_u64()
@@ -311,13 +312,13 @@ pub fn transition_count(state: &Value) -> u64 {
 }
 pub fn transition_limit(program: &Value) -> u64 {
     if endpoints::enabled(program) && program["stage"] == "exploration" {
-        return MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 64;
+        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 64;
     }
     match field(program, "stage") {
-        "worlds" => MAX_APP_TRANSITIONS - REASONING_TRANSITION_RESERVE,
-        "routes" => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 64,
-        "combinations" => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128,
-        _ => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128 - 32,
+        "worlds" => MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE,
+        "routes" => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 64,
+        "combinations" => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 128,
+        _ => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 128 - 32,
     }
 }
 pub fn temporal_allows_forecast(program: &Value, id: &str) -> bool {
@@ -595,9 +596,8 @@ mod tests {
     }
 
     #[test]
-    fn polling_reserve_preserves_all_stage_budgets() {
-        assert_eq!(MAX_REASONING_POLLS, 10);
-        assert_eq!(REASONING_TRANSITION_RESERVE, 44);
+    fn admission_reserve_preserves_all_stage_budgets() {
+        assert_eq!(REASONING_ADMISSION_RESERVE, 44);
         let exploration = transition_limit(&json!({"stage":"exploration"}));
         let combinations = transition_limit(&json!({"stage":"combinations"}));
         let worlds = transition_limit(&json!({"stage":"worlds"}));
@@ -606,7 +606,6 @@ mod tests {
         assert_eq!(combinations + 44 + 128, worlds);
         assert_eq!(worlds + 44, MAX_APP_TRANSITIONS);
         assert_eq!(MAX_APP_TRANSITIONS + 32, 512);
-        const { assert!(40 + 4 <= REASONING_TRANSITION_RESERVE) };
     }
     #[test]
     fn late_branch_is_screened_before_earlier_candidates_repeat_deep_checks() {
