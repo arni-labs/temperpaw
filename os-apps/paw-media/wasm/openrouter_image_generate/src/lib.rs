@@ -176,7 +176,7 @@ fn validate_request(fields: &Value) -> Result<(), String> {
 
 /// OpenRouter models a request may name. Every picture is paid from the
 /// tenant's OpenRouter credit, so a caller cannot pick an arbitrary (or
-/// arbitrarily expensive) model: only the newest model of each family
+/// arbitrarily expensive) model: only the newest version of each family
 /// Katagami's art-style transfer test draws with (Rita, 2026-10-02: Grok
 /// Imagine, GPT Image, Nano Banana and Seedream, ids from OpenRouter's image
 /// model list on 2026-10-02), or the operator's configured default.
@@ -860,6 +860,9 @@ mod tests {
             "openai/gpt-image-2.5-flare",
             "google/gemini-3-pro-image",
             "bytedance-seed/seedream-5-0-flash",
+            // Only exact ids: a near miss is another (or a free) model.
+            "google/gemini-3.1-flash-image-preview",
+            "openai/gpt-image-2.5-sunburst:free",
         ] {
             assert!(choose_model(model, DEFAULT_MODEL).is_err(), "{model}");
         }
