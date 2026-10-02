@@ -431,6 +431,7 @@
         <Property Name="AgentModel" Type="Edm.String"/>
         <Property Name="AgentProvider" Type="Edm.String"/>
         <Property Name="AgentProviderOptionsJson" Type="Edm.String"/>
+        <Property Name="ResumeRunId" Type="Edm.String"/>
         <Property Name="ResearchSessionId" Type="Edm.String"/>
         <Property Name="ResearchSessionAttempt" Type="Edm.String"/>
         <Property Name="ResearchMonitorUnavailable" Type="Edm.Boolean"/>

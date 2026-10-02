@@ -1088,6 +1088,13 @@ name = "semantic_exploration_requested"
 type = "bool"
 initial = "false"
 
+# A fresh exploration explicitly starts without a saved run. This internal
+# spawn input is deliberately absent from Configure; retries belong to SemanticRun.
+[[state]]
+name = "resume_run_id"
+type = "string"
+initial = ""
+
 [[action]]
 name = "RequestSemanticExploration"
 kind = "input"
@@ -1101,7 +1108,7 @@ kind = "input"
 from = ["Active"]
 params = []
 guard = "is_true semantic_exploration_requested"
-effect = [{type="spawn",entity_type="SemanticRun",entity_id_source="{uuid}",initial_action="Start",copy_fields=""},{type="set_bool",var="semantic_exploration_requested",value=false}]
+effect = [{type="spawn",entity_type="SemanticRun",entity_id_source="{uuid}",initial_action="Start",copy_fields="resume_run_id"},{type="set_bool",var="semantic_exploration_requested",value=false}]
 
 # Research terminal replies are not proof of the application's completion callback.
 [[action]]
