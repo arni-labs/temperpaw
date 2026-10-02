@@ -1,8 +1,24 @@
 # paw-foresight
 
-Domain-agnostic foresight engine. Simulates a domain's future through temporal projection — spawning independent probe agents to observe projected states, detecting convergence across probes, evolving the model through simulated time, and presenting actionable directions.
+Foresight explores possible futures for an ordinary question. The question-driven
+UI uses the `SemanticRun` lifecycle. New runs with `world_search_contract: 1`
+imagine distinct worlds, record their original commitments, and search backward
+for paths connecting them to the sourced present.
 
-## How the Substrate Works
+Jev assesses the proposed pieces and paths. Exactly unchanged assessments can be
+reused across routes; changed inputs invalidate them. An unresolved or rejected
+route prompts an alternative search within the run's resource budget. Changes to
+a world's commitments remain explicit, alongside the original idea. Final worlds
+retain their selected causal paths and receive separate whole-world estimates.
+These estimates are uncalibrated model judgments. A connected proposed path,
+repeated score or agreement between models does not establish that a future will
+happen. Missing evidence and unfinished search remain visible.
+
+See [the worlds-first contract](adrs/018-worlds-before-routes.md). Existing runs
+retain their recorded contract; resuming them does not silently convert their
+history. The separate `ForesightModel` / `Projection` interface is documented below.
+
+## Existing projection interface
 
 The Foresight Engine is a **substrate, not a pipeline**. Probes are the simulation — they project what would happen, and their convergent projections become the next step's reality. Quality emerges from structural gates: independent observation, semantic convergence detection, and direction versioning.
 
