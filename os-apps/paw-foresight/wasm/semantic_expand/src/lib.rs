@@ -1024,6 +1024,9 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             .remove("claim_role_contract");
     }
     for key in [
+        "endpoint_proposal_contract",
+        "endpoint_proposal_attempt",
+        "endpoint_proposal_history",
         "world_search_contract",
         "endpoint_search",
         "candidate_basis",
@@ -1379,6 +1382,9 @@ fn evidence_ids(snapshot: &Value) -> std::collections::BTreeSet<String> {
 fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Result<Value, String> {
     let mut program = core::plan(snapshot["nodes"].as_array().ok_or("Missing nodes")?)?;
     for key in [
+        "endpoint_proposal_contract",
+        "endpoint_proposal_attempt",
+        "endpoint_proposal_history",
         "world_search_contract",
         "endpoint_search",
         "candidate_basis",
@@ -2056,7 +2062,7 @@ mod tests {
     #[test]
     fn endpoint_routes_compose_without_link_collisions_and_keep_original_lineage() {
         let (mut snapshot, mut generated, mut old) = world_fixture();
-        snapshot["world"]["description"]=json!("How could these interacting systems change?");
+        snapshot["world"]["description"] = json!("How could these interacting systems change?");
         references::References::new(&snapshot)
             .unwrap()
             .resolve_generated(&mut generated);

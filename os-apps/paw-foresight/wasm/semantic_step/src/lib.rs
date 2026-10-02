@@ -330,10 +330,44 @@ fn step(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
-    if core::endpoints::enabled(&program) && !program["endpoint_search"].is_object() {
+    if core::endpoints::enabled(&program)
+        && !program["endpoint_search"].is_object()
+        && program["endpoint_proposal_attempt"]["status"] != "checking"
+    {
+        if program["endpoint_proposal_attempt"]["status"] == "unresolved" {
+            set_success_result(
+                "Fail",
+                &json!({"error_message":"Endpoint proposal quality unresolved: the bounded search did not produce sufficiently distinct consequential worlds. No endpoint was accepted and no whole-world estimates were made."}),
+            );
+            return Ok(());
+        }
         set_success_result(
             "Reason",
             &json!({"phase":"imagine","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
+        );
+        return Ok(());
+    }
+    if program["stage"] == "proposals"
+        && (cursor >= count
+            || stopped
+            || calls >= core::call_limit(&program)
+            || elapsed >= core::time_limit(&program))
+    {
+        let remaining =
+            core::transition_limit(&program).saturating_sub(core::transition_count(&program));
+        let resource_exhausted =
+            stopped || calls >= core::call_limit(&program) || elapsed >= core::time_limit(&program);
+        let retry = !resource_exhausted
+            && remaining >= core::REASONING_TRANSITION_RESERVE + 16
+            && elapsed < core::time_limit(&program).saturating_sub(120_000);
+        core::proposals::finish(&mut program, retry, resource_exhausted)?;
+        if program["endpoint_proposal_attempt"]["status"] == "unresolved" {
+            program["stop_reason"] = json!("endpoint_proposal_quality");
+        }
+        // Publish the exact receipt before any next generation or terminal failure.
+        set_success_result(
+            "SearchPlanned",
+            &json!({"program_json":program.to_string()}),
         );
         return Ok(());
     }

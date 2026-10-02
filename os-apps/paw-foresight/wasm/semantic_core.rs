@@ -379,8 +379,10 @@ pub fn forecast_exclusion_reason<'a>(program: &'a Value, id: &str) -> &'a str {
 /// Screening is independent of prior probabilities. A non-event remains in the
 /// snapshot as context, but never receives event-specific judgments.
 pub fn task_allowed(program: &Value, task: &Value) -> bool {
-    if matches!(program["stage"].as_str(), Some("worlds" | "routes"))
-        || task["function"] == "classify_claim_role"
+    if matches!(
+        program["stage"].as_str(),
+        Some("worlds" | "routes" | "proposals")
+    ) || task["function"] == "classify_claim_role"
     {
         return true;
     }
@@ -400,7 +402,10 @@ pub fn task_allowed(program: &Value, task: &Value) -> bool {
 /// Invalidate before filtering a replanned task queue so newly required
 /// admission checks cannot erase odds whose replacement tasks were removed.
 pub fn clear_ineligible_forecasts(program: &mut Value) {
-    if matches!(program["stage"].as_str(), Some("worlds" | "routes")) {
+    if matches!(
+        program["stage"].as_str(),
+        Some("worlds" | "routes" | "proposals")
+    ) {
         return;
     }
     let excluded: Vec<String> = program["results"]
@@ -433,7 +438,10 @@ pub fn clear_ineligible_forecasts(program: &mut Value) {
 }
 
 pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
-    if matches!(program["stage"].as_str(), Some("worlds" | "routes")) {
+    if matches!(
+        program["stage"].as_str(),
+        Some("worlds" | "routes" | "proposals")
+    ) {
         return Ok(());
     }
     clear_ineligible_forecasts(program);
@@ -715,4 +723,8 @@ mod tests {
 #[cfg(test)]
 mod claim_role_tests {
     include!("semantic_claim_role_tests.rs");
+}
+
+pub mod proposals {
+    include!("semantic_proposals.rs");
 }

@@ -42,7 +42,7 @@ fn list(value: &Value, max: usize) -> Result<Vec<String>, String> {
 }
 
 /// Freeze imagined endpoint commitments before any prerequisite generation.
-pub fn imagine(_snapshot: &Value, old: &Value, generated: &Value) -> Result<Value, String> {
+pub fn imagine(snapshot: &Value, old: &Value, generated: &Value) -> Result<Value, String> {
     if !enabled(old) || old["endpoint_search"].is_object() {
         return Err("Endpoints must be imagined once before backward search".into());
     }
@@ -90,6 +90,9 @@ pub fn imagine(_snapshot: &Value, old: &Value, generated: &Value) -> Result<Valu
         let mut endpoint = proposal.clone();
         endpoint["status"] = json!("imagined");
         endpoints.push(endpoint);
+    }
+    if old["endpoint_proposal_contract"] == 1 {
+        return super::proposals::plan(snapshot, old, endpoints);
     }
     let mut program = old.clone();
     program["endpoint_search"] =

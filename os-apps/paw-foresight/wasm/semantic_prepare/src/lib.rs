@@ -284,7 +284,11 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
         Ok(())
     };
     for task in tasks {
-        if core::search::is_structural(task) {
+        if core::proposals::is_task(task) {
+            if !core::proposals::valid_task(&program, task) {
+                return Err("Invalid proposal resume task".into());
+            }
+        } else if core::search::is_structural(task) {
             validate_structural(task)?;
         } else if !ids.contains(core::field(task, "nodeId")) {
             return Err("Resume task references missing node".into());
@@ -296,7 +300,11 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     }
     for (index, item) in traces.iter().enumerate() {
         let structural = core::search::is_structural(&item["task"]);
-        let valid_subject = if structural {
+        let valid_subject = if core::proposals::is_task(&item["task"]) {
+            item["task"]["nodeId"] == item["nodeId"]
+                && item["task"]["function"] == item["function"]
+                && core::proposals::valid_task(&program, &item["task"])
+        } else if structural {
             item["task"]["nodeId"] == item["nodeId"]
                 && item["task"]["function"] == item["function"]
                 && validate_structural(&item["task"]).is_ok()
@@ -477,6 +485,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     }
     let mut program = core::plan(&nodes)?;
     program["world_search_contract"] = json!(1);
+    program["endpoint_proposal_contract"] = json!(1);
     let session_id = core::field(&world, "research_session_id");
     if session_id.is_empty()
         || !session_id

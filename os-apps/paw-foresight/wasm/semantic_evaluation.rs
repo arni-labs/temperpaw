@@ -91,6 +91,9 @@ pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
     request_task(snapshot, program, &program["tasks"][cursor])
 }
 pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
+    if super::proposals::is_task(task) {
+        return super::proposals::request(snapshot, program, task);
+    }
     if task["function"] == "check_route_grounding" {
         return super::endpoints::grounding_request(snapshot, program, task);
     }
