@@ -74,3 +74,11 @@ endpoints for route search. Preserve rejected attempts and their judgments; do
 not represent a model verdict as proof of novelty. Keep the current run and clock
 intact. Ordinary-question completion, the held-out questions and the blind
 comparison remain pending. No comparative win or delivery is claimed.
+
+The same run later reached terminal Failed: “Reasoning phase exhausted its
+reserved polling budget; saved work is preserved”, with zero Jev judgments and
+zero routes. The native active-run list was empty. Preserve this functional
+failure alongside the proposal-quality failure. No retry or clock reset was
+performed. The request for all backward routes in one generation is a workload
+hypothesis to test with bounded incremental batches, not a verified provider
+failure cause.
