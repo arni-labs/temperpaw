@@ -2,14 +2,21 @@
 // These are fallible model classifications, never proofs of novelty or truth.
 use super::field;
 use serde_json::{Value, json};
+pub mod pool {
+    include!("semantic_proposal_pool.rs");
+}
 
 pub fn is_task(task: &Value) -> bool {
-    matches!(
-        field(task, "function"),
-        "check_endpoint_delta" | "check_endpoint_set"
-    )
+    pool::is_task(task)
+        || matches!(
+            field(task, "function"),
+            "check_endpoint_delta" | "check_endpoint_set"
+        )
 }
 fn tasks(attempt: &Value) -> Vec<Value> {
+    if attempt["contract"] == 2 {
+        return attempt["tasks"].as_array().cloned().unwrap_or_default();
+    }
     let number = attempt["attempt"].as_u64().unwrap_or(0);
     let mut tasks: Vec<_>=attempt["endpoints"].as_array().into_iter().flatten().map(|endpoint|json!({"nodeId":format!("proposal-{number}-endpoint-{}",field(endpoint,"id")),"function":"check_endpoint_delta","proposal_attempt":number,"endpoint_id":endpoint["id"],"depth":0})).collect();
     tasks.push(json!({"nodeId":format!("proposal-{number}-set"),"function":"check_endpoint_set","proposal_attempt":number,"depth":0}));
@@ -80,6 +87,9 @@ fn criteria(function: &str) -> Value {
 }
 pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
     let attempt = attempt(program, task).ok_or("Unknown preliminary endpoint assessment")?;
+    if attempt["contract"] == 2 {
+        return pool::request(attempt, task);
+    }
     let proposal = if task["endpoint_id"].is_string() {
         attempt["endpoints"]
             .as_array()

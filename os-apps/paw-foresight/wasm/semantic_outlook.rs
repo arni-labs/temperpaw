@@ -10,9 +10,14 @@ fn text(value: &Value, limit: usize) -> Result<&str, String> {
         .ok_or_else(|| format!("Outlook text must contain 1–{limit} characters"))
 }
 fn list(value: &Value, min: usize, max: usize, limit: usize) -> Result<(), String> {
-    let values = value.as_array().ok_or("Outlook list must be an array of strings")?;
+    let values = value
+        .as_array()
+        .ok_or("Outlook list must be an array of strings")?;
     if !(min..=max).contains(&values.len()) {
-        return Err(format!("Outlook list must contain {min}–{max} items; received {}", values.len()));
+        return Err(format!(
+            "Outlook list must contain {min}–{max} items; received {}",
+            values.len()
+        ));
     }
     for v in values {
         text(v, limit)?;
@@ -126,14 +131,18 @@ mod tests {
         assert_eq!(observation["type"], "object");
         assert_eq!(observation["properties"]["claim"]["type"], "string");
         assert_eq!(observation["properties"]["evidence_ids"]["type"], "array");
-        assert_eq!(observation["properties"]["evidence_ids"]["items"]["type"], "string");
+        assert_eq!(
+            observation["properties"]["evidence_ids"]["items"]["type"],
+            "string"
+        );
         for key in ["assumptions", "unknowns"] {
             let descriptor = &contract[key];
             assert_eq!(descriptor["items"]["type"], "string");
             let count = descriptor["maxItems"].as_u64().unwrap() as usize;
             let length = descriptor["items"]["maxLength"].as_u64().unwrap() as usize;
             let snapshot = json!({"world":{"last_ingest_date":"2026-10-01"},"nodes":[]});
-            let mut baseline = json!({"as_of":"2026-10-01","observed":[],"assumptions":[],"unknowns":["Unknown"]});
+            let mut baseline =
+                json!({"as_of":"2026-10-01","observed":[],"assumptions":[],"unknowns":["Unknown"]});
             baseline[key] = json!(vec!["x".repeat(length); count]);
             assert!(validate_baseline(&baseline, &snapshot).is_ok());
             baseline[key].as_array_mut().unwrap().push(json!("extra"));
@@ -148,7 +157,8 @@ mod tests {
     #[test]
     fn list_errors_distinguish_type_from_count_without_relaxing_validation() {
         let question = "How will people eat in 2030?";
-        let snapshot = json!({"world":{"description":question,"last_ingest_date":"2026-10-01"},"nodes":[]});
+        let snapshot =
+            json!({"world":{"description":question,"last_ingest_date":"2026-10-01"},"nodes":[]});
         let mut baseline = json!({"as_of":"2026-10-01","observed":[],"assumptions":{"items":[question]},"unknowns":[]});
         let error = validate_new_baseline(&baseline, &snapshot).unwrap_err();
         assert!(error.starts_with("baseline.assumptions:"), "{error}");
@@ -156,13 +166,22 @@ mod tests {
         baseline["assumptions"] = json!([question]);
         assert!(validate_new_baseline(&baseline, &snapshot).is_ok());
         for value in [Value::Null, json!("text"), json!(42), json!({"items":[]})] {
-            assert_eq!(list(&value, 0, 2, 3).unwrap_err(), "Outlook list must be an array of strings");
+            assert_eq!(
+                list(&value, 0, 2, 3).unwrap_err(),
+                "Outlook list must be an array of strings"
+            );
         }
         assert!(list(&json!([]), 0, 2, 3).is_ok());
         assert!(list(&json!(["a"]), 1, 2, 3).is_ok());
         assert!(list(&json!(["a", "abc"]), 1, 2, 3).is_ok());
-        assert_eq!(list(&json!([]), 1, 2, 3).unwrap_err(), "Outlook list must contain 1–2 items; received 0");
-        assert_eq!(list(&json!(["a", "b", "c"]), 1, 2, 3).unwrap_err(), "Outlook list must contain 1–2 items; received 3");
+        assert_eq!(
+            list(&json!([]), 1, 2, 3).unwrap_err(),
+            "Outlook list must contain 1–2 items; received 0"
+        );
+        assert_eq!(
+            list(&json!(["a", "b", "c"]), 1, 2, 3).unwrap_err(),
+            "Outlook list must contain 1–2 items; received 3"
+        );
         for value in [json!([""]), json!(["abcd"]), json!([1])] {
             assert!(list(&value, 1, 2, 3).is_err());
         }
@@ -648,10 +667,25 @@ fn validate_v3(answer: &Value, snapshot: &Value) -> Result<(), String> {
         {
             return Err("World meaning or defining links changed after evaluation".into());
         }
+        // Read the contract from the trusted composed node, never from writer
+        // output. Endpoint reconstruction retains all selected prerequisites.
+        let endpoint_world = world["endpoint_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty());
+        let (minimum, maximum) = if endpoint_world {
+            (3, crate::core::endpoints::MAX_WORLD_COMPONENTS)
+        } else {
+            (2, 12)
+        };
         let components = outcome["component_ids"]
             .as_array()
-            .filter(|v| (2..=12).contains(&v.len()))
-            .ok_or("A world needs multiple defining events")?;
+            .filter(|v| (minimum..=maximum).contains(&v.len()))
+            .ok_or_else(|| {
+                format!(
+                    "World {id} needs {minimum}–{maximum} defining components; received {}",
+                    outcome["component_ids"].as_array().map_or(0, Vec::len)
+                )
+            })?;
         if components
             .iter()
             .filter_map(Value::as_str)
@@ -728,6 +762,44 @@ mod world_tests {
         let answer = json!({"schema":"foresight-worlds-v3","headline":"Different worlds","summary":"What changes after today","horizon":"2027","probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"evaluation_status":"evaluated","evaluation_note":"","baseline":{"as_of":"2026-09-19","observed":[{"claim":"Already happening","evidence_ids":["e"]}],"assumptions":[],"unknowns":[]},"evidence_limits":["Limited research"],"research_questions":[],"outcomes":[o("w1"),o("w2")]});
         (answer, snapshot)
     }
+    #[test]
+    fn reconstructed_world_keeps_all_prerequisites_without_relaxing_legacy_or_minimum() {
+        let (mut answer, mut snapshot) = fixture();
+        let components: Vec<_> = (0..14).map(|i| json!(format!("component-{i}"))).collect();
+        for id in &components {
+            snapshot["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"Id":id,"kind":"scenario"}));
+        }
+        let index = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|n| n["Id"] == "w1")
+            .unwrap();
+        snapshot["nodes"][index]["endpoint_id"] = json!("original");
+        snapshot["nodes"][index]["component_ids"] = json!(components);
+        answer["outcomes"][0]["component_ids"] = json!(components);
+        assert!(validate(&answer, &snapshot).is_ok());
+        let mut legacy = snapshot.clone();
+        legacy["nodes"][index]
+            .as_object_mut()
+            .unwrap()
+            .remove("endpoint_id");
+        assert!(validate(&answer, &legacy).unwrap_err().contains("2–12"));
+        for count in [1, 33] {
+            let ids: Vec<_> = (0..count)
+                .map(|i| json!(format!("component-{i}")))
+                .collect();
+            let mut bad = answer.clone();
+            bad["outcomes"][0]["component_ids"] = json!(ids);
+            let mut nodes = snapshot.clone();
+            nodes["nodes"][index]["component_ids"] = json!(ids);
+            assert!(validate(&bad, &nodes).unwrap_err().contains("3–32"));
+        }
+    }
+
     #[test]
     fn whole_worlds_accept_independent_odds_and_explicit_missing_evaluations() {
         let (mut a, s) = fixture();

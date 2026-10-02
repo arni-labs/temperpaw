@@ -3,6 +3,8 @@ use super::{field, search};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub const MAX_WORLD_COMPONENTS: usize = 32;
+
 pub fn enabled(program: &Value) -> bool {
     program["world_search_contract"] == 1
 }
@@ -53,10 +55,41 @@ pub fn imagine(snapshot: &Value, old: &Value, generated: &Value) -> Result<Value
     }) {
         return Err("Imagine endpoints before generating components or routes".into());
     }
-    let proposals = generated["endpoints"]
+    let mut generated = generated.clone();
+    if super::proposals::pool::enabled(old) {
+        super::references_for_endpoints::References::new(snapshot)?
+            .resolve_generated(&mut generated);
+    }
+    let (min, max) = if super::proposals::pool::enabled(old) {
+        if old["proposal_pool"]["stage"] == "enrich" {
+            (3, 5)
+        } else {
+            (8, 12)
+        }
+    } else {
+        (2, 6)
+    };
+    let endpoints = validate_proposals(&generated["endpoints"], min, max)?;
+    if super::proposals::pool::enabled(old) {
+        return super::proposals::pool::receive(snapshot, old, endpoints);
+    }
+    if old["endpoint_proposal_contract"] == 1 {
+        return super::proposals::plan(snapshot, old, endpoints);
+    }
+    let mut program = old.clone();
+    program["endpoint_search"] =
+        json!({"status":"imagined","endpoints":endpoints,"routes":[],"amendments":[],"rounds":[]});
+    program["tasks"] = json!([]);
+    program["cursor"] = json!(0);
+    program["stage"] = json!("exploration");
+    Ok(program)
+}
+
+pub fn validate_proposals(proposals: &Value, min: usize, max: usize) -> Result<Vec<Value>, String> {
+    let proposals = proposals
         .as_array()
-        .filter(|v| (2..=6).contains(&v.len()))
-        .ok_or("Imagine two to six distinct endpoints")?;
+        .filter(|v| (min..=max).contains(&v.len()))
+        .ok_or("Candidate count outside the supplied bounded range")?;
     let mut ids = BTreeSet::new();
     let mut endpoints = vec![];
     for proposal in proposals {
@@ -91,16 +124,7 @@ pub fn imagine(snapshot: &Value, old: &Value, generated: &Value) -> Result<Value
         endpoint["status"] = json!("imagined");
         endpoints.push(endpoint);
     }
-    if old["endpoint_proposal_contract"] == 1 {
-        return super::proposals::plan(snapshot, old, endpoints);
-    }
-    let mut program = old.clone();
-    program["endpoint_search"] =
-        json!({"status":"imagined","endpoints":endpoints,"routes":[],"amendments":[],"rounds":[]});
-    program["tasks"] = json!([]);
-    program["cursor"] = json!(0);
-    program["stage"] = json!("exploration");
-    Ok(program)
+    Ok(endpoints)
 }
 
 fn endpoint<'a>(program: &'a Value, id: &str) -> Result<&'a Value, String> {
@@ -136,6 +160,35 @@ fn validate_root_connection(anchor: &Value) -> Result<Vec<String>, String> {
     Ok(refs)
 }
 
+fn invalid_route_components(
+    route: &Value,
+    snapshot: &Value,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    let nodes = snapshot["nodes"].as_array().ok_or("Missing route graph")?;
+    let refs = super::references_for_endpoints::References::new(snapshot)?;
+    let mut errors = vec![];
+    for (index, id) in list(&route["component_ids"], 12)?.iter().enumerate() {
+        let node = nodes.iter().find(|n| n["Id"] == *id);
+        if !node.is_some_and(|n| matches!(field(n, "kind"), "scenario" | "revision")) {
+            let shown = refs.project(&json!({"component_id":id}));
+            errors.push(format!(
+                "{path}.component_ids[{index}]={} has kind {}",
+                field(&shown, "component_id"),
+                node.map(|n| field(n, "kind")).unwrap_or("missing")
+            ));
+        }
+    }
+    Ok(errors)
+}
+
+fn route_component_error(errors: Vec<String>) -> String {
+    format!(
+        "Route components must name candidate events: {}. Only scenario/revision nodes belong in component_ids and chain. Put source evidence in root_connections.evidence_ids or grounding_evidence_ids; state the conjectural bridge as a separate hypothesis, never relabel an observation as a future event.",
+        errors.join("; ")
+    )
+}
+
 fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<(), String> {
     let endpoint = endpoint(program, field(route, "endpoint_id"))?;
     let claim = commitment(endpoint, field(route, "commitment_id"))?;
@@ -146,13 +199,9 @@ fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<()
     }
     let nodes = snapshot["nodes"].as_array().ok_or("Missing route graph")?;
     let active_sources = super::evidence::active_sources(snapshot);
-    for id in &components {
-        if !nodes
-            .iter()
-            .any(|n| n["Id"] == *id && matches!(field(n, "kind"), "scenario" | "revision"))
-        {
-            return Err("Route component must name a candidate event".into());
-        }
+    let component_errors = invalid_route_components(route, snapshot, "route")?;
+    if !component_errors.is_empty() {
+        return Err(route_component_error(component_errors));
     }
     let target_node = nodes
         .iter()
@@ -218,7 +267,18 @@ fn validate_route(route: &Value, snapshot: &Value, program: &Value) -> Result<()
         }
     }
     if ancestors.len() != components.len() {
-        return Err("Disconnected route components do not lead to its commitment".into());
+        let disconnected: Vec<_> = components
+            .iter()
+            .filter(|id| !ancestors.contains(*id))
+            .cloned()
+            .collect();
+        let refs = super::references_for_endpoints::References::new(snapshot)?;
+        let visible =
+            refs.project(&json!({"component_ids":disconnected,"target_component_id":target}));
+        return Err(format!(
+            "Disconnected route components {} do not lead to commitment target {}. Connect each through an explicit causal chain or remove unrelated components; citations belong in grounding evidence, not extra chain nodes.",
+            visible["component_ids"], visible["target_component_id"]
+        ));
     }
     let mut completed = BTreeSet::new();
     loop {
@@ -376,6 +436,30 @@ pub fn add_routes(
         .ok_or("Backward search must return bounded routes")?;
     let mut checking = old.clone();
     checking["endpoint_search"] = search.clone();
+    // Independent routes can fail for different reasons. Report them together
+    // while the snapshot/search are still unchanged, rather than spending one
+    // correction session to discover each route's first actionable defect.
+    let mut route_errors = vec![];
+    for (index, route) in routes.iter().enumerate() {
+        let result = invalid_route_components(route, after, &format!("routes[{index}]")).and_then(
+            |errors| {
+                if errors.is_empty() {
+                    validate_route(route, after, &checking)
+                } else {
+                    Err(route_component_error(errors))
+                }
+            },
+        );
+        if let Err(error) = result {
+            route_errors.push(format!(
+                "routes[{index}] (id={}): {error}",
+                field(route, "id")
+            ));
+        }
+    }
+    if !route_errors.is_empty() {
+        return Err(route_errors.join("; "));
+    }
     let mut new_nodes:Vec<Value>=reply["amendments"].as_array().into_iter().flatten().map(|a|json!({"Id":format!("amendment-{}",field(a,"id")),"kind":"world","route_only":true,"archived":true,"statement":format!("Proposed amendment: {}",field(a,"replacement_text")),"amendment":a,"edges":"[]"})).collect();
     for route in routes {
         let id = identifier(&route["id"])?;
@@ -400,7 +484,6 @@ pub fn add_routes(
                 return Err("Alternate route must address the same original commitment".into());
             }
         }
-        validate_route(route, after, &checking)?;
         use sha2::{Digest, Sha256};
         let route_definition = json!({"component_ids":route["component_ids"],"chain":route["chain"],"root_connections":route["root_connections"],"grounding_evidence_ids":route["grounding_evidence_ids"]});
         let node_id = format!(
@@ -1073,6 +1156,66 @@ mod tests {
         );
         assert_eq!(after, before);
     }
+    #[test]
+    fn evidence_components_report_all_route_locations_without_mutation() {
+        let (before, program, mut route) = fixture();
+        route["component_ids"] = json!(["source", "target"]);
+        let mut second = route.clone();
+        second["id"] = json!("second");
+        second["component_ids"] = json!(["missing-component", "target"]);
+        let mut after = before.clone();
+        let error = add_routes(
+            &before,
+            &mut after,
+            &program,
+            &json!({"routes":[route,second]}),
+        )
+        .unwrap_err();
+        for detail in [
+            "routes[0].component_ids[0]=ref_0001",
+            "research_evidence",
+            "routes[1].component_ids[0]=missing-component",
+            "kind missing",
+            "root_connections.evidence_ids",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn independent_route_defects_are_reported_together_before_mutation() {
+        let (mut before, program, route) = fixture();
+        before["nodes"].as_array_mut().unwrap().push(
+            json!({"Id":"orphan","kind":"scenario","statement":"Unrelated event","edges":"[]"}),
+        );
+        let mut disconnected = route.clone();
+        disconnected["id"] = json!("disconnected");
+        disconnected["component_ids"] = json!(["root", "target", "orphan"]);
+        let mut bad_link = route;
+        bad_link["id"] = json!("bad-link");
+        bad_link["chain"][0]["to_id"] = json!("root");
+        let mut after = before.clone();
+        let error = add_routes(
+            &before,
+            &mut after,
+            &program,
+            &json!({"routes":[disconnected,bad_link]}),
+        )
+        .unwrap_err();
+        for detail in [
+            "routes[0] (id=disconnected)",
+            "Disconnected route components",
+            "ref_0004",
+            "ref_0003",
+            "routes[1] (id=bad-link)",
+            "Route link references invalid component",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert_eq!(after, before);
+    }
+
     #[test]
     fn producer_fixture_preserves_amendment_nodes_and_route_receipts() {
         let (snapshot, mut old, route) = fixture();

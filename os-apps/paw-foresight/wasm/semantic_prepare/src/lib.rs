@@ -485,7 +485,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     }
     let mut program = core::plan(&nodes)?;
     program["world_search_contract"] = json!(1);
-    program["endpoint_proposal_contract"] = json!(1);
+    program["endpoint_proposal_contract"] = json!(2);
     let session_id = core::field(&world, "research_session_id");
     if session_id.is_empty()
         || !session_id
@@ -533,6 +533,60 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "replay explicitly supplied full native checkpoint with simulated time"]
+    fn real_food_checkpoint_preserves_receipts_and_original_clock() {
+        let path = std::env::var("FORESIGHT_NATIVE_CHECKPOINT").unwrap();
+        let record: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let world_id = core::field(&record, "world_id");
+        let started = core::field(&record, "started_at_ms")
+            .parse::<u64>()
+            .unwrap();
+        // Simulated times exercise the actual stored checkpoint, not a live retry.
+        let prepared = prepare_retry(&record, world_id, started + core::MAX_MS - 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared["started_at_ms"], record["started_at_ms"]);
+        assert_eq!(prepared["snapshot_json"], record["snapshot_json"]);
+        assert_eq!(prepared["trace_json"], record["trace_json"]);
+        let before = core::parse(core::field(&record, "program_json")).unwrap();
+        let after = core::parse(core::field(&prepared, "program_json")).unwrap();
+        for key in [
+            "results",
+            "evaluations",
+            "world_refinement",
+            "endpoint_search",
+        ] {
+            assert_eq!(after[key], before[key]);
+        }
+        let traces = core::parse(core::field(&prepared, "trace_json")).unwrap();
+        assert_eq!(traces.as_array().unwrap().len(), 500);
+        assert_eq!(
+            traces
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry["error"].is_string())
+                .count(),
+            3
+        );
+        let expired = prepare_retry(&record, world_id, started + core::MAX_MS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expired["started_at_ms"], record["started_at_ms"]);
+        assert_eq!(expired["phase"], "synthesize");
+        assert_eq!(
+            core::parse(core::field(&expired, "program_json")).unwrap()["stop_reason"],
+            "time_budget"
+        );
+        assert_eq!(expired["trace_json"], record["trace_json"]);
+        println!(
+            "Simulated within-deadline resume phase={} callback={}; all500 trace entries (497 checks and3 failed attempts) and original clock preserved. Expired prepare selects synthesis but semantic_session still enforces original MAX_MS.",
+            prepared["phase"],
+            resume_transition(&prepared).unwrap()
+        );
+    }
+
     use super::*;
     fn checkpoint() -> Value {
         let snapshot = json!({"world":{"Id":"w"},"nodes":[{"Id":"h","kind":"scenario","statement":"Future","edges":"[]"}]});

@@ -773,8 +773,15 @@ fn refresh_researched_baseline(
     {
         return Ok(None);
     }
-    if !generated["baseline"].is_object() || !generated["scope_review"].is_object() {
-        return Err("New research findings require reconciled baseline and current scope_review using the supplied contracts".into());
+    let missing: Vec<_> = ["baseline", "scope_review"]
+        .into_iter()
+        .filter(|key| !generated[*key].is_object())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "New research findings: missing or non-object {}. Return complete top-level baseline and scope_review in the same response. Reconcile prior observations; supply baseline_dispositions for rewrites/omissions and copy scope_review.limitations into baseline.unknowns. Preserve valid sources/routes; retrieval need not be repeated.",
+            missing.join(", ")
+        ));
     }
     let mut reply = generated.clone();
     references::References::new(before)?.resolve_generated(&mut reply);
@@ -944,16 +951,22 @@ fn establish_baseline_with_corrections(
     }
     reply["baseline"]["observed"] = json!(present);
     if !excluded.is_empty() {
-        let limits = reply["baseline"]["unknowns"].as_array_mut().ok_or("Missing baseline unknowns")?;
+        let limits = reply["baseline"]["unknowns"]
+            .as_array_mut()
+            .ok_or("Missing baseline unknowns")?;
         if limits.is_empty() {
-            limits.push(json!("Only source projections were supplied; present outcomes remain unknown."));
+            limits.push(json!(
+                "Only source projections were supplied; present outcomes remain unknown."
+            ));
         }
     }
     let mut program = establish_baseline(&candidate, &reply, old)?;
     if !receipts.is_empty() {
         program["source_corrections"] = json!(receipts);
         program["source_projection_observations"] = json!(excluded);
-        program["source_projection_notice"] = json!("Source projections are not present observations. Their claims, horizons and citations remain in the source-correction records; whether those projected outcomes will happen is unknown.");
+        program["source_projection_notice"] = json!(
+            "Source projections are not present observations. Their claims, horizons and citations remain in the source-correction records; whether those projected outcomes will happen is unknown."
+        );
     }
     *snapshot = candidate;
     Ok(program)
@@ -1097,7 +1110,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             }
         }
         let component_limit = if core::endpoints::enabled(old) {
-            32
+            core::endpoints::MAX_WORLD_COMPONENTS
         } else {
             12
         };
@@ -1233,6 +1246,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "source_projection_observations",
         "source_projection_notice",
         "endpoint_proposal_contract",
+        "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
         "world_search_contract",
@@ -1613,6 +1627,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "source_projection_observations",
         "source_projection_notice",
         "endpoint_proposal_contract",
+        "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
         "world_search_contract",
@@ -1945,10 +1960,47 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 &json!({"snapshot_json":snapshot.to_string(),"program_json":prepared.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
             ),
             Err(error) => {
-                let corrected = exploration_correction(raw, &old, phase, &error)?;
+                let corrected = exploration_correction(phase, &old, &error, raw)?;
                 set_success_result(
                     "CompositionRejected",
                     &json!({"program_json":corrected.to_string()}),
+                );
+            }
+        }
+        return Ok(());
+    }
+    if phase == "explore" && core::proposals::pool::research_pending(&old) {
+        let mut candidate = snapshot.clone();
+        let result = (|| -> Result<Value, String> {
+            if generated["hypotheses"]
+                .as_array()
+                .is_none_or(|a| !a.is_empty())
+                || generated["branches"]
+                    .as_array()
+                    .is_some_and(|a| !a.is_empty())
+            {
+                return Err(
+                    "Candidate contrast research cannot create hypothesis nodes or branches".into(),
+                );
+            }
+            let refresh = expand_with_baseline(&mut candidate, &generated, phase, &old)?;
+            let mut prior = old.clone();
+            if let Some(receipt) = refresh {
+                prior["baseline"] = receipt["baseline"].clone();
+                prior["scope_review"] = receipt["scope_review"].clone();
+            }
+            core::proposals::pool::contrasts(&candidate, &prior, &generated)
+        })();
+        match result {
+            Ok(program) => set_success_result(
+                "Expanded",
+                &json!({"snapshot_json":candidate.to_string(),"program_json":program.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+            ),
+            Err(error) => {
+                let correction = exploration_correction(phase, &old, &error, raw)?;
+                set_success_result(
+                    "CompositionRejected",
+                    &json!({"program_json":correction.to_string()}),
                 );
             }
         }
@@ -2117,6 +2169,69 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "replay explicitly supplied captured synthesis snapshot"]
+    fn real_large_endpoint_world_survives_final_validation() {
+        let path = std::env::var("FORESIGHT_SYNTHESIS_FAILURE").unwrap();
+        let captured: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let snapshot = &captured["snapshot"];
+        let program = &captured["program"];
+        let worlds: Vec<_> = snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| {
+                n["kind"] == "world"
+                    && program["active_world_ids"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&n["Id"])
+            })
+            .collect();
+        assert!(
+            worlds
+                .iter()
+                .any(|w| w["component_ids"].as_array().unwrap().len() > 12)
+        );
+        let outcomes:Vec<_>=worlds.iter().enumerate().map(|(i,w)|json!({"id":format!("world-{i}"),"world_id":w["Id"],"title":w["title"],"definition":w["statement"],"component_ids":w["component_ids"],"counter_ids":w["counter_ids"],"scene":w["scene"],"narrative":w["narrative"],"what_you_can_do":[],"signals":w["signals"],"falsifiers":w["falsifiers"]})).collect();
+        let mut answer = json!({"schema":"foresight-worlds-v3","headline":"Synthetic presentation replay of recorded worlds","summary":"The original recorded components and estimates remain unchanged.","horizon":snapshot["world"]["target_date"],"probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"evidence_limits":["Synthetic writer projection, not a captured provider answer"],"research_questions":[],"outcomes":outcomes});
+        attach_world_probabilities(&mut answer, program, snapshot).unwrap();
+        outlook::validate(&answer, snapshot).unwrap();
+        for (outcome, world) in answer["outcomes"].as_array().unwrap().iter().zip(worlds) {
+            assert_eq!(outcome["component_ids"], world["component_ids"]);
+        }
+    }
+
+    #[test]
+    #[ignore = "replay an explicitly supplied captured route rejection"]
+    fn real_route_component_rejection_diagnostics() {
+        let path = std::env::var("FORESIGHT_ROUTE_REJECTION").unwrap();
+        let captured: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let program = &captured["program"];
+        let generated: Value = serde_json::from_str(
+            program["response_correction"]["rejected_draft"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let mut snapshot = captured["snapshot"].clone();
+        let before = snapshot.clone();
+        let error =
+            expand_with_baseline(&mut snapshot, &generated, "backward", program).unwrap_err();
+        for detail in [
+            "ref_0028",
+            "ref_0029",
+            "research_evidence",
+            "root_connections.evidence_ids",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert_eq!(snapshot, before);
+        println!("{error}");
+    }
+
+    #[test]
     fn research_schema_reports_all_bad_records_and_fields_together() {
         let bad = json!({"id":"source","statement":"Retrieved finding","source_refs":["https://example.test/source"],"publication_date":"2026","observation_period":{"start":null,"end":null},"kind":"research_evidence","provenance":"direct_fetch","quote":"word ".repeat(26)});
         let error = validate_research_reports(&vec![bad; 4], true).unwrap_err();
@@ -2266,6 +2381,34 @@ mod tests {
     }
 
     #[test]
+    fn new_findings_require_both_top_level_reconciliation_objects_together() {
+        let finding = json!({"id":"local","evidence_metadata":{"kind":"finding"}});
+        let reply = json!({"research_evidence":[finding],"hypotheses":[],"routes":[]});
+        let error =
+            refresh_researched_baseline(&json!({}), &json!({}), &reply, &json!({})).unwrap_err();
+        assert!(
+            error.contains("missing or non-object baseline, scope_review"),
+            "{error}"
+        );
+        assert!(error.contains("same response"));
+        assert!(error.contains("baseline_dispositions"));
+        let mut missing_scope = reply.clone();
+        missing_scope["baseline"] = json!({});
+        assert!(
+            refresh_researched_baseline(&json!({}), &json!({}), &missing_scope, &json!({}))
+                .unwrap_err()
+                .contains("missing or non-object scope_review.")
+        );
+        let mut lead = reply;
+        lead["research_evidence"][0]["evidence_metadata"]["kind"] = json!("lead");
+        assert!(
+            refresh_researched_baseline(&json!({}), &json!({}), &lead, &json!({}))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn researched_baseline_maps_new_sources_and_rejects_unaccepted_summaries() {
         let before = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[]});
         let source = json!({"Id":"r4-local","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2025","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-01"}});
@@ -2300,7 +2443,7 @@ mod tests {
         assert!(
             refresh_researched_baseline(&before, &after, &bad, &old)
                 .unwrap_err()
-                .contains("require reconciled")
+                .contains("missing or non-object baseline")
         );
         bad = reply.clone();
         bad["baseline"]["observed"][0]["evidence_ids"] = json!(["invented"]);
@@ -3259,9 +3402,18 @@ mod tests {
             );
         }
         let mut full_reply = reply.clone();
-        full_reply["baseline"]["unknowns"] = json!((0..16).map(|i| format!("Unresolved original limitation {i}")).collect::<Vec<_>>());
-        let full = establish_baseline_with_corrections(&mut snapshot.clone(), &full_reply, &json!({})).unwrap();
-        assert_eq!(full["baseline"]["unknowns"], full_reply["baseline"]["unknowns"]);
+        full_reply["baseline"]["unknowns"] = json!(
+            (0..16)
+                .map(|i| format!("Unresolved original limitation {i}"))
+                .collect::<Vec<_>>()
+        );
+        let full =
+            establish_baseline_with_corrections(&mut snapshot.clone(), &full_reply, &json!({}))
+                .unwrap();
+        assert_eq!(
+            full["baseline"]["unknowns"],
+            full_reply["baseline"]["unknowns"]
+        );
         assert!(full["source_projection_notice"].is_string());
         let mut fake = snapshot.clone();
         fake["nodes"].as_array_mut().unwrap().push(json!({"Id":"fake","kind":"scenario","source_correction":{"corrected_source_id":"fake","source_id":"future-report","kind":"source_projection"}}));

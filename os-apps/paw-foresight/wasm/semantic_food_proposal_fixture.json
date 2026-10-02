@@ -1,0 +1,313 @@
+{
+  "baseline": {
+    "as_of": "2026-10-02",
+    "assumptions": [],
+    "observed": [
+      {
+        "claim": "In 2025, USDA ERS reported U.S. food spending was larger away from home than at home: $1.41T away from home versus $1.10T at home; this measures spending, not number of meals, and includes consumers, businesses, and government entities.",
+        "evidence_ids": [
+          "en-01a0fdb0-aa1a-7da0-a3f4-b372d8d3fac4"
+        ]
+      },
+      {
+        "claim": "USDA ERS\u2019s 2026 chart says inflation-adjusted U.S. spending rose for both food at home and food away from home from 1997 to 2025, with away-from-home spending growing more.",
+        "evidence_ids": [
+          "en-01a0fdb0-aa9c-7942-a722-dc3be78df1c5"
+        ]
+      },
+      {
+        "claim": "An indexed ReFED 2024 residential fact-sheet excerpt estimates U.S. homes generated 23.5 million tons of surplus food in 2024, about 33.2% of total surplus food; the full source was not directly fetched here.",
+        "evidence_ids": [
+          "en-01a0fdb0-ab04-7a10-ad60-0b48f6edd292"
+        ]
+      },
+      {
+        "claim": "ReFED reported in April 2026 that U.S. surplus food fell in 2024 and that the decline was led by nearly 950,000 fewer tons of residential food waste, subject to ReFED\u2019s model revisions.",
+        "evidence_ids": [
+          "en-01a0fdb0-ab76-7d43-a20b-8ad033a43648"
+        ]
+      },
+      {
+        "claim": "A December 2025 Cornell Chronicle article reported a study using Numerator purchase data and surveys for about 150,000 households; within six months of starting GLP-1 medication, adopter households cut grocery spending by 5.3% on average.",
+        "evidence_ids": [
+          "en-01a0fdb0-abe1-73a2-a480-c910e08bd627"
+        ]
+      },
+      {
+        "claim": "The same Cornell Chronicle article says GLP-1 adoption was associated with grocery reductions concentrated in ultra-processed, calorie-dense foods, while only a few categories, including yogurt and fresh fruit, rose.",
+        "evidence_ids": [
+          "en-01a0fdb0-ac4b-7830-b788-77eb728ec41a"
+        ]
+      },
+      {
+        "claim": "A CES Innovation Awards page for Samsung\u2019s 2026 Family Hub refrigerator claims it can recognize food in real time, update a food list, suggest recipes, make grocery lists, and provide weekly food reports; this is product-award evidence, not verified adoption.",
+        "evidence_ids": [
+          "en-01a0fdb0-acc0-7d60-b037-9d133a46bfa7"
+        ]
+      },
+      {
+        "claim": "Coresight Research\u2019s indexed excerpt says its April 2025 survey of 2,004 U.S. consumers tracked online grocery purchasing from 2018\u20132025 and describes online grocery as normal for many consumers, but the excerpt did not provide adoption percentages.",
+        "evidence_ids": [
+          "en-01a0fdb0-ad32-7fc0-99c0-75fc192e8c82"
+        ]
+      },
+      {
+        "claim": "ASHB\u2019s 2025 Smart Home Technology Trends Survey executive-summary excerpt says a U.S./Canada survey of 611 consumers found reported smart-home tech adoption of 59%, up from 49% in 2024, but it is not kitchen-specific.",
+        "evidence_ids": [
+          "en-01a0fdb0-adab-7822-b1f5-c7b17b7bfb5f"
+        ]
+      },
+      {
+        "claim": "FMI\u2019s 2025 U.S. Grocery Shopper Trends product page says February 2025 data tables came from U.S. adults who did at least some household grocery shopping and had shopped in the past two weeks; the substantive report was not inspected.",
+        "evidence_ids": [
+          "en-01a0fdb0-ae29-7a93-a9ee-9dad09103f85"
+        ]
+      },
+      {
+        "claim": "Posha\u2019s own page, fetched on 2026-10-02, advertised a countertop cooking robot at $1,500 with a $25 reservation deposit and claimed use in 1,000+ homes, but that household-use claim was not independently verified.",
+        "evidence_ids": [
+          "en-01a0fdb1-7a08-72e1-b1ee-4af6ffb80962"
+        ]
+      },
+      {
+        "claim": "A 2026 Bot Scout review described Posha as automating stovetop cooking after ingredients are ready, but said users still wash, measure, and chop ingredients before cooking starts.",
+        "evidence_ids": [
+          "en-01a0fdb1-7abc-7a43-9f74-4b4ef3a726d3"
+        ]
+      },
+      {
+        "claim": "A direct fetch of Posha\u2019s page on 2026-10-02 showed the next batch as March 2027, while an earlier indexed excerpt had said September 2026, making the product\u2019s delivery timing uncertain.",
+        "evidence_ids": [
+          "en-01a0fdb2-44d3-7e93-8744-df731ec392f0"
+        ]
+      },
+      {
+        "claim": "Gallup/Cookpad\u2019s global research page reports that people worldwide cooked an average of 6.4 meals per week in 2022, about the same as before the pandemic; this is a global cooking baseline, not a 2035 forecast.",
+        "evidence_ids": [
+          "scope-repair_001"
+        ]
+      },
+      {
+        "claim": "A 2025 Johns Hopkins-indexed article says Gallup World Poll data from 135 countries in 2018\u20132022 showed cooking at home rose during the pandemic and then declined toward pre-pandemic levels by 2022; eating meals at home did not move the same way.",
+        "evidence_ids": [
+          "scope-repair_002"
+        ]
+      },
+      {
+        "claim": "A BLS indexed 2024 American Time Use Survey table reports U.S. people age 15+ spent 0.67 hours per day on food preparation and cleanup on average, with 63.1% doing it on an average day.",
+        "evidence_ids": [
+          "scope-repair_004"
+        ]
+      }
+    ],
+    "unknowns": [
+      "Evidence now includes one global cooking source, but most supplied detail on spending, waste, grocery automation, GLP-1s, and robots remains U.S.-focused.",
+      "Supplied and newly retrieved evidence does not directly observe 2035 home eating; it gives present and recent historical baselines only.",
+      "Meal counts, cooking frequency, household time use, and who prepares food at home are still unevenly established across countries and household types.",
+      "Adoption, reliability, cost, and everyday use of AI fridges, grocery automation, and cooking robots remain weakly evidenced.",
+      "The effect of GLP-1 drugs on long-term household eating patterns beyond reported early grocery changes is unknown.",
+      "Chronology is limited because some supplied records rely on indexed excerpts or pages whose full source dates were not visible.",
+      "Restaurant delivery, meal kits, prepared supermarket meals, appliance ownership, kitchen size, household budgets, and food prices are not fully mapped.",
+      "Differences by income, age, household size, region, disability, work schedule, and cooking skill are not established in the supplied findings.",
+      "Whether reported smart-home adoption includes food-management features, and whether people actually use those features, remains unknown.",
+      "The supplied legacy_unverified scenario records are unresolved hypotheses, not present observations under the evidence contract."
+    ]
+  },
+  "endpoints": [
+    {
+      "commitments": [
+        {
+          "id": "clinic-1",
+          "statement": "By 2035, at least one large grocery, pharmacy or health insurer in several rich countries offers meal planning that uses wearable or home health readings, not just stated diet preferences."
+        },
+        {
+          "id": "clinic-2",
+          "statement": "By 2035, many packaged foods sold for home eating carry machine-readable labels detailed enough for household software to screen them for allergies, sodium, sugar and common medicine conflicts."
+        },
+        {
+          "id": "clinic-3",
+          "statement": "By 2035, continuous glucose monitors or similar everyday body sensors are common enough outside diabetes care that home meal services design menus around their readings."
+        },
+        {
+          "id": "clinic-4",
+          "statement": "By 2035, privacy rules or lawsuits clearly limit whether employers, insurers or food sellers can use home eating data to raise prices, deny coverage or target ads."
+        },
+        {
+          "id": "clinic-5",
+          "statement": "By 2035, doctors or dietitians in routine care can prescribe broad food patterns that connect directly to grocery ordering or meal-kit systems for willing patients."
+        }
+      ],
+      "falsifiers": [
+        "Wearables remain mainly fitness toys with little food use",
+        "Privacy backlash blocks food-health data sharing broadly",
+        "Doctors reject app-based meal plans as unreliable",
+        "Healthy meal services stay too expensive for mass use",
+        "Packaged food data remains patchy and hard for software to use"
+      ],
+      "id": "kitchen-as-clinic",
+      "original_narrative": "Imagine a Tuesday evening. A parent gets home tired. Their phone says the child\u2019s soccer practice ran long, their own blood sugar dipped twice, and a late coffee hurt last night\u2019s sleep. Dinner suggestions are not restaurant ads. They are three meals the household will probably tolerate: lentil pasta with extra sauce, salmon rice bowls, or a frozen stew that fits everyone\u2019s allergies and medicines.\n\nThe parent still opens the fridge and chops an onion. But some choices have moved upstream. The grocery order already skipped foods that clash with one person\u2019s blood pressure pills. Snack drawers look different: fewer mystery treats, more labeled portions that the house system knows how to count. People do not need to remember every rule from a doctor visit. The kitchen remembers.\n\nThis world depends on trust. If people feel watched, or if the advice is expensive and joyless, they ignore it. If insurers or employers push too hard, it becomes creepy instead of useful. The best version feels like a seatbelt for eating: mostly invisible, sometimes annoying, and clearly helpful on bad days.",
+      "original_statement": "Eating at home in 2035 could become a quiet health routine: the meal is picked by software using a person\u2019s sleep, blood sugar, medicine and goals, then assembled from ordinary groceries, prepared packs or a countertop machine. The kitchen does not vanish, but the question shifts from \u201cWhat do we feel like eating?\u201d to \u201cWhat will keep us steady today?\u201d",
+      "signals": [
+        "Grocery apps asking to connect to wearables or glucose monitors",
+        "Food labels redesigned for software scanning, not only human reading",
+        "Doctors discussing connected meal plans during routine visits",
+        "Public fights over insurers rewarding or punishing eating data",
+        "Countertop appliances advertising medical-diet modes"
+      ],
+      "title": "By 2035, many home dinners are chosen like a daily dose"
+    },
+    {
+      "commitments": [
+        {
+          "id": "hearth-1",
+          "statement": "By 2035, dense neighborhoods in some cities have subscription services that deliver or stock daily prepared staples for home finishing, priced below frequent restaurant delivery."
+        },
+        {
+          "id": "hearth-2",
+          "statement": "By 2035, new apartment buildings in some cities include shared cold storage, food lockers or dish-return spaces as normal amenities."
+        },
+        {
+          "id": "hearth-3",
+          "statement": "By 2035, refillable or returnable containers are common in at least some home-food subscription systems, with deposits or building pickup."
+        },
+        {
+          "id": "hearth-4",
+          "statement": "By 2035, household ownership of some bulky cooking or storage items, such as second freezers or large pantry shelving, falls among subscribers in dense urban markets."
+        },
+        {
+          "id": "hearth-5",
+          "statement": "By 2035, local health departments have inspection rules written for neighborhood production kitchens that serve homes rather than restaurants."
+        }
+      ],
+      "falsifiers": [
+        "Prepared food remains much pricier than cooking from groceries",
+        "Return logistics prove too messy or costly",
+        "Food safety failures make shared kitchens unpopular",
+        "Building owners avoid adding food storage spaces",
+        "Restaurant delivery absorbs the market instead of home finishing"
+      ],
+      "id": "subscription-hearth",
+      "original_narrative": "Imagine an apartment building at 6 p.m. In the lobby, warm boxes sit in lockers: plain rice, roasted vegetables, soup base, chopped herbs, bread, sauces, school lunches for tomorrow. Upstairs, one person fries eggs over the rice. Another adds chili oil and tofu. A family turns the same vegetable tray into tacos.\n\nThe building\u2019s basement no longer has only mail and bikes. It has a small cold room and return bins for jars and pans. The service is not fancy takeout. It is closer to a neighborhood kitchen that makes the boring middle of dinner reliable. People buy fewer backup cans, less single-use packaging and perhaps no second freezer. A young renter may never own a full set of pots.\n\nThis world grows if food labor, delivery routes, packaging return and local kitchens become cheaper together. It stalls if people distrust shared kitchens, if delivery wages rise sharply, or if families decide the loss of control is not worth the saved time. It also needs menus plain enough to be customized, not chef performances every night.",
+      "original_statement": "Eating at home in 2035 could resemble using electricity: households subscribe to a steady flow of prepared staples, fresh parts and refillable basics delivered through local kitchens. People still cook finishing touches, but fewer homes keep deep pantries, buy big appliances or plan a week of meals from scratch.",
+      "signals": [
+        "Apartment ads mention food lockers beside package lockers",
+        "Meal services sell plain staples, not only complete meals",
+        "Return bins for jars and trays appear in residential buildings",
+        "Local kitchens operate as subscription hubs for nearby blocks",
+        "Young households report owning fewer cooking tools"
+      ],
+      "title": "By 2035, some homes eat from a shared food utility, not a personal pantry"
+    },
+    {
+      "commitments": [
+        {
+          "id": "machine-1",
+          "statement": "By 2035, at least one countertop cooking machine that combines heating, stirring or steaming with guided ingredient packs sells at mass-market appliance prices in several countries."
+        },
+        {
+          "id": "machine-2",
+          "statement": "By 2035, major grocery chains stock fresh or frozen meal components designed for automated home cooking machines, not only microwave reheating."
+        },
+        {
+          "id": "machine-3",
+          "statement": "By 2035, common home layouts or rental listings in some markets mention space, power or plumbing for advanced countertop cooking appliances."
+        },
+        {
+          "id": "machine-4",
+          "statement": "By 2035, repair, cleaning and replacement parts for automated cooking appliances become a visible consumer issue, including warranties or right-to-repair rules."
+        },
+        {
+          "id": "machine-5",
+          "statement": "By 2035, cooking education for some young adults shifts toward choosing, combining and supervising machine-ready components rather than learning full recipes from raw ingredients."
+        }
+      ],
+      "falsifiers": [
+        "Machines stay expensive niche gadgets",
+        "Cleaning remains harder than cooking normally",
+        "Food packs cost too much or create public waste backlash",
+        "Brands refuse shared formats and frustrate buyers",
+        "Air fryers, microwaves and simple kits satisfy the same need cheaply"
+      ],
+      "id": "cookless-machines",
+      "original_narrative": "Imagine a teenager home first. They scan a tray marked \u201cno peanuts, spicy level 2,\u201d slide it into a box the size of a microwave, and press start. Steam, stirring and browning happen inside. Twenty minutes later there is dal, rice and greens. No one checks whether the onions are burning.\n\nThe family keeps a small fridge drawer of machine-ready parts. Some weekends they still cook real pancakes or grill outside. But weeknights change. The house no longer needs as many pans, measuring cups or jars of half-used spices. A person who never learned knife skills can feed themselves something better than a snack plate.\n\nThis future needs the machine to be cheap, reliable and easy to clean. It also needs food makers to agree on formats, or every brand becomes its own trap. It could fail if the meals taste too samey, if cartridges create waste, if repairs are expensive, or if people decide a simpler air fryer and a bagged salad are good enough.",
+      "original_statement": "Eating at home in 2035 could be built around sealed ingredient cartridges, frozen pucks or fresh trays that a countertop machine turns into meals. The home still smells like dinner, but skill moves from the person to the device and its supply chain. Cooking becomes more like loading laundry: choose, insert, wait, clean the tray.",
+      "signals": [
+        "Grocery freezer aisles add machine-cook labels",
+        "Appliance reviews focus on taste, cleaning and cartridge lock-in",
+        "Rental kitchens advertise appliance-ready counters",
+        "Food brands partner on shared tray or cartridge shapes",
+        "Schools or apps teach machine meal assembly"
+      ],
+      "title": "By 2035, a kitchen appliance may cook dinner while people stop learning recipes"
+    },
+    {
+      "commitments": [
+        {
+          "id": "grow-1",
+          "statement": "By 2035, indoor growing cabinets for herbs, greens or mushrooms are sold through mainstream appliance or furniture channels, not only hobby garden shops."
+        },
+        {
+          "id": "grow-2",
+          "statement": "By 2035, some apartment buildings, schools or senior housing sites run shared indoor growing rooms that supply residents with small but regular amounts of fresh food."
+        },
+        {
+          "id": "grow-3",
+          "statement": "By 2035, electricity and water use for common home growing systems is low enough that sellers publish running costs comparable to buying premium fresh greens."
+        },
+        {
+          "id": "grow-4",
+          "statement": "By 2035, seed pods, mushroom blocks or similar refills are available in ordinary grocery or hardware stores in markets where home growing catches on."
+        },
+        {
+          "id": "grow-5",
+          "statement": "By 2035, household food habits in some groups include harvesting small fresh ingredients at dinner time often enough to reduce purchases of packaged herbs and delicate salad greens."
+        }
+      ],
+      "falsifiers": [
+        "Energy prices make indoor growing look wasteful",
+        "Mold, bugs or cleaning problems drive abandonment",
+        "Supermarket greens stay cheap and reliable enough",
+        "Refill pods remain expensive niche products",
+        "Consumers treat cabinets as novelty gifts rather than daily food sources"
+      ],
+      "id": "gardened-protein",
+      "original_narrative": "Imagine opening what looks like a narrow bookcase with lights inside. Basil, lettuce and pea shoots are ready. A tray of mushrooms is on its last day. Dinner is noodles, a store-bought sauce and greens cut minutes before eating. The household still buys onions, oil, fruit, grains and most protein. The difference is that the \u201cfresh accent\u201d is always alive in the room.\n\nIn another home, a shared building room grows herbs and greens for residents. People take a handful like they once took laundry from a machine. Kids notice food as something that changes daily, not only as a sealed bag from a store. Some grocery trips shrink because delicate greens no longer wilt in the fridge.\n\nThis future needs low electricity use, easy cleaning and crops people actually eat often. It is stopped by high power prices, mold, pests, boredom, or cabinets that become abandoned exercise bikes. It also depends on whether local growing beats the plain convenience of cheap supermarket produce.",
+      "original_statement": "Eating at home in 2035 could include small indoor growing cabinets and local protein makers that supply greens, herbs, mushrooms or cultured foods close to the plate. Dinner is not fully home-grown. But some fresh, fragile and expensive parts stop coming from far away every week.",
+      "signals": [
+        "Home stores display growing cabinets beside fridges and shelves",
+        "Grocery stores sell seed pods and mushroom blocks",
+        "Apartment amenity lists include shared grow rooms",
+        "Appliance labels show monthly electricity cost for food growing",
+        "Recipes assume fresh home-grown herbs or greens are available"
+      ],
+      "title": "By 2035, some homes grow a meaningful part of dinner indoors"
+    }
+  ],
+  "captured_checks": [
+    {
+      "endpoint_id": "kitchen-as-clinic",
+      "function": "check_endpoint_delta",
+      "result": "consequential_change"
+    },
+    {
+      "endpoint_id": "subscription-hearth",
+      "function": "check_endpoint_delta",
+      "result": "consequential_change"
+    },
+    {
+      "endpoint_id": "cookless-machines",
+      "function": "check_endpoint_delta",
+      "result": "consequential_change"
+    },
+    {
+      "endpoint_id": "gardened-protein",
+      "function": "check_endpoint_delta",
+      "result": "consequential_change"
+    },
+    {
+      "endpoint_id": null,
+      "function": "check_endpoint_set",
+      "result": "alternative_trajectories"
+    }
+  ]
+}

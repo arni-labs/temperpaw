@@ -330,6 +330,25 @@ fn step(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
+    if core::proposals::pool::research_pending(&program) {
+        let remaining =
+            core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
+        if !stopped
+            && core::proposals::pool::admits(remaining, 2, 160)
+            && elapsed < core::time_limit(&program).saturating_sub(120_000)
+        {
+            set_success_result(
+                "Reason",
+                &json!({"phase":"explore","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
+            );
+        } else {
+            set_success_result(
+                "Fail",
+                &json!({"error_message":"Candidate comparison remains incomplete: insufficient reserved budget for analogue research, checks and connected-world reconstruction. No endpoints were frozen."}),
+            );
+        }
+        return Ok(());
+    }
     if core::endpoints::enabled(&program)
         && !program["endpoint_search"].is_object()
         && program["endpoint_proposal_attempt"]["status"] != "checking"
@@ -360,7 +379,19 @@ fn step(ctx: &Context) -> Result<(), String> {
         let retry = !resource_exhausted
             && remaining >= core::REASONING_TRANSITION_RESERVE + 16
             && elapsed < core::time_limit(&program).saturating_sub(120_000);
-        core::proposals::finish(&mut program, retry, resource_exhausted)?;
+        if core::proposals::pool::enabled(&program) {
+            let global_remaining =
+                core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
+            let bounded_retry = retry && core::proposals::pool::admits(global_remaining, 2, 160);
+            core::proposals::pool::finish(
+                &snapshot,
+                &mut program,
+                bounded_retry,
+                resource_exhausted,
+            )?;
+        } else {
+            core::proposals::finish(&mut program, retry, resource_exhausted)?;
+        }
         if program["endpoint_proposal_attempt"]["status"] == "unresolved" {
             program["stop_reason"] = json!("endpoint_proposal_quality");
         }
