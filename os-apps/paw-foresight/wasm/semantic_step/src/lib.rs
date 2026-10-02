@@ -44,6 +44,51 @@ fn next_phase(
             "previous_admission":previous
         });
     }
+    if core::endpoints::enabled(program) && program["stage"] != "worlds" {
+        if !program["endpoint_search"].is_object() {
+            return "imagine";
+        }
+        if program["endpoint_search"]["routes"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+            && program["endpoint_search"]["rounds"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        {
+            return "backward";
+        }
+        if program["stage"] != "routes"
+            && exhausted.is_empty()
+            && core::endpoints::plan_routes(snapshot, program)
+        {
+            return "refine";
+        }
+        core::endpoints::finish_routes(snapshot, program);
+        let needs_alternative = core::endpoints::alternative_needed(program);
+        let remaining = core::transition_limit(&json!({"stage":"routes"}))
+            .saturating_sub(core::transition_count(program));
+        let allowed = exhausted.is_empty()
+            && remaining >= core::REASONING_TRANSITION_RESERVE + 16
+            && elapsed_ms < core::MAX_MS.saturating_sub(core::WORLD_TIME_RESERVE_MS + 120_000);
+        program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_TRANSITION_RESERVE+16,"alternative_required":needs_alternative});
+        if allowed && (needs_alternative || program["continue_exploring"] != false) {
+            program["stage"] = json!("exploration");
+            program["stop_reason"] = json!(if needs_alternative {
+                "backward_alternative_needed"
+            } else {
+                "backward_search_continues"
+            });
+            return "backward";
+        }
+        program["stop_reason"] = json!(if !exhausted.is_empty() {
+            exhausted.as_str()
+        } else if needs_alternative {
+            "backward_routes_unresolved"
+        } else {
+            "backward_routes_evaluated"
+        });
+        return "compose";
+    }
     if program["stage"] == "combinations" {
         core::search::finish_combinations(program);
         if !exhausted.is_empty() {
@@ -169,7 +214,8 @@ fn plan_combination_phase(
     elapsed: u64,
 ) -> bool {
     let search = json!({"stage":"combinations"});
-    program["stage"] == "exploration"
+    !core::endpoints::enabled(program)
+        && program["stage"] == "exploration"
         && program["combination_search"].is_null()
         && !matches!(
             program["stop_reason"].as_str(),
@@ -281,6 +327,13 @@ fn step(ctx: &Context) -> Result<(), String> {
         set_success_result(
             "SearchPlanned",
             &json!({"program_json":program.to_string()}),
+        );
+        return Ok(());
+    }
+    if core::endpoints::enabled(&program) && !program["endpoint_search"].is_object() {
+        set_success_result(
+            "Reason",
+            &json!({"phase":"imagine","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
         );
         return Ok(());
     }
@@ -476,6 +529,27 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn world_first_imagination_precedes_components_and_failed_routes_get_an_alternative() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});
+        let mut program = json!({"world_search_contract":1,"baseline_status":"established","stage":"exploration","tasks":[],"cursor":0});
+        assert_eq!(next_phase(&snapshot, &mut program, 0, 0), "imagine");
+        program["endpoint_search"] = json!({"status":"imagined","endpoints":[{"id":"e","commitments":[{"id":"c"}]}],"routes":[],"amendments":[],"rounds":[]});
+        assert_eq!(next_phase(&snapshot, &mut program, 0, 0), "backward");
+        program["endpoint_search"]["rounds"] = json!([{"round":1}]);
+        program["endpoint_search"]["routes"] =
+            json!([{"id":"r","endpoint_id":"e","commitment_id":"c","status":"blocked"}]);
+        program["stage"] = json!("routes");
+        program["continue_exploring"] = json!(false);
+        assert_eq!(next_phase(&snapshot, &mut program, 4, 1000), "backward");
+        assert_eq!(program["stop_reason"], "backward_alternative_needed");
+        assert!(!plan_combination_phase(&snapshot, &mut program, 4, 1000));
+        program["transition_count"] = json!(core::MAX_APP_TRANSITIONS);
+        assert_eq!(next_phase(&snapshot, &mut program, 4, 1000), "compose");
+        assert_eq!(program["endpoint_search"]["routes"][0]["status"], "blocked");
+        assert_eq!(program["stop_reason"], "backward_routes_unresolved");
+    }
+
     #[test]
     fn hard_exploration_exit_replaces_prior_admission_without_inventing_cost() {
         let snapshot = json!({"nodes":[]});

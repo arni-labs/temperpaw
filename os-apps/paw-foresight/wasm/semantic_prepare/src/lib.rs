@@ -127,14 +127,16 @@ fn exploration_interrupted(snapshot: &Value, program: &Value, trace: &Value) -> 
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|n| n["kind"] == "world")
+        .filter(|n| n["kind"] == "world" && n["route_only"] != true)
         .filter_map(|n| n["Id"].as_str())
         .collect();
     program["stop_reason"] == "provider_error"
         && (program["stage"] == "exploration"
             || program["exploration_stop_reason"] == "provider_error")
         && !trace.as_array().into_iter().flatten().any(|item| {
-            item["task"]["world_id"].as_str().is_some()
+            item["task"]["world_id"]
+                .as_str()
+                .is_some_and(|id| world_ids.contains(id))
                 || (item["function"] == "estimate_likelihood"
                     && item["nodeId"]
                         .as_str()
@@ -175,7 +177,7 @@ fn restore_exploration(snapshot: &Value, program: &Value) -> Result<(Value, Valu
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .filter(|n| n["kind"] == "world")
+        .filter(|n| n["kind"] == "world" && n["route_only"] != true)
     {
         node["archived"] = json!(true);
     }
@@ -322,11 +324,13 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     let phase = core::field(record, "phase");
     if !matches!(
         phase,
-        "seed" | "explore" | "challenge" | "compose" | "synthesize"
+        "seed" | "explore" | "challenge" | "compose" | "synthesize" | "imagine" | "backward"
     ) {
         return Err("Invalid resume phase".into());
     }
-    let has_worlds = nodes.iter().any(|n| core::field(n, "kind") == "world");
+    let has_worlds = nodes
+        .iter()
+        .any(|n| core::field(n, "kind") == "world" && n["route_only"] != true);
     let has_hypotheses = nodes
         .iter()
         .filter(|n| matches!(core::field(n, "kind"), "scenario" | "revision"))
@@ -370,7 +374,7 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
         return Ok(
             json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,
             "snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":trace_raw,
-            "started_at_ms":started_raw,"phase":"explore","reasoning_phase_polls":0}),
+            "started_at_ms":started_raw,"phase":if core::endpoints::enabled(&program){"backward"}else{"explore"},"reasoning_phase_polls":0}),
         );
     }
     // Keep the program exactly unless a spent budget needs its honest stop reason.
@@ -471,7 +475,8 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         let safe = snapshot_node(n)?;
         nodes.push(safe);
     }
-    let program = core::plan(&nodes)?;
+    let mut program = core::plan(&nodes)?;
+    program["world_search_contract"] = json!(1);
     let session_id = core::field(&world, "research_session_id");
     if session_id.is_empty()
         || !session_id

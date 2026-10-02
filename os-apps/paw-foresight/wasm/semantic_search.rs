@@ -88,6 +88,12 @@ pub fn validate_world(world: &Value, snapshot: &Value) -> Result<(), String> {
     if assumptions.iter().any(|v| !text(v, 600)) {
         return Err("Invalid world assumption".into());
     }
+    validate_chain(world, snapshot)
+}
+
+/// Validate causal dates, references and DAG structure for worlds or smaller routes.
+pub fn validate_chain(world: &Value, snapshot: &Value) -> Result<(), String> {
+    let components: BTreeSet<_> = ids(&world["component_ids"])?.into_iter().collect();
     let links = world["chain"]
         .as_array()
         .filter(|v| v.len() <= 24)
@@ -172,7 +178,22 @@ fn pair_id(a: &str, b: &str) -> String {
 }
 pub fn world_tasks(world: &Value) -> Vec<Value> {
     let id = field(world, "Id");
-    let components = ids(&world["component_ids"]).unwrap_or_default();
+    let all_components = ids(&world["component_ids"]).unwrap_or_default();
+    // Endpoint commitments are the joint claims. Route prerequisites remain in
+    // every link and the whole-world consistency request, without a quadratic
+    // sweep of unrelated intermediate steps.
+    let components = if world["endpoint_id"].is_string() {
+        world["commitment_bindings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|binding| binding["component_id"].as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        all_components
+    };
     let mut tasks = vec![];
     for (i, a) in components.iter().enumerate() {
         for b in &components[i + 1..] {

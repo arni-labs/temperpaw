@@ -91,6 +91,12 @@ pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
     request_task(snapshot, program, &program["tasks"][cursor])
 }
 pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
+    if task["function"] == "check_route_grounding" {
+        return super::endpoints::grounding_request(snapshot, program, task);
+    }
+    if task["function"] == "classify_amendment" {
+        return super::endpoints::amendment_request(snapshot, program, task);
+    }
     if super::search::is_structural(task) {
         return super::search::request(snapshot, program, task);
     }

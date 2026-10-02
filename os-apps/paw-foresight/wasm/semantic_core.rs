@@ -16,8 +16,12 @@ pub const WORLD_TIME_RESERVE_MS: u64 = 600_000;
 pub const COMBINATION_CALL_BUDGET: usize = 1000;
 pub const COMBINATION_TIME_BUDGET_MS: u64 = 180_000;
 pub fn call_limit(program: &Value) -> usize {
+    if endpoints::enabled(program) && program["stage"] == "exploration" {
+        return MAX_CALLS - WORLD_CALL_RESERVE / 2;
+    }
     match program["stage"].as_str() {
         Some("worlds") => MAX_CALLS,
+        Some("routes") => MAX_CALLS - WORLD_CALL_RESERVE / 2,
         Some("combinations") => MAX_CALLS - WORLD_CALL_RESERVE + COMBINATION_CALL_BUDGET,
         _ => MAX_CALLS - WORLD_CALL_RESERVE,
     }
@@ -25,9 +29,16 @@ pub fn call_limit(program: &Value) -> usize {
 pub fn time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
         Some("worlds") => MAX_MS - SYNTHESIS_TIME_RESERVE_MS,
+        Some("routes") => MAX_MS - WORLD_TIME_RESERVE_MS,
         Some("combinations") => MAX_MS - WORLD_TIME_RESERVE_MS + COMBINATION_TIME_BUDGET_MS,
         _ => MAX_MS - WORLD_TIME_RESERVE_MS,
     }
+}
+pub mod endpoints {
+    include!("semantic_endpoints.rs");
+}
+pub mod references_for_endpoints {
+    include!("semantic_references.rs");
 }
 pub mod comparison {
     include!("semantic_comparison.rs");
@@ -296,8 +307,12 @@ pub fn transition_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 pub fn transition_limit(program: &Value) -> u64 {
+    if endpoints::enabled(program) && program["stage"] == "exploration" {
+        return MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 64;
+    }
     match field(program, "stage") {
         "worlds" => MAX_APP_TRANSITIONS - REASONING_TRANSITION_RESERVE,
+        "routes" => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 64,
         "combinations" => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128,
         _ => MAX_APP_TRANSITIONS - 2 * REASONING_TRANSITION_RESERVE - 128 - 32,
     }
@@ -364,7 +379,9 @@ pub fn forecast_exclusion_reason<'a>(program: &'a Value, id: &str) -> &'a str {
 /// Screening is independent of prior probabilities. A non-event remains in the
 /// snapshot as context, but never receives event-specific judgments.
 pub fn task_allowed(program: &Value, task: &Value) -> bool {
-    if program["stage"] == "worlds" || task["function"] == "classify_claim_role" {
+    if matches!(program["stage"].as_str(), Some("worlds" | "routes"))
+        || task["function"] == "classify_claim_role"
+    {
         return true;
     }
     let id = field(task, "nodeId");
@@ -383,7 +400,7 @@ pub fn task_allowed(program: &Value, task: &Value) -> bool {
 /// Invalidate before filtering a replanned task queue so newly required
 /// admission checks cannot erase odds whose replacement tasks were removed.
 pub fn clear_ineligible_forecasts(program: &mut Value) {
-    if program["stage"] == "worlds" {
+    if matches!(program["stage"].as_str(), Some("worlds" | "routes")) {
         return;
     }
     let excluded: Vec<String> = program["results"]
@@ -416,7 +433,7 @@ pub fn clear_ineligible_forecasts(program: &mut Value) {
 }
 
 pub fn skip_nonfuture_tasks(program: &mut Value) -> Result<(), String> {
-    if program["stage"] == "worlds" {
+    if matches!(program["stage"].as_str(), Some("worlds" | "routes")) {
         return Ok(());
     }
     clear_ineligible_forecasts(program);

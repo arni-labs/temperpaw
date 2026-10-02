@@ -219,7 +219,7 @@ fn expand(
     phase: &str,
     program: &Value,
 ) -> Result<(), String> {
-    if !matches!(phase, "seed" | "explore" | "challenge") {
+    if !matches!(phase, "seed" | "explore" | "challenge" | "backward") {
         return Err("Unknown exploration phase".into());
     }
     let mut generated = generated.clone();
@@ -804,6 +804,7 @@ fn baseline_correction(old: &Value, error: &str) -> Result<Value, String> {
 fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value, String> {
     let mut generated = generated.clone();
     references::References::new(snapshot)?.resolve_generated(&mut generated);
+    core::endpoints::validate_composition(old, &generated)?;
     let baseline = if old["baseline"].is_object() {
         &old["baseline"]
     } else {
@@ -890,8 +891,15 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
                 return Err(format!("Duplicate world component {reference}"));
             }
         }
-        if components.len() < 3 || components.len() > 12 {
-            return Err("World needs three to twelve defining components".into());
+        let component_limit = if core::endpoints::enabled(old) {
+            32
+        } else {
+            12
+        };
+        if components.len() < 3 || components.len() > component_limit {
+            return Err(format!(
+                "World needs three to {component_limit} defining components"
+            ));
         }
         let counters = world["counter_ids"]
             .as_array()
@@ -1016,6 +1024,11 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
             .remove("claim_role_contract");
     }
     for key in [
+        "world_search_contract",
+        "endpoint_search",
+        "candidate_basis",
+        "novelty_basis",
+        "route_basis",
         "results",
         "evaluations",
         "round",
@@ -1051,6 +1064,12 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     }
     program["tasks"] = json!(tasks);
     program["active_world_ids"] = json!(identities);
+    if core::endpoints::enabled(old) {
+        program["unreconstructed_endpoints"] = generated["unreconstructed_endpoints"]
+            .as_array()
+            .cloned()
+            .map_or(json!([]), |v| json!(v));
+    }
     program["world_revision"] = json!(revision);
     program["world_set_audit"] = Value::Null;
     program["world_pass"] = json!(1);
@@ -1193,6 +1212,18 @@ fn attach_world_probabilities(
         }
         if let Some(binding_audit) = program["comparison_bindings"].get(&id) {
             outcome["comparison_binding_audit"] = binding_audit.clone();
+        }
+        if core::endpoints::enabled(program) {
+            for key in ["endpoint_id", "selected_route_ids", "commitment_bindings"] {
+                outcome[key] = node[key].clone();
+            }
+            outcome["original_endpoint"] = program["endpoint_search"]["endpoints"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|e| e["id"] == node["endpoint_id"])
+                .cloned()
+                .unwrap_or(Value::Null);
         }
         // Context references are persisted world inputs, not writer-generated identities.
         let mut context_ids = std::collections::BTreeSet::new();
@@ -1348,6 +1379,11 @@ fn evidence_ids(snapshot: &Value) -> std::collections::BTreeSet<String> {
 fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Result<Value, String> {
     let mut program = core::plan(snapshot["nodes"].as_array().ok_or("Missing nodes")?)?;
     for key in [
+        "world_search_contract",
+        "endpoint_search",
+        "candidate_basis",
+        "novelty_basis",
+        "route_basis",
         "results",
         "evaluations",
         "baseline",
@@ -1400,7 +1436,9 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         .as_array_mut()
         .ok_or("Invalid round history")?
         .push(receipt);
-    core::defer_recorded_rankings(&mut program, old);
+    if !core::endpoints::enabled(old) {
+        core::defer_recorded_rankings(&mut program, old);
+    }
     let current_evidence = evidence_ids(snapshot);
     let previous_evidence: std::collections::BTreeSet<_> = old["evidence_ids"]
         .as_array()
@@ -1432,6 +1470,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         }
     }
     program["evidence_ids"] = json!(current_evidence);
+    core::endpoints::invalidate_changed_candidates(snapshot, &mut program, old);
     core::clear_ineligible_forecasts(&mut program);
     let results = program["results"].clone();
     program["tasks"]
@@ -1528,6 +1567,10 @@ fn exploration_correction(
     let mut program = old.clone();
     let instruction = if scope_pending(old) {
         "Scope research repair was not applied. Return the complete research-only repair JSON: no hypotheses or branches; preserve original question and source qualifications, validate refreshed baseline, and report remaining limits honestly. Empty research_evidence is valid when no new findings were obtained."
+    } else if phase == "imagine" {
+        "The endpoint proposal was not applied. Return the complete endpoint-only JSON against the same question and sourced present; do not generate components, routes or estimates yet."
+    } else if phase == "backward" {
+        "The backward search response was not applied. Return complete corrected hypotheses, evidence and route JSON. Preserve immutable endpoint commitments and earlier routes, ground each proposed root or mark its unresolved question, and retain supplied source qualifications."
     } else if phase == "challenge" {
         "The challenge response was not applied. Return the complete corrected challenge JSON against the unchanged visible catalog. Every premise must link existing prior hypotheses to new alternative hypotheses; every new hypothesis must be linked. Do not invent references, evidence, or evaluations. You may return empty premises and hypotheses with an honest explanation."
     } else {
@@ -1578,11 +1621,14 @@ fn expand_with_baseline(
 ) -> Result<Option<Value>, String> {
     let mut candidate = snapshot.clone();
     expand(&mut candidate, generated, phase, old)?;
-    let refresh = if matches!(phase, "explore" | "challenge") {
+    let refresh = if matches!(phase, "explore" | "challenge" | "backward") {
         refresh_researched_baseline(snapshot, &candidate, generated, old)?
     } else {
         None
     };
+    if phase == "backward" {
+        core::endpoints::add_routes(snapshot, &mut candidate, old, generated)?;
+    }
     *snapshot = candidate;
     Ok(refresh)
 }
@@ -1651,6 +1697,22 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         return Ok(());
     }
 
+    if phase == "imagine" {
+        match core::endpoints::imagine(&snapshot, &old, &generated) {
+            Ok(prepared) => set_success_result(
+                "Expanded",
+                &json!({"snapshot_json":snapshot.to_string(),"program_json":prepared.to_string(),"started_at_ms":core::field(&ctx.entity_state,"started_at_ms")}),
+            ),
+            Err(error) => {
+                let corrected = exploration_correction(raw, &old, phase, &error)?;
+                set_success_result(
+                    "CompositionRejected",
+                    &json!({"program_json":corrected.to_string()}),
+                );
+            }
+        }
+        return Ok(());
+    }
     if phase == "seed" {
         match core::parse(raw).and_then(|generated| establish_baseline(&snapshot, &generated, &old))
         {
@@ -1711,7 +1773,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             })
         };
         if let Err(error) = expansion {
-            if !matches!(phase, "challenge" | "explore") {
+            if !matches!(phase, "challenge" | "explore" | "backward") {
                 return Err(error);
             }
             let program = match exploration_correction(phase, &old, &error, raw) {
@@ -1749,6 +1811,10 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 planning_old["evidence_ids"] = json!([]);
             }
         }
+        if let Some(ref receipt) = baseline_refresh {
+            planning_old["baseline"] = receipt["baseline"].clone();
+            planning_old["scope_review"] = receipt["scope_review"].clone();
+        }
         replan(&snapshot, &planning_old, &core::parse(raw)?, added)?
     };
     if scope_pending(&old) {
@@ -1772,6 +1838,22 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             .as_array_mut()
             .unwrap()
             .push(receipt);
+    }
+    if phase == "backward" {
+        let original = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+        let mut candidate = snapshot.clone();
+        // Route nodes were validated atomically in expansion; reconstruct the
+        // append-only receipt against the same ordinary candidate graph.
+        candidate["nodes"].as_array_mut().unwrap().retain(|n| {
+            n["route_only"] != true
+                || original["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|prior| prior["Id"] == n["Id"])
+        });
+        program["endpoint_search"] =
+            core::endpoints::add_routes(&original, &mut candidate, &old, &generated)?;
     }
     if phase == "challenge" {
         record_challenge(&snapshot, before, &core::parse(raw)?, &old, &mut program)?;
@@ -1971,6 +2053,79 @@ mod tests {
         let program = json!({"claim_role_contract":1,"results":{"a":{"classify_claim_role":"event","estimate_likelihood":"0.9"},"b":{"classify_claim_role":"event","estimate_likelihood":"0.8"},"c":{"classify_claim_role":"event"},"d":{"classify_claim_role":"event"}},"evaluations":{},"rounds":[],"round":6,"stop_reason":"exploration_converged"});
         (snapshot, generated, program)
     }
+    #[test]
+    fn endpoint_routes_compose_without_link_collisions_and_keep_original_lineage() {
+        let (mut snapshot, mut generated, mut old) = world_fixture();
+        snapshot["world"]["description"]=json!("How could these interacting systems change?");
+        references::References::new(&snapshot)
+            .unwrap()
+            .resolve_generated(&mut generated);
+        old["world_search_contract"] = json!(1);
+        old["endpoint_search"] =
+            json!({"status":"searching","endpoints":[],"routes":[],"amendments":[],"rounds":[]});
+        let mut routes = vec![];
+        for e in 0..2 {
+            let endpoint_id = format!("endpoint{e}");
+            old["endpoint_search"]["endpoints"].as_array_mut().unwrap().push(json!({"id":endpoint_id,"title":"Original endpoint","original_statement":generated["worlds"][e]["statement"],"original_narrative":"Frozen imagined world","commitments":[{"id":"ca","statement":"Component A"},{"id":"cb","statement":"Component B"},{"id":"cc","statement":"Component C"}],"signals":["A changes"],"falsifiers":["A fails"]}));
+            let mut selected = vec![];
+            let mut bindings = vec![];
+            for (from, to, claim) in [("d", "a", "ca"), ("a", "b", "cb"), ("b", "c", "cc")] {
+                let id = format!("route{e}-{claim}");
+                selected.push(id.clone());
+                bindings.push(json!({"commitment_id":claim,"component_id":to,"amendment_id":null}));
+                routes.push(json!({"id":id,"endpoint_id":endpoint_id,"commitment_id":claim,"target_component_id":to,"component_ids":[from,to],"chain":[{"id":"same-local-label","from_ids":[from],"to_id":to,"by":"2027-03-01","mechanism":format!("{from} enables {to}")}],"root_connections":[{"component_id":from,"evidence_ids":["e"],"mechanism":"A proposed bridge from observed conditions"}],"grounding_evidence_ids":["e"],"alternative_to":null,"amendment_id":null}));
+            }
+            generated["worlds"][e]["endpoint_id"] = json!(endpoint_id);
+            generated["worlds"][e]["selected_route_ids"] = json!(selected);
+            generated["worlds"][e]["commitment_bindings"] = json!(bindings);
+            generated["worlds"][e]["component_ids"] = json!(["a", "b", "c", "d"]);
+            generated["worlds"][e]["counter_ids"] = json!([]);
+            generated["worlds"][e]["facets"][0]["component_ids"] = json!(["a", "d"]);
+        }
+        let before = snapshot.clone();
+        old["endpoint_search"]=core::endpoints::add_routes(&before,&mut snapshot,&old,&json!({"routes":routes,"amendments":[],"hypotheses":[],"research_evidence":[],"exploration_note":"Two endpoint routes"})).unwrap();
+        for world in generated["worlds"].as_array_mut().unwrap() {
+            world["chain"] = json!(
+                old["endpoint_search"]["routes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r["endpoint_id"] == world["endpoint_id"])
+                    .flat_map(|r| r["chain"].as_array().unwrap().iter().cloned())
+                    .collect::<Vec<_>>()
+            );
+        }
+        let program = compose(&mut snapshot, &generated, &old).unwrap();
+        assert_eq!(program["active_world_ids"].as_array().unwrap().len(), 2);
+        for id in program["active_world_ids"].as_array().unwrap() {
+            let world = snapshot["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["Id"] == *id)
+                .unwrap();
+            core::search::validate_chain(world, &snapshot).unwrap();
+            assert_eq!(world["chain"].as_array().unwrap().len(), 3);
+            assert_ne!(world["route_only"], true);
+        }
+        let mut answer = json!({"schema":"foresight-worlds-v3","headline":"Different imagined ways the system could change","horizon":"2027-09-19","probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"summary":"Compare two imagined endpoint worlds and their causal routes.","evidence_limits":["Synthetic producer-contract fixture; no live estimates were made."],"research_questions":[],"outcomes":program["active_world_ids"].as_array().unwrap().iter().map(|id|{let node=snapshot["nodes"].as_array().unwrap().iter().find(|n|n["Id"]==*id).unwrap();json!({"id":id,"world_id":id,"title":node["title"],"definition":node["statement"],"scene":node["scene"],"narrative":node["narrative"],"what_you_can_do":node["what_you_can_do"],"signals":node["signals"],"falsifiers":node["falsifiers"]})}).collect::<Vec<_>>()});
+        attach_world_probabilities(&mut answer, &program, &snapshot).unwrap();
+        assert_eq!(
+            answer["outcomes"][0]["original_endpoint"],
+            old["endpoint_search"]["endpoints"][0]
+        );
+        if let Ok(path) = std::env::var("FORESIGHT_COMPOSE_FIXTURE") {
+            std::fs::write(
+                path,
+                serde_json::to_string_pretty(
+                    &json!({"program":program,"snapshot":snapshot,"answer":answer}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn claim_role_admission_rejects_context_components_without_altering_worlds() {
         let (snapshot, generated, mut program) = world_fixture();
