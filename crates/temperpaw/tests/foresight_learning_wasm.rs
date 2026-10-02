@@ -481,60 +481,65 @@ impl WasmHost for SessionConfigureHost {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn seed_world_records_research_session_from_the_create_response() {
-    let host = SimWasmHost::new()
-        .with_default_response(404, "unexpected request")
-        .with_response(
-            "https://temper.test/tdata/Workspaces",
-            201,
-            r#"{"entity_id":"workspace-1"}"#,
-        )
-        .with_response(
-            "https://temper.test/tdata/Agents",
-            201,
-            r#"{"entity_id":"agent-1"}"#,
-        )
-        .with_response(
-            "https://temper.test/tdata/Sessions",
-            201,
-            r#"{"entity_id":"session-1"}"#,
-        )
-        .with_response(
-            "https://temper.test/tdata/Sessions('session-1')/TemperPaw.Configure",
-            200,
-            "{}",
+    for options in ["", r#"{ "reasoning_effort": "high", "custom": 7 }"#] {
+        let host = SimWasmHost::new()
+            .with_default_response(404, "unexpected request")
+            .with_response(
+                "https://temper.test/tdata/Workspaces",
+                201,
+                r#"{"entity_id":"workspace-1"}"#,
+            )
+            .with_response(
+                "https://temper.test/tdata/Agents",
+                201,
+                r#"{"entity_id":"agent-1"}"#,
+            )
+            .with_response(
+                "https://temper.test/tdata/Sessions",
+                201,
+                r#"{"entity_id":"session-1"}"#,
+            )
+            .with_response(
+                "https://temper.test/tdata/Sessions('session-1')/TemperPaw.Configure",
+                200,
+                "{}",
+            );
+        let mut ctx = context(
+            "seed_world",
+            "Seed",
+            json!({"agent_model":"fixture-model","agent_provider":"fixture-provider","agent_provider_options_json":options}),
         );
-    let mut ctx = context(
-        "seed_world",
-        "Seed",
-        json!({"agent_model":"fixture-model","agent_provider":"fixture-provider"}),
-    );
-    ctx.entity_state["status"] = json!("Seeding");
-    ctx.entity_state["counters"] = json!({"research_attempt":7});
-    let configure_requests = Arc::new(Mutex::new(Vec::new()));
-    let host = SessionConfigureHost {
-        http_requests: Arc::default(),
-        inner: host,
-        configure_requests: Arc::clone(&configure_requests),
-    };
-    let result = invoke("seed_world", ctx, host).await;
-    let requests = configure_requests.lock().unwrap();
-    assert_eq!(
-        requests.len(),
-        1,
-        "seed must configure its research session"
-    );
-    assert_eq!(
-        requests[0]["tool_choice"], "required",
-        "research must use explicit tool completion instead of a plain-text end turn"
-    );
-    assert!(result.success, "{result:?}");
-    assert_eq!(
-        result.callback_action, "ResearchSessionStarted",
-        "{result:?}"
-    );
-    assert_eq!(result.callback_params["research_session_id"], "session-1");
-    assert_ne!(result.callback_params["research_session_id"], "agent-1");
-    assert_eq!(result.callback_params["expected_research_attempt"], 7);
+        ctx.entity_state["status"] = json!("Seeding");
+        ctx.entity_state["counters"] = json!({"research_attempt":7});
+        let configure_requests = Arc::new(Mutex::new(Vec::new()));
+        let host = SessionConfigureHost {
+            http_requests: Arc::default(),
+            inner: host,
+            configure_requests: Arc::clone(&configure_requests),
+        };
+        let result = invoke("seed_world", ctx, host).await;
+        let requests = configure_requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "seed must configure its research session"
+        );
+        assert_eq!(
+            requests[0]["tool_choice"], "required",
+            "research must use explicit tool completion instead of a plain-text end turn"
+        );
+        assert_eq!(requests[0]["model"], "fixture-model");
+        assert_eq!(requests[0]["provider"], "fixture-provider");
+        assert_eq!(requests[0]["provider_options_json"], options);
+        assert!(result.success, "{result:?}");
+        assert_eq!(
+            result.callback_action, "ResearchSessionStarted",
+            "{result:?}"
+        );
+        assert_eq!(result.callback_params["research_session_id"], "session-1");
+        assert_ne!(result.callback_params["research_session_id"], "agent-1");
+        assert_eq!(result.callback_params["expected_research_attempt"], 7);
+    }
 }
 
 fn corridor_session_host() -> SimWasmHost {

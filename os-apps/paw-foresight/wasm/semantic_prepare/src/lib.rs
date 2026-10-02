@@ -380,7 +380,7 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     if !exhausted && interrupted_exploration {
         let (snapshot, program) = restore_exploration(&snapshot, &program)?;
         return Ok(
-            json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,
+            json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,"provider_options_json":core::field(record,"provider_options_json"),
             "snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":trace_raw,
             "started_at_ms":started_raw,"phase":if core::endpoints::enabled(&program){"backward"}else{"explore"},"reasoning_phase_polls":0}),
         );
@@ -407,7 +407,7 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
         program_raw.to_owned()
     };
     Ok(
-        json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,
+        json!({"world_id":world_id,"agent_id":agent_id,"model":model,"provider":provider,"provider_options_json":core::field(record,"provider_options_json"),
         "snapshot_json":snapshot_raw,"program_json":program_raw,"trace_json":trace_raw,
         "started_at_ms":started_raw,"phase":phase,"reasoning_phase_polls":0}),
     )
@@ -452,7 +452,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         // Read only the trusted checkpoint and launch metadata. JSON escaping
         // of the bounded 24 MiB trace plus graph/program needs a larger envelope.
         let path = format!(
-            "SemanticRuns('{resume_id}')?$select=Id,Status,world_id,agent_id,model,provider,snapshot_json,program_json,trace_json,started_at_ms,phase"
+            "SemanticRuns('{resume_id}')?$select=Id,Status,world_id,agent_id,model,provider,provider_options_json,snapshot_json,program_json,trace_json,started_at_ms,phase"
         );
         let record = read_bounded(ctx, &path, 64 * 1024 * 1024)?;
         if let Some(prepared) = prepare_retry(&record, id, Context::get_time_millis() as u64)? {
@@ -518,7 +518,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     }
     set_success_result(
         "Prepared",
-        &json!({"world_id":id,"agent_id":agent_id,"model":core::field(&world,"agent_model"),"provider":core::field(&world,"agent_provider"),"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":Context::get_time_millis().to_string(),"phase":"seed","reasoning_phase_polls":0}),
+        &json!({"world_id":id,"agent_id":agent_id,"model":core::field(&world,"agent_model"),"provider":core::field(&world,"agent_provider"),"provider_options_json":core::field(&world,"agent_provider_options_json"),"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":Context::get_time_millis().to_string(),"phase":"seed","reasoning_phase_polls":0}),
     );
     Ok(())
 }
@@ -599,6 +599,25 @@ mod tests {
         json!({"Status":"Failed","world_id":"w","phase":"seed",
             "snapshot_json":"","program_json":"","trace_json":"",
             "started_at_ms":"","agent_id":"","model":"","provider":""})
+    }
+
+    #[test]
+    fn retry_preserves_exact_provider_options_and_legacy_empty_default() {
+        for options in [
+            None,
+            Some(""),
+            Some(r#"{"reasoning_effort":"high","custom":{"value":7}}"#),
+        ] {
+            let mut record = checkpoint();
+            if let Some(options) = options {
+                record["provider_options_json"] = json!(options);
+            }
+            let prepared = prepare_retry(&record, "w", 2000).unwrap().unwrap();
+            assert_eq!(prepared["provider_options_json"], options.unwrap_or(""));
+            assert_eq!(prepared["model"], record["model"]);
+            assert_eq!(prepared["provider"], record["provider"]);
+            assert_eq!(prepared["started_at_ms"], record["started_at_ms"]);
+        }
     }
 
     #[test]

@@ -77,7 +77,7 @@ name = "Prepared"
 kind = "input"
 from = ["Preparing"]
 to = "ReasoningSetup"
-params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase", "reasoning_phase_polls"]
+params = ["world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "provider_options_json", "phase", "reasoning_phase_polls"]
 effect = [{type="increment",var="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"}]
 [[action.triggers]]
 name = "semantic_reasoning"
@@ -643,7 +643,7 @@ name = "ResumePrepared"
 kind = "input"
 from = ["Preparing"]
 to = "Choosing"
-params = ["reasoning_phase_polls", "world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "phase"]
+params = ["reasoning_phase_polls", "world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "provider_options_json", "phase"]
 effect = [{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"},{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"

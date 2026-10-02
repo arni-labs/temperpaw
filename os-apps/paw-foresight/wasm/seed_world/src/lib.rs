@@ -402,6 +402,7 @@ fn spawn_session(
     role: &str,
     model: &str,
     provider: &str,
+    provider_options_json: &str,
     tools: &str,
     max_turns: &str,
     user_message: &str,
@@ -456,6 +457,7 @@ fn spawn_session(
     let configure_body = json!({
         "model": model,
         "provider": provider,
+        "provider_options_json": provider_options_json,
         "agent_name": role,
         "tools_enabled": tools,
         "tool_choice": "required",
@@ -576,6 +578,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             "surveyor",
             &model,
             &provider,
+            &get("agent_provider_options_json"),
             &tools,
             if open_exploration { "64" } else { "40" },
             &surveyor_msg,

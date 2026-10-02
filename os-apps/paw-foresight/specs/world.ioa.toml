@@ -123,6 +123,11 @@ name = "agent_provider"
 type = "string"
 initial = ""
 
+[[state]]
+name = "agent_provider_options_json"
+type = "string"
+initial = ""
+
 # Current surveyor session, recorded only by seed_world's trusted callback.
 [[state]]
 name = "research_session_id"
@@ -219,7 +224,7 @@ initial = ""
 name = "Configure"
 kind = "input"
 from = ["Created"]
-params = ["name", "domain", "description", "horizon_months", "target_date", "frontier_date", "corpus_file_id", "driver_config_file_id", "lag_table_file_id", "endpoint_budget", "token_budget_cents", "agent_model", "agent_provider", "hindcast_mode", "last_ingest_date"]
+params = ["name", "domain", "description", "horizon_months", "target_date", "frontier_date", "corpus_file_id", "driver_config_file_id", "lag_table_file_id", "endpoint_budget", "token_budget_cents", "agent_model", "agent_provider", "agent_provider_options_json", "hindcast_mode", "last_ingest_date"]
 hint = "Configure world parameters. Self-loop on Created."
 
 [[action]]

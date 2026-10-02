@@ -430,6 +430,7 @@
         <Property Name="TokenBudgetCents" Type="Edm.String"/>
         <Property Name="AgentModel" Type="Edm.String"/>
         <Property Name="AgentProvider" Type="Edm.String"/>
+        <Property Name="AgentProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ResearchSessionId" Type="Edm.String"/>
         <Property Name="ResearchSessionAttempt" Type="Edm.String"/>
         <Property Name="ResearchMonitorUnavailable" Type="Edm.Boolean"/>
@@ -670,6 +671,7 @@
         <Parameter Name="token_budget_cents" Type="Edm.String" Nullable="true"/>
         <Parameter Name="agent_model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="agent_provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="agent_provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="hindcast_mode" Type="Edm.String" Nullable="true"/>
         <Parameter Name="last_ingest_date" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.World"/>
@@ -1491,6 +1493,7 @@
         <Parameter Name="agent_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="phase" Type="Edm.String" Nullable="true"/>
         <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
@@ -1514,6 +1517,7 @@
         <Parameter Name="agent_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="phase" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
       </Action>
