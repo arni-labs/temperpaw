@@ -49,6 +49,26 @@ for imagination and alternative route search before broad combination audits con
 the budget. The UI exposes original worlds, route development, amendments and final
 estimates, including blocked paths and uncertainty.
 
+### Corrections from the first deployed attempt
+
+The first imagined set repeated its present-day research topics, then backward
+generation exhausted its polling allowance before recording any routes. A
+proposal is now preliminary until Jev separately assesses its consequential
+change from the sourced present and whether the set contains alternative whole
+trajectories. The classifications are fallible critique, not proof of novelty.
+Rejected proposals and actual judgments remain visible; at most two revisions
+use the original run's remaining resources before explicit quality exhaustion.
+
+New accepted sets request backward paths in deterministic batches of at most
+three commitments. Missing paths come first, then least-explored unresolved
+alternatives. All original worlds and shared components remain in context;
+batching limits generation work rather than narrowing the original ideas.
+Responses outside the selected commitments or above the per-turn bounds are
+rejected before mutation. Existing time and transition limits remain unchanged.
+This addresses an oversized-work hypothesis; only a fresh live run can establish
+whether it resolves the observed timeout. Historical accepted sets retain their
+original contract.
+
 ## Verification and delivery
 
 Behavioral checks must distinguish this flow from the replaced one: endpoints exist
