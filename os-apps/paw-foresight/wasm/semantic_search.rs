@@ -2160,7 +2160,7 @@ mod refinement_tests {
     }
 
     #[test]
-    fn second_pass_consumes_prior_judgments_without_reusing_current_values() {
+    fn second_pass_preserves_prior_judgments_but_joint_estimate_is_fresh() {
         let (snapshot, mut program) = fixture();
         fill(&snapshot, &mut program, 0.23);
         assert!(refine_worlds(&snapshot, &mut program, 20, 1000, ""));
@@ -2168,11 +2168,9 @@ mod refinement_tests {
         assert_eq!(program["world_pass"], 2);
         assert!(program["results"]["w"]["estimate_likelihood"].is_null());
         let request = super::super::request(&snapshot, &program).unwrap();
-        assert_eq!(
-            request["state"]["previous_world_judgments"]["rounds"][0]["probability"],
-            0.23
-        );
-        let feedback = &request["state"]["previous_world_judgments"];
+        assert!(request["state"].get("previous_world_judgments").is_none());
+        let feedback = previous_world_judgments(&program, &snapshot["nodes"][3]);
+        assert_eq!(feedback["rounds"][0]["probability"], 0.23);
         let index = feedback["question_legend"]
             .as_array()
             .unwrap()

@@ -1,6 +1,9 @@
 // Jev primitives evaluate explicit hypotheses; their distributions are not empirical calibration.
 use super::{MODEL, field, parse};
 use serde_json::{Value, json};
+mod whole_world {
+    include!("semantic_whole_world_assessment.rs");
+}
 mod definitions {
     include!("semantic_definitions.rs");
 }
@@ -341,6 +344,9 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
             .unwrap()
             .remove("probability");
     }
+    if is_world && task["function"] == "estimate_likelihood" {
+        return whole_world::request(snapshot, program, node, request);
+    }
     compact_evaluation_contexts(&mut request["state"]);
     // Joint worlds receive a lossless transport projection in batch::finish;
     // the same hard provider byte bound is enforced there after encoding.
@@ -604,7 +610,7 @@ fn joint_likelihood_preserves_sources_components_and_counters_not_novelty_sample
     let judgments = json!({"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4},"evaluate_novelty":{"score":2},"decision_value":{"score":3}});
     let program = json!({"cursor":0,"tasks":[{"nodeId":"w","function":"estimate_likelihood"}],"results":{"h":{"classify_gap":"evidence","estimate_likelihood":"0.4","evaluate_novelty":"2","decision_value":"3"}},"evaluations":{"h":judgments}});
     let request = request(&snapshot, &program).unwrap();
-    assert_eq!(request["state"]["comparisons"], json!([]));
+    assert!(request["state"].get("comparisons").is_none());
     assert_eq!(
         request["state"]["prerequisites"][0]["node"]["statement"],
         "Defining event"
@@ -618,8 +624,8 @@ fn joint_likelihood_preserves_sources_components_and_counters_not_novelty_sample
         "Exact source quote"
     );
     assert_eq!(
-        request["state"]["prerequisites"][0]["evaluations"],
-        json!({"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4}})
+        request["state"]["prerequisites"][0]["recorded_gap"],
+        json!("evidence")
     );
     assert_eq!(program["evaluations"]["h"], judgments);
 }
@@ -639,17 +645,22 @@ fn captured_whole_world_likelihood_request() {
     program.as_object_mut().unwrap().remove("world_refinement");
     let batch = super::batch::prepare(&snapshot, &program, 100).unwrap();
     use sha2::{Digest, Sha256};
-    let canonical = super::batch::canonical_request(&snapshot, &program, 100);
-    let restored = super::batch::restore_likelihood_receipts(&batch.request, &canonical);
-    assert_eq!(restored, canonical);
-    assert_eq!(
-        format!("{:x}", Sha256::digest(restored.to_string().as_bytes())),
-        "69a6507d0787c4e65d1ba03de705ebfb8970658c196e928dd1dcc64709e5e5b7"
+    let trace: Value = serde_json::from_str(capture["trace_json"].as_str().unwrap()).unwrap();
+    assert!(
+        trace
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["requestHash"]
+                == "69a6507d0787c4e65d1ba03de705ebfb8970658c196e928dd1dcc64709e5e5b7")
     );
-    assert!(batch.request.to_string().len() * 100 < restored.to_string().len() * 90);
+    assert_eq!(
+        batch.request["state"]["assessment_contract"],
+        "whole_world_assessment_v1"
+    );
+    assert!(batch.request.to_string().len() < 130405);
     eprintln!(
-        "original bytes={} projected bytes={}",
-        restored.to_string().len(),
+        "pass12 original=130405 direct={}",
         batch.request.to_string().len()
     );
     assert_eq!(batch.tasks.len(), 1);

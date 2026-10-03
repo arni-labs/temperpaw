@@ -382,6 +382,56 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
         return Err("Candidate contrast response exceeds 64 KiB".into());
     }
     let mut generated = generated.clone();
+    if let Some(delta) = generated.get("proposal_contrasts_delta").cloned() {
+        if generated.get("proposal_contrasts").is_some() {
+            return Err(
+                "Use proposal_contrasts_delta or complete proposal_contrasts, not both".into(),
+            );
+        }
+        let originals = old["proposal_pool"]["candidates"]
+            .as_array()
+            .ok_or("Missing comparison candidates")?;
+        if originals.iter().any(|e| !e["contrast"].is_object()) {
+            return Err("Initial comparison requires complete proposal_contrasts".into());
+        }
+        let mut rows: Vec<Value> = originals
+            .iter()
+            .map(|e| json!({"endpoint_id":e["id"],"contrast":e["contrast"]}))
+            .collect();
+        let mut edited = BTreeSet::new();
+        for row in delta
+            .as_array()
+            .ok_or("proposal_contrasts_delta must be an array")?
+        {
+            let id = field(row, "endpoint_id");
+            if !edited.insert(id.to_owned()) {
+                return Err("Duplicate comparison delta target".into());
+            }
+            let target = rows
+                .iter_mut()
+                .find(|e| field(e, "endpoint_id") == id)
+                .ok_or("Unknown comparison delta target")?;
+            *target = row.clone();
+        }
+        for revision in generated["endpoint_revisions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if !edited.contains(field(revision, "endpoint_id")) {
+                return Err("A revised endpoint requires a corresponding comparison delta".into());
+            }
+        }
+        generated["proposal_contrasts"] = json!(rows);
+        if generated.get("comparison_priority").is_none() {
+            generated["comparison_priority"] = json!(
+                originals
+                    .iter()
+                    .map(|e| e["id"].clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
     references::References::new(snapshot)?.resolve_generated(&mut generated);
     let local_sources: BTreeSet<_> = generated["research_evidence"]
         .as_array()
@@ -425,6 +475,7 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let prior_revision_count = revision_receipts.len();
     let revisions = generated
         .get("endpoint_revisions")
         .and_then(Value::as_array);
@@ -485,6 +536,15 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
             e["contrast"]["frontier_challenge"]["query_provenance"] =
                 json!("researcher_report_not_verified_against_tool_trace");
         }
+    }
+    // Receipts describe the canonical accepted replacement, not the raw draft's
+    // stale embedded contrast. Never rewrite earlier revision history.
+    for receipt in revision_receipts.iter_mut().skip(prior_revision_count) {
+        receipt["replacement"] = candidates
+            .iter()
+            .find(|e| e["id"] == receipt["endpoint_id"])
+            .ok_or("Missing canonical revision")?
+            .clone();
     }
     let priority=generated["comparison_priority"].as_array().ok_or("Return comparison_priority containing every candidate ID once, ordered by strongest distinct organizing arrangements")?;
     let mut order = BTreeSet::new();
@@ -1016,7 +1076,10 @@ pub fn finish(
                 .unwrap_or_default();
             let targets: Vec<_> = selected
                 .iter()
-                .filter(|id| !viable.iter().any(|e| e["id"] == **id) || !novelty_passed(p, id.as_str().unwrap_or("")))
+                .filter(|id| {
+                    !viable.iter().any(|e| e["id"] == **id)
+                        || !novelty_passed(p, id.as_str().unwrap_or(""))
+                })
                 .cloned()
                 .collect();
             let admission = repair_admission(snapshot, p, candidates, selected.len())?;
@@ -1122,25 +1185,95 @@ pub fn finish(
 mod tests {
     use super::*;
     #[test]
+    fn comparison_delta_retains_untouched_candidates_and_canonical_revision_receipt() {
+        let (snapshot, mut p) = pool();
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, true, false).unwrap();
+        let originals = p["proposal_pool"]["candidates"].clone();
+        let mut replacement = originals[0].clone();
+        replacement["commitments"][0]["statement"] =
+            json!("An explicitly revised defining capability");
+        replacement["contrast"]["frontier_challenge"]
+            .as_object_mut()
+            .unwrap()
+            .remove("query_provenance");
+        let reply = json!({"research_evidence":[],"proposal_contrasts_delta":[{"endpoint_id":replacement["id"],"contrast":replacement["contrast"]}],"endpoint_revisions":[{"endpoint_id":replacement["id"],"reason":"Develop a different mechanism","replacement":replacement}]});
+        let next = contrasts(&snapshot, &p, &reply).unwrap();
+        let canonical = &next["proposal_pool"]["candidates"][0];
+        assert_eq!(
+            next["proposal_pool"]["revisions"][0]["replacement"],
+            *canonical
+        );
+        assert_eq!(
+            canonical["contrast"]["frontier_challenge"]["query_provenance"],
+            "researcher_report_not_verified_against_tool_trace"
+        );
+        assert_eq!(
+            next["proposal_pool"]["revisions"][0]["original"],
+            originals[0]
+        );
+        for i in 1..originals.as_array().unwrap().len() {
+            assert_eq!(next["proposal_pool"]["candidates"][i], originals[i]);
+        }
+        let unchanged = contrasts(
+            &snapshot,
+            &p,
+            &json!({"research_evidence":[],"proposal_contrasts_delta":[]}),
+        )
+        .unwrap();
+        assert_eq!(unchanged["proposal_pool"]["candidates"], originals);
+        assert!(unchanged["tasks"].as_array().unwrap().is_empty());
+        let mut bad = reply;
+        bad["proposal_contrasts_delta"] = json!([]);
+        assert!(
+            contrasts(&snapshot, &p, &bad)
+                .unwrap_err()
+                .contains("corresponding comparison delta")
+        );
+    }
+
+    #[test]
     fn fresh_failed_novelty_replaces_stale_pass_before_creative_targets() {
-        let fixture: Value = serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
         let mut p = fixture["program"].clone();
         let id = "kitchen-becomes-a-barrier";
-        p["endpoint_novelty"][id] = json!({"status":"passed","initial_check":{"result":"changed_arrangement"}});
-        let history = json!({"checks":[{"task":{"endpoint_id":id},"result":"changed_arrangement"}]});
+        p["endpoint_novelty"][id] =
+            json!({"status":"passed","initial_check":{"result":"changed_arrangement"}});
+        let history =
+            json!({"checks":[{"task":{"endpoint_id":id},"result":"changed_arrangement"}]});
         p["endpoint_proposal_history"] = json!([history.clone()]);
         finish(&fixture["snapshot"], &mut p, true, false).unwrap();
         assert_eq!(p["endpoint_novelty"][id]["status"], "provisional");
-        assert!(p["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!(id)));
+        assert!(
+            p["proposal_pool"]["creative_repair"]["target_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(id))
+        );
         assert_eq!(p["endpoint_proposal_history"][0], history);
-        assert_eq!(p["endpoint_novelty"]["flavor-separates-from-food"]["status"], "passed");
-        assert!(!p["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!("flavor-separates-from-food")));
+        assert_eq!(
+            p["endpoint_novelty"]["flavor-separates-from-food"]["status"],
+            "passed"
+        );
+        assert!(
+            !p["proposal_pool"]["creative_repair"]["target_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("flavor-separates-from-food"))
+        );
         let mut failed_frontier = fixture["program"].clone();
         failed_frontier["tasks"] = failed_frontier["endpoint_proposal_attempt"]["tasks"].clone();
         record(&mut failed_frontier, pass);
         finish(&fixture["snapshot"], &mut failed_frontier, true, false).unwrap();
         assert_eq!(failed_frontier["endpoint_novelty"][id]["status"], "passed");
-        assert!(failed_frontier["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!(id)), "A separate failed frontier check still makes this slot repairable");
+        assert!(
+            failed_frontier["proposal_pool"]["creative_repair"]["target_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(id)),
+            "A separate failed frontier check still makes this slot repairable"
+        );
     }
 
     #[test]

@@ -67,3 +67,27 @@ request hash exactly. These byte measurements still do not establish provider
 acceptance. Local integration documentation records a 32k-token limit for state
 plus the longest question and 64k for the complete request; neither is a byte
 limit or a reason to increase the application's bounds.
+
+
+### Direct whole-world assessment
+
+`whole_world_assessment_v1` supersedes the value-catalog transport for newly
+constructed whole-world likelihood requests. The evaluator receives the exact
+joint definition, all defining components and deadlines, signed conditions,
+causal mechanisms, assumptions, current evidence and baseline, endpoint
+commitments and qualitative route limitations directly. Conditional experiment
+probabilities and their execution histories remain in canonical audits, but are
+not inputs to this fresh joint estimate. This changes the assessment contract;
+it is not a claim that the previous provider request can be reconstructed from
+this smaller request. Coherence checking still operates on recorded estimates.
+
+Known presentation fields and execution metadata do not become extra event
+conjuncts. Unknown top-level semantic node fields fail explicitly. A boundary
+check rejects dropped defining conditions/components or current source claims;
+a fingerprint binds the actual assessment contents. Originals, prior rounds and
+full audit receipts remain unchanged. No independent-event product is computed.
+
+Captured-request byte reductions are engineering measurements, not evidence of
+provider acceptance or improved forecast quality. Fresh native acceptance must
+measure provider token usage and verify answer quality; expired run clocks are
+not reset for replay.

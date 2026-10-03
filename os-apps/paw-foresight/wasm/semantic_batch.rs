@@ -26,7 +26,12 @@ fn finish(mut batch: Batch) -> Result<Batch, String> {
         && batch.tasks[0]["function"] == "estimate_likelihood"
         && batch.individual[0]["state"]["node"]["kind"] == "world"
     {
-        batch.request = likelihood_projection::project(&batch.request);
+        batch.request =
+            if batch.individual[0]["state"]["assessment_contract"] == "whole_world_assessment_v1" {
+                batch.individual[0].clone()
+            } else {
+                likelihood_projection::project(&batch.request)
+            };
     }
     if batch.request.to_string().len() > 128 * 1024 {
         return Err("Semantic provider request exceeds 128 KB after lossless encoding".into());
@@ -137,6 +142,12 @@ fn prepare_raw(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         // Structural requests take their task explicitly; avoid cloning the whole
         // accumulated program for every independent question.
         let individual = super::evaluation::request_task(snapshot, program, task)?;
+        if !batch.tasks.is_empty()
+            && (batch.individual[0]["state"]["assessment_contract"] == "whole_world_assessment_v1"
+                || individual["state"]["assessment_contract"] == "whole_world_assessment_v1")
+        {
+            break;
+        }
         let key = format!("q{}", batch.tasks.len());
         let mut state = individual["state"].clone();
         let mut common = json!({});
@@ -283,23 +294,26 @@ mod domain_cap_tests {
         let mut program: Value =
             serde_json::from_str(record["fields"]["program_json"].as_str().unwrap()).unwrap();
         program.as_object_mut().unwrap().remove("world_refinement");
-        let canonical = canonical_request(&snapshot, &program, 100);
-        let previous = likelihood_projection::previous_encoding(&canonical);
-        assert_eq!(previous.to_string().len(), 105732);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(previous.to_string().as_bytes())),
-            "9c3cfe8bbaac452ea574723154e99eb4d8ec179c896ccf079f5929d498240b6a"
+        let trace: Value =
+            serde_json::from_str(record["fields"]["trace_json"].as_str().unwrap()).unwrap();
+        assert!(
+            trace
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["requestHash"]
+                    == "9c3cfe8bbaac452ea574723154e99eb4d8ec179c896ccf079f5929d498240b6a"
+                    && entry["requestBytes"] == 105732)
         );
         let batch = prepare(&snapshot, &program, 100).unwrap();
         assert_eq!(batch.tasks.len(), 1);
         assert_eq!(
-            restore_likelihood_receipts(&batch.request, &canonical),
-            canonical
+            batch.request["state"]["assessment_contract"],
+            "whole_world_assessment_v1"
         );
-        assert!(batch.request.to_string().len() < previous.to_string().len());
+        assert!(batch.request.to_string().len() < 105732);
         eprintln!(
-            "pass13 recorded={} projected_with_provenance={}",
-            previous.to_string().len(),
+            "pass13 recorded=105732 direct={}",
             batch.request.to_string().len()
         );
         let mut changed = snapshot.clone();

@@ -596,7 +596,7 @@ fn retain_scope_limits(baseline: &Value, review: &Value) -> Result<(), String> {
 }
 
 fn scope_pending(program: &Value) -> bool {
-    program["scope_repair"]["status"] == "pending"
+    program["scope_repair"]["status"] == "pending" && !core::proposals::pool::enabled(program)
 }
 
 fn failed_scope_repair(old: &Value, error: &str) -> Value {
@@ -2032,6 +2032,52 @@ fn expand_with_baseline(
     Ok(refresh)
 }
 
+fn combined_scope_receipt(
+    before: &Value,
+    after: &Value,
+    generated: &Value,
+    old: &Value,
+    refresh: Option<&Value>,
+) -> Result<Value, String> {
+    let mut assembled = assemble_baseline_delta(generated, old)?;
+    references::References::new(before)?.resolve_generated(&mut assembled);
+    if let Some(receipt) = refresh {
+        assembled["baseline"] = receipt["baseline"].clone();
+        assembled["scope_review"] = receipt["scope_review"].clone();
+        assembled["baseline_dispositions"] = receipt["dispositions"].clone();
+    } else {
+        if assembled["baseline"].is_null() {
+            assembled["baseline"] = old["baseline"].clone();
+        }
+        if assembled["scope_review"].is_null() {
+            assembled["scope_review"] = old["scope_review"].clone();
+        }
+        if assembled["baseline_dispositions"].is_null() {
+            assembled["baseline_dispositions"] = json!([]);
+        }
+    }
+    let locals: std::collections::BTreeSet<_> = generated["research_evidence"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    let round = old["round"].as_u64().unwrap_or(0) + 1;
+    for id in assembled["scope_disposition"]["evidence_ids"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(local) = id.as_str().filter(|id| locals.contains(id)) {
+            *id = json!(format!("r{round}-{local}"));
+        }
+    }
+    // References above now name stored findings; avoid the standalone scope-
+    // prefix used by legacy scope-only responses.
+    assembled["research_evidence"] = json!([]);
+    finish_scope_repair(after, &assembled, old)
+}
+
 fn run_inner(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let mut old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
@@ -2144,9 +2190,21 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             }
             let refresh = expand_with_baseline(&mut candidate, &generated, phase, &old)?;
             let mut prior = old.clone();
-            if let Some(receipt) = refresh {
+            if let Some(receipt) = &refresh {
                 prior["baseline"] = receipt["baseline"].clone();
                 prior["scope_review"] = receipt["scope_review"].clone();
+            }
+            if old["scope_repair"]["status"] == "pending" {
+                let scope_receipt = combined_scope_receipt(
+                    &snapshot,
+                    &candidate,
+                    &generated,
+                    &old,
+                    refresh.as_ref(),
+                )?;
+                prior["baseline"] = scope_receipt["baseline"].clone();
+                prior["scope_review"] = scope_receipt["review"].clone();
+                prior["scope_repair"] = scope_receipt;
             }
             core::proposals::pool::contrasts(&candidate, &prior, &generated)
         })();
@@ -2952,6 +3010,27 @@ mod tests {
         assert_eq!(next["baseline"], old["baseline"]);
         assert_eq!(next["http_calls"], 9);
         assert_eq!(next["continue_exploring"], true);
+    }
+
+    #[test]
+    fn combined_scope_reuses_baseline_delta_and_normal_research_ids() {
+        let before = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01"},"nodes":[{"Id":"e","kind":"evidence","statement":"Observed present","edges":"[]"}]});
+        let old = json!({"round":0,"endpoint_proposal_contract":2,"proposal_pool":{"stage":"contrast"},"scope_repair":{"status":"pending"},"baseline":{"as_of":"2026-10-01","observed":[{"claim":"Observed present","evidence_ids":["e"]}],"assumptions":[],"unknowns":["Limited coverage"]},"scope_review":{"requested_question":"Question","evidence_scope":"Observed present only","narrowing_basis":"evidence_availability","status":"narrowed","limitations":["Limited coverage"]}});
+        assert!(
+            !scope_pending(&old),
+            "Combined contrast is not a second scope-only phase"
+        );
+        let mut after = before.clone();
+        after["nodes"].as_array_mut().unwrap().push(json!({"Id":"r1-new","kind":"research_evidence","statement":"Another present finding","edges":"[]"}));
+        let generated = json!({"research_evidence":[{"id":"new"}],"baseline_delta":{},"scope_disposition":{"status":"limited","report":"A new source did not resolve representative coverage","evidence_ids":["new"]}});
+        let receipt = combined_scope_receipt(&before, &after, &generated, &old, None).unwrap();
+        assert_eq!(receipt["baseline"], old["baseline"]);
+        assert_eq!(receipt["review"], old["scope_review"]);
+        assert_eq!(receipt["evidence_ids"], json!(["r1-new"]));
+        assert_eq!(receipt["coverage_certified"], false);
+        let mut bad = generated;
+        bad["scope_disposition"]["evidence_ids"] = json!(["invented"]);
+        assert!(combined_scope_receipt(&before, &after, &bad, &old, None).is_err());
     }
 
     #[test]

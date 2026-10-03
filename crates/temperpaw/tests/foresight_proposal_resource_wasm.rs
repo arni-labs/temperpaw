@@ -243,3 +243,45 @@ async fn captured_checked_selection_enters_backward_without_rewriting_worlds() {
     assert_eq!(next["callback_params"]["phase"], "backward");
     assert!(next["callback_params"].get("started_at_ms").is_none());
 }
+
+#[tokio::test]
+async fn combined_scope_and_optional_repair_use_route_preserving_dispatch() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let engine = WasmEngine::new().unwrap();
+    let snapshot = json!({"world":{"description":"Question","hindcast_mode":"false"},"nodes":[]});
+    let mut program = json!({"stage":"exploration","endpoint_proposal_contract":2,"world_search_contract":1,"scope_repair":{"status":"pending"},"tasks":[],"cursor":0,"results":{},"evaluations":{},"round":0});
+    let mut fields = json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","transition_count":4,"started_at_ms":now.to_string()});
+    let first = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(first["callback_action"], "Reason", "{first}");
+    assert_eq!(
+        first["callback_params"]["phase"], "imagine",
+        "Scope gaps must travel with contrast, not a separate research child"
+    );
+    program["scope_repair"]["status"] = json!("completed");
+    program["stage"] = json!("proposals");
+    program["proposal_pool"] = json!({"stage":"contrast","research_attempts":1,"novelty_repair":{"status":"pending"},"selected_ids":["a","b","c"],"candidates":[{"id":"a"},{"id":"b"},{"id":"c"}]});
+    program["reasoning_durations_ms"] = json!({"explore":663216});
+    fields["program_json"] = json!(program.to_string());
+    fields["started_at_ms"] = json!(now.saturating_sub(1_205_400).to_string());
+    fields["transition_count"] = json!(66);
+    let second = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(second["callback_action"], "SearchPlanned", "{second}");
+    let saved: Value =
+        serde_json::from_str(second["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        saved["proposal_pool"]["repair_time_admission"]["admitted"],
+        false
+    );
+    assert_eq!(
+        saved["proposal_pool"]["novelty_repair"]["status"],
+        "not_admitted"
+    );
+    assert_eq!(
+        saved["endpoint_search"]["endpoints"],
+        program["proposal_pool"]["candidates"]
+    );
+    assert!(second["callback_params"].get("started_at_ms").is_none());
+}

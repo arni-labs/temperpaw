@@ -452,6 +452,10 @@ fn admit_route_finalization(
     Ok(admitted)
 }
 
+fn standalone_scope_repair(program: &Value) -> bool {
+    program["scope_repair"]["status"] == "pending" && !core::proposals::pool::enabled(program)
+}
+
 fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -480,7 +484,7 @@ fn step(ctx: &Context) -> Result<(), String> {
             "trace_budget" | "provider_error" | "time_budget" | "call_budget" | "transition_budget"
         )
     );
-    if program["scope_repair"]["status"] == "pending" {
+    if standalone_scope_repair(&program) {
         let remaining = core::transition_limit(&program)
             .saturating_sub(core::transition_count(&ctx.entity_state));
         let allowed = !stopped
@@ -503,10 +507,19 @@ fn step(ctx: &Context) -> Result<(), String> {
         return Ok(());
     }
     if core::proposals::pool::research_pending(&program) {
+        let optional_repair = program["proposal_pool"]["research_attempts"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0;
+        let time_admission = core::optional_repair_time_admission(&program, elapsed);
+        if optional_repair {
+            program["proposal_pool"]["repair_time_admission"] = time_admission.clone();
+        }
         let remaining =
             core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
         if !stopped
             && core::proposals::pool::admits(remaining, 2, 160)
+            && (!optional_repair || time_admission["admitted"] == true)
             && core::research_admission(&program, "explore", elapsed)["admitted"] == true
         {
             set_success_result(
@@ -772,6 +785,37 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pass14_optional_repair_preserves_first_routes_and_writing_window() {
+        // Recorded pass14 food first checks at20.09min, then39.29min after repair.
+        let p = json!({"endpoint_proposal_contract":2,"stage":"proposals","reasoning_durations_ms":{"explore":663216,"imagine":180358,"seed":120247}});
+        assert_eq!(
+            core::research_admission(&p, "explore", 1_205_400)["admitted"],
+            true
+        );
+        let admission = core::optional_repair_time_admission(&p, 1_205_400);
+        assert_eq!(admission["admitted"], false);
+        assert_eq!(admission["route_reserve_ms"], 1_800_000);
+        assert_eq!(admission["finalization_reserve_ms"], 600_000);
+        assert_eq!(
+            core::optional_repair_time_admission(&p, 60_000)["admitted"],
+            true
+        );
+        assert_eq!(
+            core::optional_repair_time_admission(&p, core::MAX_MS)["admitted"],
+            false
+        );
+        assert_eq!(
+            core::research_admission(&p, "backward", 2_357_400)["predicted_generation_ms"],
+            900_000
+        );
+        let merged = json!({"endpoint_proposal_contract":2,"scope_repair":{"status":"pending"}});
+        assert!(!standalone_scope_repair(&merged));
+        assert!(standalone_scope_repair(
+            &json!({"scope_repair":{"status":"pending"}})
+        ));
+    }
+
     #[test]
     fn world_first_imagination_precedes_components_and_failed_routes_get_an_alternative() {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario"}]});

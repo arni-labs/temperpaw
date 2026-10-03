@@ -66,6 +66,25 @@ pub fn research_admission(program: &Value, phase: &str, elapsed_ms: u64) -> Valu
     let required = predicted.saturating_add(ENDPOINT_EVALUATION_DRAIN_MS);
     json!({"admitted":!(program["route_finalization"]["admitted"] == true && phase != "compose" && phase != "synthesize") && elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
 }
+// Optional comparison work must leave the first two complete routes and the
+// existing finalization window. Preserve phase-specific observed durations and
+// the existing 15-minute fallback; this is admission, not a completion promise.
+pub fn optional_repair_time_admission(program: &Value, elapsed_ms: u64) -> Value {
+    let duration = |phase: &str| {
+        program["reasoning_durations_ms"][phase]
+            .as_u64()
+            .filter(|v| *v > 0)
+            .unwrap_or(900_000)
+    };
+    let route_ms = duration("backward").saturating_mul(2);
+    let generation_ms = duration("explore");
+    let required = generation_ms
+        .saturating_add(route_ms)
+        .saturating_add(ENDPOINT_EVALUATION_DRAIN_MS)
+        .saturating_add(WORLD_TIME_RESERVE_MS);
+    json!({"admitted":elapsed_ms.saturating_add(required) < MAX_MS,"elapsed_ms":elapsed_ms,"required_ms":required,"generation_ms":generation_ms,"first_route_turns":2,"route_reserve_ms":route_ms,"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_reserve_ms":WORLD_TIME_RESERVE_MS,"original_deadline_ms":MAX_MS,"guaranteed":false})
+}
+
 pub fn research_time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
         Some("worlds") => MAX_MS - SYNTHESIS_TIME_RESERVE_MS,
