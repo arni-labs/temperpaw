@@ -310,15 +310,24 @@ fn proposal_resource_reason(program: &Value, calls: usize, elapsed: u64) -> Opti
     }
 }
 
-fn proposal_resource_message(program: &Value, reason: &str) -> String {
-    let limit = match reason {
+fn proposal_resource_limit(reason: &str) -> &'static str {
+    match reason {
         "time_budget" => "the research time limit reserved for reconstruction and final writing",
         "call_budget" => "the reserved evaluation-call limit",
         "transition_budget" => "the reserved execution-step limit",
         "trace_budget" => "the saved-evaluation size limit",
         "provider_error" => "a provider failure",
         _ => "a resource limit",
-    };
+    }
+}
+
+fn contrast_resource_message(reason: &str) -> String {
+    let limit = proposal_resource_limit(reason);
+    format!("Present-day comparison research remains incomplete because of {limit} ({reason}). No current comparison checks were scheduled. Saved research and earlier receipts are preserved; this is not a failed novelty judgment. No endpoint was accepted and no whole-world estimates were made.")
+}
+
+fn proposal_resource_message(program: &Value, reason: &str) -> String {
+    let limit = proposal_resource_limit(reason);
     let checks = program["endpoint_proposal_attempt"]["checks"].as_array();
     let planned = program["endpoint_proposal_attempt"]["tasks"]
         .as_array()
@@ -402,7 +411,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         } else {
             set_success_result(
                 "Fail",
-                &json!({"error_message":proposal_resource_message(&program, proposal_resource_reason(&program, calls, elapsed).unwrap_or(if elapsed >= core::time_limit(&program).saturating_sub(120_000) {"time_budget"} else {"transition_budget"}))}),
+                &json!({"error_message":contrast_resource_message(proposal_resource_reason(&program, calls, elapsed).unwrap_or(if elapsed >= core::time_limit(&program).saturating_sub(120_000) {"time_budget"} else {"transition_budget"}))}),
             );
         }
         return Ok(());

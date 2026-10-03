@@ -142,3 +142,28 @@ async fn captured_unchecked_game_pool_keeps_reserved_deadline_reason() {
             .contains("Endpoint proposal quality unresolved")
     );
 }
+
+#[tokio::test]
+async fn contrast_resource_failure_never_reports_absent_or_stale_check_counts() {
+    let engine = WasmEngine::new().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    for prior_attempt in [
+        Value::Null,
+        json!({"tasks":vec![json!({});33],"checks":vec![json!({"evaluation":{"type":"choice"}});33],"status":"examined"}),
+    ] {
+        let program = json!({"stage":"proposals","endpoint_proposal_contract":2,"proposal_pool":{"stage":"contrast"},"tasks":[],"cursor":0,"results":{},"endpoint_proposal_attempt":prior_attempt});
+        let fields = json!({"snapshot_json":json!({"world":{},"nodes":[]}).to_string(),"program_json":program.to_string(),"trace_json":"[]","transition_count":67,"started_at_ms":now.saturating_sub(3_000_000).to_string()});
+        let out = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+        assert_eq!(out["callback_action"], "Fail", "{out}");
+        let message = out["callback_params"]["error_message"].as_str().unwrap();
+        assert!(
+            message.contains("research remains incomplete") && message.contains("time_budget"),
+            "{message}"
+        );
+        assert!(message.contains("No current comparison checks were scheduled"));
+        assert!(!message.contains("0 of 0") && !message.contains("33 of 33"));
+    }
+}
