@@ -26,7 +26,45 @@ pub fn call_limit(program: &Value) -> usize {
         _ => MAX_CALLS - WORLD_CALL_RESERVE,
     }
 }
+// Research closes before the bounded drain of already accepted endpoint work.
+// This consumes two minutes of the existing ten-minute finalization reserve;
+// it never moves the original one-hour deadline or admits further research.
+pub const ENDPOINT_EVALUATION_DRAIN_MS: u64 = 120_000;
 pub fn time_limit(program: &Value) -> u64 {
+    if endpoints::enabled(program)
+        && (matches!(program["stage"].as_str(), Some("exploration" | "routes"))
+            || (program["stage"] == "proposals"
+                && program["endpoint_proposal_attempt"]["pool_stage"] == "deferred"))
+    {
+        return research_time_limit(program) + ENDPOINT_EVALUATION_DRAIN_MS;
+    }
+    research_time_limit(program)
+}
+/// Observed child duration includes native provider retries and polling latency.
+/// It starts at launch setup, never at the parent run's original clock.
+pub fn start_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
+    program["reasoning_timing"] = json!({"phase":phase,"started_at_ms":now_ms});
+}
+pub fn finish_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
+    let timing = &program["reasoning_timing"];
+    if timing["phase"] != phase || timing["completed"] == true { return; }
+    let Some(start) = timing["started_at_ms"].as_u64().filter(|s| *s > 0 && *s <= now_ms) else { return; };
+    let elapsed = now_ms - start;
+    let prior = program["reasoning_durations_ms"][phase].as_u64().unwrap_or(0);
+    program["reasoning_durations_ms"][phase] = json!(prior.max(elapsed));
+    program["reasoning_timing"]["elapsed_ms"] = json!(elapsed);
+    program["reasoning_timing"]["completed"] = json!(true);
+}
+pub fn research_admission(program: &Value, phase: &str, elapsed_ms: u64) -> Value {
+    // The native idle allowance is a conservative first-sample planning estimate,
+    // not an upper bound: progressing children may take longer.
+    let observed = program["reasoning_durations_ms"][phase].as_u64().filter(|v| *v > 0);
+    let predicted = observed.unwrap_or(900_000);
+    let completion_deadline = time_limit(program);
+    let required = predicted.saturating_add(ENDPOINT_EVALUATION_DRAIN_MS);
+    json!({"admitted":elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
+}
+pub fn research_time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
         Some("worlds") => MAX_MS - SYNTHESIS_TIME_RESERVE_MS,
         Some("routes") => MAX_MS - WORLD_TIME_RESERVE_MS,

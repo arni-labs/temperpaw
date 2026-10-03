@@ -758,6 +758,92 @@ fn validate_baseline_dispositions(
     Ok(())
 }
 
+// Expand explicit edits against the exact prior baseline before normal validation.
+// Omitted observations are retained; only an indexed, justified edit can retract one.
+fn assemble_baseline_delta(generated: &Value, old: &Value) -> Result<Value, String> {
+    let Some(delta) = generated.get("baseline_delta") else {
+        return Ok(generated.clone());
+    };
+    let delta = delta
+        .as_object()
+        .ok_or("baseline_delta must be an object")?;
+    if generated.get("baseline").is_some() || generated.get("baseline_dispositions").is_some() {
+        return Err(
+            "Use either baseline_delta or complete baseline with dispositions, not both".into(),
+        );
+    }
+    if delta.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "replacements" | "additions" | "assumptions" | "unknowns"
+        )
+    }) {
+        return Err("Unknown baseline_delta field".into());
+    }
+    let prior = old["baseline"]["observed"]
+        .as_array()
+        .ok_or("baseline_delta requires an established baseline")?;
+    let empty = vec![];
+    let replacements = match delta.get("replacements") {
+        Some(v) => v
+            .as_array()
+            .ok_or("baseline_delta.replacements must be an array")?,
+        None => &empty,
+    };
+    let additions = match delta.get("additions") {
+        Some(v) => v
+            .as_array()
+            .ok_or("baseline_delta.additions must be an array")?,
+        None => &empty,
+    };
+    if replacements.len() > 16 || additions.len() > 16 {
+        return Err("baseline_delta lists must contain at most 16 entries".into());
+    }
+    let mut edits = std::collections::BTreeMap::new();
+    for edit in replacements {
+        let index = usize::try_from(
+            edit["prior_observation_index"]
+                .as_u64()
+                .ok_or("Invalid delta prior_observation_index")?,
+        )
+        .map_err(|_| "Invalid delta prior_observation_index")?;
+        if index >= prior.len() || edits.insert(index, edit).is_some() {
+            return Err("Unknown or duplicate delta prior_observation_index".into());
+        }
+        if edit["observations"].as_array().is_none_or(|v| v.len() > 16) {
+            return Err("Delta replacement observations must contain 0–16 entries".into());
+        }
+    }
+    let mut observations = vec![];
+    let mut dispositions = vec![];
+    for (index, prior_observation) in prior.iter().enumerate() {
+        if let Some(edit) = edits.get(&index) {
+            let start = observations.len();
+            observations.extend(edit["observations"].as_array().unwrap().iter().cloned());
+            dispositions.push(json!({"prior_observation_index":index,"replacement_observation_indices":(start..observations.len()).collect::<Vec<_>>(),"reason":edit["reason"],"evidence_ids":edit["evidence_ids"]}));
+        } else {
+            observations.push(prior_observation.clone());
+        }
+    }
+    observations.extend(additions.iter().cloned());
+    if observations.len() > 16 {
+        return Err("Assembled baseline exceeds 16 observations; explicitly consolidate or retract justified observations".into());
+    }
+    let mut reply = generated.clone();
+    reply["baseline"] = old["baseline"].clone();
+    reply["baseline"]["observed"] = json!(observations);
+    for key in ["assumptions", "unknowns"] {
+        if let Some(value) = delta.get(key) {
+            reply["baseline"][key] = value.clone();
+        }
+    }
+    if generated.get("scope_review").is_none() {
+        reply["scope_review"] = old["scope_review"].clone();
+    }
+    reply["baseline_dispositions"] = json!(dispositions);
+    Ok(reply)
+}
+
 fn refresh_researched_baseline(
     before: &Value,
     after: &Value,
@@ -773,6 +859,7 @@ fn refresh_researched_baseline(
     {
         return Ok(None);
     }
+    let generated = assemble_baseline_delta(generated, old)?;
     let missing: Vec<_> = ["baseline", "scope_review"]
         .into_iter()
         .filter(|key| !generated[*key].is_object())
@@ -1257,6 +1344,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "endpoint_proposal_contract",
         "endpoint_novelty",
         "deferred_novelty_recheck",
+        "reasoning_timing",
+        "reasoning_durations_ms",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
@@ -1642,6 +1731,8 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "endpoint_proposal_contract",
         "endpoint_novelty",
         "deferred_novelty_recheck",
+        "reasoning_timing",
+        "reasoning_durations_ms",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
@@ -2318,6 +2409,39 @@ mod tests {
                 .unwrap_err()
                 .contains("non-array")
         );
+    }
+
+    #[test]
+    fn baseline_delta_preserves_unchanged_claims_and_validates_explicit_changes() {
+        let snapshot = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[{"Id":"e","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2026","observation_period":{"start":null,"end":null},"retrieved_at":null}}],"branches":[]});
+        let old = json!({"round":0,"baseline":{"as_of":"2026-10-01","observed":(0..16).map(|i|json!({"claim":format!("Prior {i}"),"evidence_ids":["e"]})).collect::<Vec<_>>(),"assumptions":[],"unknowns":[]},"scope_review":{"requested_question":"Question","evidence_scope":"Supplied sources","status":"aligned","narrowing_basis":"none","limitations":[]}});
+        let reply = json!({"research_evidence":[{"id":"new","evidence_metadata":{"kind":"finding"}}],"baseline_delta":{"replacements":[{"prior_observation_index":14,"observations":[{"claim":"Counterevidence changes this observation","evidence_ids":["e"]}],"reason":"Explicit correction","evidence_ids":["e"]},{"prior_observation_index":15,"observations":[],"reason":"Source retracts claim","evidence_ids":["e"]}],"additions":[{"claim":"New observation","evidence_ids":["e"]}]}});
+        let receipt = refresh_researched_baseline(&snapshot, &snapshot, &reply, &old).unwrap().unwrap();
+        assert_eq!(&receipt["baseline"]["observed"].as_array().unwrap()[..14], &old["baseline"]["observed"].as_array().unwrap()[..14]);
+        assert_eq!(receipt["baseline"]["observed"].as_array().unwrap().len(),16);
+        assert_eq!(receipt["scope_review"],old["scope_review"]);
+        assert_eq!(receipt["dispositions"][1]["replacement_observation_indices"],json!([]));
+        let full = assemble_baseline_delta(&reply,&old).unwrap();
+        let mut complete=full.clone(); complete.as_object_mut().unwrap().remove("baseline_delta");
+        assert_eq!(refresh_researched_baseline(&snapshot,&snapshot,&complete,&old).unwrap().unwrap(),receipt);
+        for bad_id in ["missing", "future"] {
+            let mut bad=reply.clone();bad["baseline_delta"]["replacements"][0]["observations"][0]["evidence_ids"]=json!([bad_id]);
+            assert!(refresh_researched_baseline(&snapshot,&snapshot,&bad,&old).is_err());
+        }
+        let mut after=snapshot.clone();
+        let mut new_source=snapshot["nodes"][0].clone();new_source["Id"]=json!("r1-new");
+        after["nodes"].as_array_mut().unwrap().push(new_source);
+        let mut local=reply.clone();local["baseline_delta"]["additions"][0]["evidence_ids"]=json!(["new"]);
+        assert_eq!(refresh_researched_baseline(&snapshot,&after,&local,&old).unwrap().unwrap()["baseline"]["observed"][15]["evidence_ids"],json!(["r1-new"]));
+        after["nodes"][1]["evidence_metadata"]["observation_period"]["end"]=json!("2040");
+        assert!(refresh_researched_baseline(&snapshot,&after,&local,&old).is_err());
+        let mut duplicate=reply.clone();duplicate["baseline_delta"]["replacements"][1]["prior_observation_index"]=json!(14);
+        assert!(assemble_baseline_delta(&duplicate,&old).unwrap_err().contains("duplicate"));
+        let mut unknown=reply.clone();unknown["baseline_delta"]["replacements"][0]["prior_observation_index"]=json!(17);
+        assert!(assemble_baseline_delta(&unknown,&old).is_err());
+        let mut mixed=reply.clone();mixed["baseline"]=old["baseline"].clone();assert!(assemble_baseline_delta(&mixed,&old).is_err());
+        let mut overflow=reply.clone();overflow["baseline_delta"]["replacements"]=json!([]);assert!(assemble_baseline_delta(&overflow,&old).is_err());
+        assert_eq!(old["baseline"]["observed"][14]["claim"],"Prior 14");
     }
 
     #[test]
@@ -3093,14 +3217,16 @@ mod tests {
     #[test]
     fn backward_replan_and_composition_preserve_deferred_admission_receipts() {
         let (mut snapshot, generated, mut old) = world_fixture();
+        old["reasoning_timing"] = json!({"phase":"backward","started_at_ms":1000,"completed":true});
+        old["reasoning_durations_ms"] = json!({"backward":900000});
         old["endpoint_novelty"] = json!({"original":{"status":"provisional","initial_check":{"result":"unresolved"}}});
         old["deferred_novelty_recheck"] = json!({"status":"checking","required_transitions":4});
         let next = replan(&snapshot, &old, &json!({"hypotheses":[],"research_evidence":[],"continue_exploring":false,"exploration_note":"Preserved provisional route work"}), 0).unwrap();
-        for key in ["endpoint_novelty", "deferred_novelty_recheck"] { assert_eq!(next[key], old[key]); }
+        for key in ["endpoint_novelty", "deferred_novelty_recheck", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(next[key], old[key]); }
         // The replan requires fresh candidate checks before composition. Exercise
         // the separate composition reconstruction using its eligible fixture.
         let composed = compose(&mut snapshot, &generated, &old).unwrap();
-        for key in ["endpoint_novelty", "deferred_novelty_recheck"] { assert_eq!(composed[key], old[key]); }
+        for key in ["endpoint_novelty", "deferred_novelty_recheck", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(composed[key], old[key]); }
     }
 
     #[test]

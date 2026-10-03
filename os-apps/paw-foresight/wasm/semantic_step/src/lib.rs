@@ -55,6 +55,12 @@ fn next_phase(
                 .as_array()
                 .is_none_or(Vec::is_empty)
         {
+            if !exhausted.is_empty()
+                || core::research_admission(program, "backward", elapsed_ms)["admitted"] != true
+            {
+                program["stop_reason"] = json!(if exhausted.is_empty() { "time_budget" } else { exhausted.as_str() });
+                return "compose";
+            }
             return "backward";
         }
         if program["stage"] != "routes"
@@ -69,8 +75,8 @@ fn next_phase(
             .saturating_sub(core::transition_count(program));
         let allowed = exhausted.is_empty()
             && remaining >= core::REASONING_ADMISSION_RESERVE + 16
-            && elapsed_ms < core::MAX_MS.saturating_sub(core::WORLD_TIME_RESERVE_MS + 120_000);
-        program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_ADMISSION_RESERVE+16,"alternative_required":needs_alternative});
+            && core::research_admission(program, "backward", elapsed_ms)["admitted"] == true;
+        program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_ADMISSION_RESERVE+16,"alternative_required":needs_alternative,"time_admission":core::research_admission(program, "backward", elapsed_ms)});
         if allowed && (needs_alternative || program["continue_exploring"] != false) {
             program["stage"] = json!("exploration");
             program["stop_reason"] = json!(if needs_alternative {
@@ -241,7 +247,10 @@ fn challenge_due(snapshot: &Value, program: &Value, upcoming_transitions: u64) -
     let limit = core::transition_limit(program);
     let transitions = program["transition_count"].as_u64().unwrap_or(0);
     let trigger = limit.saturating_sub(core::REASONING_ADMISSION_RESERVE + 32);
-    program["stage"] == "exploration"
+    // Endpoint search already challenges mechanisms through backward alternatives.
+    // Its queued assessments must finish before admitting another research pass.
+    !core::endpoints::enabled(program)
+        && program["stage"] == "exploration"
         && program["baseline_status"] == "established"
         && program["independent_challenge"].is_null()
         && transitions.saturating_add(upcoming_transitions) >= trigger
@@ -365,6 +374,10 @@ fn proposal_terminal_message(program: &Value) -> String {
         "Endpoint proposal quality unresolved: the bounded search did not produce sufficiently distinct consequential worlds. No endpoint was accepted and no whole-world estimates were made.".into()
     }
 }
+fn pending_assessment(program: &Value, cursor: usize, count: usize, calls: usize, elapsed: u64, stopped: bool) -> bool {
+    cursor < count && calls < core::call_limit(program) && elapsed < core::time_limit(program) && !stopped
+}
+
 fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -396,7 +409,7 @@ fn step(ctx: &Context) -> Result<(), String> {
             .saturating_sub(core::transition_count(&ctx.entity_state));
         let allowed = !stopped
             && calls < core::call_limit(&program)
-            && elapsed < core::time_limit(&program).saturating_sub(120_000)
+            && core::research_admission(&program, "explore", elapsed)["admitted"] == true
             && remaining >= core::REASONING_ADMISSION_RESERVE + 32
             && core::field(&snapshot["world"], "hindcast_mode") == "false";
         if allowed {
@@ -418,7 +431,7 @@ fn step(ctx: &Context) -> Result<(), String> {
             core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
         if !stopped
             && core::proposals::pool::admits(remaining, 2, 160)
-            && elapsed < core::time_limit(&program).saturating_sub(120_000)
+            && core::research_admission(&program, "explore", elapsed)["admitted"] == true
         {
             set_success_result(
                 "Reason",
@@ -427,7 +440,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         } else {
             set_success_result(
                 "Fail",
-                &json!({"error_message":contrast_resource_message(proposal_resource_reason(&program, calls, elapsed).unwrap_or(if elapsed >= core::time_limit(&program).saturating_sub(120_000) {"time_budget"} else {"transition_budget"}))}),
+                &json!({"error_message":contrast_resource_message(proposal_resource_reason(&program, calls, elapsed).unwrap_or(if core::research_admission(&program, "explore", elapsed)["admitted"] != true {"time_budget"} else {"transition_budget"}))}),
             );
         }
         return Ok(());
@@ -441,6 +454,11 @@ fn step(ctx: &Context) -> Result<(), String> {
                 "Fail",
                 &json!({"error_message":proposal_terminal_message(&program)}),
             );
+            return Ok(());
+        }
+        let admission = core::research_admission(&program, "imagine", elapsed);
+        if admission["admitted"] != true {
+            set_success_result("Fail", &json!({"error_message":format!("No admitted time for endpoint generation and reassessment; saved work remains available. {admission}")}));
             return Ok(());
         }
         set_success_result(
@@ -464,7 +482,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         }
         let retry = !resource_exhausted
             && remaining >= core::REASONING_ADMISSION_RESERVE + 16
-            && elapsed < core::time_limit(&program).saturating_sub(120_000);
+            && core::research_admission(&program, "imagine", elapsed)["admitted"] == true;
         if core::proposals::pool::enabled(&program) {
             let global_remaining =
                 core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
@@ -540,7 +558,7 @@ fn step(ctx: &Context) -> Result<(), String> {
                 && admission["estimated_batches"].is_u64()
                 && required <= admission["remaining_transitions"].as_u64().unwrap_or(0)
                 && calls + program["tasks"].as_array().unwrap().len() < core::MAX_CALLS
-                && elapsed < core::time_limit(&program).saturating_sub(120_000);
+                && core::research_admission(&program, "compose", elapsed)["admitted"] == true;
             admission["required_transitions"] = json!(required);
             admission["admitted"] = json!(revise);
             program["world_set_admission"] = admission;
@@ -584,11 +602,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
-    if cursor >= count
-        || calls >= core::call_limit(&program)
-        || elapsed >= core::time_limit(&program)
-        || stopped
-    {
+    if !pending_assessment(&program, cursor, count, calls, elapsed, stopped) {
         program["remaining_calls"] = json!(core::MAX_CALLS.saturating_sub(calls));
         program["remaining_round_tasks"] = json!(count.saturating_sub(cursor));
         let mut phase = next_phase(&snapshot, &mut program, calls, elapsed);
@@ -716,6 +730,74 @@ mod tests {
         program["stop_reason"] = json!("checking_combinations");
         next_phase(&snapshot, &mut program, 112, 1100);
         assert_eq!(program["exploration_admission"], receipt);
+    }
+
+    #[test]
+    fn observed_generation_duration_prevents_late_research_admission() {
+        let mut p = json!({"world_search_contract":1,"stage":"exploration","started_at_ms":"1"});
+        core::start_reasoning_timing(&mut p, "backward", 1_000_000);
+        core::finish_reasoning_timing(&mut p, "backward", 1_900_000);
+        assert_eq!(p["reasoning_durations_ms"]["backward"], 900_000);
+        core::finish_reasoning_timing(&mut p, "backward", 2_900_000);
+        assert_eq!(p["reasoning_durations_ms"]["backward"], 900_000, "Completed callbacks cannot inflate timing twice");
+        assert_eq!(p["started_at_ms"], "1");
+        let late = core::research_admission(&p, "backward", 47 * 60_000 + 59_000);
+        assert_eq!(late["admitted"], false);
+        assert_eq!(late["predicted_generation_ms"], 900_000);
+        assert_eq!(late["basis"], "maximum_observed_same_phase");
+        assert_eq!(core::research_admission(&p, "backward", 30 * 60_000)["admitted"], true);
+        assert_eq!(core::research_admission(&p, "explore", 48 * 60_000)["admitted"], false);
+        core::start_reasoning_timing(&mut p, "backward", 3_000_000);
+        core::finish_reasoning_timing(&mut p, "backward", 3_100_000);
+        assert_eq!(p["reasoning_durations_ms"]["backward"], 900_000, "A faster follow-up cannot erase observed slow work");
+    }
+
+    #[test]
+    fn admitted_endpoint_checks_drain_after_research_closes_without_new_research() {
+        let program = json!({"world_search_contract":1,"stage":"exploration"});
+        let minute = 60_000;
+        assert_eq!(core::research_time_limit(&program), 50 * minute);
+        // A newly accepted graph with cleared stale scores still has102 checks.
+        // Exercise the actual dispatch predicate, not just a deadline constant.
+        assert!(pending_assessment(&program, 0, 102, 168, 51 * minute, false));
+        assert!(!pending_assessment(&program, 0, 102, 168, 52 * minute, false));
+        assert!(!pending_assessment(&program, 0, 102, 168, 60 * minute, false));
+        assert!(!pending_assessment(&program, 0, 102, 168, 51 * minute, true));
+        assert!(!pending_assessment(&program, 102, 102, 168, 51 * minute, false));
+        assert!(51 * minute >= core::research_time_limit(&program).saturating_sub(120_000));
+        assert_eq!(core::time_limit(&program), 52 * minute);
+        assert!(52 * minute >= core::time_limit(&program));
+        let mut routes = program.clone();
+        routes["stage"] = json!("routes");
+        assert_eq!(core::time_limit(&routes), 52 * minute);
+        routes["stage"] = json!("proposals");
+        routes["endpoint_proposal_attempt"] = json!({"pool_stage":"deferred"});
+        assert_eq!(core::time_limit(&routes), 52 * minute);
+        routes["endpoint_proposal_attempt"]["pool_stage"] = json!("individual");
+        assert_eq!(core::time_limit(&routes), 50 * minute);
+        assert_eq!(core::time_limit(&json!({"stage":"exploration"})), 50 * minute);
+        assert_eq!(core::time_limit(&json!({"stage":"worlds"})), 57 * minute);
+        assert_eq!(core::MAX_MS, 60 * minute);
+        let snapshot = json!({"nodes":[]});
+        let mut no_routes = json!({"world_search_contract":1,"stage":"exploration","endpoint_search":{"endpoints":[],"routes":[],"rounds":[]}});
+        assert_eq!(next_phase(&snapshot, &mut no_routes, 0, 34 * minute), "backward");
+        assert_eq!(next_phase(&snapshot, &mut no_routes, 0, 48 * minute), "compose");
+        assert_eq!(no_routes["stop_reason"], "time_budget");
+    }
+
+    #[test]
+    fn endpoint_pending_evaluations_are_not_interrupted_by_legacy_challenge() {
+        let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","statement":"A future event","edges":"[]"}]});
+        let program = json!({"world_search_contract":1,"stage":"exploration","baseline_status":"established","transition_count":252,"cursor":0,"tasks":[{"nodeId":"h","function":"classify_claim_role","depth":0}],"results":{},"evaluations":{}});
+        assert!(program["cursor"].as_u64().unwrap() < program["tasks"].as_array().unwrap().len() as u64);
+        assert_eq!(core::transition_limit(&program), 328);
+        assert!(!challenge_due(&snapshot, &program, 0), "The legacy transition trigger must not preempt pending endpoint evaluations");
+        assert!(!challenge_due(&snapshot, &program, core::REASONING_ADMISSION_RESERVE));
+        assert!(core::request(&snapshot, &program).is_ok(), "The queued assessment remains executable");
+        let mut legacy = program.clone();
+        legacy.as_object_mut().unwrap().remove("world_search_contract");
+        legacy["transition_count"] = json!(core::transition_limit(&legacy) - core::REASONING_ADMISSION_RESERVE - 32);
+        assert!(challenge_due(&snapshot, &legacy, 0), "Legacy exploration retains its independent challenge");
     }
 
     #[test]

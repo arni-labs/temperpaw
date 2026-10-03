@@ -167,7 +167,9 @@ fn check(ctx: &Context) -> Result<(), String> {
             if result.trim().is_empty() {
                 return Err("Reasoning completed without an answer".into());
             }
-            set_success_result("ReasoningComplete", &json!({"reasoning_result":result}));
+            let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+            core::finish_reasoning_timing(&mut program, core::field(&ctx.entity_state, "phase"), Context::get_time_millis() as u64);
+            set_success_result("ReasoningComplete", &json!({"reasoning_result":result,"program_json":program.to_string()}));
         }
         "Failed" | "Cancelled" => {
             let message = core::field(&s, "error_message");

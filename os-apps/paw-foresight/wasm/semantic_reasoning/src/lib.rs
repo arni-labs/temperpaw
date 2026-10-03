@@ -48,7 +48,7 @@ Reference contract: existing catalog nodes use exact ref_ identifiers; never rec
 
 Resource contract: at most128 TOTAL hypotheses plus research_evidence per batch; capacity5000 Jev calls,2048 nodes,64 rounds and one hour. These are limits, not targets or category counts. Continue while another round can add a materially different mechanism or resolve a consequential uncertainty. Stop with continue_exploring=false when it cannot, explaining why and what remains unknown. A budget stop means incomplete exploration, not convergence."#;
 
-const RESEARCH_CONTRACT: &str = r#"Research response JSON contract (applies equally to explore, challenge, scope repair and backward search): If ANY research_evidence record has evidence_metadata.kind="finding", the SAME response MUST also contain complete top-level baseline and scope_review objects, following the supplied field contracts. Do not return sources/routes alone. Start from the supplied prior baseline, retain supported observations, reconcile the new findings, and copy every scope_review.limitations string exactly into baseline.unknowns. Include top-level baseline_dispositions for every omitted or rewritten prior observation; [] is valid when all prior observations are retained verbatim. Do not wrap these objects inside research_evidence, scope or endpoint_search. Leads alone require no refresh outside scope repair; scope repair always returns baseline, scope_review and scope_disposition. This applies to backward route generation and its corrections as well as exploration/challenge.
+const RESEARCH_CONTRACT: &str = r#"Research response JSON contract (applies equally to explore, challenge, scope repair and backward search): If ANY research_evidence record has evidence_metadata.kind="finding", reconcile it in the SAME response. Outside scope repair, prefer baseline_delta: {replacements:[{prior_observation_index:0,observations:[{claim:"replacement observation",evidence_ids:["finding ref"]}],reason:"why changed",evidence_ids:["finding ref"]}],additions:[],unknowns:["complete revised unknowns, only when changed"],assumptions:["complete explicit user constraints, only when changed"]}. Omitted fields and unedited observations are retained exactly; observations:[] explicitly retracts that indexed observation. Each index may be edited once. Use additions for new observations; the assembled total remains at most16, so consolidate with justified indexed replacements when full. Scope_review may be omitted to retain it exactly, or supplied completely when changed; unresolved limitations must remain in unknowns. The engine derives baseline_dispositions and validates the complete assembled baseline against all sources. Never omit contradictory evidence merely to preserve old claims. Complete top-level baseline plus scope_review and dispositions remain supported; do not mix complete baseline/dispositions with baseline_delta. Scope repair still requires the complete format. Do not return sources/routes alone. Retain supported observations, reconcile new findings, and retain every scope_review.limitations string in baseline unknowns. For complete-format responses include baseline_dispositions for every omitted or rewritten prior observation; [] is valid when all prior observations remain verbatim. Do not wrap these objects inside research_evidence, scope or endpoint_search. Leads alone require no refresh outside scope repair; scope repair always returns baseline, scope_review and scope_disposition. This applies to backward route generation and its corrections as well as exploration/challenge.
 For each new source, return research_evidence as an array of records with exactly this response shape: {"id":"unique local ASCII ID","statement":"scoped finding, nonempty and under 2000 bytes","url":"one exact retrieved HTTPS URL","quote":"nonempty supporting excerpt, at most 25 words and 200 characters","evidence_metadata":{"kind":"finding or lead","publication_date":null,"observation_period":{"start":null,"end":null},"retrieved_at":null},"provenance":"observed or contested or weak_signal"}. Replace enum descriptions with one allowed value; dates follow the chronology contract, unknown dates remain null. These are response records, not stored catalog nodes: source_refs does not replace url, publication_date and observation_period belong inside evidence_metadata, kind belongs inside evidence_metadata, and direct_fetch is not a provenance value. Use finding only for actually retrieved substantive support, lead for source existence or incomplete retrieval. Return [] when there are no new reports. When correcting schema errors, preserve valid routes and content and repair every indexed field reported; do not repeat research merely to reformat already retrieved source content.
 Research contract: use available read-only temper.web_search and temper.web_fetch. Prefer direct temper.web_fetch(url); web_fetch accepts only a URL. On failure, web_search result's text field may contain bounded source-extracted text. Report only claims and quotations actually contained in that returned text, never infer them from titles, URLs or search summaries. Label indexed-excerpt evidence, direct-fetch failure and date/context limits; use weak_signal when context remains unverified. Fetch smaller article/text-version URLs only when actually discovered. Keep publication dates distinct from retrieval dates, and old findings distinct from the observed present. For frozen hindcasts, return research_evidence=[] and use only supplied evidence within the vantage; later remembered knowledge is inadmissible. Report tool failures and contradictory evidence honestly. A citation or Jev label does not prove a future."#;
 
@@ -250,6 +250,11 @@ fn composition_candidates(snapshot: &Value, program: &Value) -> Value {
         }
     }
     json!({"component_ids":eligible,"excluded":excluded})
+}
+
+fn include_proposal_pool(phase: &str, pool_research: bool, program: &Value) -> bool {
+    core::proposals::pool::enabled(program)
+        && (matches!(phase, "imagine" | "enrich") || pool_research)
 }
 
 fn reasoning_input(snapshot: &Value, program: &Value) -> Result<Value, String> {
@@ -576,7 +581,7 @@ fn checked_composition_bundles(snapshot: &Value, program: &Value) -> Result<Valu
 fn setup(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
-    let program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let scope_repair = phase == "explore" && program["scope_repair"]["status"] == "pending";
     let pool_research = phase == "explore" && core::proposals::pool::research_pending(&program);
     let prompt = match phase {
@@ -630,7 +635,7 @@ fn setup(ctx: &Context) -> Result<(), String> {
         input["backward_batch"] =
             references::References::new(&snapshot)?.project(&core::backward::batch(&program));
     }
-    if core::proposals::pool::enabled(&program) && phase != "synthesize" {
+    if include_proposal_pool(phase, pool_research, &program) {
         input["proposal_pool"] =
             references::References::new(&snapshot)?.project(&program["proposal_pool"]);
         if pool_research {
@@ -683,7 +688,7 @@ fn setup(ctx: &Context) -> Result<(), String> {
         }
         fields["baseline"] = outlook::baseline_contract();
         let requirement = if matches!(phase, "explore" | "challenge" | "backward") || scope_repair {
-            "For scope repair always, and for ANY researching phase (explore, challenge or backward) when research_evidence adds any typed finding, return these fields at the response root alongside hypotheses/research_evidence. Preserve the separate overall scope_disposition when scope repair requests it. Return the complete replacement baseline, not only newly learned claims. Retain still-supported prior observed claims (citations may be enriched), revise stale unknowns and limitations, and retain unresolved qualifications. For EACH omitted or rewritten prior observed claim, include a root baseline_dispositions item: {prior_observation_index: zero-based integer in supplied baseline.observed, replacement_observation_indices: array of indices in the returned baseline.observed (empty for explicit retraction), reason: nonempty text up to 400 characters, evidence_ids: 1–16 current finding refs or same-response finding IDs}. At most one disposition per prior observation. Within the unchanged 16-observation limit, consolidate claims explicitly using these mappings; never silently drop prior facts. Dispositions are model judgments, not verified retractions. During ordinary explore, challenge or backward search, leads alone do not require a refresh."
+            "For scope repair always, and for ANY researching phase (explore, challenge or backward) when research_evidence adds any typed finding, reconcile these fields alongside hypotheses/research_evidence using baseline_delta or the complete format. Preserve the separate overall scope_disposition when scope repair requests it. Outside scope repair, baseline_delta is preferred and the engine retains unedited prior observations and scope_review; use the shared delta contract instead of repeating them. Complete-format responses return the complete replacement baseline. Retain still-supported prior observed claims (citations may be enriched), revise stale unknowns and limitations, and retain unresolved qualifications. In complete-format responses, for EACH omitted or rewritten prior observed claim, include a root baseline_dispositions item: {prior_observation_index: zero-based integer in supplied baseline.observed, replacement_observation_indices: array of indices in the returned baseline.observed (empty for explicit retraction), reason: nonempty text up to 400 characters, evidence_ids: 1–16 current finding refs or same-response finding IDs}. At most one disposition per prior observation. Within the unchanged 16-observation limit, consolidate claims explicitly using these mappings; never silently drop prior facts. Dispositions are model judgments, not verified retractions. During ordinary explore, challenge or backward search, leads alone do not require a refresh."
         } else {
             "Return these fields at the response root. scope_review and scope_disposition, when requested, are distinct judgments."
         };
@@ -735,9 +740,10 @@ fn setup(ctx: &Context) -> Result<(), String> {
         prompt
     };
     let web_research = research_enabled(phase, &snapshot) && !format_repair;
+    core::start_reasoning_timing(&mut program, phase, Context::get_time_millis() as u64);
     set_success_result(
         "LaunchReasoning",
-        &json!({"system_prompt":prompt,"user_message":input.to_string(),"tools_enabled":if web_research {"temper_web_search,temper_web_fetch"} else {""},"tool_choice":if web_research {"auto"} else {"none"},"max_turns":if web_research {"12"} else {"1"}}),
+        &json!({"program_json":program.to_string(),"system_prompt":prompt,"user_message":input.to_string(),"tools_enabled":if web_research {"temper_web_search,temper_web_fetch"} else {""},"tool_choice":if web_research {"auto"} else {"none"},"max_turns":if web_research {"12"} else {"1"}}),
     );
     Ok(())
 }
@@ -814,6 +820,18 @@ mod reasoning_tests {
             program["endpoint_proposal_history"][0]["baseline"]["observed"][0]["claim"],
             "BASELINE_SENTINEL"
         );
+    }
+
+    #[test]
+    fn frozen_world_phases_omit_historical_pool_but_keep_generation_context() {
+        let program=json!({"endpoint_proposal_contract":2,"proposal_pool":{"stage":"accepted","candidates":[]}});
+        for phase in ["backward","challenge","compose","synthesize"] {
+            assert!(!include_proposal_pool(phase,false,&program),"{phase} repeats historical pool");
+        }
+        assert!(include_proposal_pool("explore",true,&program));
+        assert!(include_proposal_pool("enrich",false,&program));
+        assert!(RESEARCH_CONTRACT.contains("baseline_delta"));
+        assert!(RESEARCH_CONTRACT.contains("Omitted fields and unedited observations are retained exactly"));
     }
 
     #[test]

@@ -314,7 +314,7 @@ max_fuel = "10000000000"
 name = "LaunchReasoning"
 kind = "input"
 from = ["ReasoningSetup"]
-params = ["system_prompt", "user_message", "tools_enabled", "tool_choice", "max_turns"]
+params = ["system_prompt", "user_message", "tools_enabled", "tool_choice", "max_turns", "program_json"]
 effect = [{type="increment",var="transition_count"},{type="schedule",action="SpawnReasoning",delay_seconds=0}]
 
 [[action]]
@@ -368,7 +368,7 @@ name = "ReasoningComplete"
 kind = "input"
 from = ["Reasoning"]
 to = "Expanding"
-params = ["reasoning_result"]
+params = ["reasoning_result", "program_json"]
 effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_expand"
