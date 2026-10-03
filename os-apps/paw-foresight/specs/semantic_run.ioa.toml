@@ -353,6 +353,16 @@ to = "Reasoning"
 params = []
 effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=60}]
 
+# Same single polling chain as ReasoningPending. Only the WASM's observation
+# of a newly advanced child progress token resets the native idle timeout.
+[[action]]
+name = "ReasoningProgress"
+kind = "input"
+from = ["Reasoning"]
+to = "Reasoning"
+params = ["reasoning_progress_session_id", "reasoning_progress_token"]
+effect = [{type="increment",var="transition_count"},{type="increment",var="check_count"},{type="schedule",action="CheckReasoning",delay_seconds=60}]
+
 [[action]]
 name = "ReasoningComplete"
 kind = "input"
@@ -395,7 +405,8 @@ params = {error_message = "Reasoning stage timed out; partial exploration is pre
 state = "Reasoning"
 after_seconds = 900
 on_timeout = "Fail"
-params = {error_message = "Reasoning stage timed out; partial exploration is preserved."}
+reset_on = ["ReasoningProgress"]
+params = {error_message = "Reasoning child made no observed progress for 900 seconds; partial exploration is preserved."}
 
 [[state_timeout]]
 state = "Expanding"
@@ -699,3 +710,13 @@ initial = "0"
 name = "reasoning_phase_polls"
 type = "counter"
 initial = "0"
+
+[[state]]
+name = "reasoning_progress_session_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "reasoning_progress_token"
+type = "string"
+initial = ""

@@ -34,6 +34,8 @@
         <Property Name="temper_api_url" Type="Edm.String"/>
         <Property Name="reasoning_session_id" Type="Edm.String"/>
         <Property Name="reasoning_result" Type="Edm.String"/>
+        <Property Name="reasoning_progress_session_id" Type="Edm.String"/>
+        <Property Name="reasoning_progress_token" Type="Edm.String"/>
         <Property Name="answer" Type="Edm.String"/>
         <Property Name="check_count" Type="Edm.Int64"/>
         <Property Name="transition_count" Type="Edm.Int64"/>
@@ -1505,6 +1507,12 @@
         <Parameter Name="program_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="trace_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
+      </Action>
+      <Action Name="ReasoningProgress" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
+        <Parameter Name="reasoning_progress_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reasoning_progress_token" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
       </Action>
       <Action Name="ResumeReasoned" IsBound="true">

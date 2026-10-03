@@ -701,10 +701,10 @@ permit(principal, action == Action::"StartSemanticExploration", resource is Worl
 when { principal.agent_type == "system" };
 // WASM result callbacks are delivered by the runtime relay, not browser callers.
 permit(principal == Agent::"service:wasm-runtime",
- action in [Action::"Prepared",Action::"ResumePrepared",Action::"SearchPlanned",Action::"Evaluate",Action::"Recorded",Action::"Reason",Action::"LaunchReasoning",Action::"ReasoningPending",Action::"ReasoningRetry",Action::"ReasoningComplete",Action::"CompositionRejected",Action::"Expanded",Action::"Complete",Action::"Fail"],
+ action in [Action::"Prepared",Action::"ResumePrepared",Action::"SearchPlanned",Action::"Evaluate",Action::"Recorded",Action::"Reason",Action::"LaunchReasoning",Action::"ReasoningPending",Action::"ReasoningProgress",Action::"ReasoningRetry",Action::"ReasoningComplete",Action::"CompositionRejected",Action::"Expanded",Action::"Complete",Action::"Fail"],
  resource is SemanticRun);
 forbid(principal,
- action in [Action::"Prepared",Action::"ResumePrepared",Action::"SearchPlanned",Action::"Evaluate",Action::"Recorded",Action::"Reason",Action::"LaunchReasoning",Action::"ReasoningPending",Action::"ReasoningRetry",Action::"ReasoningComplete",Action::"CompositionRejected",Action::"Expanded",Action::"Complete"],
+ action in [Action::"Prepared",Action::"ResumePrepared",Action::"SearchPlanned",Action::"Evaluate",Action::"Recorded",Action::"Reason",Action::"LaunchReasoning",Action::"ReasoningPending",Action::"ReasoningProgress",Action::"ReasoningRetry",Action::"ReasoningComplete",Action::"CompositionRejected",Action::"Expanded",Action::"Complete"],
  resource is SemanticRun)
 unless { principal == Agent::"service:wasm-runtime" };
 

@@ -97,6 +97,26 @@ fn polling_diagnostic(state: &Value, session: &Value, polls: u64) -> String {
     )
 }
 
+// A progress token belongs to one child. Heartbeats and repeated reads of the
+// same token are liveness only and must not extend the parent's idle timeout.
+fn advancing_child_progress(state: &Value, session: &Value) -> Option<Value> {
+    let fields = session.get("fields").unwrap_or(session);
+    let token = fields
+        .get("progress_token")
+        .or_else(|| fields.get("ProgressToken"))
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))?;
+    if token == 0 {
+        return None;
+    }
+    let id = core::field(state, "reasoning_session_id");
+    let previous = core::field(state, "reasoning_progress_token")
+        .parse::<u64>()
+        .unwrap_or(0);
+    if core::field(state, "reasoning_progress_session_id") == id && token <= previous {
+        return None;
+    }
+    Some(json!({"reasoning_progress_session_id":id,"reasoning_progress_token":token.to_string()}))
+}
 fn check(ctx: &Context) -> Result<(), String> {
     let started = core::field(&ctx.entity_state, "started_at_ms")
         .parse::<u64>()
@@ -125,7 +145,7 @@ fn check(ctx: &Context) -> Result<(), String> {
         .ok_or("Missing Temper URL")?;
     let r = ctx.http_call(
         "GET",
-        &format!("{api}/tdata/Sessions('{id}')?$select=Status,result,error_message,error,turn_count,provider_auth_status"),
+        &format!("{api}/tdata/Sessions('{id}')?$select=Status,result,error_message,error,turn_count,provider_auth_status,progress_token,last_progress_at"),
         &[
             ("x-tenant-id".into(), ctx.tenant.clone()),
             ("x-temper-principal-kind".into(), "agent".into()),
@@ -170,7 +190,11 @@ fn check(ctx: &Context) -> Result<(), String> {
         }
         _ => {
             ctx.log("info", &polling_diagnostic(&ctx.entity_state, &s, polls));
-            set_success_result("ReasoningPending", &json!({}));
+            if let Some(progress) = advancing_child_progress(&ctx.entity_state, &s) {
+                set_success_result("ReasoningProgress", &progress);
+            } else {
+                set_success_result("ReasoningPending", &json!({}));
+            }
         }
     };
     Ok(())
