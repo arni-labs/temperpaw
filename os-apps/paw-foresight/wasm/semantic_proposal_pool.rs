@@ -772,8 +772,7 @@ pub fn finish(
     if a["pool_stage"] == "pairs" {
         let remaining =
             super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
-        let developed = p["proposal_pool"]["development"]["status"] == "completed";
-        let remaining_reasoning_turns = if developed { 2 } else { 4 };
+        let remaining_reasoning_turns = 2;
         let max_selected = (remaining.saturating_sub(32) / REASONING_ADMISSION_RESERVE)
             .saturating_sub(remaining_reasoning_turns)
             .min(5) as usize;
@@ -805,20 +804,15 @@ pub fn finish(
         p["proposal_pool"]["selected_ids"] = json!(selected);
         p["proposal_pool"]["selection_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"selected":selected.contains(&e["id"]),"reason":if selected.contains(&e["id"]){"pairwise_distinct_set"}else{"not_in_bounded_distinct_set"}})).collect::<Vec<_>>());
         if selected.len() >= 3 {
-            if developed {
-                let accepted: Vec<_> = candidates
-                    .iter()
-                    .filter(|e| selected.contains(&e["id"]))
-                    .cloned()
-                    .collect();
-                p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"deferred_novelty_contract":1,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
-                p["endpoint_proposal_attempt"]["status"] = json!(if selected.iter().all(|id| novelty_passed(p,id.as_str().unwrap_or(""))) {"accepted"} else {"examined"});
-                p["proposal_pool"]["stage"] = json!("accepted");
-                p["stage"] = json!("exploration");
-            } else {
-                p["proposal_pool"]["stage"] = json!("enrich");
-                p["endpoint_proposal_attempt"]["status"] = json!("development_requested");
-            }
+            let accepted: Vec<_> = candidates
+                .iter()
+                .filter(|e| selected.contains(&e["id"]))
+                .cloned()
+                .collect();
+            p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"deferred_novelty_contract":1,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
+            p["endpoint_proposal_attempt"]["status"] = json!(if selected.iter().all(|id| novelty_passed(p,id.as_str().unwrap_or(""))) {"accepted"} else {"examined"});
+            p["proposal_pool"]["stage"] = json!("accepted");
+            p["stage"] = json!("exploration");
             return Ok(());
         }
     } else {
@@ -908,12 +902,7 @@ pub fn finish(
             let cost = check_transitions(snapshot, &paired)?;
             let remaining =
                 super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
-            let development_turns = if p["proposal_pool"]["development"]["status"] == "completed" {
-                0
-            } else {
-                2
-            };
-            let reserved_tail = reserve() + development_turns * REASONING_ADMISSION_RESERVE + 32 + 2 * candidates.len() as u64 + 2;
+            let reserved_tail = reserve() + 32 + 2 * candidates.len() as u64 + 2;
             paired["proposal_pool"]["pair_admission"] = json!({"remaining_transitions":remaining,"check_transitions":cost,"reserved_tail":reserved_tail,"admitted":remaining>=cost+reserved_tail});
             if remaining < cost + reserved_tail {
                 paired["endpoint_proposal_attempt"]["status"] = json!("unresolved");
@@ -1537,7 +1526,22 @@ mod tests {
     }
 
     #[test]
-    fn breadth_shortlist_pair_distinction_enrichment_and_exact_cache() {
+    fn direct_freeze_keeps_unresolved_novelty_provisional() {
+        let (snapshot, mut program) = pool();
+        record(&mut program, |t| if t["function"] == "check_proposal_change" { "unresolved".into() } else { pass(t) });
+        finish(&snapshot, &mut program, true, false).unwrap();
+        let receipts = program["endpoint_novelty"].clone();
+        record(&mut program, pass);
+        finish(&snapshot, &mut program, true, false).unwrap();
+        assert_eq!(program["stage"], "exploration");
+        assert!(program["proposal_pool"]["development"].is_null());
+        assert_eq!(program["endpoint_novelty"], receipts);
+        assert_eq!(program["endpoint_proposal_attempt"]["status"], "examined");
+        assert!(program["endpoint_search"]["endpoints"].as_array().unwrap().iter().all(|e|!novelty_passed(&program,field(e,"id"))));
+    }
+
+    #[test]
+    fn breadth_selection_freezes_directly_and_saved_development_keeps_exact_cache() {
         let (s, mut p) = pool();
         record(&mut p, pass);
         finish(&s, &mut p, true, false).unwrap();
@@ -1589,11 +1593,22 @@ mod tests {
             .filter(|e| selected.contains(&e["id"]))
             .cloned()
             .collect();
+        assert_eq!(p["stage"], "exploration");
+        assert_eq!(p["endpoint_search"]["endpoints"], json!(originals));
+        assert!(p["proposal_pool"]["development"].is_null());
+        let obligations = super::super::super::backward::batch(&p);
+        assert_eq!(obligations["mode"], "complete_original");
+        assert_eq!(obligations["commitments"].as_array().unwrap().len(), originals[0]["commitments"].as_array().unwrap().len());
+        // A saved pre-change checkpoint may already be waiting for development.
+        // Preserve that continuation; new successful selections never enter it.
+        let mut queued_development = p.clone();
+        queued_development.as_object_mut().unwrap().remove("endpoint_search");
+        queued_development["proposal_pool"]["stage"] = json!("enrich");
         let mut changed = originals.clone();
         changed[0]["original_statement"] =
             json!("A substantively different arrangement with new interacting consequences");
         changed[0]["commitments"][0]["statement"] = json!("A changed load-bearing future event");
-        let developed = receive(&s, &p, changed.clone()).unwrap();
+        let developed = receive(&s, &queued_development, changed.clone()).unwrap();
         assert_eq!(developed["proposal_pool"]["stage"], "contrast");
         assert!(developed["endpoint_search"].is_null());
         assert!(
@@ -1650,7 +1665,7 @@ mod tests {
                 .unwrap_err()
                 .contains("once")
         );
-        let unchanged = receive(&s, &p, originals.clone()).unwrap();
+        let unchanged = receive(&s, &queued_development, originals.clone()).unwrap();
         let mut enriched = contrasts(&s, &unchanged, &contrast_reply(&originals)).unwrap();
         assert_eq!(
             enriched["tasks"],
@@ -1668,7 +1683,7 @@ mod tests {
                 .len(),
             5
         );
-        let mut new_baseline = p.clone();
+        let mut new_baseline = queued_development.clone();
         new_baseline["baseline"]["unknowns"] = json!(["New evidence changes the comparison scope"]);
         let development = receive(&s, &new_baseline, originals.clone()).unwrap();
         let refreshed = contrasts(&s, &development, &contrast_reply(&originals)).unwrap();

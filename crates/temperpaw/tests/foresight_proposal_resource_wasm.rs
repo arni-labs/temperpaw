@@ -197,3 +197,49 @@ async fn deferred_native_completion_preserves_paths_and_original_clock() {
     assert_eq!(completed["transition_count"], 320);
     assert!(result["callback_params"].get("started_at_ms").is_none());
 }
+
+#[tokio::test]
+#[ignore = "Requires authorized captured pass9 proposal checkpoint"]
+async fn captured_checked_selection_enters_backward_without_rewriting_worlds() {
+    let response: Value = serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_PASS9_CAPTURE").unwrap()).unwrap()).unwrap();
+    let rows: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let captured = &rows[0];
+    let mut program: Value = serde_json::from_str(captured["program_json"].as_str().unwrap()).unwrap();
+    let pair = program["endpoint_proposal_history"].as_array().unwrap().iter().find(|a|a["pool_stage"] == "pairs").unwrap().clone();
+    let snapshot = json!({"world":pair["world"],"nodes":pair["source_evidence"]});
+    // Reconstruct the recorded checkpoint before pair completion. Do not call
+    // the provider or change the live run; recorded Jev checks remain unchanged.
+    program["endpoint_proposal_attempt"] = pair.clone();
+    program["endpoint_proposal_attempt"]["status"] = json!("checking");
+    program["endpoint_proposal_history"] = json!([program["endpoint_proposal_history"][0]]);
+    program["tasks"] = pair["tasks"].clone();
+    program["cursor"] = json!(pair["tasks"].as_array().unwrap().len());
+    program["stage"] = json!("proposals");
+    program["proposal_pool"]["stage"] = json!("pairs");
+    program["proposal_pool"]["candidates"] = pair["endpoints"].clone();
+    program["proposal_pool"].as_object_mut().unwrap().remove("development");
+    program.as_object_mut().unwrap().remove("endpoint_search");
+    for check in pair["checks"].as_array().unwrap() {
+        let task = &check["task"];
+        program["results"][task["nodeId"].as_str().unwrap()][task["function"].as_str().unwrap()] = check["result"].clone();
+        program["evaluations"][task["nodeId"].as_str().unwrap()][task["function"].as_str().unwrap()] = check["evaluation"].clone();
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    // Offline simulator clock, not a live run retry or deadline change.
+    let mut fields = json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","transition_count":captured["counters"]["transition_count"],"started_at_ms":now.saturating_sub(1_800_000).to_string()});
+    let engine = WasmEngine::new().unwrap();
+    let selected = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(selected["callback_action"], "SearchPlanned", "{selected}");
+    let frozen: Value = serde_json::from_str(selected["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(frozen["stage"], "exploration");
+    assert!(frozen["proposal_pool"]["development"].is_null());
+    assert_eq!(frozen["endpoint_novelty"], program["endpoint_novelty"]);
+    for endpoint in frozen["endpoint_search"]["endpoints"].as_array().unwrap() {
+        assert_eq!(Some(endpoint), pair["endpoints"].as_array().unwrap().iter().find(|e|e["id"]==endpoint["id"]));
+    }
+    fields["program_json"] = selected["callback_params"]["program_json"].clone();
+    let next = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(next["callback_action"], "Reason", "{next}");
+    assert_eq!(next["callback_params"]["phase"], "backward");
+    assert!(next["callback_params"].get("started_at_ms").is_none());
+}
