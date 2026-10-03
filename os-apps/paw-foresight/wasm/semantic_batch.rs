@@ -40,7 +40,15 @@ pub fn reduce_cap(program: &mut Value, batch: &Batch) -> bool {
         return false;
     }
     let old = byte_cap(program);
-    let next = old.min(batch.request.to_string().len()) / 2;
+    let failed_bytes = old.min(batch.request.to_string().len());
+    // Shared evidence is paid once regardless of case count. Halving the whole
+    // payload can put the cap below two cases and serialize every later audit.
+    // Back off the variable case bytes instead; every retry still has a strictly
+    // smaller cap than the failed request and retains the exact common context.
+    let shared_bytes = batch.request["state"]["common"].as_object().map_or(0, |_| {
+        json!({"model":batch.request["model"],"state":{"common":batch.request["state"]["common"],"cases":{}},"questions":{}}).to_string().len()
+    }).min(failed_bytes.saturating_sub(1));
+    let next = shared_bytes + (failed_bytes - shared_bytes) / 2;
     if next == 0 || next >= old {
         return false;
     }
@@ -233,6 +241,24 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 mod domain_cap_tests {
     use super::*;
     #[test]
+    fn token_backoff_halves_case_bytes_without_halving_shared_evidence() {
+        let batch = Batch {
+            request: json!({"model":"jev", "state":{"common":{"evidence":"x".repeat(40000)},"cases":{"q0":"a".repeat(10000),"q1":"b".repeat(10000),"q2":"c".repeat(10000),"q3":"d".repeat(10000)}},"questions":{}}),
+            tasks: vec![json!({}); 4],
+            individual: vec![],
+        };
+        let original = batch.request.clone();
+        let mut program = json!({"endpoint_proposal_contract":2,"stage":"routes"});
+        assert!(reduce_cap(&mut program, &batch));
+        let cap = byte_cap(&program);
+        // Forty KiB of fixed evidence still leaves room for roughly two cases.
+        // Total-payload halving leaves room for none, forcing serial fallbacks.
+        assert!((60000..61000).contains(&cap));
+        assert!(cap < batch.request.to_string().len());
+        assert_eq!(batch.request, original);
+    }
+
+    #[test]
     fn independent_domain_backoff_persists_and_legacy_cap_is_unchanged() {
         let batch = Batch {
             request: json!({"payload":"x".repeat(10000)}),
@@ -271,6 +297,44 @@ mod domain_cap_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "Requires authorized pass9 food checkpoint capture"]
+    fn captured_food_overflow_reduces_cases_without_serializing_route_audits() {
+        let path = std::env::var("FORESIGHT_FOOD_BATCH_CAPTURE").unwrap();
+        let capture: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(capture["snapshot_json"].as_str().unwrap()).unwrap();
+        let mut program: Value =
+            serde_json::from_str(capture["program_json"].as_str().unwrap()).unwrap();
+        // Reconstruct the actual rejected request from immutable captured routes.
+        program["cursor"] = json!(27);
+        program["batch_byte_caps"]["routes"] = json!(128 * 1024);
+        let failed = prepare(&snapshot, &program, 81).unwrap();
+        assert_eq!(failed.tasks.len(), 15);
+        assert_eq!(failed.request.to_string().len(), 109280);
+        assert!(reduce_cap(&mut program, &failed));
+        let retry = prepare(&snapshot, &program, 81).unwrap();
+        assert!(retry.tasks.len() > 1 && retry.tasks.len() < failed.tasks.len());
+        assert!(retry.request.to_string().len() < failed.request.to_string().len());
+        assert!(retry.request.to_string().len() <= byte_cap(&program));
+        assert_eq!(retry.individual, failed.individual[..retry.tasks.len()]);
+        assert_comparison_roundtrip(&retry);
+        let mut attempts = 1;
+        let mut batch = retry;
+        while batch.tasks.len() > 1 {
+            let previous = byte_cap(&program);
+            assert!(reduce_cap(&mut program, &batch));
+            assert!(byte_cap(&program) < previous);
+            batch = prepare(&snapshot, &program, 81).unwrap();
+            assert_comparison_roundtrip(&batch);
+            attempts += 1;
+            assert!(attempts <= 16);
+        }
+        let before = program.clone();
+        assert!(!reduce_cap(&mut program, &batch));
+        assert_eq!(program, before);
+    }
+
     #[test]
     fn wrapper_overflow_preserves_valid_individual_and_result_answer() {
         let task = json!({"nodeId":"h","function":"classify_temporal","depth":0});
