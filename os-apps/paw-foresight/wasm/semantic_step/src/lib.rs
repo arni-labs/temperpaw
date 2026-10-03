@@ -326,6 +326,17 @@ fn proposal_resource_limit(reason: &str) -> &'static str {
     }
 }
 
+fn composition_unavailable_message(program: &Value, eligible: usize, calls: usize, elapsed: u64) -> String {
+    if let Some(reason) = proposal_resource_reason(program, calls, elapsed) {
+        let pending_checks = program["tasks"].as_array().map_or(0, Vec::len)
+            .saturating_sub(program["cursor"].as_u64().unwrap_or(0) as usize);
+        let pending_routes = program["endpoint_search"]["routes"].as_array().into_iter().flatten()
+            .filter(|route| route["status"] == "pending").count();
+        return format!("World reconstruction stopped because of {} ({reason}). {pending_checks} candidate checks and {pending_routes} pending routes remain saved; {eligible} hypotheses are currently eligible for composition. Unevaluated work is not a rejected future. No completed worlds or whole-world estimates are available.", proposal_resource_limit(reason));
+    }
+    format!("Cannot compose worlds: only {eligible} current eligible hypotheses; at least three are required. Not enough currently evaluated future candidates are available.")
+}
+
 fn contrast_resource_message(reason: &str) -> String {
     let limit = proposal_resource_limit(reason);
     format!("Present-day comparison research remains incomplete because of {limit} ({reason}). No current comparison checks were scheduled. Saved research and earlier receipts are preserved; this is not a failed novelty judgment. No endpoint was accepted and no whole-world estimates were made.")
@@ -629,7 +640,7 @@ fn step(ctx: &Context) -> Result<(), String> {
             if eligible < 3 {
                 set_success_result(
                     "Fail",
-                    &json!({"error_message":format!("Cannot compose worlds: only {eligible} current eligible hypotheses; at least three are required. Not enough currently evaluated future candidates are available.")}),
+                    &json!({"error_message":composition_unavailable_message(&program, eligible, calls, elapsed)}),
                 );
                 return Ok(());
             }
@@ -1086,6 +1097,22 @@ mod tests {
 #[cfg(test)]
 mod proposal_stop_tests {
     use super::*;
+    #[test]
+    fn unevaluated_city_cutoff_reports_saved_work_and_actual_limit() {
+        let mut p = json!({"stage":"exploration","cursor":0,"tasks":vec![json!({});93],"endpoint_search":{"routes":vec![json!({"status":"pending"});6]}});
+        let message = composition_unavailable_message(&p, 0, 95, 3_000_000);
+        assert!(message.contains("time_budget"));
+        assert!(message.contains("93 candidate checks and 6 pending routes"));
+        assert!(message.contains("Unevaluated work is not a rejected future"));
+        assert!(!message.contains("at least three are required"));
+        for reason in ["transition_budget", "call_budget", "trace_budget", "provider_error"] {
+            p["stop_reason"] = json!(reason);
+            assert!(composition_unavailable_message(&p, 0, 95, 1).contains(reason));
+        }
+        p["stop_reason"] = Value::Null;
+        assert!(composition_unavailable_message(&p, 0, 95, 1).contains("at least three are required"));
+    }
+
     #[test]
     fn reserved_deadline_is_not_a_novelty_judgment() {
         let mut p = json!({"stage":"proposals","endpoint_proposal_attempt":{"tasks":vec![json!({});33],"checks":vec![json!({"evaluation":null});33]}});
