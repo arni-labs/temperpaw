@@ -44,7 +44,13 @@ fn transient_provider_error(error: &str) -> bool {
     // Foresight reasoning exposes only search/fetch tools (or no tools). A fresh
     // phase can repeat those reads after a terminal truncated response; never
     // treat arbitrary stream/parser failures or authorization errors as transient.
-    if error == "openai codex stream failed after visible output or final attempt: openai sse stream ended before response.completed" {
+    if matches!(error.as_str(),
+        "openai codex stream failed after visible output or final attempt: openai sse stream ended before response.completed"
+        | "openai codex stream failed after visible output: streaming response read: stream error: host rc -4"
+    ) {
+        // The latter host code is ambiguous, not proof of a network failure.
+        // Retry only this terminal read-only child, never the partial provider
+        // stream or arbitrary host errors; original limits still govern below.
         return true;
     }
     [429, 500, 502, 503, 504].iter().any(|status| {
@@ -256,6 +262,18 @@ mod retry_tests {
             assert!(!transient_provider_error(&format!("{observed}: {suffix}")));
         }
         for other in ["OpenAI SSE stream ended before response.completed", "OpenAI Codex stream failed after visible output or final attempt: invalid JSON", "OpenAI Codex stream failed after visible output: connection reset"] {
+            assert!(!transient_provider_error(other));
+        }
+    }
+
+    #[test]
+    fn exact_terminal_stream_read_failure_is_bounded_to_its_observed_class() {
+        let observed = "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -4";
+        assert!(transient_provider_error(observed));
+        for suffix in ["permission denied", "HTTP 401", "insufficient quota", "billing", "authentication failed"] {
+            assert!(!transient_provider_error(&format!("{observed}: {suffix}")));
+        }
+        for other in ["stream error: host rc -4", "OpenAI Codex stream failed after visible output: connection reset", "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -3"] {
             assert!(!transient_provider_error(other));
         }
     }

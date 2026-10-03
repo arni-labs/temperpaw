@@ -45,6 +45,7 @@ async fn invoke(engine: &WasmEngine, module: &str, fields: &Value, response: &Va
     serde_json::to_value(result).unwrap()
 }
 const OBSERVED: &str = "OpenAI Codex stream failed after visible output or final attempt: OpenAI SSE stream ended before response.completed";
+const READ_FAILURE: &str = "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -4";
 #[tokio::test]
 async fn terminal_sse_retry_preserves_original_limits() {
     let now = std::time::SystemTime::now()
@@ -54,6 +55,14 @@ async fn terminal_sse_retry_preserves_original_limits() {
         .to_string();
     let engine = WasmEngine::new().unwrap();
     for (status, error, retries, started, transitions, expected) in [
+        ("Failed", READ_FAILURE, 0, now.as_str(), 84, "ReasoningRetry"),
+        ("Failed", READ_FAILURE, 3, now.as_str(), 84, "Fail"),
+        ("Cancelled", READ_FAILURE, 0, now.as_str(), 84, "Fail"),
+        ("Failed", READ_FAILURE, 0, "1", 84, "Fail"),
+        ("Failed", READ_FAILURE, 0, now.as_str(), 480, "Fail"),
+        ("Failed", "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -3", 0, now.as_str(), 84, "Fail"),
+        ("Failed", "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -4: permission denied", 0, now.as_str(), 84, "Fail"),
+        ("Failed", "OpenAI Codex stream failed after visible output: streaming response read: stream error: host rc -4: insufficient quota", 0, now.as_str(), 84, "Fail"),
         ("Failed", OBSERVED, 0, now.as_str(), 0, "ReasoningRetry"),
         ("Failed", OBSERVED, 2, now.as_str(), 0, "ReasoningRetry"),
         ("Failed", OBSERVED, 3, now.as_str(), 0, "Fail"),
@@ -77,7 +86,7 @@ async fn terminal_sse_retry_preserves_original_limits() {
             "Fail",
         ),
     ] {
-        let fields = json!({"reasoning_session_id":"failed-child","started_at_ms":started,"transition_count":transitions,"reasoning_retry_count":retries});
+        let fields = json!({"reasoning_session_id":"failed-child","started_at_ms":started,"transition_count":transitions,"reasoning_retry_count":retries,"snapshot_json":"{\"saved\":true}","program_json":"{\"phase\":\"backward\"}","trace_json":"[]"});
         let result = invoke(
             &engine,
             "semantic_session",
@@ -89,7 +98,7 @@ async fn terminal_sse_retry_preserves_original_limits() {
         if expected == "ReasoningRetry" {
             assert_eq!(
                 result["callback_params"],
-                json!({"last_retry_error":OBSERVED,"last_retry_session_id":"failed-child"})
+                json!({"last_retry_error":error,"last_retry_session_id":"failed-child"})
             );
         }
     }

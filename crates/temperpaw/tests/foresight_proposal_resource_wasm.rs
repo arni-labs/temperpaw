@@ -436,3 +436,47 @@ async fn targeted_repair_native_no_change_and_failure_preserve_checkpoint() {
     assert!(failed["callback_params"].get("program_json").is_none());
     assert_eq!(serde_json::from_str::<Value>(fields["program_json"].as_str().unwrap()).unwrap()["answer_checkpoint"],checkpoint);
 }
+
+#[tokio::test]
+#[ignore = "Requires authorized captured pass17 food checkpoint"]
+async fn captured_pass17_blocking_error_cannot_complete_unperformed_comparisons() {
+    let capture: Value = serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_PASS17_FOOD").unwrap()).unwrap()).unwrap();
+    let engine = WasmEngine::new().unwrap();
+    let mut fields = capture["fields"].clone();
+    let mut program: Value = serde_json::from_str(fields["program_json"].as_str().unwrap()).unwrap();
+    // Offline replay with a synthetic live clock; all graph, error and provider
+    // receipts remain the actual captured values. No acceptance run is resumed.
+    fields["started_at_ms"] = json!((std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - 1_800_000).to_string());
+    let blocked = invoke(&engine,"semantic_step",&fields,&json!({})).await;
+    assert_eq!(blocked["callback_action"],"Fail","{blocked}");
+    assert!(blocked["callback_params"]["error_message"].as_str().unwrap().contains("max_tokens_exceeded"));
+    assert!(blocked["callback_params"].get("started_at_ms").is_none());
+    program["stage"] = json!("proposals");
+    program["endpoint_proposal_attempt"]["status"] = json!("checking");
+    program["deferred_novelty_recheck"]["status"] = json!("checking");
+    program["tasks"] = program["endpoint_proposal_attempt"]["tasks"].clone();
+    program["cursor"] = json!(0);
+    fields["program_json"] = json!(program.to_string());
+    let interrupted=invoke(&engine,"semantic_step",&fields,&json!({})).await;
+    assert_eq!(interrupted["callback_action"],"SearchPlanned","{interrupted}");
+    let saved:Value=serde_json::from_str(interrupted["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(saved["deferred_novelty_recheck"]["status"],"interrupted");
+    assert_eq!(saved["deferred_novelty_recheck"]["performed_checks"],0);
+    assert_eq!(saved["deferred_novelty_recheck"]["pending_checks"],5);
+    assert_eq!(saved["endpoint_search"],program["endpoint_search"]);
+    assert_eq!(saved["baseline"],program["baseline"]);
+    for (id,receipt) in program["endpoint_novelty"].as_object().unwrap() {
+        assert_eq!(saved["endpoint_novelty"][id]["initial_check"],receipt["initial_check"]);
+    }
+    fields["program_json"]=interrupted["callback_params"]["program_json"].clone();
+    if let Ok(path)=std::env::var("FORESIGHT_INTERRUPTED_FIXTURE") {
+        let mut envelope=capture.clone();
+        envelope["fields"]=fields.clone();
+        envelope["status"]=json!("Choosing");
+        envelope["provenance"]=json!("Captured pass17 inputs replayed through actual WASM with a synthetic live clock; no live run resumed");
+        std::fs::write(path,envelope.to_string()).unwrap();
+    }
+    let terminal=invoke(&engine,"semantic_step",&fields,&json!({})).await;
+    assert_eq!(terminal["callback_action"],"Fail");
+    assert!(terminal["callback_params"]["error_message"].as_str().unwrap().contains("max_tokens_exceeded"));
+}

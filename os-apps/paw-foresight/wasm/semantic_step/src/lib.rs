@@ -731,6 +731,13 @@ fn step(ctx: &Context) -> Result<(), String> {
         );
         return Ok(());
     }
+    // A blocking provider failure cannot be repaired by scheduling a different
+    // audit and then marking its missing results examined. Keep the real cause.
+    if core::endpoints::enabled(&program) && program["stage"] != "worlds" && matches!(core::field(&program,"stop_reason"),"provider_error"|"trace_budget") {
+        let detail = trace.as_array().and_then(|items| items.iter().rev().find_map(|entry|entry["error"].as_str())).unwrap_or(core::field(&program,"stop_reason"));
+        set_success_result("Fail", &json!({"error_message":format!("Mandatory evaluation stopped: {detail}. Saved proposals, evidence and completed judgments are preserved; remaining checks were not performed.")}));
+        return Ok(());
+    }
     if program["stage"] == "worlds"
         && let Some(mut audit) = core::search::pending_world_set_audit(
             &program,

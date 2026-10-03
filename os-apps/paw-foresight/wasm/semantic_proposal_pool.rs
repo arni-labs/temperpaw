@@ -753,7 +753,7 @@ fn pending_novelty_endpoints(snapshot: &Value, program: &Value) -> Result<Vec<Va
         let id = field(endpoint,"id");
         let receipt = &program["endpoint_novelty"][id];
         let prior = if receipt["final_check"].is_object() { &receipt["final_check"] } else { &receipt["initial_check"] };
-        if receipt["status"] == "provisional" || (receipt["status"] == "passed" && request(&current,&json!({"function":"check_proposal_change","endpoint_id":id}))? != prior["request"]) {
+        if receipt["status"] == "provisional" || (program["deferred_novelty_recheck"]["status"] == "interrupted" && receipt["final_check"].is_object() && prior["result"].is_null()) || (receipt["status"] == "passed" && request(&current,&json!({"function":"check_proposal_change","endpoint_id":id}))? != prior["request"]) {
             pending.push(endpoint.clone());
         }
     }
@@ -783,6 +783,10 @@ pub fn defer_before_composition(
         return Ok(false);
     }
     let pending = pending_novelty_endpoints(snapshot,p)?;
+    if matches!(field(p,"stop_reason"),"provider_error"|"trace_budget") {
+        p["deferred_novelty_recheck"] = json!({"status":"not_admitted","error":format!("Current comparisons were not scheduled because {} stopped admitted work",field(p,"stop_reason"))});
+        return Ok(false);
+    }
     for endpoint in &pending {
         let id = field(endpoint,"id");
         if p["endpoint_novelty"][id]["status"] == "passed" {
@@ -983,8 +987,10 @@ pub fn finish(
             && result.is_string();
         checks.push(json!({"task":t,"result":if recorded {result.clone()} else {Value::Null},"passed":recorded&&allowed(t,result),"evaluation":if recorded{eval.clone()}else{Value::Null},"request":request(&a,t)?}));
     }
+    let pending_checks = checks.iter().filter(|check| check["result"].is_null()).count();
+    let interrupted = a["pool_stage"] == "deferred" && pending_checks > 0;
     a["checks"] = json!(checks);
-    a["status"] = json!("examined");
+    a["status"] = json!(if interrupted {"unresolved"} else {"examined"});
     p["endpoint_proposal_history"]
         .as_array_mut()
         .ok_or("Missing pool history")?
@@ -998,7 +1004,18 @@ pub fn finish(
             p["endpoint_novelty"][id]["final_check"] = check.clone();
             p["endpoint_novelty"][id]["status"] = json!(if check["passed"] == true {"passed"} else if check["result"].is_null() || check["result"] == "unresolved" {"unresolved"} else {"rejected"});
         }
-        p["deferred_novelty_recheck"]["status"] = json!("completed");
+        p["deferred_novelty_recheck"]["status"] = json!(if interrupted {"interrupted"} else {"completed"});
+        p["deferred_novelty_recheck"]["performed_checks"] = json!(checks.len()-pending_checks);
+        p["deferred_novelty_recheck"]["pending_checks"] = json!(pending_checks);
+        if interrupted {
+            let reason = format!("Current comparison checks were interrupted by {}; missing judgments were not performed, not evaluated as uncertain",field(p,"stop_reason"));
+            p["deferred_novelty_recheck"]["reason"] = json!(reason);
+            for check in &checks {
+                if check["result"].is_null() {
+                    p["endpoint_novelty"][field(&check["task"],"endpoint_id")]["reason"] = json!(reason);
+                }
+            }
+        }
         p["stage"] = json!("exploration");
         p["proposal_pool"]["stage"] = json!("accepted");
         return Ok(());
@@ -1773,6 +1790,42 @@ mod tests {
         assert!(super::super::super::transition_limit(&fresh) < super::super::super::MAX_APP_TRANSITIONS);
         let pending = fresh.clone();
         let pending_fixture = pending.clone();
+        for completed_count in [0usize, 1] {
+            let mut interrupted = pending.clone();
+            let initial = interrupted["endpoint_novelty"].clone();
+            interrupted["stop_reason"] = json!("provider_error");
+            let first = interrupted["tasks"][0].clone();
+            if completed_count == 1 {
+                record(&mut interrupted, pass);
+                for task in interrupted["tasks"].as_array().unwrap().clone().into_iter().skip(1) {
+                    interrupted["results"][field(&task,"nodeId")][field(&task,"function")] = Value::Null;
+                    interrupted["evaluations"][field(&task,"nodeId")][field(&task,"function")] = Value::Null;
+                }
+            }
+            finish(&snapshot,&mut interrupted,false,true).unwrap();
+            assert_eq!(interrupted["deferred_novelty_recheck"]["status"],"interrupted");
+            assert_eq!(interrupted["deferred_novelty_recheck"]["performed_checks"],completed_count);
+            assert_eq!(interrupted["endpoint_proposal_attempt"]["status"],"unresolved");
+            for e in endpoints.as_array().unwrap() {
+                let eid=field(e,"id");
+                assert_eq!(interrupted["endpoint_novelty"][eid]["initial_check"],initial[eid]["initial_check"]);
+            }
+            if completed_count==1 { assert_eq!(interrupted["endpoint_novelty"][field(&first,"endpoint_id")]["status"],"passed"); }
+            assert_eq!(pending_novelty_endpoints(&snapshot,&interrupted).unwrap().len(),endpoints.as_array().unwrap().len()-completed_count);
+            let pending_cost=pending_novelty_checks(&snapshot,&interrupted).unwrap();
+            assert!(pending_cost<=endpoints.as_array().unwrap().len()-completed_count);
+            let mut resumed=interrupted.clone();
+            resumed["stop_reason"]=Value::Null;
+            assert!(defer_before_composition(&snapshot,&mut resumed,false).unwrap());
+            assert_eq!(resumed["tasks"].as_array().unwrap().len(),pending_cost);
+
+        }
+        let mut blocked = before.clone();
+        blocked["stop_reason"] = json!("provider_error");
+        let original_receipts=blocked["endpoint_novelty"].clone();
+        assert!(!defer_before_composition(&snapshot,&mut blocked,false).unwrap());
+        assert_eq!(blocked["deferred_novelty_recheck"]["status"],"not_admitted");
+        assert_eq!(blocked["endpoint_novelty"],original_receipts);
         record(&mut fresh, pass); // Deterministic Jev boundary; no accuracy claim.
         finish(&snapshot, &mut fresh, false, false).unwrap();
         assert_eq!(fresh["endpoint_novelty"][&id]["status"], "passed");

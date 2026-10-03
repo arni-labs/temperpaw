@@ -312,3 +312,122 @@ fn provider_contract_endpoint_model_and_question_are_bound_to_cache_identity() {
         assert_ne!(identity, fingerprint(&changed));
     }
 }
+
+#[test]
+#[ignore = "requires frozen pass17 food via FORESIGHT_BRIDGE_OVERFLOW_CAPTURE"]
+fn captured_bridge_overflow_request_replay() {
+    use sha2::{Digest, Sha256};
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_BRIDGE_OVERFLOW_CAPTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let snapshot: Value =
+        serde_json::from_str(record["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+    let mut program: Value =
+        serde_json::from_str(record["fields"]["program_json"].as_str().unwrap()).unwrap();
+    let trace: Value =
+        serde_json::from_str(record["fields"]["trace_json"].as_str().unwrap()).unwrap();
+    let failed = trace.as_array().unwrap().last().unwrap();
+    // finish_routes/deferred comparison mutated only these fields after the
+    // failed HTTP request. The recorded provider hash verifies this replay.
+    for endpoint in program["endpoint_search"]["endpoints"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if endpoint["id"] == "kitchens-cook-themselves" {
+            endpoint["status"] = json!("imagined");
+        }
+    }
+    let novelty = &mut program["endpoint_novelty"]["kitchens-cook-themselves"];
+    novelty["status"] = json!("passed");
+    novelty["final_check"] = Value::Null;
+    novelty.as_object_mut().unwrap().remove("reason");
+    program["tasks"] = json!([failed["task"]]);
+    program["cursor"] = json!(0);
+    let batch = super::super::super::batch::prepare(&snapshot, &program, 1).unwrap();
+    let raw = batch.request.to_string();
+    let legacy: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_BRIDGE_LEGACY_REQUEST").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let old_raw = legacy["request"].to_string();
+    assert_eq!(old_raw.len(), 90961);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(old_raw.as_bytes())),
+        "13edef59bdecdeb9925c61199d11d7b1bafd6eae8d3bb98367bdb3268c3c97ae"
+    );
+    let old = &legacy["individual"]["state"];
+    let new = &batch.individual[0]["state"];
+    for key in [
+        "definitions",
+        "bridge",
+        "branch_state",
+        "ancestor_mechanisms",
+        "root_connections",
+        "declared_dependencies",
+        "baseline",
+        "source_evidence",
+        "event_qualifications",
+        "snapshot_branches",
+        "route_context_extensions",
+    ] {
+        assert_eq!(new[key], old[key], "lost semantic field {key}");
+    }
+    for (role, old_field) in [
+        ("direct_prerequisite_ids", "prerequisite_events"),
+        ("ancestor_ids", "ancestor_events"),
+        ("unassigned_route_event_ids", "unassigned_route_events"),
+    ] {
+        let ids: Vec<_> = old[old_field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| n["Id"].clone())
+            .collect();
+        assert_eq!(new["event_roles"][role], json!(ids));
+    }
+    assert_eq!(new["event_roles"]["target_id"], old["target_event"]["Id"]);
+    for (id, prior) in old["prerequisite_judgments"].as_object().unwrap() {
+        let current = &new["prerequisite_judgments"][id];
+        assert_eq!(current["normalized"], prior["normalized"]);
+        for (function, evaluation) in prior["evaluations"].as_object().unwrap() {
+            assert_eq!(
+                current["evaluations"][function]["answer"],
+                evaluation["answer"]
+            );
+            assert_eq!(
+                current["evaluations"][function]["selected"],
+                evaluation["selected"]
+            );
+            for key in ["evidence_ids", "branch_state", "probability_comparison"] {
+                assert_eq!(
+                    current["evaluations"][function]["context"][key],
+                    evaluation["context"][key]
+                );
+            }
+        }
+    }
+    assert!(raw.len() < old_raw.len());
+    eprintln!(
+        "exact failed request {} -> {} bytes",
+        old_raw.len(),
+        raw.len()
+    );
+    if let Ok(path) = std::env::var("FORESIGHT_BRIDGE_OVERFLOW_OUTPUT") {
+        std::fs::write(path,serde_json::to_vec(&json!({"request":batch.request,"individual":batch.individual[0],"task":failed["task"]})).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn prior_outcome_projection_preserves_unknown_context_and_raw_decisions() {
+    let original = json!({"answer":{"choice":"plausible","probabilities":{"plausible":0.59}},"selected":"uncertain","future_semantic_field":"preserve","context":{"task":{"nodeId":"execution-address"},"round":4,"evidence_ids":["contrary-source"],"branch_state":{"condition":"not all"},"unknown_qualification":"only independently observed trials"}});
+    let projected = outcome_context(original.clone());
+    assert_eq!(projected["answer"], original["answer"]);
+    assert_eq!(projected["selected"], "uncertain");
+    assert_eq!(projected["future_semantic_field"], "preserve");
+    for key in ["evidence_ids", "branch_state", "unknown_qualification"] {
+        assert_eq!(projected["context"][key], original["context"][key]);
+    }
+    assert!(projected["context"].get("task").is_none());
+    assert!(projected["context"].get("round").is_none());
+}

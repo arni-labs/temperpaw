@@ -105,6 +105,33 @@ fn semantic_branch(mut branch: Value) -> Value {
     }
     branch
 }
+// These fields locate execution receipts, not the prior judgment's premises.
+// Evidence IDs, branch state, probability qualifications and unknown context
+// fields remain present even when repeated.
+fn outcome_context(mut evaluation: Value) -> Value {
+    if let Some(context) = evaluation["context"].as_object_mut() {
+        for key in [
+            "round",
+            "world_revision",
+            "world_pass",
+            "task",
+            "audit_input_fingerprint",
+            "prerequisite_input_fingerprint",
+            "shared_bridge_reuse",
+        ] {
+            context.remove(key);
+        }
+    }
+    evaluation
+}
+fn outcomes(mut evaluations: Value) -> Value {
+    if let Some(values) = evaluations.as_object_mut() {
+        for evaluation in values.values_mut() {
+            *evaluation = outcome_context(evaluation.clone());
+        }
+    }
+    evaluations
+}
 pub fn project_request(
     snapshot: &Value,
     program: &Value,
@@ -194,16 +221,25 @@ pub fn project_request(
         dependencies
             .push(json!({"original":original,"amendments":amendments,"novelty_admission":novelty}));
     }
-    let judgments:Value=ids.iter().map(|id| (id.clone(),json!({"normalized":program["results"][id],"evaluations":program["evaluations"][id]}))).collect();
+    let judgments:Value=ids.iter().map(|id| (id.clone(),json!({"normalized":program["results"][id],"evaluations":outcomes(program["evaluations"][id].clone())}))).collect();
     // Start from the complete structural state: future unknown fields survive.
     let mut local = state.clone();
     local
         .as_object_mut()
         .unwrap()
         .remove("previous_world_judgments");
-    local["assessment_contract"] = json!("shared_bridge_v1");
+    local["assessment_contract"] = json!("shared_bridge_v2");
+    local["event_roles"] = json!({"direct_prerequisite_ids":bridge["from_ids"],"target_id":bridge["to_id"],"ancestor_ids":state["ancestor_events"].as_array().into_iter().flatten().map(|node|node["Id"].clone()).collect::<Vec<_>>(),"unassigned_route_event_ids":state["unassigned_route_events"].as_array().into_iter().flatten().map(|node|node["Id"].clone()).collect::<Vec<_>>()});
+    for key in [
+        "link",
+        "prerequisite_events",
+        "ancestor_events",
+        "target_event",
+        "unassigned_route_events",
+    ] {
+        local.as_object_mut().unwrap().remove(key);
+    }
     local["bridge"] = bridge.clone();
-    local["link"] = bridge.clone();
     local["branch_state"] = semantic_branch(state["branch_state"].clone());
     let world = nodes
         .iter()
@@ -261,10 +297,9 @@ pub fn project_request(
     local["declared_dependencies"] = json!(dependencies);
     local["prerequisite_judgments"] = judgments;
     local["snapshot_branches"] = snapshot["branches"].clone();
-    local["world"]["bridge_assumptions"] = bridge["assumptions"].clone();
     request["state"] = local;
     request["questions"]["result"]["instructions"] = json!(format!(
-        "{} This is shared_bridge_v1: assess only this bridge under its explicit ancestor state and assumptions. Declared endpoint originals and amendments preserve scope, not events assumed to have happened; do not condition on downstream outcomes. Event qualifications preserve signed branch restrictions. Prior raw and normalized judgments are model assessments, not source evidence. Different containing routes do not create independent confirmation.",
+        "{} This is shared_bridge_v2: definitions contains each exact event once; event_roles identifies direct prerequisites, ancestors, unassigned alternatives and target by their event IDs. Assess only this bridge under its explicit ancestor state and assumptions. Declared endpoint originals and amendments preserve scope, not events assumed to have happened; do not condition on downstream outcomes. Event qualifications preserve signed branch restrictions. Prior raw and normalized judgments are model assessments, not source evidence. Different containing routes do not create independent confirmation.",
         field(&request["questions"]["result"], "instructions")
     ));
     Ok(())
@@ -277,7 +312,10 @@ fn fingerprint_for(
     endpoint: &str,
     contract: &str,
 ) -> Option<String> {
-    if request["state"]["assessment_contract"] != "shared_bridge_v1" {
+    if !matches!(
+        request["state"]["assessment_contract"].as_str(),
+        Some("shared_bridge_v1" | "shared_bridge_v2")
+    ) {
         return None;
     }
     use sha2::{Digest, Sha256};

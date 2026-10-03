@@ -11,15 +11,17 @@ pub struct Batch {
 impl Batch {
     pub fn question_key(&self, index: usize) -> String {
         if self.request["questions"].get("q0").is_some() {
-            let canonical =
-                if self.individual[index]["state"]["assessment_contract"] == "shared_bridge_v1" {
-                    self.individual[..=index]
-                        .iter()
-                        .position(|request| request == &self.individual[index])
-                        .unwrap()
-                } else {
-                    index
-                };
+            let canonical = if matches!(
+                self.individual[index]["state"]["assessment_contract"].as_str(),
+                Some("shared_bridge_v1" | "shared_bridge_v2")
+            ) {
+                self.individual[..=index]
+                    .iter()
+                    .position(|request| request == &self.individual[index])
+                    .unwrap()
+            } else {
+                index
+            };
             format!("q{canonical}")
         } else {
             "result".into()
@@ -161,11 +163,13 @@ fn prepare_raw(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         {
             break;
         }
-        if individual["state"]["assessment_contract"] == "shared_bridge_v1"
-            && batch
-                .individual
-                .iter()
-                .any(|existing| existing == &individual)
+        if matches!(
+            individual["state"]["assessment_contract"].as_str(),
+            Some("shared_bridge_v1" | "shared_bridge_v2")
+        ) && batch
+            .individual
+            .iter()
+            .any(|existing| existing == &individual)
         {
             batch.tasks.push(task.clone());
             batch.individual.push(individual);
