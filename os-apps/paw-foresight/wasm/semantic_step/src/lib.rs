@@ -291,6 +291,55 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
     )
 }
 
+// Preserve why checks stopped separately from the judgments they would have produced.
+fn proposal_resource_reason(program: &Value, calls: usize, elapsed: u64) -> Option<&'static str> {
+    match core::field(program, "stop_reason") {
+        "trace_budget" => return Some("trace_budget"),
+        "provider_error" => return Some("provider_error"),
+        "time_budget" => return Some("time_budget"),
+        "call_budget" => return Some("call_budget"),
+        "transition_budget" => return Some("transition_budget"),
+        _ => {}
+    }
+    if calls >= core::call_limit(program) {
+        Some("call_budget")
+    } else if elapsed >= core::time_limit(program) {
+        Some("time_budget")
+    } else {
+        None
+    }
+}
+
+fn proposal_resource_message(program: &Value, reason: &str) -> String {
+    let limit = match reason {
+        "time_budget" => "the research time limit reserved for reconstruction and final writing",
+        "call_budget" => "the reserved evaluation-call limit",
+        "transition_budget" => "the reserved execution-step limit",
+        "trace_budget" => "the saved-evaluation size limit",
+        "provider_error" => "a provider failure",
+        _ => "a resource limit",
+    };
+    let checks = program["endpoint_proposal_attempt"]["checks"].as_array();
+    let planned = program["endpoint_proposal_attempt"]["tasks"]
+        .as_array()
+        .map_or(0, Vec::len);
+    let completed = checks
+        .into_iter()
+        .flatten()
+        .filter(|c| !c["evaluation"].is_null())
+        .count();
+    format!(
+        "Candidate comparison stopped because of {limit} ({reason}). {completed} of {planned} proposal checks were completed. Unevaluated checks are not failed novelty judgments. Saved research and comparison receipts are preserved; no endpoint was accepted and no whole-world estimates were made."
+    )
+}
+
+fn proposal_terminal_message(program: &Value) -> String {
+    if let Some(reason) = proposal_resource_reason(program, 0, 0) {
+        proposal_resource_message(program, reason)
+    } else {
+        "Endpoint proposal quality unresolved: the bounded search did not produce sufficiently distinct consequential worlds. No endpoint was accepted and no whole-world estimates were made.".into()
+    }
+}
 fn step(ctx: &Context) -> Result<(), String> {
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -353,7 +402,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         } else {
             set_success_result(
                 "Fail",
-                &json!({"error_message":"Candidate comparison remains incomplete: insufficient reserved budget for analogue research, checks and connected-world reconstruction. No endpoints were frozen."}),
+                &json!({"error_message":proposal_resource_message(&program, proposal_resource_reason(&program, calls, elapsed).unwrap_or(if elapsed >= core::time_limit(&program).saturating_sub(120_000) {"time_budget"} else {"transition_budget"}))}),
             );
         }
         return Ok(());
@@ -365,7 +414,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         if program["endpoint_proposal_attempt"]["status"] == "unresolved" {
             set_success_result(
                 "Fail",
-                &json!({"error_message":"Endpoint proposal quality unresolved: the bounded search did not produce sufficiently distinct consequential worlds. No endpoint was accepted and no whole-world estimates were made."}),
+                &json!({"error_message":proposal_terminal_message(&program)}),
             );
             return Ok(());
         }
@@ -385,6 +434,9 @@ fn step(ctx: &Context) -> Result<(), String> {
             core::transition_limit(&program).saturating_sub(core::transition_count(&program));
         let resource_exhausted =
             stopped || calls >= core::call_limit(&program) || elapsed >= core::time_limit(&program);
+        if let Some(reason) = proposal_resource_reason(&program, calls, elapsed) {
+            program["stop_reason"] = json!(reason);
+        }
         let retry = !resource_exhausted
             && remaining >= core::REASONING_ADMISSION_RESERVE + 16
             && elapsed < core::time_limit(&program).saturating_sub(120_000);
@@ -401,7 +453,7 @@ fn step(ctx: &Context) -> Result<(), String> {
         } else {
             core::proposals::finish(&mut program, retry, resource_exhausted)?;
         }
-        if program["endpoint_proposal_attempt"]["status"] == "unresolved" {
+        if program["endpoint_proposal_attempt"]["status"] == "unresolved" && !resource_exhausted {
             program["stop_reason"] = json!("endpoint_proposal_quality");
         }
         // Publish the exact receipt before any next generation or terminal failure.
@@ -1014,5 +1066,36 @@ mod tests {
         program["world_revision"] = json!(3);
         assert_eq!(next_phase(&snapshot, &mut program, 40, 2000), "synthesize");
         assert_eq!(program["stop_reason"], "world_audits_unresolved");
+    }
+}
+
+#[cfg(test)]
+mod proposal_stop_tests {
+    use super::*;
+    #[test]
+    fn reserved_deadline_is_not_a_novelty_judgment() {
+        let mut p = json!({"stage":"proposals","endpoint_proposal_attempt":{"tasks":vec![json!({});33],"checks":vec![json!({"evaluation":null});33]}});
+        assert_eq!(proposal_resource_reason(&p, 0, 2_999_999), None);
+        assert_eq!(
+            proposal_resource_reason(&p, 0, 3_000_000),
+            Some("time_budget")
+        );
+        p["stop_reason"] = json!("time_budget");
+        let message = proposal_terminal_message(&p);
+        assert!(message.contains("0 of 33"));
+        assert!(message.contains("time_budget"));
+        assert!(!message.contains("insufficiently distinct"));
+        assert!(!message.contains("did not produce sufficiently distinct"));
+        for reason in [
+            "call_budget",
+            "transition_budget",
+            "trace_budget",
+            "provider_error",
+        ] {
+            p["stop_reason"] = json!(reason);
+            assert!(proposal_terminal_message(&p).contains(reason));
+        }
+        p["stop_reason"] = json!("endpoint_proposal_quality");
+        assert!(proposal_terminal_message(&p).contains("Endpoint proposal quality unresolved"));
     }
 }
