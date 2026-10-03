@@ -58,11 +58,13 @@ pub fn finish_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
 pub fn research_admission(program: &Value, phase: &str, elapsed_ms: u64) -> Value {
     // The native idle allowance is a conservative first-sample planning estimate,
     // not an upper bound: progressing children may take longer.
-    let observed = program["reasoning_durations_ms"][phase].as_u64().filter(|v| *v > 0);
+    let observed = program["reasoning_durations_ms"][phase]
+        .as_u64()
+        .filter(|v| *v > 0);
     let predicted = observed.unwrap_or(900_000);
     let completion_deadline = time_limit(program);
     let required = predicted.saturating_add(ENDPOINT_EVALUATION_DRAIN_MS);
-    json!({"admitted":elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
+    json!({"admitted":!(program["route_finalization"]["admitted"] == true && phase != "compose" && phase != "synthesize") && elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
 }
 pub fn research_time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
@@ -349,9 +351,16 @@ pub fn transition_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 pub fn transition_limit(program: &Value) -> u64 {
+    if program["route_finalization"]["admitted"] == true
+        && matches!(program["stage"].as_str(), Some("routes" | "exploration"))
+    {
+        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+    }
     // Deferred novelty is finalization work after route exploration, not a new
     // initial proposal search. Keep composition/writing and their tail reserved.
-    if program["stage"] == "proposals" && program["endpoint_proposal_attempt"]["pool_stage"] == "deferred" {
+    if program["stage"] == "proposals"
+        && program["endpoint_proposal_attempt"]["pool_stage"] == "deferred"
+    {
         return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
     }
     if endpoints::enabled(program) && program["stage"] == "exploration" {

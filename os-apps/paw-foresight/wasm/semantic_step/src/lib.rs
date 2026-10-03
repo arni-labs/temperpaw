@@ -74,6 +74,7 @@ fn next_phase(
         let remaining = core::transition_limit(&json!({"stage":"routes"}))
             .saturating_sub(core::transition_count(program));
         let allowed = exhausted.is_empty()
+            && program["route_finalization"]["admitted"] != true
             && remaining >= core::REASONING_ADMISSION_RESERVE + 16
             && core::research_admission(program, "backward", elapsed_ms)["admitted"] == true;
         program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_ADMISSION_RESERVE+16,"alternative_required":needs_alternative,"time_admission":core::research_admission(program, "backward", elapsed_ms)});
@@ -374,8 +375,81 @@ fn proposal_terminal_message(program: &Value) -> String {
         "Endpoint proposal quality unresolved: the bounded search did not produce sufficiently distinct consequential worlds. No endpoint was accepted and no whole-world estimates were made.".into()
     }
 }
-fn pending_assessment(program: &Value, cursor: usize, count: usize, calls: usize, elapsed: u64, stopped: bool) -> bool {
-    cursor < count && calls < core::call_limit(program) && elapsed < core::time_limit(program) && !stopped
+fn pending_assessment(
+    program: &Value,
+    cursor: usize,
+    count: usize,
+    calls: usize,
+    elapsed: u64,
+    stopped: bool,
+) -> bool {
+    cursor < count
+        && calls < core::call_limit(program)
+        && elapsed < core::time_limit(program)
+        && !stopped
+}
+
+// Finish accepted path work only when its actual packed workload and the
+// current present-comparison checks both fit before the protected writer tail.
+fn admit_route_finalization(
+    snapshot: &Value,
+    program: &mut Value,
+    calls: usize,
+    elapsed: u64,
+) -> Result<bool, String> {
+    if program["stage"] != "routes"
+        || !core::endpoints::enabled(program)
+        || program["route_finalization"].is_object()
+        || elapsed >= core::time_limit(program)
+        || matches!(
+            core::field(program, "stop_reason"),
+            "provider_error" | "trace_budget" | "time_budget" | "call_budget"
+        )
+    {
+        return Ok(false);
+    }
+    let mut scratch = program.clone();
+    let count = scratch["tasks"]
+        .as_array()
+        .ok_or("Missing route tasks")?
+        .len();
+    let start = scratch["cursor"].as_u64().ok_or("Missing route cursor")? as usize;
+    if calls.saturating_add(count.saturating_sub(start)) >= core::call_limit(program) {
+        return Ok(false);
+    }
+    let mut cursor = start;
+    let mut batches = 0u64;
+    while cursor < count {
+        scratch["cursor"] = json!(cursor);
+        let batch = core::batch::prepare(snapshot, &scratch, count - cursor)?;
+        if batch.tasks.is_empty() {
+            return Err("Route finalization cannot pack pending work".into());
+        }
+        cursor += batch.tasks.len();
+        batches += 1;
+    }
+    let mut novelty = program.clone();
+    core::proposals::pool::defer_before_composition(snapshot, &mut novelty, false)?;
+    let novelty_cost = if novelty["deferred_novelty_recheck"] != program["deferred_novelty_recheck"]
+    {
+        novelty["deferred_novelty_recheck"]["required_transitions"]
+            .as_u64()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let required = batches
+        .saturating_mul(2)
+        .saturating_add(novelty_cost)
+        .saturating_add(4);
+    let limit = core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32;
+    let remaining = limit.saturating_sub(core::transition_count(program));
+    let admitted = required <= remaining;
+    program["route_finalization"] = json!({"admitted":admitted,"pending_checks":count.saturating_sub(start),"estimated_batches":batches,"novelty_transitions":novelty_cost,"handoff_transitions":4,"required_transitions":required,"remaining_transitions":remaining,"transition_limit":limit,"prior_stop_reason":program["stop_reason"],"new_research_allowed":false});
+    if admitted && program["stop_reason"] == "transition_budget" {
+        program.as_object_mut().unwrap().remove("stop_reason");
+    }
+    Ok(admitted)
 }
 
 fn step(ctx: &Context) -> Result<(), String> {
@@ -383,9 +457,6 @@ fn step(ctx: &Context) -> Result<(), String> {
     let trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
 
     program["transition_count"] = json!(core::transition_count(&ctx.entity_state));
-    if core::transition_count(&ctx.entity_state) >= core::transition_limit(&program) {
-        program["stop_reason"] = json!("transition_budget");
-    }
     core::skip_nonfuture_tasks(&mut program)?;
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let started = core::field(&ctx.entity_state, "started_at_ms")
@@ -397,13 +468,18 @@ fn step(ctx: &Context) -> Result<(), String> {
     if trace.to_string().len().saturating_add(192 * 1024) > core::MAX_TRACE_BYTES {
         program["stop_reason"] = json!("trace_budget");
     }
+    let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    if core::transition_count(&ctx.entity_state) >= core::transition_limit(&program)
+        && !admit_route_finalization(&snapshot, &mut program, calls, elapsed)?
+    {
+        program["stop_reason"] = json!("transition_budget");
+    }
     let stopped = matches!(
         program["stop_reason"].as_str(),
         Some(
             "trace_budget" | "provider_error" | "time_budget" | "call_budget" | "transition_budget"
         )
     );
-    let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     if program["scope_repair"]["status"] == "pending" {
         let remaining = core::transition_limit(&program)
             .saturating_sub(core::transition_count(&ctx.entity_state));
@@ -730,6 +806,67 @@ mod tests {
         program["stop_reason"] = json!("checking_combinations");
         next_phase(&snapshot, &mut program, 112, 1100);
         assert_eq!(program["exploration_admission"], receipt);
+    }
+
+    #[test]
+    fn captured_food_route_tail_and_current_novelty_fit_reserved_finalization() {
+        let capture: Value = serde_json::from_str(include_str!(
+            "../../semantic_route_finalization_fixture.json"
+        ))
+        .unwrap();
+        let snapshot = &capture["snapshot"];
+        let mut program = capture["program"].clone();
+        // Undo only the captured terminal decision, preserving actual route
+        // tasks, cursor, source evidence, statements and previous check requests.
+        program
+            .as_object_mut()
+            .unwrap()
+            .remove("deferred_novelty_recheck");
+        for receipt in program["endpoint_novelty"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            receipt["status"] = json!("passed");
+            receipt.as_object_mut().unwrap().remove("reason");
+        }
+        let before = program.clone();
+        assert_eq!(program["cursor"], 104);
+        assert_eq!(program["tasks"].as_array().unwrap().len(), 116);
+        assert!(admit_route_finalization(snapshot, &mut program, 357, 2_500_483).unwrap());
+        let receipt = &program["route_finalization"];
+        assert_eq!(receipt["estimated_batches"], 9);
+        assert_eq!(receipt["novelty_transitions"], 4);
+        assert_eq!(receipt["required_transitions"], 26);
+        assert_eq!(receipt["remaining_transitions"], 32);
+        assert_eq!(core::transition_limit(&program), 360);
+        assert_eq!(
+            core::research_admission(&program, "backward", 1000)["admitted"],
+            false
+        );
+        assert_eq!(
+            core::research_admission(&program, "explore", 1000)["admitted"],
+            false
+        );
+        assert!(pending_assessment(
+            &program, 104, 116, 357, 2_500_483, false
+        ));
+        assert_eq!(program["results"], before["results"]);
+        assert_eq!(program["endpoint_novelty"], before["endpoint_novelty"]);
+        assert_eq!(program["tasks"], before["tasks"]);
+        assert_eq!(program["cursor"], before["cursor"]);
+        let mut insufficient = before.clone();
+        insufficient["transition_count"] = json!(335);
+        assert!(!admit_route_finalization(snapshot, &mut insufficient, 357, 2_500_483).unwrap());
+        assert_eq!(
+            insufficient["route_finalization"]["remaining_transitions"],
+            25
+        );
+        let mut expired = before.clone();
+        assert!(!admit_route_finalization(snapshot, &mut expired, 357, core::MAX_MS).unwrap());
+        let mut denied = before;
+        denied["stop_reason"] = json!("provider_error");
+        assert!(!admit_route_finalization(snapshot, &mut denied, 357, 2_500_483).unwrap());
     }
 
     #[test]

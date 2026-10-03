@@ -799,6 +799,14 @@ fn assemble_baseline_delta(generated: &Value, old: &Value) -> Result<Value, Stri
     if replacements.len() > 16 || additions.len() > 16 {
         return Err("baseline_delta lists must contain at most 16 entries".into());
     }
+    for (i, observation) in additions.iter().enumerate() {
+        bounded_text(&observation["claim"], 400, &format!("baseline_delta.additions[{i}].claim"))?;
+    }
+    for (i, edit) in replacements.iter().enumerate() {
+        for (j, observation) in edit["observations"].as_array().into_iter().flatten().enumerate() {
+            bounded_text(&observation["claim"], 400, &format!("baseline_delta.replacements[{i}].observations[{j}].claim"))?;
+        }
+    }
     let mut edits = std::collections::BTreeMap::new();
     for edit in replacements {
         let index = usize::try_from(
@@ -1344,6 +1352,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "endpoint_proposal_contract",
         "endpoint_novelty",
         "deferred_novelty_recheck",
+        "route_finalization",
         "reasoning_timing",
         "reasoning_durations_ms",
         "proposal_pool",
@@ -1731,6 +1740,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "endpoint_proposal_contract",
         "endpoint_novelty",
         "deferred_novelty_recheck",
+        "route_finalization",
         "reasoning_timing",
         "reasoning_durations_ms",
         "proposal_pool",
@@ -2416,6 +2426,15 @@ mod tests {
         let snapshot = json!({"world":{"description":"Question","last_ingest_date":"2026-10-01","evidence_contract":"v1"},"nodes":[{"Id":"e","kind":"research_evidence","evidence_metadata":{"kind":"finding","publication_date":"2026","observation_period":{"start":null,"end":null},"retrieved_at":null}}],"branches":[]});
         let old = json!({"round":0,"baseline":{"as_of":"2026-10-01","observed":(0..16).map(|i|json!({"claim":format!("Prior {i}"),"evidence_ids":["e"]})).collect::<Vec<_>>(),"assumptions":[],"unknowns":[]},"scope_review":{"requested_question":"Question","evidence_scope":"Supplied sources","status":"aligned","narrowing_basis":"none","limitations":[]}});
         let reply = json!({"research_evidence":[{"id":"new","evidence_metadata":{"kind":"finding"}}],"baseline_delta":{"replacements":[{"prior_observation_index":14,"observations":[{"claim":"Counterevidence changes this observation","evidence_ids":["e"]}],"reason":"Explicit correction","evidence_ids":["e"]},{"prior_observation_index":15,"observations":[],"reason":"Source retracts claim","evidence_ids":["e"]}],"additions":[{"claim":"New observation","evidence_ids":["e"]}]}});
+        let mut overlong=reply.clone();
+        overlong["baseline_delta"]["replacements"][0]["observations"][0]["claim"]=json!("GDC's 2026 survey of over 2,300 people reports AI use: 36% overall, 30% at studios, 58% elsewhere; 52% view it negatively. Uses include ideas, emails, code and prototypes. Unreal/Unity lead at 42%/30%; 28% work on Steam Deck. Layoffs affected 28% in two years; half report employer cuts in one, more at large studios. These are self-reports, not measured gains, causes or global shares; dates are unknown.");
+        let error=refresh_researched_baseline(&snapshot,&snapshot,&overlong,&old).unwrap_err();
+        assert!(error.contains("baseline_delta.replacements[0].observations[0].claim"));
+        assert!(error.contains("received 405 characters"));
+        let corrected="GDC's 2026 survey of over 2,300 people reports AI use: 36% overall, 30% at studios, 58% elsewhere; 52% view it negatively. Uses include ideas, emails, code and prototypes. Unreal/Unity lead at 42%/30%; 28% work on Steam Deck. Layoffs affected 28% in two years; half report employer cuts in one, more at large studios. These are self-reports, not measured gains, causes or global shares; dates are unknown.".replace("over 2,300", "2,300").replace("overall", "total");
+        overlong["baseline_delta"]["replacements"][0]["observations"][0]["claim"]=json!(corrected);
+        let corrected_receipt=refresh_researched_baseline(&snapshot,&snapshot,&overlong,&old).unwrap().unwrap();
+        assert_eq!(corrected_receipt["baseline"]["observed"][14]["evidence_ids"],reply["baseline_delta"]["replacements"][0]["observations"][0]["evidence_ids"]);
         let receipt = refresh_researched_baseline(&snapshot, &snapshot, &reply, &old).unwrap().unwrap();
         assert_eq!(&receipt["baseline"]["observed"].as_array().unwrap()[..14], &old["baseline"]["observed"].as_array().unwrap()[..14]);
         assert_eq!(receipt["baseline"]["observed"].as_array().unwrap().len(),16);
@@ -3221,12 +3240,13 @@ mod tests {
         old["reasoning_durations_ms"] = json!({"backward":900000});
         old["endpoint_novelty"] = json!({"original":{"status":"provisional","initial_check":{"result":"unresolved"}}});
         old["deferred_novelty_recheck"] = json!({"status":"checking","required_transitions":4});
+        old["route_finalization"] = json!({"admitted":true,"required_transitions":26});
         let next = replan(&snapshot, &old, &json!({"hypotheses":[],"research_evidence":[],"continue_exploring":false,"exploration_note":"Preserved provisional route work"}), 0).unwrap();
-        for key in ["endpoint_novelty", "deferred_novelty_recheck", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(next[key], old[key]); }
+        for key in ["endpoint_novelty", "deferred_novelty_recheck", "route_finalization", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(next[key], old[key]); }
         // The replan requires fresh candidate checks before composition. Exercise
         // the separate composition reconstruction using its eligible fixture.
         let composed = compose(&mut snapshot, &generated, &old).unwrap();
-        for key in ["endpoint_novelty", "deferred_novelty_recheck", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(composed[key], old[key]); }
+        for key in ["endpoint_novelty", "deferred_novelty_recheck", "route_finalization", "reasoning_timing", "reasoning_durations_ms"] { assert_eq!(composed[key], old[key]); }
     }
 
     #[test]
