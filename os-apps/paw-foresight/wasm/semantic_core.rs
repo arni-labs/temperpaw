@@ -311,6 +311,11 @@ pub fn transition_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 pub fn transition_limit(program: &Value) -> u64 {
+    // Deferred novelty is finalization work after route exploration, not a new
+    // initial proposal search. Keep composition/writing and their tail reserved.
+    if program["stage"] == "proposals" && program["endpoint_proposal_attempt"]["pool_stage"] == "deferred" {
+        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+    }
     if endpoints::enabled(program) && program["stage"] == "exploration" {
         return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 64;
     }

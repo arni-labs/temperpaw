@@ -204,6 +204,7 @@ async fn structural_correction_is_tool_free_and_unknowns_reach_backward_and_writ
         "12"
     );
     program["response_correction"] = Value::Null;
+    program["endpoint_novelty"] = json!({a["endpoints"][0]["id"].as_str().unwrap():{"status":"provisional","initial_check":a["checks"][0]}});
     // Minimal composed world placeholders exercise the writer's actual input
     // projection; this does not assert these are evaluated live worlds.
     for id in ["writer-world-a", "writer-world-b"] {

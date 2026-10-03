@@ -504,14 +504,15 @@ fn schedule(
         }
     } else {
         for e in &candidates {
-            tasks.push(task(
+            if stage != "deferred" { tasks.push(task(
                 number,
                 "check_proposal_coverage",
                 field(e, "id"),
                 "",
                 0,
-            ));
+            )); }
             tasks.push(task(number, "check_proposal_change", field(e, "id"), "", 0));
+            if stage == "deferred" { continue; }
             for (i, _) in e["contrast"]["consequences"]
                 .as_array()
                 .into_iter()
@@ -569,6 +570,55 @@ fn schedule(
     Ok(p)
 }
 
+/// A provisional endpoint is explorable, never an accepted final world.
+pub fn novelty_passed(program: &Value, id: &str) -> bool {
+    (!program["endpoint_novelty"].is_object()
+        && program["endpoint_search"]["deferred_novelty_contract"] != 1)
+        || program["endpoint_novelty"][id]["status"] == "passed"
+}
+
+/// One change-only continuation after backward search. Only current source
+/// findings and the original comparison context enter the request, not routes.
+pub fn defer_before_composition(
+    snapshot: &Value,
+    p: &mut Value,
+    exhausted: bool,
+) -> Result<bool, String> {
+    if p["deferred_novelty_recheck"]["status"].is_string() {
+        return Ok(false);
+    }
+    let pending: Vec<_> = p["endpoint_search"]["endpoints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| p["endpoint_novelty"][field(e, "id")]["status"] == "provisional")
+        .cloned()
+        .collect();
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    let mut next = schedule(snapshot, p, pending.clone(), "deferred")?;
+    let cost = check_transitions(snapshot, &next)? + 2;
+    let remaining =
+        super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
+    let admitted = !exhausted && remaining >= cost + 2 * REASONING_ADMISSION_RESERVE + 32;
+    let admission = json!({"status":if admitted {"checking"} else {"not_admitted"},"required_transitions":cost,"remaining_transitions":remaining,"reserved_finalization":2 * REASONING_ADMISSION_RESERVE + 32});
+    if admitted {
+        next["deferred_novelty_recheck"] = admission;
+        *p = next;
+        Ok(true)
+    } else {
+        p["deferred_novelty_recheck"] = admission;
+        for e in pending {
+            p["endpoint_novelty"][field(&e, "id")]["status"] = json!("unresolved");
+            p["endpoint_novelty"][field(&e, "id")]["reason"] = json!(
+                "No admitted comparison recheck before finalization; provisional novelty remains unresolved."
+            );
+        }
+        Ok(false)
+    }
+}
+
 pub fn check_transitions(snapshot: &Value, program: &Value) -> Result<u64, String> {
     let mut scratch = program.clone();
     let count = scratch["tasks"]
@@ -611,7 +661,7 @@ pub fn request(attempt: &Value, t: &Value) -> Result<Value, String> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|n| n["evidence_metadata"]["kind"] == "finding")
+                .filter(|n| n["evidence_metadata"]["kind"] == "finding" && !evidence::is_projection(n))
                 .collect();
             (
                 json!({"baseline":attempt["baseline"],"analogue":e["contrast"]["present_analogue"],"frontier_challenge":e["contrast"]["frontier_challenge"],"source_evidence":sources,"defining_commitments":e["commitments"].as_array().into_iter().flatten().filter(|c|e["contrast"]["defining_commitment_ids"].as_array().is_some_and(|ids|ids.contains(&c["id"]))).collect::<Vec<_>>(),"consequences":e["contrast"]["consequences"]}),
@@ -676,6 +726,17 @@ pub fn finish(
     p["endpoint_proposal_attempt"] = a.clone();
     p["tasks"] = json!([]);
     p["cursor"] = json!(0);
+    if a["pool_stage"] == "deferred" {
+        for check in &checks {
+            let id = field(&check["task"], "endpoint_id");
+            p["endpoint_novelty"][id]["final_check"] = check.clone();
+            p["endpoint_novelty"][id]["status"] = json!(if check["passed"] == true {"passed"} else if check["result"].is_null() || check["result"] == "unresolved" {"unresolved"} else {"rejected"});
+        }
+        p["deferred_novelty_recheck"]["status"] = json!("completed");
+        p["stage"] = json!("exploration");
+        p["proposal_pool"]["stage"] = json!("accepted");
+        return Ok(());
+    }
     if exhausted {
         p["endpoint_proposal_attempt"]["status"] = json!("unresolved");
         return Ok(());
@@ -723,8 +784,8 @@ pub fn finish(
                     .filter(|e| selected.contains(&e["id"]))
                     .cloned()
                     .collect();
-                p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
-                p["endpoint_proposal_attempt"]["status"] = json!("accepted");
+                p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"deferred_novelty_contract":1,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
+                p["endpoint_proposal_attempt"]["status"] = json!(if selected.iter().all(|id| novelty_passed(p,id.as_str().unwrap_or(""))) {"accepted"} else {"examined"});
                 p["proposal_pool"]["stage"] = json!("accepted");
                 p["stage"] = json!("exploration");
             } else {
@@ -745,12 +806,18 @@ pub fn finish(
                     && checks
                         .iter()
                         .filter(|c| c["task"]["endpoint_id"] == e["id"])
-                        .all(|c| c["passed"] == true)
+                        .all(|c| c["passed"] == true || (c["task"]["function"] == "check_proposal_change" && c["result"] == "unresolved" && c["evaluation"]["type"] == "choice"))
             })
             .cloned()
             .collect();
         if a["pool_stage"] == "individual" {
-            p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
+            if !p["endpoint_novelty"].is_object() { p["endpoint_novelty"] = json!({}); }
+            for endpoint in &viable {
+                if let Some(check) = checks.iter().find(|c| c["task"]["endpoint_id"] == endpoint["id"] && c["task"]["function"] == "check_proposal_change") {
+                    p["endpoint_novelty"][field(endpoint,"id")] = json!({"status":if check["passed"] == true {"passed"} else {"provisional"},"initial_check":check});
+                }
+            }
+            p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]) && novelty_passed(p,field(e,"id")),"explorable":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
         }
         // Failed initial comparisons should trigger creative development, not
         // repeated research over unchanged arrangements. This is provisional:
@@ -819,7 +886,7 @@ pub fn finish(
             } else {
                 2
             };
-            let reserved_tail = reserve() + development_turns * REASONING_ADMISSION_RESERVE + 32;
+            let reserved_tail = reserve() + development_turns * REASONING_ADMISSION_RESERVE + 32 + 2 * candidates.len() as u64 + 2;
             paired["proposal_pool"]["pair_admission"] = json!({"remaining_transitions":remaining,"check_transitions":cost,"reserved_tail":reserved_tail,"admitted":remaining>=cost+reserved_tail});
             if remaining < cost + reserved_tail {
                 paired["endpoint_proposal_attempt"]["status"] = json!("unresolved");
@@ -921,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn source_forecasts_keep_their_qualifications_and_compact_eight_claims_fit() {
+    fn source_forecasts_stay_out_of_present_comparison_and_compact_eight_claims_fit() {
         let (mut snapshot, program) = pool();
         let mut report = snapshot["nodes"][0].clone();
         report["Id"] = json!("forecast-report");
@@ -946,11 +1013,12 @@ mod tests {
             .unwrap();
         let request = request(&next["endpoint_proposal_attempt"], task).unwrap();
         assert!(
-            request["state"]["source_evidence"]
+            !request["state"]["source_evidence"]
                 .as_array()
                 .unwrap()
                 .contains(&report)
         );
+        assert!(snapshot["nodes"].as_array().unwrap().contains(&report));
         assert!(
             request["questions"]["result"]["instructions"]
                 .as_str()
@@ -1033,6 +1101,70 @@ mod tests {
             .unwrap();
         assert_eq!(receipt["admissible"], false);
         assert_eq!(receipt["frontier_comparison_status"], "already_present");
+    }
+
+    #[test]
+    fn unresolved_change_gets_paths_then_current_evidence_recheck_without_erasing_routes() {
+        let (mut snapshot, mut p) = pool();
+        p["proposal_pool"]["development"] = json!({"status":"completed","originals":p["proposal_pool"]["candidates"],"developed":p["proposal_pool"]["candidates"]});
+        record(&mut p, |t| if t["function"] == "check_proposal_change" {"unresolved".into()} else {pass(t)});
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert_eq!(p["proposal_pool"]["stage"], "pairs");
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, false, false).unwrap();
+        let endpoints = p["endpoint_search"]["endpoints"].clone();
+        assert!(endpoints.as_array().unwrap().len() >= 3);
+        assert_eq!(p["endpoint_proposal_attempt"]["status"], "examined");
+        let id = field(&endpoints[0], "id").to_owned();
+        assert!(!novelty_passed(&p, &id));
+        // Stored graph data is not evidence of a present analogue and must not
+        // be rewritten by the deferred proposal continuation.
+        p["endpoint_search"]["routes"] = json!([{"id":"saved-route","endpoint_id":id,"commitment_id":endpoints[0]["commitments"][0]["id"],"component_ids":["new-hypothetical-step"],"target_component_id":"new-hypothetical-step","grounding_evidence_ids":[],"root_connections":[{"component_id":"new-hypothetical-step","evidence_ids":[],"mechanism":"","unresolved_question":"Which observed capability could support this imagined step?"}],"status":"unresolved","alternative_to":null,"amendment_id":null,"chain":[]}]);
+        let routes = p["endpoint_search"]["routes"].clone();
+        snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":"new-hypothetical-step","kind":"scenario","statement":"A proposed path could deliver the imagined capability"}));
+        let mut projection = snapshot["nodes"][0].clone();
+        projection["Id"] = json!("new-projection");
+        projection["claim_type"] = json!("source_projection");
+        snapshot["nodes"].as_array_mut().unwrap().push(projection);
+        let before = p.clone();
+        assert!(defer_before_composition(&snapshot, &mut p, false).unwrap());
+        assert!(p["tasks"].as_array().unwrap().is_empty(), "Hypothetical paths alone must reuse unresolved present comparison");
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert_eq!(p["endpoint_novelty"][&id]["status"], "unresolved");
+        assert_eq!(p["endpoint_search"]["routes"], routes);
+        assert!(!defer_before_composition(&snapshot, &mut p, false).unwrap(), "Only one bounded recheck");
+
+        let mut finding = snapshot["nodes"][0].clone();
+        finding["Id"] = json!("new-present-comparison");
+        finding["statement"] = json!("A retrieved current comparison clarifies which capability is already offered and which consequence remains absent from that inspected arrangement.");
+        snapshot["nodes"].as_array_mut().unwrap().push(finding.clone());
+        let mut fresh = before.clone();
+        assert!(defer_before_composition(&snapshot, &mut fresh, false).unwrap());
+        assert_eq!(fresh["tasks"].as_array().unwrap().len(), endpoints.as_array().unwrap().len());
+        let req = request(&fresh["endpoint_proposal_attempt"], &fresh["tasks"][0]).unwrap();
+        assert!(req["state"]["source_evidence"].as_array().unwrap().contains(&finding));
+        assert!(!req["state"]["source_evidence"].to_string().contains("new-hypothetical-step"));
+        assert!(super::super::super::transition_limit(&fresh) > super::super::super::transition_limit(&json!({"stage":"proposals"})));
+        assert!(super::super::super::transition_limit(&fresh) < super::super::super::MAX_APP_TRANSITIONS);
+        let pending = fresh.clone();
+        let pending_fixture = pending.clone();
+        record(&mut fresh, pass); // Deterministic Jev boundary; no accuracy claim.
+        finish(&snapshot, &mut fresh, false, false).unwrap();
+        assert_eq!(fresh["endpoint_novelty"][&id]["status"], "passed");
+        assert_eq!(fresh["endpoint_search"]["routes"], routes);
+        assert_eq!(fresh["endpoint_search"]["endpoints"], endpoints);
+        let mut rejected = pending;
+        record(&mut rejected, |_| "present_or_adoption_only".into());
+        finish(&snapshot, &mut rejected, false, false).unwrap();
+        assert_eq!(rejected["endpoint_novelty"][&id]["status"], "rejected");
+        let before_fixture = before.clone();
+        let mut no_budget = before;
+        assert!(!defer_before_composition(&snapshot, &mut no_budget, true).unwrap());
+        assert_eq!(no_budget["endpoint_novelty"][&id]["status"], "unresolved");
+        assert_eq!(no_budget["endpoint_search"]["routes"], routes);
+        if let Ok(path) = std::env::var("FORESIGHT_DEFERRED_FIXTURE") {
+            std::fs::write(path, serde_json::to_vec_pretty(&json!({"snapshot":snapshot,"provisional":before_fixture,"not_admitted":no_budget,"checking":pending_fixture,"passed":fresh,"rejected":rejected,"disclosure":"Native deterministic producer test receipts, not live Jev predictions. Stored route is an immutability sentinel, not a verified causal graph."})).unwrap()).unwrap();
+        }
     }
 
     #[test]

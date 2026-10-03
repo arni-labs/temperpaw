@@ -823,6 +823,7 @@ pub fn preserve_omitted_originals(program: &Value, generated: &mut Value) {
         if let Some(bundle) = program["composition_route_bundles"].as_array().into_iter().flatten()
             .find(|b| b["endpoint_id"] == endpoint["id"] && b["status"] != "compatible") {
             let reason = match field(bundle, "status") {
+                "novelty_unresolved" => "The present comparison remains unresolved or rejected after provisional reconstruction; original commitments and paths are preserved without a whole-world estimate.",
                 "incomplete" => "Some defining commitments still lack eligible routes; the original remains unresolved.",
                 "unexamined_limit" => "The bounded route search has not established a compatible set of paths. It has not shown that this future is impossible.",
                 _ if field(bundle, "reason").contains("nondecreasing") => "The stored route deadlines do not establish a consistent order across all commitments. The path needs explicit timing refinement; this does not show that the future is impossible.",
@@ -877,6 +878,7 @@ pub fn assemble_composition(program: &Value, generated: &mut Value) -> Result<()
         .ok_or("Missing reconstructed worlds")?;
     for world in worlds {
         let original = endpoint(program, field(world, "endpoint_id"))?;
+        if !super::proposals::pool::novelty_passed(program, field(original,"id")) { return Err("A provisional or rejected present comparison cannot become a final accepted world".into()); }
         let compact = ["statement", "component_ids", "chain", "commitment_bindings"]
             .iter()
             .any(|key| world.get(*key).is_none());
@@ -1292,6 +1294,27 @@ mod tests {
         let route = json!({"id":"r","endpoint_id":"e","commitment_id":"c","component_ids":["root","target"],"target_component_id":"target","chain":[{"id":"link","from_ids":["root"],"to_id":"target","mechanism":"The prerequisite enables the target","by":"2029-01-01"}],"grounding_evidence_ids":["source"],"root_connections":[{"component_id":"root","evidence_ids":["source"],"mechanism":"Observed capacity could be expanded"}],"alternative_to":null,"amendment_id":null});
         (snapshot, program, route)
     }
+    #[test]
+    fn provisional_novelty_cannot_be_composed_even_with_stored_routes() {
+        let (snapshot, mut program, route) = fixture();
+        program["endpoint_search"]["routes"] = json!([route]);
+        let draft = json!({"worlds":[{"id":"w","endpoint_id":"e","selected_route_ids":["r"]}]});
+        for status in ["provisional", "unresolved", "rejected"] {
+            program["endpoint_novelty"] = json!({"e":{"status":status}});
+            assert_eq!(composition_bundles(&snapshot, &program)[0]["status"], "novelty_unresolved");
+            let mut reply = draft.clone();
+            assert!(assemble_composition(&program, &mut reply).unwrap_err().contains("provisional or rejected"));
+            assert_eq!(reply, draft);
+        }
+        program["endpoint_search"]["deferred_novelty_contract"] = json!(1);
+        program.as_object_mut().unwrap().remove("endpoint_novelty");
+        assert!(assemble_composition(&program, &mut draft.clone()).is_err(), "New-contract missing receipts cannot fall back to legacy acceptance");
+        program["endpoint_novelty"] = json!({"e":{"status":"passed"}});
+        let mut reply = draft;
+        assemble_composition(&program, &mut reply).unwrap();
+        assert_eq!(reply["worlds"][0]["chain"], program["endpoint_search"]["routes"][0]["chain"]);
+    }
+
     #[test]
     fn captured_unresolved_music_roots_remain_gaps_even_when_provider_says_connected() {
         let roots: Vec<Value> =

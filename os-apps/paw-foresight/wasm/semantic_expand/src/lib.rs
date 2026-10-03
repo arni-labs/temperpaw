@@ -1255,6 +1255,8 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "source_projection_observations",
         "source_projection_notice",
         "endpoint_proposal_contract",
+        "endpoint_novelty",
+        "deferred_novelty_recheck",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
@@ -1452,6 +1454,7 @@ fn attach_world_probabilities(
             for key in ["endpoint_id", "selected_route_ids", "commitment_bindings"] {
                 outcome[key] = node[key].clone();
             }
+            if let Some(receipt) = program["endpoint_novelty"].get(core::field(node,"endpoint_id")) { outcome["novelty_admission"] = receipt.clone(); }
             outcome["original_endpoint"] = program["endpoint_search"]["endpoints"]
                 .as_array()
                 .into_iter()
@@ -1518,7 +1521,7 @@ fn attach_world_probabilities(
             let receipt = program["unreconstructed_endpoints"].as_array().into_iter().flatten()
                 .find(|receipt|receipt["endpoint_id"]==original["id"])
                 .ok_or("Final answer omitted an original endpoint without a recorded reconstruction limit")?;
-            omitted.push(json!({"endpoint_id":original["id"],"reason":receipt["reason"],"original_endpoint":original}));
+            omitted.push(json!({"endpoint_id":original["id"],"reason":receipt["reason"],"original_endpoint":original,"novelty_admission":program["endpoint_novelty"][core::field(original,"id")]}));
         }
         answer["unreconstructed_endpoints"] = json!(omitted);
     }
@@ -1637,6 +1640,8 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "source_projection_observations",
         "source_projection_notice",
         "endpoint_proposal_contract",
+        "endpoint_novelty",
+        "deferred_novelty_recheck",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
@@ -2955,6 +2960,39 @@ mod tests {
         }
         answer["outcomes"][0]["world_id"] = json!("invented-world");
         assert!(attach_world_probabilities(&mut answer, &program, &snapshot).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires local deterministic deferred producer fixture"]
+    fn backward_expansion_without_findings_reuses_unresolved_novelty() {
+        let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_DEFERRED_FIXTURE").unwrap()).unwrap()).unwrap();
+        let mut snapshot = fixture["snapshot"].clone();
+        snapshot["nodes"].as_array_mut().unwrap().retain(|n| n["Id"] != "new-present-comparison");
+        let old = fixture["provisional"].clone();
+        let world = snapshot["world"].clone();
+        let generated = json!({"hypotheses":[{"id":"further-route-step","statement":"Another hypothetical causal prerequisite by 2035","requires":[]}],"research_evidence":[],"continue_exploring":false,"exploration_note":"A new possible path, not evidence of present novelty"});
+        expand(&mut snapshot, &generated, "backward", &old).unwrap();
+        assert_eq!(snapshot["world"], world);
+        let mut next = replan(&snapshot, &old, &generated, 1).unwrap();
+        assert_eq!(next["endpoint_novelty"], old["endpoint_novelty"]);
+        assert_eq!(next["endpoint_search"], old["endpoint_search"]);
+        assert!(core::proposals::pool::defer_before_composition(&snapshot, &mut next, false).unwrap());
+        assert!(next["tasks"].as_array().unwrap().is_empty(), "Only hypothetical work changed; reuse exact unresolved comparison");
+        core::proposals::pool::finish(&snapshot, &mut next, false, false).unwrap();
+        assert!(next["endpoint_search"]["endpoints"].as_array().unwrap().iter().all(|e|next["endpoint_novelty"][core::field(e,"id")]["status"] == "unresolved"));
+    }
+
+    #[test]
+    fn backward_replan_and_composition_preserve_deferred_admission_receipts() {
+        let (mut snapshot, generated, mut old) = world_fixture();
+        old["endpoint_novelty"] = json!({"original":{"status":"provisional","initial_check":{"result":"unresolved"}}});
+        old["deferred_novelty_recheck"] = json!({"status":"checking","required_transitions":4});
+        let next = replan(&snapshot, &old, &json!({"hypotheses":[],"research_evidence":[],"continue_exploring":false,"exploration_note":"Preserved provisional route work"}), 0).unwrap();
+        for key in ["endpoint_novelty", "deferred_novelty_recheck"] { assert_eq!(next[key], old[key]); }
+        // The replan requires fresh candidate checks before composition. Exercise
+        // the separate composition reconstruction using its eligible fixture.
+        let composed = compose(&mut snapshot, &generated, &old).unwrap();
+        for key in ["endpoint_novelty", "deferred_novelty_recheck"] { assert_eq!(composed[key], old[key]); }
     }
 
     #[test]

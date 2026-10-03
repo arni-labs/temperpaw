@@ -87,6 +87,11 @@ fn next_phase(
         } else {
             "backward_routes_evaluated"
         });
+        match core::proposals::pool::defer_before_composition(snapshot, program, !exhausted.is_empty()) {
+            Ok(true) => return "refine",
+            Ok(false) => {},
+            Err(error) => { program["deferred_novelty_recheck"] = json!({"status":"not_admitted","error":error}); }
+        }
         return "compose";
     }
     if program["stage"] == "combinations" {

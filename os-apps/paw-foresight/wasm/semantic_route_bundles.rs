@@ -242,7 +242,7 @@ pub fn composition_bundles(snapshot: &Value, program: &Value) -> Value {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|e| find_bundle(snapshot, &eligible, e, &[], true, MAX_PREFIXES))
+            .map(|e| if super::super::proposals::pool::novelty_passed(program, field(e,"id")) { find_bundle(snapshot, &eligible, e, &[], true, MAX_PREFIXES) } else { json!({"endpoint_id":e["id"],"status":"novelty_unresolved","reason":"The present comparison has not passed; provisional paths remain preserved, without a final world estimate."}) })
             .collect::<Vec<_>>()
     )
 }

@@ -167,3 +167,33 @@ async fn contrast_resource_failure_never_reports_absent_or_stale_check_counts() 
         assert!(!message.contains("0 of 0") && !message.contains("33 of 33"));
     }
 }
+
+#[tokio::test]
+#[ignore = "Requires local deterministic deferred producer fixture"]
+async fn deferred_native_completion_preserves_paths_and_original_clock() {
+    let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_DEFERRED_FIXTURE").unwrap()).unwrap()).unwrap();
+    let engine = WasmEngine::new().unwrap();
+    let mut program = fixture["passed"].clone();
+    // Replay the actual step boundary with the recorded deterministic judgments.
+    program["stage"] = json!("proposals");
+    program["endpoint_proposal_attempt"]["status"] = json!("checking");
+    program["tasks"] = program["endpoint_proposal_attempt"]["tasks"].clone();
+    program["cursor"] = json!(program["tasks"].as_array().unwrap().len());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let original_start = now.saturating_sub(2_400_000).to_string();
+    let fields = json!({"snapshot_json":fixture["snapshot"].to_string(),"program_json":program.to_string(),"trace_json":"[]","transition_count":320,"started_at_ms":original_start});
+    let mut pending_fields = fields.clone();
+    pending_fields["program_json"] = json!(fixture["checking"].to_string());
+    let scheduled = invoke(&engine, "semantic_step", &pending_fields, &json!({})).await;
+    assert_eq!(scheduled["callback_action"], "Evaluate", "{scheduled}");
+    assert!(scheduled["callback_params"].get("started_at_ms").is_none());
+    let result = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(result["callback_action"], "SearchPlanned", "{result}");
+    let completed: Value = serde_json::from_str(result["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(completed["endpoint_search"], program["endpoint_search"]);
+    assert_eq!(completed["endpoint_novelty"], program["endpoint_novelty"]);
+    assert_eq!(completed["deferred_novelty_recheck"]["status"], "completed");
+    assert_eq!(completed["stage"], "exploration");
+    assert_eq!(completed["transition_count"], 320);
+    assert!(result["callback_params"].get("started_at_ms").is_none());
+}
