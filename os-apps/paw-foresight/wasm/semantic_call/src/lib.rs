@@ -117,6 +117,7 @@ fn call(ctx: &Context) -> Result<(), String> {
     let trace_bytes = trace.to_string().len();
     'batch: {
         core::skip_nonfuture_tasks(&mut p)?;
+        while core::endpoints::bridges::reuse_current(&snapshot, &mut p)? {}
         let cursor = p["cursor"].as_u64().ok_or("Missing cursor")? as usize;
         if cursor >= p["tasks"].as_array().ok_or("Missing tasks")?.len() {
             break 'batch;
@@ -159,7 +160,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             let r = ctx
                 .http_call(
                     "POST",
-                    "https://api.typesafe.ai/v1/systemone",
+                    core::endpoints::bridges::PROVIDER_ENDPOINT,
                     &[
                         ("content-type".into(), "application/json".into()),
                         ("authorization".into(), format!("Bearer {key}")),
@@ -256,6 +257,24 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["cursor"] = json!(cursor + offset + 1);
             let index = trace.as_array().unwrap().len();
             let mut entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"premise_judgments":state["premise_judgments"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
+            let alias =
+                (0..offset).find(|prior| batch.question_key(*prior) == batch.question_key(offset));
+            if let Some(prior) = alias {
+                // One provider answer may serve several exact-input consumers.
+                let fingerprint = core::endpoints::bridges::fingerprint(individual)
+                    .ok_or("Unexpected provider alias")?;
+                let receipt = p["shared_bridge_receipts"][&fingerprint].clone();
+                p["evaluations"][node][function]["context"]["shared_bridge_reuse"] = json!({"input_fingerprint":fingerprint,"trace_index":receipt["trace_index"],"http_call_id":http_call,"source_question_key":batch.question_key(prior),"meaning":"Same complete assessment input; not an independent provider judgment"});
+                continue;
+            }
+            core::endpoints::bridges::record(
+                &mut p,
+                individual,
+                &evaluation,
+                &decision,
+                index,
+                &json!(http_call),
+            );
             record_provider_usage(&mut entry, &provider_response, offset);
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
         }

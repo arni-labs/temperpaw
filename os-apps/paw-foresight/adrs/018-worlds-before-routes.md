@@ -150,3 +150,58 @@ unresolved transitions or competing routes. Reporting distinguishes selected
 experiments from `not_run` experiments. Historical runs keep their original full
 sweep. Mandatory candidate/route/comparison work stops with the existing ten-minute
 finalization time and 120-transition tail still protected.
+
+Pass16 showed that this admitted unit also needs a completion boundary. Both runs
+had two complete compatible originals with current novelty receipts and no pending
+mandatory checks, but attempted a third original before composing an answer.
+New findings reopened the existing graph: its conservative revalidation cost alone
+was 200/206 transitions against 158/154 reserved. Removing every new prerequisite
+could not satisfy the correction request.
+
+Policy 2 now sends that completed two-original unit through the existing composition,
+world evaluation and writing lifecycle before further-original research. This is
+structural readiness, not proof that the paths will occur: uncertain route judgments
+remain uncertain, and other original proposals remain available as unconstructed
+alternatives. The answer may still fail its distinctness or world checks.
+
+Capacity rejection separates existing-graph revalidation under the proposed present
+context from additional graph work. When existing-graph cost alone exceeds the
+allowance, the receiver stops without futile shrink corrections. Retrieved findings
+and the unaccepted draft remain in the saved reasoning result; it neither applies
+part of the draft nor presents saved odds as rechecked against that evidence.
+These costs are conservative admission estimates, not measured provider work.
+
+Shared bridge producer contract
+-------------------------------
+
+Backward generation declares an exactly shared causal mechanism once in a bounded
+`bridges` list, then names it with `bridge_ref` from every dependent route. Stored
+bridge IDs remain immutable and distinct from candidate reference aliases. The
+producer supplies causal ancestors, assumptions, milestone and the complete set of
+endpoint dependencies explicitly. Changed mechanisms, conditions or deadlines
+require a new declaration; paraphrasing a bridge per route does not establish a
+new mechanism. Signed conditions come from canonical candidate branch ancestry.
+The declaration contract changes representation, not the existing response or
+execution budgets. These producer instructions do not establish causal validity;
+native validation and actual judgments remain required.
+
+Targeted repair generation receives the exact obligation fingerprint, affected
+commitments and recorded categorical distributions. It may retrieve specific
+missing evidence, propose a materially different immutable mechanism, or report
+`no_change` explicitly. A deadline, test plan or rephrasing is not a causal repair.
+The producer emits a fingerprint-bound disposition; it cannot invent Jev reasoning,
+claim a failed bridge makes a world impossible, or reset the original budgets.
+
+The existing Expanded callback may preserve one validated answer and its exact
+assessment context before one optional repair. The checkpoint is immutable and
+bounded to 8 MiB; it retains the original clock and counters. Admission reserves
+existing-graph revalidation, 44 generation transitions, at least 120 finalization
+transitions (88 generation transitions plus the larger of 32 or the packed final
+audit cost), and a minimum of 16
+transitions for new work. Time admission retains the larger finalization reserve
+or observed compose-plus-synthesize duration. Native application checks actual
+cost again. Admission is not guaranteed: the captured pass15 food history exceeds
+the checkpoint bound and declines repair while retaining the completed answer.
+During active or failed repair, the UI labels the saved answer as the initial
+assessment and uses its saved sources and audit context. Later findings are not
+presented as incorporated until a new validated answer completes.

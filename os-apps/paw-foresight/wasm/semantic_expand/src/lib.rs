@@ -1363,6 +1363,11 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "audit_policy_version",
         "audit_diagnostic_plan",
         "admitted_work",
+        "initial_world_finalization",
+        "shared_bridge_receipts",
+        "answer_checkpoint",
+        "targeted_repair",
+        "targeted_repair_history",
         "endpoint_search",
         "candidate_basis",
         "novelty_basis",
@@ -1781,6 +1786,11 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "audit_policy_version",
         "audit_diagnostic_plan",
         "admitted_work",
+        "initial_world_finalization",
+        "shared_bridge_receipts",
+        "answer_checkpoint",
+        "targeted_repair",
+        "targeted_repair_history",
         "endpoint_search",
         "candidate_basis",
         "novelty_basis",
@@ -1956,6 +1966,81 @@ fn composition_correction(old: &Value, raw: &str, error: &str) -> Result<Value, 
     Ok(program)
 }
 
+/// Price evidence changes against the accepted graph separately from the new
+/// proposal. No evaluated value is reused under the changed context: this copy
+/// only diagnoses the irreducible cost of preserving the retrieved findings.
+fn backward_capacity_breakdown(
+    original: &Value,
+    snapshot: &Value,
+    old: &Value,
+    program: &Value,
+    work: &Value,
+    capacity: u64,
+) -> Result<Value, String> {
+    let original_ids: std::collections::BTreeSet<_> = original["nodes"]
+        .as_array()
+        .ok_or("Missing original nodes")?
+        .iter()
+        .filter_map(|node| node["Id"].as_str())
+        .collect();
+    let mut retained = snapshot.clone();
+    retained["nodes"]
+        .as_array_mut()
+        .ok_or("Missing generated nodes")?
+        .retain(|node| {
+            original_ids.contains(core::field(node, "Id"))
+                || matches!(core::field(node, "kind"), "evidence" | "research_evidence")
+        });
+    let mut fixed = old.clone();
+    fixed["baseline"] = program["baseline"].clone();
+    fixed["scope_review"] = program["scope_review"].clone();
+    core::endpoints::invalidate_changed_candidates(&retained, &mut fixed, old);
+    let fixed_work = if retained["nodes"].as_array().is_some_and(Vec::is_empty) {
+        json!({"questions":0,"required_transitions":0,"candidate_tasks":[],"route_tasks":[],"novelty_rechecks":0})
+    } else {
+        core::endpoints::pending_mandatory_work(&retained, &fixed)?
+    };
+    let fixed_cost = if fixed_work["questions"] == 0 {
+        0
+    } else {
+        fixed_work["required_transitions"]
+            .as_u64()
+            .ok_or("Missing existing graph cost")?
+    };
+    let total = work["required_transitions"]
+        .as_u64()
+        .ok_or("Missing proposed graph cost")?;
+    Ok(
+        json!({"reserved_transitions":capacity,"total_required_transitions":total,
+        "existing_graph_revalidation_transitions":fixed_cost,
+        "additional_graph_transitions":total.saturating_sub(fixed_cost),
+        "existing_graph_exceeds_capacity":fixed_cost>capacity,
+        "existing_graph_candidate_questions":fixed_work["candidate_tasks"].as_array().map_or(0,Vec::len),
+        "existing_graph_route_questions":fixed_work["route_tasks"].as_array().map_or(0,Vec::len),
+        "existing_graph_novelty_questions":fixed_work["novelty_rechecks"],
+        "semantics":"Conservative planning costs, not measured execution. Existing graph cost retains new present evidence and baseline; it cannot be reduced by shortening proposed new paths."}),
+    )
+}
+
+fn backward_capacity_error(cost: &Value) -> String {
+    if cost["existing_graph_exceeds_capacity"] == true {
+        format!(
+            "The retrieved present context requires {} transitions to revalidate the existing graph alone, exceeding the reserved {} (complete proposal: {}). Reducing new prerequisites cannot fit this work. The unaccepted draft and findings remain in the saved reasoning result; accepted proposals and evaluations are unchanged and must not be presented as rechecked against these findings. Further shrink corrections were not requested.",
+            cost["existing_graph_revalidation_transitions"],
+            cost["reserved_transitions"],
+            cost["total_required_transitions"]
+        )
+    } else {
+        format!(
+            "The complete mandatory reconstruction plan requires {} transitions against the reserved {}: {} for existing-graph revalidation and {} additional for the new graph. Retain all selected original commitments and retrieved findings; reduce only redundant new prerequisites/links or share exact mechanisms. No proposed work has been applied.",
+            cost["total_required_transitions"],
+            cost["reserved_transitions"],
+            cost["existing_graph_revalidation_transitions"],
+            cost["additional_graph_transitions"]
+        )
+    }
+}
+
 fn exploration_correction(
     phase: &str,
     old: &Value,
@@ -2086,6 +2171,101 @@ fn combined_scope_receipt(
     finish_scope_repair(after, &assembled, old)
 }
 
+
+fn assessment_context(snapshot: &Value, program: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}",Sha256::digest(json!({"world":snapshot["world"],"baseline":program["baseline"],"sources":core::evidence::active_sources(snapshot)}).to_string().as_bytes()))
+}
+
+/// The first validated answer is visible before optional repair. Completed stays
+/// terminal: only this existing Expanding -> Choosing callback can continue.
+fn answer_completion(
+    snapshot: &Value,
+    program: &mut Value,
+    answer: &Value,
+    trace_raw: &str,
+    started: u64,
+    now: u64,
+    transitions: u64,
+) -> Result<Value, String> {
+    program["transition_count"] = json!(core::transition_count(program).max(transitions));
+    if program["answer_checkpoint"].is_object() {
+        program["targeted_repair"]["status"] = json!("completed");
+        program["targeted_repair"]["warning"] = json!("");
+    } else if program["audit_policy_version"] == 2 && program["targeted_repair"].is_null() {
+        let (queue, planning_error) = match core::backward::repair_obligations(snapshot, program) {
+            Ok(queue) => (queue, None),
+            Err(error) => (vec![], Some(error)),
+        };
+        let admission = if let Some(error) = planning_error {
+            json!({"admitted":false,"reason":"repair_planning_error","error":error})
+        } else if queue.is_empty() {
+            json!({"admitted":false,"reason":"no_current_recorded_gap"})
+        } else {
+            core::backward::repair_admission(snapshot,program,now.saturating_sub(started)).unwrap_or_else(|error|json!({"admitted":false,"reason":"repair_planning_error","error":error}))
+        };
+        let mut repair = json!({"status":"declined","obligation":queue.first(),"admission":admission,"assessment_context_changed":false,"warning":""});
+        if admission["admitted"] == true {
+            use sha2::{Digest, Sha256};
+            let snapshot_raw = snapshot.to_string();
+            let program_raw = program.to_string();
+            let digest = |s: &str| format!("{:x}", Sha256::digest(s.as_bytes()));
+            let checkpoint = json!({"version":1,"answer":answer,"snapshot_json":snapshot_raw,"program_json":program_raw,"trace_json":trace_raw,"started_at_ms":started.to_string(),"created_at_ms":now.to_string(),"snapshot_sha256":digest(&snapshot_raw),"program_sha256":digest(&program_raw),"trace_sha256":digest(trace_raw),"source_context_fingerprint":assessment_context(snapshot,program)});
+            let mut candidate = program.clone();
+            candidate["answer_checkpoint"] = checkpoint;
+            let mut admitted_repair = repair.clone();
+            admitted_repair["status"] = json!("admitted");
+            admitted_repair["warning"] = json!("The displayed answer is the completed initial assessment. Optional repair research is not incorporated until a newly validated answer is completed.");
+            candidate["targeted_repair"] = admitted_repair;
+            candidate["stage"] = json!("exploration");
+            candidate["tasks"] = json!([]);
+            candidate["cursor"] = json!(0);
+            candidate["stop_reason"] = json!("targeted_repair_admitted");
+            candidate["admitted_work"] = admission;
+            candidate["admitted_work"]["status"] = json!("generating");
+            // Bound the entire final program, including the receipt. Its nested
+            // original program has no checkpoint, so history is stored once.
+            if candidate.to_string().len() <= 8 * 1024 * 1024 {
+                *program = candidate;
+                return Ok(json!({"action":"Expanded","params":{"answer":answer.to_string(),"snapshot_json":snapshot.to_string(),"program_json":program.to_string()}}));
+            }
+            repair["admission"]["admitted"] = json!(false);
+            repair["admission"]["reason"] = json!("checkpoint_storage_bound");
+        }
+        program["targeted_repair"] = repair;
+    }
+    Ok(
+        json!({"action":"Complete","params":{"answer":answer.to_string(),"program_json":program.to_string(),"finished_at_ms":now.to_string()}}),
+    )
+}
+
+fn finish_answer(
+    ctx: &Context,
+    snapshot: &Value,
+    program: &mut Value,
+    answer: &Value,
+) -> Result<(), String> {
+    let started = core::field(&ctx.entity_state, "started_at_ms")
+        .parse::<u64>()
+        .map_err(|_| "Missing original run clock")?;
+    let completion = answer_completion(
+        snapshot,
+        program,
+        answer,
+        core::field(&ctx.entity_state, "trace_json"),
+        started,
+        Context::get_time_millis() as u64,
+        core::transition_count(&ctx.entity_state),
+    )?;
+    set_success_result(
+        completion["action"]
+            .as_str()
+            .ok_or("Missing completion action")?,
+        &completion["params"],
+    );
+    Ok(())
+}
+
 fn run_inner(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let mut old = core::parse(core::field(&ctx.entity_state, "program_json"))?;
@@ -2136,7 +2316,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             let receipt=&program["presentation_repair"];
             let answer=outlook::apply_presentation_repairs(&receipt["draft"],&generated,receipt["issues"].as_array().ok_or("Missing presentation issues")?)?;
             outlook::validate(&answer,&snapshot)?;
-            set_success_result("Complete",&json!({"answer":answer.to_string(),"finished_at_ms":Context::get_time_millis().to_string()}));
+            finish_answer(ctx,&snapshot,&mut program,&answer)?;
             return Ok(());
         }
         let mut answer = core::parse(raw)?;
@@ -2159,10 +2339,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             }
             return Err(error);
         }
-        set_success_result(
-            "Complete",
-            &json!({"answer":answer.to_string(),"finished_at_ms":Context::get_time_millis().to_string()}),
-        );
+        finish_answer(ctx, &snapshot, &mut program, &answer)?;
         return Ok(());
     }
 
@@ -2247,6 +2424,16 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
                 );
             }
         }
+        return Ok(());
+    }
+    if phase=="backward" && core::backward::repair_disposition(&old,&generated)?==Some("no_change") {
+        let answer=old["answer_checkpoint"]["answer"].clone();
+        if !answer.is_object(){return Err("Missing immutable answer checkpoint for repair".into());}
+        old["targeted_repair"]["status"]=json!("no_change");
+        old["targeted_repair"]["warning"]=json!("");
+        old["targeted_repair"]["disposition"]=generated["repair_disposition"].clone();
+        old["targeted_repair_history"]=json!([{"input_fingerprint":old["targeted_repair"]["obligation"]["input_fingerprint"],"status":"no_change"}]);
+        set_success_result("Complete",&json!({"answer":answer.to_string(),"program_json":old.to_string(),"finished_at_ms":Context::get_time_millis().to_string()}));
         return Ok(());
     }
     let before = snapshot["nodes"].as_array().ok_or("Missing nodes")?.len();
@@ -2397,9 +2584,12 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             .as_u64()
             .ok_or("Missing mandatory workload estimate")?;
         if required > capacity {
-            let error = format!(
-                "The complete mandatory reconstruction plan requires {required} transitions against the reserved {capacity}. Retain all selected original commitments; reduce redundant prerequisites/links or share exact common mechanisms within the admitted capacity. No proposed work has been applied."
-            );
+            let original = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+            let cost = backward_capacity_breakdown(&original, &snapshot, &old, &program, &work, capacity)?;
+            let error = backward_capacity_error(&cost);
+            if cost["existing_graph_exceeds_capacity"] == true {
+                return Err(error);
+            }
             let corrected = exploration_correction(phase, &old, &error, raw)?;
             set_success_result(
                 "CompositionRejected",
@@ -2411,6 +2601,12 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         program["admitted_work"]["actual_mandatory_transitions"] = json!(required);
         program["admitted_work"]["mandatory_plan"] = work;
         program["admitted_work"]["remaining_capacity"] = json!(capacity);
+    }
+    if phase=="backward" && old["answer_checkpoint"].is_object() {
+        program["targeted_repair"]["status"]=json!("checking");
+        program["targeted_repair"]["assessment_context_changed"]=json!(assessment_context(&snapshot,&program)!=core::field(&old["answer_checkpoint"],"source_context_fingerprint"));
+        program["targeted_repair"]["disposition"]=generated["repair_disposition"].clone();
+        program["targeted_repair_history"]=json!([{"input_fingerprint":old["targeted_repair"]["obligation"]["input_fingerprint"],"status":"proposed"}]);
     }
     if phase == "challenge" {
         record_challenge(&snapshot, before, &core::parse(raw)?, &old, &mut program)?;
@@ -2431,6 +2627,155 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 }
 #[cfg(test)]
 mod tests {
+
+
+    include!("../../semantic_repair_fixture.rs");
+
+    #[test]
+    fn answer_checkpoint_is_once_bounded_and_decline_keeps_validated_answer() {
+        let repair = json!({"targeted_repair":{"status":"admitted","obligation":{"input_fingerprint":"exact"}}});
+        let mut unchanged = json!({"repair_disposition":{"input_fingerprint":"exact","status":"no_change","note":"No supported alternative found"}});
+        assert_eq!(core::backward::repair_disposition(&repair,&unchanged).unwrap(),Some("no_change"));
+        unchanged["bridges"] = json!([{"id":"new-bridge"}]);
+        assert!(core::backward::repair_disposition(&repair,&unchanged).is_err());
+        let (snapshot, mut p) = ready_pair();
+        p["transition_count"] = json!(20);
+        // answer_completion receives the already validated answer; this small
+        // synthetic payload isolates immutable checkpoint and callback semantics.
+        let answer = json!({"schema":"foresight-worlds-v3","headline":"Saved worlds","summary":"Original evidence","horizon":"2030","probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"evaluation_status":"partial","evaluation_note":"Unresolved routes","baseline":{"as_of":"2026-10-03","observed":[],"assumptions":[],"unknowns":[]},"evidence_limits":["Unresolved"],"research_questions":[],"outcomes":(0..2).map(|i|json!({"id":format!("w{i}"),"world_id":format!("w{i}"),"title":format!("World {i}"),"definition":"Original definition","component_ids":[],"counter_ids":[],"scenario_ids":[],"scene":"Original scene","narrative":"Original narrative","what_you_can_do":[],"signals":["Signal"],"falsifiers":["Falsifier"],"probability":if i==0{json!(0.2)}else{Value::Null}})).collect::<Vec<_>>()});
+        let trace = "[]";
+        let before = p.clone();
+        let completion = answer_completion(&snapshot, &mut p, &answer, trace, 1000, 2000, 20).unwrap();
+        assert_eq!(completion["action"], "Expanded");
+        assert_eq!(p["targeted_repair"]["status"], "admitted");
+        assert_eq!(p["answer_checkpoint"]["answer"], answer);
+        assert_eq!(
+            core::parse(p["answer_checkpoint"]["program_json"].as_str().unwrap()).unwrap(),
+            before
+        );
+        assert!(
+            core::parse(p["answer_checkpoint"]["program_json"].as_str().unwrap())
+                .unwrap()
+                .get("answer_checkpoint")
+                .is_none()
+        );
+        assert_eq!(p["answer_checkpoint"]["started_at_ms"], "1000");
+        assert!(completion["params"].get("started_at_ms").is_none());
+        let immutable = p["answer_checkpoint"].clone();
+        let mut updated = answer.clone();
+        updated["headline"] = json!("Rechecked answer");
+        let final_answer =
+            answer_completion(&snapshot, &mut p, &updated, trace, 1000, 3000, 25).unwrap();
+        assert_eq!(final_answer["action"], "Complete");
+        assert_eq!(p["answer_checkpoint"], immutable);
+        assert_eq!(p["targeted_repair"]["status"], "completed");
+        let mut declined = before.clone();
+        let stop = answer_completion(
+            &snapshot,
+            &mut declined,
+            &answer,
+            trace,
+            1000,
+            core::MAX_MS,
+            470,
+        )
+        .unwrap();
+        assert_eq!(stop["action"], "Complete");
+        assert_eq!(
+            core::parse(stop["params"]["answer"].as_str().unwrap()).unwrap(),
+            answer
+        );
+        assert_eq!(declined["targeted_repair"]["status"], "declined");
+        assert!(declined.get("answer_checkpoint").is_none());
+        let mut oversized = before;
+        let stop = answer_completion(
+            &snapshot,
+            &mut oversized,
+            &answer,
+            &"x".repeat(8 * 1024 * 1024),
+            1000,
+            2000,
+            20,
+        )
+        .unwrap();
+        assert_eq!(stop["action"], "Complete");
+        assert_eq!(
+            oversized["targeted_repair"]["admission"]["reason"],
+            "checkpoint_storage_bound"
+        );
+        if let Ok(path) = std::env::var("FORESIGHT_REPAIR_BOUNDARY_FIXTURE") {
+            std::fs::write(path,json!({"provenance":"Synthetic already-validated-answer boundary, not a captured provider response","snapshot":snapshot,"program":core::parse(completion["params"]["program_json"].as_str().unwrap()).unwrap(),"answer":answer,"callback":completion}).to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn fixed_revalidation_diagnostic_never_suggests_dropping_findings() {
+        let error = backward_capacity_error(
+            &json!({"existing_graph_exceeds_capacity":true,"existing_graph_revalidation_transitions":200,"reserved_transitions":158,"total_required_transitions":258}),
+        );
+        assert!(error.contains("existing graph alone"));
+        assert!(error.contains("Further shrink corrections were not requested"));
+        assert!(error.contains("must not be presented as rechecked"));
+        let reducible = backward_capacity_error(
+            &json!({"existing_graph_exceeds_capacity":false,"existing_graph_revalidation_transitions":20,"reserved_transitions":158,"total_required_transitions":258,"additional_graph_transitions":238}),
+        );
+        assert!(reducible.contains("20 for existing-graph revalidation"));
+        assert!(reducible.contains("retrieved findings"));
+    }
+
+    #[test]
+    #[ignore = "uses supplied frozen pass16 checkpoints"]
+    fn captured_pass16_new_evidence_alone_exceeds_second_generation_capacity() {
+        let dir = std::env::var("FORESIGHT_PASS16_DIR").unwrap();
+        for (topic, total, fixed, capacity) in [("games", 258, 200, 158), ("food", 252, 206, 154)] {
+            let record: Value =
+                serde_json::from_str(&std::fs::read_to_string(format!("{dir}/{topic}.json")).unwrap())
+                    .unwrap();
+            let fields = &record["fields"];
+            let original = core::parse(fields["snapshot_json"].as_str().unwrap()).unwrap();
+            let old = core::parse(fields["program_json"].as_str().unwrap()).unwrap();
+            let generated = core::parse(fields["reasoning_result"].as_str().unwrap()).unwrap();
+            let mut snapshot = original.clone();
+            let refresh = expand_with_baseline(&mut snapshot, &generated, "backward", &old)
+                .unwrap()
+                .unwrap();
+            let mut planning = old.clone();
+            planning["baseline"] = refresh["baseline"].clone();
+            planning["scope_review"] = refresh["scope_review"].clone();
+            let mut program = replan(
+                &snapshot,
+                &planning,
+                &generated,
+                snapshot["nodes"].as_array().unwrap().len()
+                    - original["nodes"].as_array().unwrap().len(),
+            )
+            .unwrap();
+            let mut candidate = snapshot.clone();
+            candidate["nodes"].as_array_mut().unwrap().retain(|n| {
+                n["route_only"] != true
+                    || original["nodes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|o| o["Id"] == n["Id"])
+            });
+            program["endpoint_search"] =
+                core::endpoints::add_routes(&original, &mut candidate, &old, &generated).unwrap();
+            let work = core::endpoints::pending_mandatory_work(&snapshot, &program).unwrap();
+            let cost =
+                backward_capacity_breakdown(&original, &snapshot, &old, &program, &work, capacity)
+                    .unwrap();
+            assert_eq!(cost["total_required_transitions"], total);
+            assert_eq!(cost["existing_graph_revalidation_transitions"], fixed);
+            assert_eq!(cost["existing_graph_exceeds_capacity"], true);
+            assert_eq!(
+                old["endpoint_search"]["routes"].as_array().unwrap().len(),
+                8
+            );
+            assert_ne!(snapshot, original);
+        }
+    }
+
     #[test]
     #[ignore = "replay explicitly supplied captured synthesis snapshot"]
     fn real_large_endpoint_world_survives_final_validation() {

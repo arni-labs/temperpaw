@@ -3,6 +3,10 @@ use super::{field, search};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod bridges {
+    include!("semantic_shared_bridges.rs");
+}
+
 pub const MAX_WORLD_COMPONENTS: usize = 32;
 mod bundles {
     include!("semantic_route_bundles.rs");
@@ -392,13 +396,20 @@ pub fn add_routes(
         }
     }
     resolve_local(&mut reply, "", &locals, round);
+    bridges::materialize(&mut reply, &mut search)?;
     // Local link labels are not global identities. Canonical content identities
     // let independently proposed routes compose without collisions, while exact
     // shared edges retain one identity and can be deduplicated losslessly.
     for route in reply["routes"].as_array_mut().into_iter().flatten() {
         for link in route["chain"].as_array_mut().into_iter().flatten() {
             use sha2::{Digest, Sha256};
-            let definition = json!({"from_ids":link["from_ids"],"to_id":link["to_id"],"by":link["by"],"mechanism":link["mechanism"]});
+            let definition = if link["bridge_ref"].is_string() {
+                let mut value = link.clone();
+                value.as_object_mut().unwrap().remove("id");
+                value
+            } else {
+                json!({"from_ids":link["from_ids"],"to_id":link["to_id"],"by":link["by"],"mechanism":link["mechanism"]})
+            };
             link["id"] = json!(format!(
                 "link-{:x}",
                 Sha256::digest(definition.to_string().as_bytes())
@@ -617,7 +628,7 @@ pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value
             }
         }
     }
-    let novelty_rechecks = super::proposals::pool::pending_novelty_checks(snapshot,program)?;
+    let novelty_rechecks = super::proposals::pool::pending_novelty_checks(snapshot, program)?;
     let mut known = Vec::new();
     let mut contingent = novelty_rechecks;
     for task in candidate_tasks.iter().chain(&route_tasks) {
@@ -655,6 +666,10 @@ pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value
     let mut unknowns = Vec::new();
     while cursor < known.len() {
         scratch["cursor"] = json!(cursor);
+        if bridges::reuse_current(snapshot, &mut scratch)? {
+            cursor += 1;
+            continue;
+        }
         match super::batch::prepare(snapshot, &scratch, known.len() - cursor) {
             Ok(batch) if !batch.tasks.is_empty() => {
                 cursor += batch.tasks.len();

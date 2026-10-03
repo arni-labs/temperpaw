@@ -184,6 +184,23 @@ impl References {
 mod tests {
     use super::*;
     #[test]
+    fn shared_bridge_resolves_candidates_but_preserves_its_identity_and_dependencies() {
+        let refs = References::new(&json!({"nodes":[{"Id":"a"},{"Id":"b"}]})).unwrap();
+        let mut generated = json!({"bridges":[{"id":"stable-bridge","from_ids":["ref_0001"],"to_id":"ref_0002","endpoint_dependencies":["original-world"],"mechanism":"ref_0001 stays prose"}],"routes":[{"chain":[{"bridge_ref":"stable-bridge"}]}]});
+        refs.resolve_generated(&mut generated);
+        assert_eq!(generated["bridges"][0]["from_ids"], json!(["a"]));
+        assert_eq!(generated["bridges"][0]["to_id"], "b");
+        assert_eq!(
+            generated["routes"][0]["chain"][0]["bridge_ref"],
+            "stable-bridge"
+        );
+        assert_eq!(
+            generated["bridges"][0]["endpoint_dependencies"][0],
+            "original-world"
+        );
+        assert_eq!(generated["bridges"][0]["mechanism"], "ref_0001 stays prose");
+    }
+    #[test]
     fn comparison_bindings_project_and_resolve_without_changing_prose() {
         let refs = References::new(&json!({"nodes":[{"Id":"a"},{"Id":"b"},{"Id":"w"}]})).unwrap();
         let original = json!({"trajectory_binding":{"organizing_component_ids":["a"],"downstream_component_ids":["b"],"organizing_branch_ids":["branch-a"],"counterpart_world_id":"w"},"paths":[{"target_event_id":"b"}],"description":"a and w remain literal prose"});

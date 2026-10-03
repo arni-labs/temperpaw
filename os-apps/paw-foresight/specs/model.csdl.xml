@@ -1534,6 +1534,21 @@
         <Parameter Name="phase" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
       </Action>
+      <Action Name="Expanded" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
+        <Parameter Name="snapshot_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="program_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="started_at_ms" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="answer" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
+      </Action>
+      <Action Name="Complete" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
+        <Parameter Name="answer" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="finished_at_ms" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="program_json" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
+      </Action>
       <Action Name="ResumePrepared" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
         <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>

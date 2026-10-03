@@ -727,6 +727,24 @@ pub fn novelty_passed(program: &Value, id: &str) -> bool {
         || program["endpoint_novelty"][id]["status"] == "passed"
 }
 
+/// A status label alone cannot authorize finalization after evidence changes.
+pub fn current_novelty_passed(snapshot: &Value, program: &Value, id: &str) -> bool {
+    let receipt = &program["endpoint_novelty"][id];
+    let prior = if receipt["final_check"].is_object() {
+        &receipt["final_check"]
+    } else {
+        &receipt["initial_check"]
+    };
+    let current = json!({"endpoints":program["endpoint_search"]["endpoints"],"baseline":program["baseline"],"world":snapshot["world"],"source_evidence":evidence::active_sources(snapshot)});
+    receipt["status"] == "passed"
+        && prior["passed"] == true
+        && request(
+            &current,
+            &json!({"function":"check_proposal_change","endpoint_id":id}),
+        )
+        .is_ok_and(|request| request == prior["request"])
+}
+
 fn pending_novelty_endpoints(snapshot: &Value, program: &Value) -> Result<Vec<Value>, String> {
     if matches!(field(&program["deferred_novelty_recheck"],"status"),"checking"|"not_admitted") { return Ok(vec![]); }
     let current = json!({"endpoints":program["endpoint_search"]["endpoints"],"baseline":program["baseline"],"world":snapshot["world"],"source_evidence":evidence::active_sources(snapshot)});

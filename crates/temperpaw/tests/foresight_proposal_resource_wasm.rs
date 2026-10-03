@@ -364,3 +364,75 @@ async fn oversized_mandatory_work_never_applies_and_correction_cannot_refresh_ca
     assert_eq!(stopped["callback_action"], "Fail");
     assert!(stopped["callback_params"].get("snapshot_json").is_none());
 }
+
+#[tokio::test]
+#[ignore = "Requires frozen pass16 checkpoints and rebuilt step/expand WASMs"]
+async fn pass16_complete_pair_and_fixed_capacity_use_native_callbacks() {
+    let dir = std::env::var("FORESIGHT_PASS16_DIR").unwrap();
+    let engine = WasmEngine::new().unwrap();
+    for topic in ["games", "food"] {
+        let record: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/{topic}.json")).unwrap()).unwrap();
+        let mut fields = record["fields"].clone();
+        let before: Value = serde_json::from_str(fields["program_json"].as_str().unwrap()).unwrap();
+        fields["transition_count"] = record["counters"]["transition_count"].clone();
+        // Offline replay uses the captured elapsed interval against this test's
+        // clock; no live run clock is read, reset or resumed.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        fields["started_at_ms"] = json!(now.saturating_sub(1_660_000).to_string());
+        let decision = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+        assert_eq!(decision["callback_action"], "Reason", "{topic}: {decision}");
+        assert_eq!(decision["callback_params"]["phase"], "compose");
+        assert!(decision["callback_params"].get("started_at_ms").is_none());
+        let after: Value = serde_json::from_str(decision["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+        for key in ["endpoint_search", "results", "evaluations"] { assert_eq!(after[key],before[key],"{topic}: {key}"); }
+        // Replay the captured reply as a first capacity rejection: irreducible
+        // cost must stop immediately, not spend two more correction sessions.
+        let mut first_attempt = before.clone();
+        first_attempt.as_object_mut().unwrap().remove("response_correction");
+        fields["program_json"] = json!(first_attempt.to_string());
+        let rejected = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+        assert_eq!(rejected["callback_action"], "Fail", "{topic}: {rejected}");
+        let error = rejected["callback_params"]["error_message"].as_str().unwrap();
+        assert!(error.contains("existing graph alone"),"{error}");
+        assert!(error.contains("Further shrink corrections were not requested"));
+        assert!(rejected["callback_params"].get("snapshot_json").is_none());
+        assert!(rejected["callback_params"].get("program_json").is_none());
+        assert!(rejected["callback_params"].get("started_at_ms").is_none());
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires explicitly generated synthetic answer-boundary fixture"]
+async fn targeted_repair_native_no_change_and_failure_preserve_checkpoint() {
+    let path=std::env::var("FORESIGHT_REPAIR_BOUNDARY_FIXTURE").unwrap();
+    let fixture:Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let mut program=fixture["program"].clone();
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    // Rebase only this synthetic test clock; source/program/trace remain exact.
+    program["answer_checkpoint"]["started_at_ms"]=json!(now.saturating_sub(1000).to_string());
+    let checkpoint=program["answer_checkpoint"].clone();
+    let mut fields=json!({"snapshot_json":fixture["snapshot"].to_string(),"program_json":program.to_string(),"trace_json":"[]","answer":fixture["answer"].to_string(),"phase":"backward","transition_count":21,"started_at_ms":now.saturating_sub(1000).to_string()});
+    let engine=WasmEngine::new().unwrap();
+    let next=invoke(&engine,"semantic_step",&fields,&json!({})).await;
+    assert_eq!(next["callback_action"],"Reason","{next}");
+    assert_eq!(next["callback_params"]["phase"],"backward");
+    assert!(next["callback_params"].get("started_at_ms").is_none());
+    fields["program_json"]=next["callback_params"]["program_json"].clone();
+    if let Ok(path)=std::env::var("FORESIGHT_CHECKPOINT_FIXTURE") { std::fs::write(path,json!({"entity_id":"synthetic-repair-boundary","status":"Reasoning","fields":fields,"provenance":"Actual WASM callback over a synthetic already-validated-answer boundary; not a live research result"}).to_string()).unwrap(); }
+    let draft=json!({"hypotheses":[],"branches":[],"routes":[],"research_evidence":[],"amendments":[],"repair_disposition":{"input_fingerprint":program["targeted_repair"]["obligation"]["input_fingerprint"],"status":"no_change","note":"The available evidence does not resolve the recorded bridge."}});
+    fields["reasoning_result"]=json!(draft.to_string());
+    let complete=invoke(&engine,"semantic_expand",&fields,&json!({})).await;
+    assert_eq!(complete["callback_action"],"Complete","{complete}");
+    assert_eq!(complete["callback_params"]["answer"],fields["answer"]);
+    let saved:Value=serde_json::from_str(complete["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(saved["answer_checkpoint"],checkpoint);
+    assert_eq!(saved["targeted_repair"]["status"],"no_change");
+    assert!(complete["callback_params"].get("started_at_ms").is_none());
+    let mut invalid=draft;invalid["repair_disposition"]["input_fingerprint"]=json!("wrong-input");
+    fields["reasoning_result"]=json!(invalid.to_string());
+    let failed=invoke(&engine,"semantic_expand",&fields,&json!({})).await;
+    assert_eq!(failed["callback_action"],"Fail");
+    assert!(failed["callback_params"].get("answer").is_none());
+    assert!(failed["callback_params"].get("program_json").is_none());
+    assert_eq!(serde_json::from_str::<Value>(fields["program_json"].as_str().unwrap()).unwrap()["answer_checkpoint"],checkpoint);
+}

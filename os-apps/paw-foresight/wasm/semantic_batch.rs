@@ -11,7 +11,16 @@ pub struct Batch {
 impl Batch {
     pub fn question_key(&self, index: usize) -> String {
         if self.request["questions"].get("q0").is_some() {
-            format!("q{index}")
+            let canonical =
+                if self.individual[index]["state"]["assessment_contract"] == "shared_bridge_v1" {
+                    self.individual[..=index]
+                        .iter()
+                        .position(|request| request == &self.individual[index])
+                        .unwrap()
+                } else {
+                    index
+                };
+            format!("q{canonical}")
         } else {
             "result".into()
         }
@@ -60,7 +69,11 @@ fn byte_cap(program: &Value) -> usize {
 }
 /// A provider-confirmed token overflow only changes packing, never context or tasks.
 pub fn reduce_cap(program: &mut Value, batch: &Batch) -> bool {
-    if batch.tasks.len() <= 1 {
+    if batch.tasks.len() <= 1
+        || batch.request["questions"]
+            .as_object()
+            .is_some_and(|q| q.len() == 1)
+    {
         return false;
     }
     let old = byte_cap(program);
@@ -147,6 +160,16 @@ fn prepare_raw(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
                 || individual["state"]["assessment_contract"] == "whole_world_assessment_v1")
         {
             break;
+        }
+        if individual["state"]["assessment_contract"] == "shared_bridge_v1"
+            && batch
+                .individual
+                .iter()
+                .any(|existing| existing == &individual)
+        {
+            batch.tasks.push(task.clone());
+            batch.individual.push(individual);
+            continue;
         }
         let key = format!("q{}", batch.tasks.len());
         let mut state = individual["state"].clone();
@@ -269,7 +292,9 @@ fn intern_event(state: &mut Value, value: Value) -> usize {
 
 /// Validate every answer before advancing any cursor; malformed fan-out stays retryable.
 pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Value)>, String> {
-    if response["answers"].as_object().map(|a| a.len()) != Some(batch.tasks.len()) {
+    if response["answers"].as_object().map(|a| a.len())
+        != batch.request["questions"].as_object().map(|q| q.len())
+    {
         return Err("Provider fan-out answer count mismatch".into());
     }
     batch.individual.iter().enumerate().map(|(index,request)| {

@@ -1184,7 +1184,8 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
             field(&question, "instructions")
         ));
     }
-    let request = json!({"model":MODEL,"state":state,"questions":{"result":question}});
+    let mut request = json!({"model":MODEL,"state":state,"questions":{"result":question}});
+    super::endpoints::bridges::project_request(snapshot, program, task, &mut request)?;
     if request.to_string().len() > 128 * 1024 {
         return Err("Structural request exceeds 128 KB".into());
     }

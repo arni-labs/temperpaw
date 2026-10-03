@@ -12,9 +12,224 @@ pub fn enabled(program: &Value) -> bool {
     )
 }
 
+
+/// Rank actual unresolved checks, never model-invented explanations. Shared
+/// obligations merge only when the exact assessment input is identical.
+pub fn repair_obligations(snapshot: &Value, program: &Value) -> Result<Vec<Value>, String> {
+    use sha2::{Digest, Sha256};
+    let mut obligations: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    let nodes = snapshot["nodes"].as_array().ok_or("Missing repair graph")?;
+    let active_routes: BTreeSet<_> = nodes
+        .iter()
+        .filter(|node| {
+            program["active_world_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.contains(&node["Id"]))
+        })
+        .flat_map(|node| {
+            node["selected_route_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+        })
+        .collect();
+    for route in program["endpoint_search"]["routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if !active_routes.is_empty() && !active_routes.contains(super::field(route, "id")) {
+            continue;
+        }
+
+        let world_id = super::field(route, "world_node_id");
+        let Some(world) = nodes.iter().find(|n| n["Id"] == world_id) else {
+            continue;
+        };
+        if program["route_basis"][world_id]
+            != super::endpoints::candidate_basis(snapshot, program, world_id)
+        {
+            continue;
+        }
+        for task in super::search::mandatory_audit_tasks(world, program) {
+            let function = super::field(&task, "function");
+            let result = &program["results"][super::field(&task, "nodeId")][function];
+            if !matches!(result.as_str(), Some("gap" | "conflict" | "uncertain")) {
+                continue;
+            }
+            let (kind, subject, bridge_ref) = if function == "check_route_grounding" {
+                let roots: Vec<_> = route["root_connections"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|root| root["evidence_ids"].as_array().is_none_or(Vec::is_empty))
+                    .cloned()
+                    .collect();
+                // A whole-route uncertain result does not identify a particular
+                // root. Keep its scope exact instead of inventing a culprit.
+                (
+                    "root_gap",
+                    json!({"root_connections":if roots.is_empty(){route["root_connections"].clone()}else{json!(roots)}}),
+                    Value::Null,
+                )
+            } else if function == "check_transition" {
+                let Some(link) = world["chain"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|l| l["id"] == task["link_id"])
+                else {
+                    continue;
+                };
+                ("bridge", link.clone(), link["bridge_ref"].clone())
+            } else {
+                continue;
+            };
+            let request = super::evaluation::request_task(snapshot, program, &task)?;
+            let fingerprint = super::endpoints::bridges::fingerprint(&request)
+                .unwrap_or_else(|| format!("{:x}", Sha256::digest(request.to_string().as_bytes())));
+            let key = format!("{kind}-{fingerprint}");
+            let item=obligations.entry(key.clone()).or_insert_with(||json!({
+                "obligation_id":key,"input_fingerprint":fingerprint,"kind":kind,"bridge_ref":bridge_ref,
+                "subject":subject,"endpoint_commitments":[],"observed_results":[],"attempts":0,
+                "semantics":"Recorded categorical result and raw distribution only; no generated Jev explanation. A root-group judgment does not identify which root is responsible."
+            }));
+            let commitment = json!({"endpoint_id":route["endpoint_id"],"commitment_id":route["commitment_id"],"route_id":route["id"]});
+            if !item["endpoint_commitments"]
+                .as_array()
+                .unwrap()
+                .contains(&commitment)
+            {
+                item["endpoint_commitments"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(commitment);
+            }
+            item["observed_results"].as_array_mut().unwrap().push(json!({"task":task,"result":result,"evaluation":program["evaluations"][super::field(&task,"nodeId")][function]}));
+        }
+    }
+    let mut queue: Vec<_> = obligations
+        .into_values()
+        .filter_map(|mut item| {
+            let attempts: Vec<_> = program["targeted_repair_history"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|prior| prior["input_fingerprint"] == item["input_fingerprint"])
+                .collect();
+            if attempts
+                .iter()
+                .any(|prior| matches!(prior["status"].as_str(), Some("no_change" | "failed")))
+            {
+                return None;
+            }
+            item["attempts"] = json!(attempts.len());
+            Some(item)
+        })
+        .collect();
+    queue.sort_by_key(|item| {
+        let explicit_root = item["kind"] == "root_gap"
+            && item["observed_results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| matches!(r["result"].as_str(), Some("gap" | "conflict")));
+        let affected: BTreeSet<_> = item["endpoint_commitments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    super::field(c, "endpoint_id"),
+                    super::field(c, "commitment_id"),
+                )
+            })
+            .collect();
+        (
+            !explicit_root,
+            std::cmp::Reverse(affected.len()),
+            item["attempts"].as_u64().unwrap_or(0),
+            super::field(item, "obligation_id").to_owned(),
+        )
+    });
+    Ok(queue)
+}
+
+
+/// One prospective repair reserves revalidation of current work, a bounded
+/// generation, and another full finalization in the original run allowance.
+pub fn repair_admission(
+    snapshot: &Value,
+    program: &Value,
+    elapsed_ms: u64,
+) -> Result<Value, String> {
+    let mut revalidation = program.clone();
+    for field in ["results", "evaluations", "candidate_basis", "route_basis"] {
+        revalidation[field] = json!({});
+    }
+    let work = super::endpoints::pending_mandatory_work(snapshot, &revalidation)?;
+    let endpoints = program["endpoint_search"]["endpoints"]
+        .as_array()
+        .map_or(0, Vec::len) as u64;
+    // A prospective finding has no exact request yet. Reserve comparison changes
+    // conservatively; actual acceptance uses the normal exact-context planner.
+    let novelty = work["novelty_rechecks"].as_u64().unwrap_or(0);
+    let fixed = work["required_transitions"]
+        .as_u64()
+        .ok_or("Missing repair work cost")?
+        .saturating_add(endpoints.saturating_sub(novelty) * 2);
+    let ids = program["active_world_ids"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut tasks = Vec::new();
+    for id in &ids {
+        let world = snapshot["nodes"]
+            .as_array()
+            .and_then(|nodes| nodes.iter().find(|node| node["Id"] == *id))
+            .ok_or("Missing assessed world for repair finalization")?;
+        tasks.extend(super::search::audit_tasks(world, program));
+    }
+    tasks.extend(super::search::world_set_tasks(&ids));
+    let final_audit = super::search::refinement_admission(snapshot, program, &tasks);
+    let audit_cost = final_audit["required_transitions"]
+        .as_u64()
+        .ok_or("Cannot reserve repair finalization audit")?;
+    let finalization = 2 * super::REASONING_ADMISSION_RESERVE + audit_cost.max(32);
+    let finalization_ms = super::WORLD_TIME_RESERVE_MS.max(
+        super::generation_duration(program, "compose")
+            .saturating_add(super::generation_duration(program, "synthesize")),
+    );
+    let required = fixed + super::REASONING_ADMISSION_RESERVE + finalization + 16;
+    let remaining = super::MAX_APP_TRANSITIONS.saturating_sub(super::transition_count(program));
+    let generation = super::generation_duration(program, "backward");
+    let time_ok = elapsed_ms
+        .saturating_add(generation)
+        .saturating_add(super::ENDPOINT_EVALUATION_DRAIN_MS)
+        .saturating_add(finalization_ms)
+        < super::MAX_MS;
+    Ok(
+        json!({"admitted":time_ok&&required<=remaining,"reason":if !time_ok{"time_budget"}else if required>remaining{"transition_budget"}else{"reserved"},"required_transitions":required,"remaining_transitions":remaining,"existing_graph_revalidation_transitions":fixed,"new_work_minimum_reserve":16,"generation_transition_reserve":super::REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":finalization,"finalization_time_reserve_ms":finalization_ms,"finalization_audit":final_audit,"generation_ms":generation,"elapsed_ms":elapsed_ms,"original_deadline_ms":super::MAX_MS,"evaluation_transition_capacity":remaining.saturating_sub(super::REASONING_ADMISSION_RESERVE+finalization),"output_cost_known":false,"semantics":"Conservative current-graph revalidation reserve. New repair output must fit the same remaining capacity before application; no acceptance, timing guarantee or fresh allowance is implied."}),
+    )
+}
+
 /// Deterministic from persisted state: retries select the same obligations.
 /// Missing commitments precede alternatives; least explored alternatives go first.
 pub fn batch(snapshot: &Value, program: &Value) -> Value {
+    if matches!(
+        program["targeted_repair"]["status"].as_str(),
+        Some("admitted" | "generating")
+    ) {
+        let obligation = &program["targeted_repair"]["obligation"];
+        let mut selected = BTreeSet::new();
+        let commitments:Vec<_>=obligation["endpoint_commitments"].as_array().into_iter().flatten().filter(|c|selected.insert((super::field(c,"endpoint_id"),super::field(c,"commitment_id")))).take(MAX_COMMITMENTS).map(|c| {
+            let statement=program["endpoint_search"]["endpoints"].as_array().into_iter().flatten().find(|e|e["id"]==c["endpoint_id"]).and_then(|e|e["commitments"].as_array()).and_then(|cs|cs.iter().find(|item|item["id"]==c["commitment_id"])).map(|c|c["statement"].clone()).unwrap_or(Value::Null);
+            json!({"endpoint_id":c["endpoint_id"],"commitment_id":c["commitment_id"],"statement":statement,"alternative_to":c["route_id"],"reason":"targeted_recorded_gap","repair_fingerprint":obligation["input_fingerprint"]})
+        }).collect();
+        return json!({"contract":program["endpoint_search"]["backward_batch_contract"],"mode":"alternatives","commitments":commitments,"repair_obligation":obligation,"limits":{"routes":commitments.len(),"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}});
+    }
     let routes: Vec<_> = program["endpoint_search"]["routes"]
         .as_array()
         .into_iter()
@@ -47,7 +262,6 @@ pub fn batch(snapshot: &Value, program: &Value) -> Value {
             obligations.push((priority, related.len(), json!({"endpoint_id":endpoint["id"],"commitment_id":commitment["id"],"statement":commitment["statement"],"alternative_to":unresolved.map(|r|r["id"].clone()),"reason":if priority == 0 {"missing_route"} else if priority == 1 {"unresolved_route"} else {"further_alternative"}})));
         }
     }
-    let current = json!({"endpoints":program["endpoint_search"]["endpoints"],"baseline":program["baseline"],"world":snapshot["world"],"source_evidence":super::evidence::active_sources(snapshot)});
     let current_passes: BTreeSet<_> = if program["endpoint_search"]["backward_batch_contract"] == 2
     {
         program["endpoint_search"]["endpoints"]
@@ -56,20 +270,7 @@ pub fn batch(snapshot: &Value, program: &Value) -> Value {
             .flatten()
             .filter_map(|endpoint| {
                 let id = endpoint["id"].as_str()?;
-                let receipt = &program["endpoint_novelty"][id];
-                let prior = if receipt["final_check"].is_object() {
-                    &receipt["final_check"]
-                } else {
-                    &receipt["initial_check"]
-                };
-                (receipt["status"] == "passed"
-                    && prior["passed"] == true
-                    && super::proposals::pool::request(
-                        &current,
-                        &json!({"function":"check_proposal_change","endpoint_id":id}),
-                    )
-                    .is_ok_and(|request| request == prior["request"]))
-                .then_some(id)
+                super::proposals::pool::current_novelty_passed(snapshot, program, id).then_some(id)
             })
             .collect()
     } else {
@@ -124,6 +325,47 @@ pub fn batch(snapshot: &Value, program: &Value) -> Value {
     json!({"contract":program["endpoint_search"]["backward_batch_contract"],"mode":if complete_original {"complete_original"} else {"alternatives"},"commitments":selected,"limits":{"routes":route_limit,"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}})
 }
 
+
+pub fn repair_disposition(
+    program: &Value,
+    generated: &Value,
+) -> Result<Option<&'static str>, String> {
+    if !matches!(
+        program["targeted_repair"]["status"].as_str(),
+        Some("admitted" | "generating")
+    ) {
+        return Ok(None);
+    }
+    let disposition = &generated["repair_disposition"];
+    if disposition["input_fingerprint"]
+        != program["targeted_repair"]["obligation"]["input_fingerprint"]
+    {
+        return Err("Repair disposition must name the exact supplied input_fingerprint".into());
+    }
+    if !disposition["note"]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty() && s.len() <= 800)
+    {
+        return Err("Repair disposition needs a nonempty note of at most800 characters".into());
+    }
+    let changed = [
+        "routes",
+        "hypotheses",
+        "research_evidence",
+        "amendments",
+        "branches",
+        "source_corrections",
+        "bridges",
+    ]
+    .iter()
+    .any(|key| generated[*key].as_array().is_some_and(|a| !a.is_empty()));
+    match disposition["status"].as_str() {
+        Some("no_change") if !changed && (generated["baseline_delta"].is_null()||generated["baseline_delta"].as_object().is_some_and(|o|o.is_empty())) && (generated["baseline"].is_null()||generated["baseline"]==program["baseline"]) =>Ok(Some("no_change")),
+        Some("proposed") if changed && ["routes","hypotheses","research_evidence","amendments","source_corrections"].iter().any(|key|generated[*key].as_array().is_some_and(|a|!a.is_empty()))=>Ok(Some("proposed")),
+        _=>Err("Repair must declare proposed material work, or no_change with no new evidence, graph or baseline mutation; unchanged work cannot renew the attempt".into())
+    }
+}
+
 /// Called before any route mutations. Historical runs retain their old contract.
 pub fn validate(snapshot: &Value, program: &Value, generated: &Value) -> Result<(), String> {
     if !enabled(program) {
@@ -132,6 +374,7 @@ pub fn validate(snapshot: &Value, program: &Value, generated: &Value) -> Result<
     if generated.to_string().len() > MAX_RESPONSE_BYTES {
         return Err("Backward batch exceeds 64 KiB; return only the selected commitments and concise shared pieces".into());
     }
+    repair_disposition(program, generated)?;
     let selected = batch(snapshot, program);
     let route_limit = selected["limits"]["routes"].as_u64().unwrap_or(0) as usize;
     for (key, max) in [

@@ -142,7 +142,7 @@ name = "Complete"
 kind = "input"
 from = ["Expanding"]
 to = "Completed"
-params = ["answer", "finished_at_ms"]
+params = ["answer", "finished_at_ms", "program_json"]
 effect = [{type="increment",var="transition_count"}]
 
 [[action]]
@@ -384,7 +384,7 @@ name = "Expanded"
 kind = "input"
 from = ["Expanding"]
 to = "Choosing"
-params = ["snapshot_json", "program_json", "started_at_ms"]
+params = ["snapshot_json", "program_json", "started_at_ms", "answer"]
 effect = [{type="increment",var="transition_count"}]
 [[action.triggers]]
 name = "semantic_step"

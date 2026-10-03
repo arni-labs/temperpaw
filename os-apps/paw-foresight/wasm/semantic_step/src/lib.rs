@@ -2,12 +2,42 @@ use temper_wasm_sdk::prelude::*;
 mod core {
     include!("../../semantic_core.rs");
 }
+/// Complete the admitted diverse answer before optional additional coverage can
+/// change its evidence context. Compatibility is not proof of the route.
+fn ready_admitted_worlds(snapshot: &Value, program: &Value) -> Option<Value> {
+    if program["audit_policy_version"] != 2 {
+        return None;
+    }
+    let bundles = core::endpoints::composition_bundles(snapshot, program);
+    let ready: Vec<_> = bundles
+        .as_array()?
+        .iter()
+        .filter(|bundle| {
+            bundle["status"] == "compatible"
+                && core::proposals::pool::current_novelty_passed(
+                    snapshot,
+                    program,
+                    core::field(bundle, "endpoint_id"),
+                )
+        })
+        .map(|bundle| bundle["endpoint_id"].clone())
+        .collect();
+    if ready.len() < 2 {
+        return None;
+    }
+    let work = core::endpoints::pending_mandatory_work(snapshot, program).ok()?;
+    (work["questions"] == 0).then(|| json!({"endpoint_ids":ready,"pending_mandatory_questions":0,"semantics":"Ready for composition, not causal proof. Unresolved route checks and unconstructed originals remain explicit; final world estimates still require evaluation."}))
+}
+
 fn next_phase(
     snapshot: &Value,
     program: &mut Value,
     trace_len: usize,
     elapsed_ms: u64,
 ) -> &'static str {
+    if program["answer_checkpoint"].is_object() && program["targeted_repair"]["status"]=="admitted" {
+        return "backward";
+    }
     let exhausted = if matches!(
         program["stop_reason"].as_str(),
         Some("trace_budget" | "provider_error" | "time_budget" | "transition_budget")
@@ -94,6 +124,19 @@ fn next_phase(
                 }
             }
             program["admitted_work"]["status"] = json!("completed");
+        }
+        if let Some(receipt) = ready_admitted_worlds(snapshot, program) {
+            program["initial_world_finalization"] = receipt;
+            program["stop_reason"] = json!("admitted_worlds_ready_for_composition");
+            return "compose";
+        }
+        if program["answer_checkpoint"].is_object() {
+            // The one repair cannot schedule another generation. Current checks
+            // and the normal composer still decide whether a new answer exists.
+            match core::proposals::pool::defer_before_composition(snapshot,program,!exhausted.is_empty()) {
+                Ok(true)=>return "refine", Ok(false)=>{}, Err(error)=>{program["deferred_novelty_recheck"]=json!({"status":"not_admitted","error":error});}
+            }
+            return "compose";
         }
         let needs_alternative = core::endpoints::alternative_needed(program);
         let remaining = core::transition_limit(&json!({"stage":"routes"}))
@@ -541,6 +584,9 @@ fn step(ctx: &Context) -> Result<(), String> {
         program["stop_reason"] = json!("trace_budget");
     }
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
+    if program["targeted_repair"]["status"]=="admitted" && (elapsed.saturating_add(core::generation_duration(&program,"backward")).saturating_add(core::ENDPOINT_EVALUATION_DRAIN_MS).saturating_add(program["targeted_repair"]["admission"]["finalization_time_reserve_ms"].as_u64().unwrap_or(core::WORLD_TIME_RESERVE_MS))>=core::MAX_MS || core::transition_count(&ctx.entity_state)>=core::MAX_APP_TRANSITIONS) {
+        return Err("Optional repair reservation expired before dispatch; the completed initial answer is preserved in its original assessment context".into());
+    }
     if core::transition_count(&ctx.entity_state) >= core::transition_limit(&program)
         && !admit_route_finalization(&snapshot, &mut program, calls, elapsed)?
     {
@@ -873,6 +919,107 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("../../semantic_repair_fixture.rs");
+
+    #[test]
+    fn repair_queue_uses_current_recorded_checks_and_never_repeats_no_change() {
+        let (snapshot, mut p) = ready_pair();
+        let queue = core::backward::repair_obligations(&snapshot, &p).unwrap();
+        assert!(!queue.is_empty());
+        assert_eq!(queue[0]["kind"], "root_gap");
+        for item in &queue {
+            for observed in item["observed_results"].as_array().unwrap() {
+                let t = &observed["task"];
+                assert_eq!(
+                    observed["result"],
+                    p["results"][core::field(t, "nodeId")][core::field(t, "function")]
+                );
+                assert_eq!(
+                    observed["evaluation"],
+                    p["evaluations"][core::field(t, "nodeId")][core::field(t, "function")]
+                );
+                assert!(observed.get("explanation").is_none());
+            }
+        }
+        p["targeted_repair_history"] =
+            json!([{"input_fingerprint":queue[0]["input_fingerprint"],"status":"no_change"}]);
+        let after = core::backward::repair_obligations(&snapshot, &p).unwrap();
+        assert!(
+            !after
+                .iter()
+                .any(|item| item["input_fingerprint"] == queue[0]["input_fingerprint"])
+        );
+        p["baseline"]["unknowns"] = json!(["Changed present context"]);
+        assert!(
+            core::backward::repair_obligations(&snapshot, &p)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn complete_admitted_pair_precedes_optional_research_without_certifying_gaps() {
+        let (snapshot, mut p) = ready_pair();
+        assert_eq!(
+            core::endpoints::pending_mandatory_work(&snapshot, &p).unwrap()["questions"],
+            0
+        );
+        assert_eq!(next_phase(&snapshot, &mut p, 20, 1_000_000), "compose");
+        assert_eq!(
+            p["endpoint_search"]["endpoints"].as_array().unwrap().len(),
+            3
+        );
+        assert!(
+            p["endpoint_search"]["routes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["status"] == "unresolved")
+        );
+        assert_eq!(
+            p["initial_world_finalization"]["endpoint_ids"],
+            json!(["a", "b"])
+        );
+        let mut stale = p.clone();
+        stale["baseline"]["unknowns"] = json!(["New present uncertainty"]);
+        assert!(ready_admitted_worlds(&snapshot, &stale).is_none());
+        let mut pending = p.clone();
+        pending["results"]["target-a"]["estimate_likelihood"] = Value::Null;
+        assert!(ready_admitted_worlds(&snapshot, &pending).is_none());
+        let mut historical = p.clone();
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("audit_policy_version");
+        assert!(ready_admitted_worlds(&snapshot, &historical).is_none());
+    }
+
+    #[test]
+    #[ignore = "uses supplied frozen pass16 checkpoints"]
+    fn captured_pass16_pair_finishes_before_third_original() {
+        let dir = std::env::var("FORESIGHT_PASS16_DIR").unwrap();
+        for topic in ["games", "food"] {
+            let record: Value =
+                serde_json::from_str(&std::fs::read_to_string(format!("{dir}/{topic}.json")).unwrap())
+                    .unwrap();
+            let snapshot = core::parse(record["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+            let mut p = core::parse(record["fields"]["program_json"].as_str().unwrap()).unwrap();
+            let originals = p["endpoint_search"]["endpoints"].clone();
+            let routes = p["endpoint_search"]["routes"].clone();
+            assert_eq!(
+                ready_admitted_worlds(&snapshot, &p).unwrap()["endpoint_ids"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(next_phase(&snapshot, &mut p, 200, 1_660_000), "compose");
+            assert_eq!(p["endpoint_search"]["endpoints"], originals);
+            assert_eq!(p["endpoint_search"]["routes"], routes);
+        }
+    }
+
     #[test]
     fn admitted_work_capacity_spans_candidates_routes_and_novelty_without_reset() {
         let mut p = json!({"audit_policy_version":2,"world_search_contract":1,"stage":"exploration","transition_count":60,"reasoning_episode_durations_ms":{"backward":1260000}});
