@@ -1507,6 +1507,25 @@
         <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
       </Action>
+      <Action Name="ResumeReasoned" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
+        <Parameter Name="transition_count" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="reasoning_retry_count" Type="Edm.Int64" Nullable="false"/>
+        <Parameter Name="reasoning_session_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reasoning_result" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>
+        <Parameter Name="world_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="snapshot_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="program_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="trace_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="started_at_ms" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="agent_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="phase" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Foresight.SemanticRun"/>
+      </Action>
       <Action Name="ResumePrepared" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.SemanticRun"/>
         <Parameter Name="reasoning_phase_polls" Type="Edm.Int64" Nullable="true"/>

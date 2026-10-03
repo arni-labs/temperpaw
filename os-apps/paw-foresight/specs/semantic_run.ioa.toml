@@ -638,6 +638,23 @@ params = ["last_retry_error", "last_retry_session_id"]
 guard = [{type="max_count",var="reasoning_retry_count",max=3}]
 effect = [{type="increment",var="transition_count"},{type="increment",var="reasoning_retry_count"},{type="schedule",action="SpawnReasoning",delay_seconds=15}]
 
+# Consume a trusted saved child's completed result without spawning another.
+[[action]]
+name = "ResumeReasoned"
+kind = "input"
+from = ["Preparing"]
+to = "Expanding"
+params = ["transition_count", "reasoning_phase_polls", "reasoning_retry_count", "reasoning_session_id", "reasoning_result", "world_id", "snapshot_json", "program_json", "trace_json", "started_at_ms", "agent_id", "model", "provider", "provider_options_json", "phase"]
+effect = [{type="set_counter_from_param",var="transition_count",param="transition_count"},{type="set_counter_from_param",var="reasoning_phase_polls",param="reasoning_phase_polls"},{type="set_counter_from_param",var="reasoning_retry_count",param="reasoning_retry_count"},{type="increment",var="transition_count"}]
+[[action.triggers]]
+name = "semantic_expand"
+kind = "wasm"
+module = "semantic_expand"
+on_failure = "Fail"
+[action.triggers.config]
+max_memory = "268435456"
+max_fuel = "10000000000"
+
 [[action]]
 name = "ResumePrepared"
 kind = "input"

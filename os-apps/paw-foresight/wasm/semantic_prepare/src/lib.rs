@@ -413,6 +413,97 @@ fn resume_checkpoint(record: &Value, world_id: &str, now_ms: u64) -> Result<Valu
     )
 }
 
+/// Reuse only the completed child named by the trusted failed checkpoint.
+/// Structural validation runs first; successful recovery preserves the exact input
+/// that child answered, rather than replanning it underneath an existing answer.
+fn resume_reasoned(
+    record: &Value,
+    child: &Value,
+    world_id: &str,
+    now_ms: u64,
+) -> Result<Option<Value>, String> {
+    let child_id = core::field(record, "reasoning_session_id");
+    if !valid_id(child_id) || core::field(child, "Id") != child_id {
+        return Err("Resume reasoning child identity mismatch".into());
+    }
+    match core::field(child, "Status") {
+        "Failed" | "Cancelled" => return Ok(None),
+        "Completed" => (),
+        _ => {
+            return Err(format!(
+                "Saved reasoning session {child_id} is still active or awaiting approval; no duplicate session was started"
+            ));
+        }
+    }
+    if core::field(record, "Status") != "Failed"
+        || core::field(record, "error_message")
+            != "Reasoning stage timed out; partial exploration is preserved."
+    {
+        return Ok(None);
+    }
+    let mut prepared = resume_checkpoint(record, world_id, now_ms)?;
+    let started = core::field(record, "started_at_ms")
+        .parse::<u64>()
+        .map_err(|_| "Invalid resume clock")?;
+    if now_ms.saturating_sub(started) >= core::MAX_MS {
+        return Err(
+            "Original exploration time budget exhausted; completed reasoning remains saved".into(),
+        );
+    }
+    let transitions = record["transition_count"]
+        .as_u64()
+        .ok_or("Missing saved transition counter")?;
+    if transitions >= core::MAX_APP_TRANSITIONS - 1 {
+        return Err(
+            "Original native transition budget exhausted; completed reasoning remains saved".into(),
+        );
+    }
+    let answer = core::field(child, "result");
+    if answer.trim().is_empty() || answer.len() > 2_000_000 {
+        return Err("Completed reasoning answer is empty or exceeds the recovery bound".into());
+    }
+    // ReasoningComplete atomically stores this exact answer before Expanding.
+    // Reject old or identical answers conservatively instead of reapplying them.
+    if core::field(record, "reasoning_result") == answer {
+        return Ok(None);
+    }
+    for key in ["system_prompt", "user_message"] {
+        if core::field(record, key).is_empty()
+            || core::field(record, key) != core::field(child, key)
+        {
+            return Err(format!(
+                "Saved reasoning child {key} does not match the checkpoint"
+            ));
+        }
+    }
+    for key in [
+        "snapshot_json",
+        "program_json",
+        "trace_json",
+        "started_at_ms",
+        "phase",
+        "model",
+        "provider",
+        "provider_options_json",
+    ] {
+        prepared[key] = json!(core::field(record, key));
+    }
+    for key in [
+        "transition_count",
+        "reasoning_phase_polls",
+        "reasoning_retry_count",
+    ] {
+        prepared[key] = json!(
+            record[key]
+                .as_u64()
+                .ok_or_else(|| format!("Missing saved {key}"))?
+        );
+    }
+    prepared["reasoning_session_id"] = json!(child_id);
+    prepared["reasoning_result"] = json!(answer);
+    Ok(Some(prepared))
+}
+
 fn resume_transition(prepared: &Value) -> Result<&'static str, String> {
     let program = core::parse(core::field(prepared, "program_json"))?;
     let cursor = program["cursor"].as_u64().ok_or("Missing resume cursor")?;
@@ -452,9 +543,28 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         // Read only the trusted checkpoint and launch metadata. JSON escaping
         // of the bounded 24 MiB trace plus graph/program needs a larger envelope.
         let path = format!(
-            "SemanticRuns('{resume_id}')?$select=Id,Status,world_id,agent_id,model,provider,provider_options_json,snapshot_json,program_json,trace_json,started_at_ms,phase"
+            "SemanticRuns('{resume_id}')?$select=Id,Status,world_id,agent_id,model,provider,provider_options_json,snapshot_json,program_json,trace_json,started_at_ms,phase,reasoning_session_id,reasoning_result,system_prompt,user_message,error_message,transition_count,reasoning_phase_polls,reasoning_retry_count"
         );
         let record = read_bounded(ctx, &path, 64 * 1024 * 1024)?;
+        let child_id = core::field(&record, "reasoning_session_id");
+        if !child_id.is_empty() {
+            if !valid_id(child_id) {
+                return Err("Invalid saved reasoning session identity".into());
+            }
+            let child = read_bounded(
+                ctx,
+                &format!(
+                    "Sessions('{child_id}')?$select=Id,Status,result,system_prompt,user_message"
+                ),
+                4_000_000,
+            )?;
+            if let Some(prepared) =
+                resume_reasoned(&record, &child, id, Context::get_time_millis() as u64)?
+            {
+                set_success_result("ResumeReasoned", &prepared);
+                return Ok(());
+            }
+        }
         if let Some(prepared) = prepare_retry(&record, id, Context::get_time_millis() as u64)? {
             set_success_result(resume_transition(&prepared)?, &prepared);
             return Ok(());
@@ -599,6 +709,74 @@ mod tests {
         json!({"Status":"Failed","world_id":"w","phase":"seed",
             "snapshot_json":"","program_json":"","trace_json":"",
             "started_at_ms":"","agent_id":"","model":"","provider":""})
+    }
+
+    #[test]
+    fn completed_child_recovery_preserves_checkpoint_and_rejects_stale_or_expired_work() {
+        let mut record = checkpoint();
+        record["reasoning_session_id"] = json!("child-a");
+        record["transition_count"] = json!(123);
+        record["reasoning_phase_polls"] = json!(15);
+        record["reasoning_retry_count"] = json!(2);
+        record["reasoning_result"] = json!("prior answer");
+        record["system_prompt"] = json!("phase contract");
+        record["user_message"] = json!("exact phase input");
+        record["error_message"] =
+            json!("Reasoning stage timed out; partial exploration is preserved.");
+        let child = json!({"Id":"child-a","Status":"Completed","result":"new answer","system_prompt":"phase contract","user_message":"exact phase input"});
+        let prepared = resume_reasoned(&record, &child, "w", 2000)
+            .unwrap()
+            .unwrap();
+        for key in [
+            "snapshot_json",
+            "program_json",
+            "trace_json",
+            "started_at_ms",
+            "phase",
+            "model",
+            "provider",
+            "transition_count",
+            "reasoning_phase_polls",
+            "reasoning_retry_count",
+        ] {
+            assert_eq!(prepared[key], record[key], "changed {key}");
+        }
+        assert_eq!(prepared["reasoning_result"], "new answer");
+        for status in ["CallingProvider", "WaitingForApproval", "PreparingContext"] {
+            let mut pending = child.clone();
+            pending["Status"] = json!(status);
+            assert!(
+                resume_reasoned(&record, &pending, "w", 2000)
+                    .unwrap_err()
+                    .contains("no duplicate")
+            );
+        }
+        let mut failed = child.clone();
+        failed["Status"] = json!("Failed");
+        assert_eq!(resume_reasoned(&record, &failed, "w", 2000).unwrap(), None);
+        for (key, value) in [
+            ("Id", "another-child"),
+            ("result", ""),
+            ("user_message", "another phase"),
+        ] {
+            let mut changed = child.clone();
+            changed[key] = json!(value);
+            assert!(
+                resume_reasoned(&record, &changed, "w", 2000).is_err(),
+                "{key}"
+            );
+        }
+        let mut stale = record.clone();
+        stale["reasoning_result"] = child["result"].clone();
+        assert_eq!(resume_reasoned(&stale, &child, "w", 2000).unwrap(), None);
+        assert!(prepare_retry(&stale, "w", 2000).unwrap().is_some());
+        stale["reasoning_result"] = json!("older answer");
+        stale["error_message"] = json!("Composition rejected after two corrective attempts");
+        assert_eq!(resume_reasoned(&stale, &child, "w", 2000).unwrap(), None);
+        assert!(prepare_retry(&stale, "w", 2000).unwrap().is_some());
+        assert!(resume_reasoned(&record, &child, "w", 1000 + core::MAX_MS).is_err());
+        record["transition_count"] = json!(480);
+        assert!(resume_reasoned(&record, &child, "w", 2000).is_err());
     }
 
     #[test]
