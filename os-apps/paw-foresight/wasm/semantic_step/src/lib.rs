@@ -58,7 +58,15 @@ fn next_phase(
             if !exhausted.is_empty()
                 || core::research_admission(program, "backward", elapsed_ms)["admitted"] != true
             {
-                program["stop_reason"] = json!(if exhausted.is_empty() { "time_budget" } else { exhausted.as_str() });
+                program["stop_reason"] = json!(if exhausted.is_empty() {
+                    "time_budget"
+                } else {
+                    exhausted.as_str()
+                });
+                return "compose";
+            }
+            if !core::backward_work_admission(program, elapsed_ms) {
+                program["stop_reason"] = program["backward_work_refusal"]["reason"].clone();
                 return "compose";
             }
             return "backward";
@@ -70,6 +78,23 @@ fn next_phase(
             return "refine";
         }
         core::endpoints::finish_routes(snapshot, program);
+        if program["audit_policy_version"] == 2 && program["admitted_work"]["status"] == "checking"
+        {
+            let cannot_finish = elapsed_ms >= core::time_limit(program)
+                || core::transition_count(program)
+                    >= core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32
+                || trace_len >= core::call_limit(program);
+            match core::proposals::pool::defer_before_composition(snapshot, program, cannot_finish)
+            {
+                Ok(true) => return "refine",
+                Ok(false) => {}
+                Err(error) => {
+                    program["deferred_novelty_recheck"] =
+                        json!({"status":"not_admitted","error":error});
+                }
+            }
+            program["admitted_work"]["status"] = json!("completed");
+        }
         let needs_alternative = core::endpoints::alternative_needed(program);
         let remaining = core::transition_limit(&json!({"stage":"routes"}))
             .saturating_sub(core::transition_count(program));
@@ -78,7 +103,10 @@ fn next_phase(
             && remaining >= core::REASONING_ADMISSION_RESERVE + 16
             && core::research_admission(program, "backward", elapsed_ms)["admitted"] == true;
         program["backward_admission"] = json!({"admitted":allowed,"remaining_transitions":remaining,"required_transitions":core::REASONING_ADMISSION_RESERVE+16,"alternative_required":needs_alternative,"time_admission":core::research_admission(program, "backward", elapsed_ms)});
-        if allowed && (needs_alternative || program["continue_exploring"] != false) {
+        if allowed
+            && (needs_alternative || program["continue_exploring"] != false)
+            && core::backward_work_admission(program, elapsed_ms)
+        {
             program["stage"] = json!("exploration");
             program["stop_reason"] = json!(if needs_alternative {
                 "backward_alternative_needed"
@@ -134,7 +162,7 @@ fn next_phase(
             incomplete |= audit["completed_checks"].as_u64().unwrap_or(0)
                 < audit["planned_checks"].as_u64().unwrap_or(0);
             has_conflict |= audit["status"] == "conflicts_found";
-            next_questions += core::search::world_tasks(world).len();
+            next_questions += core::search::audit_tasks(world, program).len();
             program["world_audits"][core::field(world, "Id")] = audit;
         }
         let mut revision_allowed = false;
@@ -144,7 +172,7 @@ fn next_phase(
                 .into_iter()
                 .flatten()
                 .filter(|n| active.contains(&n["Id"]))
-                .flat_map(core::search::world_tasks)
+                .flat_map(|world| core::search::audit_tasks(world, program))
                 .collect();
             tasks.splice(0..0, core::search::world_set_tasks(&active));
             let mut admission = core::search::refinement_admission(snapshot, program, &tasks);
@@ -304,6 +332,46 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
     Ok(
         json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"reasoning_reserve":core::REASONING_ADMISSION_RESERVE,"current_graph_evaluation_transitions":evaluation_transitions,"new_work_reserve":32,"estimated_batches":batches,"current_graph_tasks":task_count,"unseen_payload_bounded":false}),
     )
+}
+
+fn comparison_admission(program: &Value, remaining: u64, elapsed: u64) -> Value {
+    let optional = program["proposal_pool"]["novelty_repair"]["status"] == "pending"
+        || program["proposal_pool"]["creative_repair"]["status"] == "pending"
+        || program["endpoint_proposal_attempt"]["status"] == "revision_requested";
+    let optional_time = core::optional_repair_time_admission(program, elapsed);
+    let completion_time = core::research_admission(program, "explore", elapsed);
+    let transitions = core::proposals::pool::admits(remaining, 2, 160);
+    let reason = if !transitions {
+        Some("transition_budget")
+    } else if completion_time["admitted"] != true || (optional && optional_time["admitted"] != true)
+    {
+        Some("time_budget")
+    } else {
+        None
+    };
+    json!({"admitted":reason.is_none(),"reason":reason,"optional_repair":optional,"remaining_transitions":remaining,"transition_admitted":transitions,"completion_time":completion_time,"optional_time":if optional {optional_time}else{Value::Null}})
+}
+
+fn admit_development(program: &mut Value, elapsed: u64) -> bool {
+    let mut admission = core::optional_repair_time_admission(program, elapsed);
+    let generation = core::generation_duration(program, "imagine");
+    let required = admission["required_ms"]
+        .as_u64()
+        .unwrap()
+        .saturating_add(generation);
+    admission["development_ms"] = json!(generation);
+    admission["required_ms"] = json!(required);
+    admission["admitted"] = json!(elapsed.saturating_add(required) < core::MAX_MS);
+    program["proposal_pool"]["development_admission"]["time_admission"] = admission.clone();
+    if admission["admitted"] == true {
+        return true;
+    }
+    program["proposal_pool"]["development_admission"]["admitted"] = json!(false);
+    program["proposal_pool"]["development_admission"]["reason"] = json!("time_budget");
+    program["proposal_pool"]["stage"] = json!("unresolved");
+    program["endpoint_proposal_attempt"]["status"] = json!("unresolved");
+    program["stop_reason"] = json!("time_budget");
+    false
 }
 
 // Preserve why checks stopped separately from the judgments they would have produced.
@@ -507,32 +575,40 @@ fn step(ctx: &Context) -> Result<(), String> {
         return Ok(());
     }
     if core::proposals::pool::research_pending(&program) {
-        let optional_repair = program["proposal_pool"]["research_attempts"]
-            .as_u64()
-            .unwrap_or(0)
-            > 0;
-        let time_admission = core::optional_repair_time_admission(&program, elapsed);
-        if optional_repair {
-            program["proposal_pool"]["repair_time_admission"] = time_admission.clone();
-        }
+        let recorded_refusal =
+            program["proposal_pool"]["comparison_admission"]["admitted"] == false;
         let remaining =
             core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
-        if !stopped
-            && core::proposals::pool::admits(remaining, 2, 160)
-            && (!optional_repair || time_admission["admitted"] == true)
-            && core::research_admission(&program, "explore", elapsed)["admitted"] == true
-        {
+        let admission = comparison_admission(&program, remaining, elapsed);
+        program["proposal_pool"]["comparison_admission"] = admission.clone();
+        if admission["optional_repair"] == true {
+            program["proposal_pool"]["repair_time_admission"] = admission["optional_time"].clone();
+        }
+        if !stopped && admission["admitted"] == true {
             set_success_result(
                 "Reason",
                 &json!({"phase":"explore","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
             );
         } else if core::proposals::pool::skip_prefreeze_repair(&mut program) {
-            set_success_result("SearchPlanned", &json!({"program_json":program.to_string()}));
-        } else {
             set_success_result(
-                "Fail",
-                &json!({"error_message":contrast_resource_message(proposal_resource_reason(&program, calls, elapsed).unwrap_or(if core::research_admission(&program, "explore", elapsed)["admitted"] != true {"time_budget"} else {"transition_budget"}))}),
+                "SearchPlanned",
+                &json!({"program_json":program.to_string()}),
             );
+        } else {
+            let reason = proposal_resource_reason(&program, calls, elapsed)
+                .unwrap_or(admission["reason"].as_str().unwrap_or("transition_budget"));
+            if recorded_refusal {
+                set_success_result(
+                    "Fail",
+                    &json!({"error_message":contrast_resource_message(reason)}),
+                );
+            } else {
+                program["stop_reason"] = json!(reason);
+                set_success_result(
+                    "SearchPlanned",
+                    &json!({"program_json":program.to_string()}),
+                );
+            }
         }
         return Ok(());
     }
@@ -547,9 +623,21 @@ fn step(ctx: &Context) -> Result<(), String> {
             );
             return Ok(());
         }
+        if program["proposal_pool"]["stage"] == "enrich"
+            && !admit_development(&mut program, elapsed)
+        {
+            set_success_result(
+                "SearchPlanned",
+                &json!({"program_json":program.to_string()}),
+            );
+            return Ok(());
+        }
         let admission = core::research_admission(&program, "imagine", elapsed);
         if admission["admitted"] != true {
-            set_success_result("Fail", &json!({"error_message":format!("No admitted time for endpoint generation and reassessment; saved work remains available. {admission}")}));
+            set_success_result(
+                "Fail",
+                &json!({"error_message":format!("No admitted time for endpoint generation and reassessment; saved work remains available. {admission}")}),
+            );
             return Ok(());
         }
         set_success_result(
@@ -786,6 +874,132 @@ pub extern "C" fn run(_: i32, _: i32) -> i32 {
 mod tests {
     use super::*;
     #[test]
+    fn admitted_work_capacity_spans_candidates_routes_and_novelty_without_reset() {
+        let mut p = json!({"audit_policy_version":2,"world_search_contract":1,"stage":"exploration","transition_count":60,"reasoning_episode_durations_ms":{"backward":1260000}});
+        assert!(core::backward_work_admission(&mut p, 16 * 60000));
+        assert_eq!(p["admitted_work"]["evaluation_transition_capacity"], 256);
+        p["admitted_work"]["status"] = json!("checking");
+        for stage in ["exploration", "routes", "proposals"] {
+            p["stage"] = json!(stage);
+            assert_eq!(core::transition_limit(&p), 360);
+            assert_eq!(core::time_limit(&p), 50*60_000);
+        }
+        let admitted = p["admitted_work"].clone();
+        assert!(!core::backward_work_admission(&mut p, 38 * 60000));
+        assert_eq!(p["admitted_work"], admitted);
+        assert_eq!(p["backward_work_refusal"]["reason"], "time_budget");
+        assert!(!core::backward_work_admission(&mut p, core::MAX_MS));
+        p["transition_count"] = json!(480);
+        assert!(!core::backward_work_admission(&mut p, 0));
+        assert!(p.get("started_at_ms").is_none());
+    }
+
+    #[test]
+    #[ignore = "uses the frozen pass15 music checkpoint supplied by FORESIGHT_MUSIC_CAPTURE"]
+    fn captured_music_workload_counts_unfinished_candidates_and_routes_together() {
+        let data: Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("FORESIGHT_MUSIC_CAPTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let mut p: Value =
+            serde_json::from_str(data["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(data["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        assert_eq!(p["stage"], "exploration");
+        assert_eq!(p["cursor"], 92);
+        p["audit_policy_version"] = json!(2);
+        // Replay the work before the terminal admission refusal. The frozen
+        // record has already rewritten these pending novelty statuses unresolved.
+        p["deferred_novelty_recheck"] = Value::Null;
+        for receipt in p["endpoint_novelty"].as_object_mut().unwrap().values_mut() {
+            if receipt["reason"].as_str().is_some_and(|reason|reason.starts_with("No admitted comparison recheck")) {
+                receipt["status"] = json!("provisional");
+            }
+        }
+        let work = core::endpoints::pending_mandatory_work(&snapshot, &p).unwrap();
+        assert!(!work["candidate_tasks"].as_array().unwrap().is_empty());
+        assert!(!work["route_tasks"].as_array().unwrap().is_empty());
+        assert_eq!(work["novelty_rechecks"], 5);
+        eprintln!(
+            "captured music candidate_tasks={} route_tasks={} packed={} contingent={} required={}",
+            work["candidate_tasks"].as_array().unwrap().len(),
+            work["route_tasks"].as_array().unwrap().len(),
+            work["known_packed_http_requests"],
+            work["contingent_questions"],
+            work["required_transitions"]
+        );
+        // No claim this already exhausted historical run can now fit. The new
+        // owner must count all of its work rather than stage-gate it away.
+    }
+
+    #[test]
+    fn education_generation_episode_counts_corrective_children_before_admission() {
+        // Captured education: final child started at53.13min, completed59.16;
+        // preceding route assessments ended38.01. Simulate a21-minute episode.
+        let mut p = json!({"stage":"exploration","world_search_contract":1});
+        core::start_reasoning_timing(&mut p, "backward", 1000);
+        core::finish_reasoning_timing(&mut p, "backward", 541000);
+        p["response_correction"] = json!({"attempt":1});
+        core::start_reasoning_timing(&mut p, "backward", 541000);
+        core::finish_reasoning_timing(&mut p, "backward", 901000);
+        p["response_correction"]["attempt"] = json!(2);
+        core::start_reasoning_timing(&mut p, "backward", 901000);
+        core::finish_reasoning_timing(&mut p, "backward", 1261000);
+        assert_eq!(p["reasoning_durations_ms"]["backward"], 540000);
+        assert_eq!(p["reasoning_episode_durations_ms"]["backward"], 1260000);
+        assert_eq!(
+            core::research_admission(&p, "backward", 38 * 60000)["admitted"],
+            false
+        );
+        p["response_correction"] = Value::Null;
+        core::start_reasoning_timing(&mut p, "backward", 2000000);
+        assert_eq!(p["reasoning_timing"]["episode_started_at_ms"], 2000000);
+        assert!(p.get("started_at_ms").is_none());
+    }
+
+    #[test]
+    fn pass15_city_admitted_development_finishes_its_required_comparison() {
+        // Exact admission/timing scalars from frozen pass15 city; payload retained
+        // synthetically below to verify a refusal never removes the existing pool.
+        let mut p = json!({"stage":"proposals","reasoning_durations_ms":{"explore":541525,"imagine":240950,"seed":120337},"proposal_pool":{"stage":"contrast","research_attempts":1,"development":{"status":"completed"},"development_admission":{"admitted":true,"remaining_transitions":431,"provisional_count":4},"candidates":[{"id":"preserved"}]}});
+        let current = comparison_admission(&p, 417, 1_147_099);
+        assert_eq!(current["admitted"], true);
+        assert_eq!(current["optional_repair"], false);
+        assert_eq!(
+            core::optional_repair_time_admission(&p, 1_147_099)["admitted"],
+            false
+        );
+        p["proposal_pool"]["novelty_repair"] = json!({"status":"pending"});
+        let optional = comparison_admission(&p, 417, 1_147_099);
+        assert_eq!(optional["admitted"], false);
+        assert_eq!(optional["reason"], "time_budget");
+        assert_eq!(optional["transition_admitted"], true);
+        p["proposal_pool"]
+            .as_object_mut()
+            .unwrap()
+            .remove("novelty_repair");
+        assert_eq!(
+            comparison_admission(&p, 1, 1_147_099)["reason"],
+            "transition_budget"
+        );
+        assert_eq!(
+            comparison_admission(&p, 417, core::MAX_MS)["reason"],
+            "time_budget"
+        );
+        let original = p["proposal_pool"]["candidates"].clone();
+        p["proposal_pool"]["stage"] = json!("enrich");
+        assert!(!admit_development(&mut p, 906_149));
+        assert_eq!(p["proposal_pool"]["candidates"], original);
+        assert_eq!(
+            p["proposal_pool"]["development_admission"]["reason"],
+            "time_budget"
+        );
+        assert_eq!(p["endpoint_proposal_attempt"]["status"], "unresolved");
+        assert!(admit_development(&mut p, 0));
+        assert!(p.get("started_at_ms").is_none());
+    }
+
+    #[test]
     fn pass14_optional_repair_preserves_first_routes_and_writing_window() {
         // Recorded pass14 food first checks at20.09min, then39.29min after repair.
         let p = json!({"endpoint_proposal_contract":2,"stage":"proposals","reasoning_durations_ms":{"explore":663216,"imagine":180358,"seed":120247}});
@@ -927,7 +1141,7 @@ mod tests {
         let late = core::research_admission(&p, "backward", 47 * 60_000 + 59_000);
         assert_eq!(late["admitted"], false);
         assert_eq!(late["predicted_generation_ms"], 900_000);
-        assert_eq!(late["basis"], "maximum_observed_same_phase");
+        assert_eq!(late["basis"], "maximum_observed_generation_episode");
         assert_eq!(core::research_admission(&p, "backward", 30 * 60_000)["admitted"], true);
         assert_eq!(core::research_admission(&p, "explore", 48 * 60_000)["admitted"], false);
         core::start_reasoning_timing(&mut p, "backward", 3_000_000);

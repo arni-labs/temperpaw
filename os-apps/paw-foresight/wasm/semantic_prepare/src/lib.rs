@@ -596,6 +596,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let mut program = core::plan(&nodes)?;
     program["world_search_contract"] = json!(1);
     program["endpoint_proposal_contract"] = json!(2);
+    program["audit_policy_version"] = json!(2);
     let session_id = core::field(&world, "research_session_id");
     if session_id.is_empty()
         || !session_id

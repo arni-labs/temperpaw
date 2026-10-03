@@ -1325,7 +1325,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
     }
     let mut tasks: Vec<_> = active
         .iter()
-        .flat_map(|n| core::search::world_tasks(n))
+        .flat_map(|n| core::search::audit_tasks(n, old))
         .collect();
     tasks.splice(
         0..0,
@@ -1355,10 +1355,14 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "route_finalization",
         "reasoning_timing",
         "reasoning_durations_ms",
+        "reasoning_episode_durations_ms",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
         "world_search_contract",
+        "audit_policy_version",
+        "audit_diagnostic_plan",
+        "admitted_work",
         "endpoint_search",
         "candidate_basis",
         "novelty_basis",
@@ -1769,10 +1773,14 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "route_finalization",
         "reasoning_timing",
         "reasoning_durations_ms",
+        "reasoning_episode_durations_ms",
         "proposal_pool",
         "endpoint_proposal_attempt",
         "endpoint_proposal_history",
         "world_search_contract",
+        "audit_policy_version",
+        "audit_diagnostic_plan",
+        "admitted_work",
         "endpoint_search",
         "candidate_basis",
         "novelty_basis",
@@ -2016,7 +2024,7 @@ fn expand_with_baseline(
     old: &Value,
 ) -> Result<Option<Value>, String> {
     if phase == "backward" {
-        core::backward::validate(old, generated)?;
+        core::backward::validate(snapshot, old, generated)?;
     }
     let mut candidate = snapshot.clone();
     expand(&mut candidate, generated, phase, old)?;
@@ -2365,6 +2373,44 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         });
         program["endpoint_search"] =
             core::endpoints::add_routes(&original, &mut candidate, &old, &generated)?;
+    }
+    if phase == "backward" && program["audit_policy_version"] == 2 {
+        let started = core::field(&ctx.entity_state, "started_at_ms")
+            .parse::<u64>()
+            .map_err(|_| "Missing original run clock")?;
+        let elapsed = (Context::get_time_millis() as u64).saturating_sub(started);
+        if elapsed
+            .saturating_add(core::ENDPOINT_EVALUATION_DRAIN_MS)
+            .saturating_add(core::WORLD_TIME_RESERVE_MS)
+            >= core::MAX_MS
+        {
+            return Err("The completed generation leaves insufficient original time for mandatory evaluation and final writing; its unaccepted draft cannot invalidate saved estimates. Original proposals and accepted research remain preserved.".into());
+        }
+        let work = core::endpoints::pending_mandatory_work(&snapshot, &program)?;
+        let remaining = (core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32)
+            .saturating_sub(core::transition_count(&ctx.entity_state));
+        let capacity = old["admitted_work"]["evaluation_transition_capacity"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(remaining);
+        let required = work["required_transitions"]
+            .as_u64()
+            .ok_or("Missing mandatory workload estimate")?;
+        if required > capacity {
+            let error = format!(
+                "The complete mandatory reconstruction plan requires {required} transitions against the reserved {capacity}. Retain all selected original commitments; reduce redundant prerequisites/links or share exact common mechanisms within the admitted capacity. No proposed work has been applied."
+            );
+            let corrected = exploration_correction(phase, &old, &error, raw)?;
+            set_success_result(
+                "CompositionRejected",
+                &json!({"program_json":corrected.to_string()}),
+            );
+            return Ok(());
+        }
+        program["admitted_work"]["status"] = json!("checking");
+        program["admitted_work"]["actual_mandatory_transitions"] = json!(required);
+        program["admitted_work"]["mandatory_plan"] = work;
+        program["admitted_work"]["remaining_capacity"] = json!(capacity);
     }
     if phase == "challenge" {
         record_challenge(&snapshot, before, &core::parse(raw)?, &old, &mut program)?;

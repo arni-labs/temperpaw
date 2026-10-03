@@ -228,6 +228,100 @@ pub fn world_tasks(world: &Value) -> Vec<Value> {
     tasks
 }
 
+/// One versioned plan owns execution, admission and completion. Missing version
+/// retains the historical sweep, including every conditional-on/off experiment.
+pub fn audit_tasks(world: &Value, program: &Value) -> Vec<Value> {
+    let mut tasks = world_tasks(world);
+    if world["route_only"] == true {
+        tasks.retain(|task| {
+            matches!(
+                field(task, "function"),
+                "check_transition" | "conditional_on" | "conditional_off"
+            )
+        });
+        tasks.insert(0, json!({"nodeId":world["Id"],"world_id":world["Id"],"function":"check_route_grounding","depth":0}));
+    }
+    if program["audit_policy_version"] == 2 {
+        let selected = &program["audit_diagnostic_plan"][field(world, "Id")]["link_ids"];
+        tasks.retain(|task| {
+            !is_diagnostic(task)
+                || selected
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|id| *id == task["link_id"])
+        });
+    }
+    tasks
+}
+fn is_diagnostic(task: &Value) -> bool {
+    matches!(
+        field(task, "function"),
+        "conditional_on" | "conditional_off"
+    )
+}
+pub fn mandatory_audit_tasks(world: &Value, program: &Value) -> Vec<Value> {
+    let mut tasks = audit_tasks(world, program);
+    if program["audit_policy_version"] == 2 {
+        tasks.retain(|task| !is_diagnostic(task));
+    }
+    tasks
+}
+
+pub fn audit_diagnostics(world: &Value, program: &Value) -> Value {
+    let selected: Vec<_> = audit_tasks(world, program)
+        .into_iter()
+        .filter(is_diagnostic)
+        .collect();
+    let completed = selected
+        .iter()
+        .filter(|task| {
+            program["results"][field(task, "nodeId")][field(task, "function")].is_string()
+        })
+        .count();
+    let possible = world["chain"].as_array().map_or(0, Vec::len) * 2;
+    json!({"policy_version":program["audit_policy_version"],"status":if selected.is_empty(){"not_run"}else if completed < selected.len(){"incomplete"}else{"completed"},"selected_checks":selected.len(),"completed_checks":completed,"not_selected_checks":possible.saturating_sub(selected.len()),"selection":program["audit_diagnostic_plan"][field(world,"Id")],"meaning":"Conditional experiments are optional diagnostics, not passed checks or whole-world probabilities."})
+}
+
+/// Select diagnosis only after all active worlds received initial mandatory
+/// coverage. Results are frozen in the program before the next pass is planned.
+fn diagnostic_selection(world: &Value, program: &Value) -> Value {
+    let links: Vec<_> = world["chain"].as_array().into_iter().flatten().collect();
+    let route = program["endpoint_search"]["routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|route| route["world_node_id"] == world["Id"]);
+    let competing_routes = route.is_some_and(|route| {
+        program["endpoint_search"]["routes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|other| {
+                other["id"] != route["id"]
+                    && other["endpoint_id"] == route["endpoint_id"]
+                    && other["commitment_id"] == route["commitment_id"]
+            })
+    });
+    let mut reasons = vec![];
+    let mut ids = vec![];
+    for link in &links {
+        let id = format!("{}/link/{}", field(world, "Id"), field(link, "id"));
+        let unresolved = matches!(
+            program["results"][&id]["check_transition"].as_str(),
+            Some("uncertain" | "gap")
+        );
+        let competing = links
+            .iter()
+            .any(|other| other["id"] != link["id"] && other["to_id"] == link["to_id"]);
+        if unresolved || competing || competing_routes {
+            ids.push(link["id"].clone());
+            reasons.push(json!({"link_id":link["id"],"unresolved_transition":unresolved,"competing_incoming_routes":competing,"competing_routes":competing_routes}));
+        }
+    }
+    json!({"link_ids":ids,"reasons":reasons,"selection_stage":"after_initial_world_coverage"})
+}
+
 /// Immutable hypothetical history for a link, independent of model answers.
 fn branch_state(
     world: &Value,
@@ -328,7 +422,7 @@ fn branch_state(
 }
 
 pub fn audit_world(world: &Value, program: &Value) -> Value {
-    let tasks = world_tasks(world);
+    let tasks = audit_tasks(world, program);
     let mut checks = vec![];
     let mut conflict = false;
     let mut unknown = false;
@@ -388,6 +482,13 @@ pub fn audit_world(world: &Value, program: &Value) -> Value {
     let mut audit = json!({"status":status,"planned_checks":checks.len(),"completed_checks":completed,"checks":checks,"probability_coherence":probability_coherence});
     if let Some(routes) = selected_routes {
         audit["selected_routes"] = routes;
+    }
+    if program["audit_policy_version"] == 2 {
+        audit["policy_version"] = json!(2);
+        audit["diagnostics"] = audit_diagnostics(world, program);
+        audit["check_scope"] = json!(
+            "mandatory checks plus explicitly selected diagnostics; unselected diagnostics are not passed"
+        );
     }
     audit
 }
@@ -1656,7 +1757,7 @@ pub fn previous_world_judgments(program: &Value, world: &Value) -> Value {
     if !record.is_object() {
         return Value::Null;
     }
-    let tasks = world_tasks(world);
+    let tasks = audit_tasks(world, program);
     let components = world["component_ids"]
         .as_array()
         .cloned()
@@ -1734,6 +1835,9 @@ pub fn refine_worlds(
     elapsed: u64,
     blocked: &str,
 ) -> bool {
+    if program["audit_policy_version"] == 2 && program["audit_diagnostic_plan"].is_object() {
+        super::endpoints::finish_routes(snapshot, program);
+    }
     let pass = program["world_pass"].as_u64().unwrap_or(1);
     let active = program["active_world_ids"]
         .as_array()
@@ -1756,7 +1860,7 @@ pub fn refine_worlds(
     let mut checked_worlds: Vec<_> = worlds
         .iter()
         .map(|world| {
-            let tasks = world_tasks(world);
+            let tasks = audit_tasks(world, program);
             let reusable: Vec<_> = tasks
                 .iter()
                 .map(|task| reusable_audit(snapshot, program, task))
@@ -1856,6 +1960,10 @@ pub fn refine_worlds(
             receipt["reused_check_count"] = json!(reused_checks.len());
             receipt["reused_checks"] = json!(reused_checks);
         }
+        if program["audit_policy_version"] == 2 {
+            receipt["audit_policy_version"] = json!(2);
+            receipt["diagnostics"] = audit_diagnostics(world, program);
+        }
         let history = program["world_refinement"][id]["rounds"]
             .as_array_mut()
             .unwrap();
@@ -1899,6 +2007,54 @@ pub fn refine_worlds(
                 .filter(|t| !reuse || field(t, "function") == "estimate_likelihood"),
         );
     }
+    let mut diagnostic_program = program.clone();
+    let mut added_diagnostics = Vec::new();
+    if program["audit_policy_version"] == 2 && all_complete && blocked.is_empty() {
+        // Candidate world coverage is complete before either route or world
+        // diagnostic depth is admitted. No initial likelihood waits for these.
+        let selected_routes: BTreeSet<_> = worlds
+            .iter()
+            .flat_map(|world| {
+                world["selected_route_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+            })
+            .collect();
+        let route_worlds: BTreeSet<_> = program["endpoint_search"]["routes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|route| selected_routes.contains(field(route, "id")))
+            .filter_map(|route| route["world_node_id"].as_str())
+            .collect();
+        for world in snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|world| {
+                active.contains(&world["Id"]) || route_worlds.contains(field(world, "Id"))
+            })
+        {
+            if diagnostic_program["audit_diagnostic_plan"]
+                .get(field(world, "Id"))
+                .is_none()
+            {
+                diagnostic_program["audit_diagnostic_plan"][field(world, "Id")] =
+                    diagnostic_selection(world, program);
+                added_diagnostics.extend(
+                    audit_tasks(world, &diagnostic_program)
+                        .into_iter()
+                        .filter(is_diagnostic),
+                );
+            }
+        }
+        if !added_diagnostics.is_empty() {
+            all_stable = false;
+            tasks.splice(0..0, added_diagnostics.clone());
+        }
+    }
     let mut reason = if !blocked.is_empty() {
         blocked
     } else if !all_complete && !refresh_required {
@@ -1915,7 +2071,7 @@ pub fn refine_worlds(
         "in_progress"
     };
     if reason == "in_progress" {
-        let admission = refinement_admission(snapshot, program, &tasks);
+        let admission = refinement_admission(snapshot, &diagnostic_program, &tasks);
         if admission["admitted"] != true {
             reason = "transition_budget";
         }
@@ -1927,7 +2083,15 @@ pub fn refine_worlds(
         program["world_refinement"][id]["converged"] = json!(reason == "stable_world_estimates");
     }
     if reason != "in_progress" {
+        if !added_diagnostics.is_empty() {
+            program["diagnostic_admission"] = json!({"status":"not_run","reason":reason,"proposed_checks":added_diagnostics.len()});
+        }
         return false;
+    }
+    if program["audit_policy_version"] == 2 {
+        program["audit_diagnostic_plan"] = diagnostic_program["audit_diagnostic_plan"].clone();
+        program["diagnostic_admission"] =
+            json!({"status":"selected","new_checks":added_diagnostics.len()});
     }
     for task in &tasks {
         for collection in ["results", "evaluations"] {
@@ -2531,4 +2695,9 @@ mod world_set_tests {
 #[cfg(test)]
 mod binding_projection_tests {
     include!("semantic_binding_projection_tests.rs");
+}
+
+#[cfg(test)]
+mod audit_policy_tests {
+    include!("semantic_audit_policy_tests.rs");
 }

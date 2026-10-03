@@ -4,9 +4,10 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_WORLD_COMPONENTS: usize = 32;
-mod bundles { include!("semantic_route_bundles.rs"); }
+mod bundles {
+    include!("semantic_route_bundles.rs");
+}
 pub use bundles::{composition_bundles, validate_selection};
-
 
 pub fn enabled(program: &Value) -> bool {
     program["world_search_contract"] == 1
@@ -341,7 +342,7 @@ pub fn add_routes(
     old: &Value,
     generated: &Value,
 ) -> Result<Value, String> {
-    super::backward::validate(old, generated)?;
+    super::backward::validate(before, old, generated)?;
     let mut search = old["endpoint_search"].clone();
     if !search.is_object() {
         return Err("Imagine endpoints before generating prerequisites".into());
@@ -538,18 +539,8 @@ pub fn amendment_request(snapshot: &Value, program: &Value, task: &Value) -> Res
 
 /// Route audit work follows shared event admission; never spend an unrelated
 /// all-pairs sweep before attempting a backward alternative.
-fn route_tasks(world: &Value) -> Vec<Value> {
-    let mut tasks: Vec<_> = search::world_tasks(world)
-        .into_iter()
-        .filter(|t| {
-            matches!(
-                field(t, "function"),
-                "check_transition" | "conditional_on" | "conditional_off"
-            )
-        })
-        .collect();
-    tasks.insert(0,json!({"nodeId":world["Id"],"world_id":world["Id"],"function":"check_route_grounding","depth":0}));
-    tasks
+fn route_tasks(world: &Value, program: &Value) -> Vec<Value> {
+    search::audit_tasks(world, program)
 }
 
 pub fn grounding_request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
@@ -566,6 +557,127 @@ pub fn grounding_request(snapshot: &Value, program: &Value, task: &Value) -> Res
         return Err("Endpoint assessment exceeds request budget".into());
     }
     Ok(request)
+}
+
+/// Estimate the actual pending admission and required audit policy without
+/// inventing candidate outcomes. Known requests use the native batch packer;
+/// contingent requests retain an explicit one-request upper bound.
+pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value, String> {
+    let nodes = snapshot["nodes"]
+        .as_array()
+        .ok_or("Missing workload nodes")?;
+    let mut candidate_plan = super::plan(nodes)?;
+    candidate_plan["world_search_contract"] = program["world_search_contract"].clone();
+    candidate_plan["endpoint_search"] = program["endpoint_search"].clone();
+    super::backward::retain_route_assessments(&mut candidate_plan);
+    let mut bases = BTreeMap::new();
+    let mut candidate_tasks = Vec::new();
+    for task in candidate_plan["tasks"].as_array().into_iter().flatten() {
+        let id = field(task, "nodeId");
+        let basis_current = *bases.entry(id.to_owned()).or_insert_with(|| {
+            let hypothesis = nodes
+                .iter()
+                .find(|node| field(node, "Id") == id)
+                .is_some_and(|node| matches!(field(node, "kind"), "scenario" | "revision"));
+            !hypothesis || program["candidate_basis"][id] == candidate_basis(snapshot, program, id)
+        });
+        if !basis_current || program["results"][id][field(task, "function")].is_null() {
+            candidate_tasks.push(task.clone());
+        }
+    }
+    let mut route_tasks = Vec::new();
+    for amendment in program["endpoint_search"]["amendments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let id = format!("amendment-{}", field(amendment, "id"));
+        if program["route_basis"][&id] != candidate_basis(snapshot, program, &id)
+            || program["results"][&id]["classify_amendment"].is_null()
+        {
+            route_tasks.push(json!({"nodeId":id,"function":"classify_amendment","amendment_id":amendment["id"],"depth":0}));
+        }
+    }
+    for route in program["endpoint_search"]["routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let world = nodes
+            .iter()
+            .find(|world| world["Id"] == route["world_node_id"])
+            .ok_or("Missing route workload world")?;
+        let basis_current = program["route_basis"][field(world, "Id")]
+            == candidate_basis(snapshot, program, field(world, "Id"));
+        for task in search::mandatory_audit_tasks(world, program) {
+            if !basis_current
+                || program["results"][field(&task, "nodeId")][field(&task, "function")].is_null()
+            {
+                route_tasks.push(task);
+            }
+        }
+    }
+    let novelty_rechecks = super::proposals::pool::pending_novelty_checks(snapshot,program)?;
+    let mut known = Vec::new();
+    let mut contingent = novelty_rechecks;
+    for task in candidate_tasks.iter().chain(&route_tasks) {
+        let route_ready = if let Some(world_id) = task["world_id"].as_str() {
+            nodes
+                .iter()
+                .find(|world| field(world, "Id") == world_id)
+                .is_some_and(|world| {
+                    world["component_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .all(|id| {
+                            super::branches::future_eligible(
+                                snapshot,
+                                program,
+                                id.as_str().unwrap_or(""),
+                            )
+                        })
+                })
+        } else {
+            true
+        };
+        if super::task_allowed(program, task) && route_ready {
+            known.push(task.clone());
+        } else {
+            contingent += 1;
+        }
+    }
+    let mut scratch = program.clone();
+    scratch["tasks"] = json!(known);
+    scratch["cursor"] = json!(0);
+    let mut cursor = 0;
+    let mut packed = 0;
+    let mut unknowns = Vec::new();
+    while cursor < known.len() {
+        scratch["cursor"] = json!(cursor);
+        match super::batch::prepare(snapshot, &scratch, known.len() - cursor) {
+            Ok(batch) if !batch.tasks.is_empty() => {
+                cursor += batch.tasks.len();
+                packed += 1;
+            }
+            _ => {
+                cursor += 1;
+                contingent += 1;
+                unknowns.push(
+                    "A current task could not be packed; retained as a one-request upper bound.",
+                );
+            }
+        }
+    }
+    if contingent > 0 {
+        unknowns.push("Candidate admission, route eligibility or novelty context is not yet known; these requests retain a conservative upper bound.");
+    }
+    unknowns.sort();
+    unknowns.dedup();
+    let requests = packed + contingent;
+    Ok(
+        json!({"candidate_tasks":candidate_tasks,"route_tasks":route_tasks,"novelty_rechecks":novelty_rechecks,"questions":candidate_tasks.len()+route_tasks.len()+novelty_rechecks,"known_packed_http_requests":packed,"contingent_questions":contingent,"conservative_http_requests":requests,"required_transitions":requests*2+4,"packing_known":contingent==0,"unknowns":unknowns,"semantics":"Known batches are packed against current inputs. Contingent work is a conservative upper bound, not a claim that it executes as singleton calls or that completion is guaranteed."}),
+    )
 }
 
 pub fn plan_routes(snapshot: &Value, program: &mut Value) -> bool {
@@ -609,7 +721,7 @@ pub fn plan_routes(snapshot: &Value, program: &mut Value) -> bool {
         }
         let basis = candidate_basis(snapshot, program, field(world, "Id"));
         if program["route_basis"][field(world, "Id")] != basis {
-            for task in route_tasks(world) {
+            for task in route_tasks(world, program) {
                 for key in ["results", "evaluations"] {
                     if let Some(v) = program[key][field(&task, "nodeId")].as_object_mut() {
                         v.remove(field(&task, "function"));
@@ -618,7 +730,7 @@ pub fn plan_routes(snapshot: &Value, program: &mut Value) -> bool {
             }
         }
         program["route_basis"][field(world, "Id")] = basis;
-        for task in route_tasks(world) {
+        for task in route_tasks(world, program) {
             if program["results"][field(&task, "nodeId")][field(&task, "function")].is_null()
                 && scheduled.insert(task.to_string())
             {
@@ -820,16 +932,32 @@ pub fn preserve_omitted_originals(program: &Value, generated: &mut Value) {
         {
             continue;
         }
-        if let Some(bundle) = program["composition_route_bundles"].as_array().into_iter().flatten()
-            .find(|b| b["endpoint_id"] == endpoint["id"] && b["status"] != "compatible") {
+        if let Some(bundle) = program["composition_route_bundles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|b| b["endpoint_id"] == endpoint["id"] && b["status"] != "compatible")
+        {
             let reason = match field(bundle, "status") {
-                "novelty_unresolved" => "The present comparison remains unresolved or rejected after provisional reconstruction; original commitments and paths are preserved without a whole-world estimate.",
-                "incomplete" => "Some defining commitments still lack eligible routes; the original remains unresolved.",
-                "unexamined_limit" => "The bounded route search has not established a compatible set of paths. It has not shown that this future is impossible.",
-                _ if field(bundle, "reason").contains("nondecreasing") => "The stored route deadlines do not establish a consistent order across all commitments. The path needs explicit timing refinement; this does not show that the future is impossible.",
-                _ => "The stored paths do not yet form a consistent whole. Their graph needs explicit repair; this does not show that the future is impossible.",
+                "novelty_unresolved" => {
+                    "The present comparison remains unresolved or rejected after provisional reconstruction; original commitments and paths are preserved without a whole-world estimate."
+                }
+                "incomplete" => {
+                    "Some defining commitments still lack eligible routes; the original remains unresolved."
+                }
+                "unexamined_limit" => {
+                    "The bounded route search has not established a compatible set of paths. It has not shown that this future is impossible."
+                }
+                _ if field(bundle, "reason").contains("nondecreasing") => {
+                    "The stored route deadlines do not establish a consistent order across all commitments. The path needs explicit timing refinement; this does not show that the future is impossible."
+                }
+                _ => {
+                    "The stored paths do not yet form a consistent whole. Their graph needs explicit repair; this does not show that the future is impossible."
+                }
             };
-            omitted.push(json!({"endpoint_id":endpoint["id"],"reason":reason,"joint_route_receipt":bundle}));
+            omitted.push(
+                json!({"endpoint_id":endpoint["id"],"reason":reason,"joint_route_receipt":bundle}),
+            );
             continue;
         }
         let mut missing = 0;
@@ -878,7 +1006,12 @@ pub fn assemble_composition(program: &Value, generated: &mut Value) -> Result<()
         .ok_or("Missing reconstructed worlds")?;
     for world in worlds {
         let original = endpoint(program, field(world, "endpoint_id"))?;
-        if !super::proposals::pool::novelty_passed(program, field(original,"id")) { return Err("A provisional or rejected present comparison cannot become a final accepted world".into()); }
+        if !super::proposals::pool::novelty_passed(program, field(original, "id")) {
+            return Err(
+                "A provisional or rejected present comparison cannot become a final accepted world"
+                    .into(),
+            );
+        }
         let compact = ["statement", "component_ids", "chain", "commitment_bindings"]
             .iter()
             .any(|key| world.get(*key).is_none());
@@ -989,7 +1122,10 @@ pub fn validate_composition(program: &Value, generated: &Value) -> Result<(), St
         if !worlds.iter().any(|w| w["endpoint_id"] == e["id"]) {
             let report=generated["unreconstructed_endpoints"].as_array().into_iter().flatten().find(|r|r["endpoint_id"]==e["id"]).ok_or("Every omitted endpoint needs an explicit unreconstructed receipt; originals remain visible")?;
             text(&report["reason"], 800)?;
-            let joint_unavailable = program["composition_route_bundles"].as_array().into_iter().flatten()
+            let joint_unavailable = program["composition_route_bundles"]
+                .as_array()
+                .into_iter()
+                .flatten()
                 .any(|b| b["endpoint_id"] == e["id"] && b["status"] != "compatible");
             if e["status"] == "evaluated" && !joint_unavailable {
                 return Err("Cannot silently discard a fully connected original endpoint".into());
@@ -1301,18 +1437,31 @@ mod tests {
         let draft = json!({"worlds":[{"id":"w","endpoint_id":"e","selected_route_ids":["r"]}]});
         for status in ["provisional", "unresolved", "rejected"] {
             program["endpoint_novelty"] = json!({"e":{"status":status}});
-            assert_eq!(composition_bundles(&snapshot, &program)[0]["status"], "novelty_unresolved");
+            assert_eq!(
+                composition_bundles(&snapshot, &program)[0]["status"],
+                "novelty_unresolved"
+            );
             let mut reply = draft.clone();
-            assert!(assemble_composition(&program, &mut reply).unwrap_err().contains("provisional or rejected"));
+            assert!(
+                assemble_composition(&program, &mut reply)
+                    .unwrap_err()
+                    .contains("provisional or rejected")
+            );
             assert_eq!(reply, draft);
         }
         program["endpoint_search"]["deferred_novelty_contract"] = json!(1);
         program.as_object_mut().unwrap().remove("endpoint_novelty");
-        assert!(assemble_composition(&program, &mut draft.clone()).is_err(), "New-contract missing receipts cannot fall back to legacy acceptance");
+        assert!(
+            assemble_composition(&program, &mut draft.clone()).is_err(),
+            "New-contract missing receipts cannot fall back to legacy acceptance"
+        );
         program["endpoint_novelty"] = json!({"e":{"status":"passed"}});
         let mut reply = draft;
         assemble_composition(&program, &mut reply).unwrap();
-        assert_eq!(reply["worlds"][0]["chain"], program["endpoint_search"]["routes"][0]["chain"]);
+        assert_eq!(
+            reply["worlds"][0]["chain"],
+            program["endpoint_search"]["routes"][0]["chain"]
+        );
     }
 
     #[test]
@@ -1342,7 +1491,7 @@ mod tests {
             .iter()
             .find(|n| n["Id"] == node_id)
             .unwrap();
-        for task in route_tasks(world) {
+        for task in route_tasks(world, &program) {
             let result = match field(&task, "function") {
                 "check_route_grounding" => "connected",
                 "check_transition" => "plausible",
@@ -1782,13 +1931,15 @@ mod tests {
 
     #[test]
     fn stored_route_union_can_exceed_legacy_chain_bound_without_trusting_markers() {
-        let snapshot = json!({"world":{"last_ingest_date":"2026-10-01","target_date":"2030-12-31"}});
-        let components: Vec<_> = (0..26).map(|i|json!(format!("n{i}"))).collect();
+        let snapshot =
+            json!({"world":{"last_ingest_date":"2026-10-01","target_date":"2030-12-31"}});
+        let components: Vec<_> = (0..26).map(|i| json!(format!("n{i}"))).collect();
         let links: Vec<_> = (0..25).map(|i|json!({"id":format!("l{i}"),"from_ids":[format!("n{i}")],"to_id":format!("n{}",i+1),"mechanism":"Earlier capacity enables the next step","by":"2029-01-01"})).collect();
         let mut routes = vec![];
         let mut commitments = vec![];
-        for (i, (start, end)) in [(0,10),(10,20),(20,25)].into_iter().enumerate() {
-            commitments.push(json!({"id":format!("c{i}"),"statement":"Original defining commitment"}));
+        for (i, (start, end)) in [(0, 10), (10, 20), (20, 25)].into_iter().enumerate() {
+            commitments
+                .push(json!({"id":format!("c{i}"),"statement":"Original defining commitment"}));
             routes.push(json!({"id":format!("r{i}"),"endpoint_id":"e","commitment_id":format!("c{i}"),"target_component_id":format!("n{end}"),"component_ids":components[start..=end],"chain":links[start..end],"amendment_id":null}));
             search::validate_chain(routes.last().unwrap(), &snapshot).unwrap();
         }
@@ -1801,17 +1952,31 @@ mod tests {
         assemble_composition(&program, &mut generated).unwrap();
         let world = &generated["worlds"][0];
         validate_world(world, &snapshot, &program).unwrap();
-        assert!(search::validate_world(world, &snapshot).unwrap_err().contains("24"));
+        assert!(
+            search::validate_world(world, &snapshot)
+                .unwrap_err()
+                .contains("24")
+        );
         assert!(validate_world(world, &snapshot, &json!({})).is_err());
         let mut forged = world.clone();
         forged["chain"][0]["mechanism"] = json!("Forged mechanism");
-        assert!(validate_world(&forged, &snapshot, &program).unwrap_err().contains("conflicts"));
+        assert!(
+            validate_world(&forged, &snapshot, &program)
+                .unwrap_err()
+                .contains("conflicts")
+        );
         for violation in ["cycle", "date"] {
             let mut invalid_program = program.clone();
             let link = &mut invalid_program["endpoint_search"]["routes"][0]["chain"][0];
-            if violation == "cycle" { link["from_ids"] = json!(["n25"]); } else { link["by"] = json!("2031-01-01"); }
+            if violation == "cycle" {
+                link["from_ids"] = json!(["n25"]);
+            } else {
+                link["by"] = json!("2031-01-01");
+            }
             let mut invalid_world = world.clone();
-            for key in ["statement","component_ids","chain","commitment_bindings"] { invalid_world.as_object_mut().unwrap().remove(key); }
+            for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
+                invalid_world.as_object_mut().unwrap().remove(key);
+            }
             let mut draft = json!({"worlds":[invalid_world]});
             assemble_composition(&invalid_program, &mut draft).unwrap();
             assert!(validate_world(&draft["worlds"][0], &snapshot, &invalid_program).is_err());
@@ -1824,32 +1989,58 @@ mod tests {
         let mut second = r.clone();
         second["id"] = json!("r2");
         second["commitment_id"] = json!("c2");
-        p["endpoint_search"]["endpoints"][0]["commitments"].as_array_mut().unwrap()
+        p["endpoint_search"]["endpoints"][0]["commitments"]
+            .as_array_mut()
+            .unwrap()
             .push(json!({"id":"c2","statement":"Second commitment"}));
         p["endpoint_search"]["routes"] = json!([r, second]);
         let compact = json!({"worlds":[{"endpoint_id":"e","selected_route_ids":["r","r2"]}]});
         let mut full = compact.clone();
         assemble_composition(&p, &mut full).unwrap();
-        assert_eq!(full["worlds"][0]["component_ids"], json!(["root", "target"]));
+        assert_eq!(
+            full["worlds"][0]["component_ids"],
+            json!(["root", "target"])
+        );
         assert_eq!(full["worlds"][0]["chain"].as_array().unwrap().len(), 1);
-        assert_eq!(full["worlds"][0]["commitment_bindings"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            full["worlds"][0]["commitment_bindings"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         assert_eq!(full["worlds"][0]["statement"], "Original world");
         for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
             let mut changed = full.clone();
             changed["worlds"][0][key] = json!("changed");
             let before = changed.clone();
-            assert!(assemble_composition(&p, &mut changed).unwrap_err().contains(key));
+            assert!(
+                assemble_composition(&p, &mut changed)
+                    .unwrap_err()
+                    .contains(key)
+            );
             assert_eq!(changed, before);
         }
         let mut changed = compact.clone();
         changed["worlds"][0]["selected_route_ids"] = json!(["missing"]);
-        assert!(assemble_composition(&p, &mut changed).unwrap_err().contains("missing"));
+        assert!(
+            assemble_composition(&p, &mut changed)
+                .unwrap_err()
+                .contains("missing")
+        );
         let mut alternate = p["endpoint_search"]["routes"][0].clone();
         alternate["id"] = json!("alt");
-        p["endpoint_search"]["routes"].as_array_mut().unwrap().push(alternate);
+        p["endpoint_search"]["routes"]
+            .as_array_mut()
+            .unwrap()
+            .push(alternate);
         let mut changed = compact.clone();
         changed["worlds"][0]["selected_route_ids"] = json!(["r", "r2", "alt"]);
-        assert!(assemble_composition(&p, &mut changed).unwrap_err().contains("exactly one"));
+        assert!(
+            assemble_composition(&p, &mut changed)
+                .unwrap_err()
+                .contains("exactly one")
+        );
         p["world_search_contract"] = Value::Null;
         let before = changed.clone();
         assemble_composition(&p, &mut changed).unwrap();
@@ -1862,8 +2053,13 @@ mod tests {
         let path = std::env::var("FORESIGHT_COMPOSITION_FIXTURE").unwrap();
         let captured: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let p = &captured["program"];
-        let worlds: Vec<_> = captured["snapshot"]["nodes"].as_array().unwrap().iter()
-            .filter(|n| n["kind"] == "world" && n["archived"] != true).cloned().collect();
+        let worlds: Vec<_> = captured["snapshot"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["kind"] == "world" && n["archived"] != true)
+            .cloned()
+            .collect();
         assert_eq!(worlds.len(), 2);
         let mut compact = json!({"worlds":worlds});
         preserve_omitted_originals(p, &mut compact);
@@ -1878,8 +2074,20 @@ mod tests {
         let mut checked_full = full;
         assemble_composition(p, &mut checked_full).unwrap();
         assert_eq!(compact, checked_full);
-        assert_eq!(compact["worlds"][0]["component_ids"].as_array().unwrap().len(), 14);
-        assert_eq!(compact["worlds"][1]["component_ids"].as_array().unwrap().len(), 10);
+        assert_eq!(
+            compact["worlds"][0]["component_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            14
+        );
+        assert_eq!(
+            compact["worlds"][1]["component_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
+        );
     }
 
     #[test]

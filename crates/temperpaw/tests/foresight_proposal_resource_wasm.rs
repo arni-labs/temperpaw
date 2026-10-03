@@ -285,3 +285,82 @@ async fn combined_scope_and_optional_repair_use_route_preserving_dispatch() {
     );
     assert!(second["callback_params"].get("started_at_ms").is_none());
 }
+
+#[tokio::test]
+async fn city_required_comparison_and_refusal_receipt_use_native_callbacks() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let engine = WasmEngine::new().unwrap();
+    let snapshot = json!({"world":{"description":"City question"},"nodes":[]});
+    let mut program = json!({"stage":"proposals","endpoint_proposal_contract":2,"world_search_contract":1,"tasks":[],"cursor":0,"round":0,"results":{},"evaluations":{},"reasoning_durations_ms":{"explore":541525,"imagine":240950},"proposal_pool":{"stage":"contrast","research_attempts":1,"development":{"status":"completed"},"development_admission":{"admitted":true},"candidates":[{"id":"preserved"}]}});
+    let mut fields = json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","transition_count":63,"started_at_ms":now.saturating_sub(1_147_099).to_string()});
+    let required = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(required["callback_action"], "Reason");
+    assert_eq!(required["callback_params"]["phase"], "explore");
+    program["proposal_pool"]["creative_repair"] = json!({"status":"pending"});
+    fields["program_json"] = json!(program.to_string());
+    let refused = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(refused["callback_action"], "SearchPlanned");
+    let saved: Value =
+        serde_json::from_str(refused["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        saved["proposal_pool"]["comparison_admission"]["reason"],
+        "time_budget"
+    );
+    assert_eq!(
+        saved["proposal_pool"]["candidates"],
+        program["proposal_pool"]["candidates"]
+    );
+    fields["program_json"] = refused["callback_params"]["program_json"].clone();
+    let terminal = invoke(&engine, "semantic_step", &fields, &json!({})).await;
+    assert_eq!(terminal["callback_action"], "Fail");
+    assert!(
+        terminal["callback_params"]["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("time_budget")
+    );
+    assert!(required["callback_params"].get("started_at_ms").is_none());
+}
+
+#[tokio::test]
+async fn oversized_mandatory_work_never_applies_and_correction_cannot_refresh_capacity() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let engine = WasmEngine::new().unwrap();
+    let snapshot = json!({"world":{"description":"What changes by2035?","last_ingest_date":"2026-10-03","target_date":"2035-12-31","hindcast_mode":"false"},"nodes":[]});
+    let program = json!({"audit_policy_version":2,"world_search_contract":1,"stage":"exploration","round":0,"rounds":[],"tasks":[],"cursor":0,"results":{},"evaluations":{},"endpoint_search":{"endpoints":[],"routes":[],"amendments":[],"rounds":[]},"baseline":{"as_of":"2026-10-03","observed":[],"assumptions":[],"unknowns":["Present remains uncertain"]},"admitted_work":{"admitted":true,"status":"generating","evaluation_transition_capacity":0}});
+    let draft = json!({"hypotheses":[{"id":"candidate","statement":"By2035 people can carry a shared virtual place between independent environments","requires":[]}],"research_evidence":[],"routes":[],"amendments":[],"continue_exploring":false,"exploration_note":"Capacity boundary fixture"});
+    let mut fields = json!({"phase":"backward","snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","reasoning_result":draft.to_string(),"transition_count":100,"started_at_ms":now.to_string()});
+    for attempt in 1..=2 {
+        let rejected = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+        assert_eq!(
+            rejected["callback_action"], "CompositionRejected",
+            "{rejected}"
+        );
+        assert!(rejected["callback_params"].get("snapshot_json").is_none());
+        let saved: Value = serde_json::from_str(
+            rejected["callback_params"]["program_json"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            saved["response_correction"]["validation_error"]
+                .as_str()
+                .unwrap()
+                .contains("mandatory reconstruction plan")
+        );
+        assert_eq!(saved["response_correction"]["attempt"], attempt);
+        assert_eq!(saved["admitted_work"], program["admitted_work"]);
+        assert_eq!(saved["endpoint_search"], program["endpoint_search"]);
+        fields["program_json"] = rejected["callback_params"]["program_json"].clone();
+    }
+    let stopped = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+    assert_eq!(stopped["callback_action"], "Fail");
+    assert!(stopped["callback_params"].get("snapshot_json").is_none());
+}

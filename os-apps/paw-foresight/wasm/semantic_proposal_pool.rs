@@ -727,6 +727,29 @@ pub fn novelty_passed(program: &Value, id: &str) -> bool {
         || program["endpoint_novelty"][id]["status"] == "passed"
 }
 
+fn pending_novelty_endpoints(snapshot: &Value, program: &Value) -> Result<Vec<Value>, String> {
+    if matches!(field(&program["deferred_novelty_recheck"],"status"),"checking"|"not_admitted") { return Ok(vec![]); }
+    let current = json!({"endpoints":program["endpoint_search"]["endpoints"],"baseline":program["baseline"],"world":snapshot["world"],"source_evidence":evidence::active_sources(snapshot)});
+    let mut pending = Vec::new();
+    for endpoint in current["endpoints"].as_array().into_iter().flatten() {
+        let id = field(endpoint,"id");
+        let receipt = &program["endpoint_novelty"][id];
+        let prior = if receipt["final_check"].is_object() { &receipt["final_check"] } else { &receipt["initial_check"] };
+        if receipt["status"] == "provisional" || (receipt["status"] == "passed" && request(&current,&json!({"function":"check_proposal_change","endpoint_id":id}))? != prior["request"]) {
+            pending.push(endpoint.clone());
+        }
+    }
+    Ok(pending)
+}
+
+/// Same exact-context selection and cache reuse as execution, including changes
+/// after a completed recheck. A completed receipt is not perpetual admission.
+pub fn pending_novelty_checks(snapshot: &Value, program: &Value) -> Result<usize, String> {
+    let pending = pending_novelty_endpoints(snapshot,program)?;
+    if pending.is_empty() { return Ok(0); }
+    Ok(schedule(snapshot,program,pending,"deferred")?["tasks"].as_array().map_or(0,Vec::len))
+}
+
 /// A change-only continuation after backward search. Unchanged passed requests
 /// are not reopened. Only current source
 /// findings and the original comparison context enter the request, not routes.
@@ -741,34 +764,12 @@ pub fn defer_before_composition(
     ) {
         return Ok(false);
     }
-    let current = json!({"endpoints":p["endpoint_search"]["endpoints"],"baseline":p["baseline"],"world":snapshot["world"],"source_evidence":evidence::active_sources(snapshot)});
-    let mut pending = Vec::new();
-    for endpoint in current["endpoints"].as_array().into_iter().flatten() {
-        let id = field(endpoint, "id");
-        let receipt = &p["endpoint_novelty"][id];
-        let changed_pass = if receipt["status"] == "passed" {
-            let prior = if receipt["final_check"].is_object() {
-                &receipt["final_check"]
-            } else {
-                &receipt["initial_check"]
-            };
-            request(
-                &current,
-                &json!({"function":"check_proposal_change","endpoint_id":id}),
-            )? != prior["request"]
-        } else {
-            false
-        };
-        if receipt["status"] == "provisional" || changed_pass {
-            pending.push(endpoint.clone());
-            if changed_pass {
-                // A recorded pass remains in its receipt, but is not current
-                // admission once the exact present-comparison input changes.
-                p["endpoint_novelty"][id]["status"] = json!("provisional");
-                p["endpoint_novelty"][id]["reason"] = json!(
-                    "Present comparison context changed after the recorded judgment; a current recheck is required."
-                );
-            }
+    let pending = pending_novelty_endpoints(snapshot,p)?;
+    for endpoint in &pending {
+        let id = field(endpoint,"id");
+        if p["endpoint_novelty"][id]["status"] == "passed" {
+            p["endpoint_novelty"][id]["status"] = json!("provisional");
+            p["endpoint_novelty"][id]["reason"] = json!("Present comparison context changed after the recorded judgment; a current recheck is required.");
         }
     }
     if pending.is_empty() {
@@ -1184,6 +1185,29 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_novelty_recheck_cost_reopens_only_changed_context() {
+        let fixture: Value = serde_json::from_str(include_str!("semantic_pass15_order_fixture.json")).unwrap();
+        let receipt = &fixture["captured_initial_receipt"];
+        let state = &receipt["request"]["state"];
+        let snapshot = json!({"world":state["world"],"nodes":state["source_evidence"]});
+        let mut p = fixture["program"].clone();
+        p["baseline"] = state["baseline"].clone();
+        p["endpoint_novelty"] = json!({"games-across-games":{"status":"passed","final_check":receipt}});
+        p["deferred_novelty_recheck"] = json!({"status":"completed"});
+        p["results"] = json!({}); p["evaluations"] = json!({});
+        assert_eq!(pending_novelty_checks(&snapshot,&p).unwrap(),0);
+        let mut unchanged = p.clone();
+        assert!(!defer_before_composition(&snapshot,&mut unchanged,false).unwrap());
+        let mut changed = snapshot.clone(); changed["nodes"][0]["statement"] = json!("New present evidence changes the comparison");
+        let cost = super::super::super::endpoints::pending_mandatory_work(&changed,&p).unwrap();
+        assert_eq!(cost["novelty_rechecks"],1);
+        assert!(defer_before_composition(&changed,&mut p,false).unwrap());
+        assert_eq!(p["tasks"].as_array().unwrap().len(),1);
+        assert_eq!(p["tasks"][0]["endpoint_id"],"games-across-games");
+        assert_eq!(cost["novelty_rechecks"].as_u64().unwrap() as usize,p["tasks"].as_array().unwrap().len());
+    }
+
     #[test]
     fn comparison_delta_retains_untouched_candidates_and_canonical_revision_receipt() {
         let (snapshot, mut p) = pool();
@@ -2175,7 +2199,7 @@ mod tests {
         assert_eq!(p["stage"], "exploration");
         assert_eq!(p["endpoint_search"]["endpoints"], json!(originals));
         assert!(p["proposal_pool"]["development"].is_null());
-        let obligations = super::super::super::backward::batch(&p);
+        let obligations = super::super::super::backward::batch(&s, &p);
         assert_eq!(obligations["mode"], "complete_original");
         assert_eq!(obligations["commitments"].as_array().unwrap().len(), originals[0]["commitments"].as_array().unwrap().len());
         // A saved pre-change checkpoint may already be waiting for development.

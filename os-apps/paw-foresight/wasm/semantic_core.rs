@@ -31,6 +31,10 @@ pub fn call_limit(program: &Value) -> usize {
 // it never moves the original one-hour deadline or admits further research.
 pub const ENDPOINT_EVALUATION_DRAIN_MS: u64 = 120_000;
 pub fn time_limit(program: &Value) -> u64 {
+    if program["audit_policy_version"] == 2 && program["admitted_work"]["admitted"] == true
+        && matches!(field(program,"stage"), "exploration" | "routes" | "proposals") {
+        return MAX_MS - WORLD_TIME_RESERVE_MS;
+    }
     if endpoints::enabled(program)
         && (matches!(program["stage"].as_str(), Some("exploration" | "routes"))
             || (program["stage"] == "proposals"
@@ -43,46 +47,117 @@ pub fn time_limit(program: &Value) -> u64 {
 /// Observed child duration includes native provider retries and polling latency.
 /// It starts at launch setup, never at the parent run's original clock.
 pub fn start_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
-    program["reasoning_timing"] = json!({"phase":phase,"started_at_ms":now_ms});
+    let correction_key = match phase {
+        "seed" => "baseline_correction",
+        "compose" => "composition_correction",
+        "synthesize" => "presentation_repair",
+        _ => "response_correction",
+    };
+    let correction = program[correction_key]["attempt"].as_u64().is_some_and(|attempt|attempt>0);
+    let episode_start = if correction && program["reasoning_timing"]["phase"] == phase {
+        program["reasoning_timing"]["episode_started_at_ms"]
+            .as_u64()
+            .or_else(|| program["reasoning_timing"]["started_at_ms"].as_u64())
+            .filter(|start| *start > 0 && *start <= now_ms)
+            .unwrap_or(now_ms)
+    } else {
+        now_ms
+    };
+    program["reasoning_timing"] =
+        json!({"phase":phase,"started_at_ms":now_ms,"episode_started_at_ms":episode_start});
 }
 pub fn finish_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
     let timing = &program["reasoning_timing"];
-    if timing["phase"] != phase || timing["completed"] == true { return; }
-    let Some(start) = timing["started_at_ms"].as_u64().filter(|s| *s > 0 && *s <= now_ms) else { return; };
+    if timing["phase"] != phase || timing["completed"] == true {
+        return;
+    }
+    let Some(start) = timing["started_at_ms"]
+        .as_u64()
+        .filter(|s| *s > 0 && *s <= now_ms)
+    else {
+        return;
+    };
     let elapsed = now_ms - start;
-    let prior = program["reasoning_durations_ms"][phase].as_u64().unwrap_or(0);
+    let prior = program["reasoning_durations_ms"][phase]
+        .as_u64()
+        .unwrap_or(0);
     program["reasoning_durations_ms"][phase] = json!(prior.max(elapsed));
     program["reasoning_timing"]["elapsed_ms"] = json!(elapsed);
     program["reasoning_timing"]["completed"] = json!(true);
+    let episode_start = program["reasoning_timing"]["episode_started_at_ms"]
+        .as_u64()
+        .unwrap_or(start);
+    let episode_elapsed = now_ms.saturating_sub(episode_start);
+    let prior_episode = program["reasoning_episode_durations_ms"][phase]
+        .as_u64()
+        .unwrap_or(0);
+    program["reasoning_episode_durations_ms"][phase] = json!(prior_episode.max(episode_elapsed));
+    program["reasoning_timing"]["episode_elapsed_ms"] = json!(episode_elapsed);
+}
+pub fn generation_duration(program: &Value, phase: &str) -> u64 {
+    program["reasoning_episode_durations_ms"][phase]
+        .as_u64()
+        .filter(|v| *v > 0)
+        .or_else(|| {
+            program["reasoning_durations_ms"][phase]
+                .as_u64()
+                .filter(|v| *v > 0)
+        })
+        .unwrap_or(900_000)
 }
 pub fn research_admission(program: &Value, phase: &str, elapsed_ms: u64) -> Value {
     // The native idle allowance is a conservative first-sample planning estimate,
     // not an upper bound: progressing children may take longer.
-    let observed = program["reasoning_durations_ms"][phase]
+    let observed = program["reasoning_episode_durations_ms"][phase]
         .as_u64()
         .filter(|v| *v > 0);
-    let predicted = observed.unwrap_or(900_000);
+    let predicted = generation_duration(program, phase);
     let completion_deadline = time_limit(program);
     let required = predicted.saturating_add(ENDPOINT_EVALUATION_DRAIN_MS);
-    json!({"admitted":!(program["route_finalization"]["admitted"] == true && phase != "compose" && phase != "synthesize") && elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
+    json!({"admitted":!(program["route_finalization"]["admitted"] == true && phase != "compose" && phase != "synthesize") && elapsed_ms.saturating_add(required) < completion_deadline && elapsed_ms < research_time_limit(program).saturating_sub(120_000),"phase":phase,"predicted_generation_ms":predicted,"basis":if observed.is_some(){"maximum_observed_generation_episode"}else if program["reasoning_durations_ms"][phase].as_u64().is_some_and(|v|v>0){"maximum_observed_same_phase"}else{"native_idle_allowance_fallback"},"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"completion_deadline_ms":completion_deadline,"elapsed_ms":elapsed_ms,"guaranteed":false})
 }
+/// Reserve the whole useful unit, without claiming unknown output has a known
+/// request count. The receiver checks its actual mandatory plan before applying it.
+pub fn backward_work_admission(program: &mut Value, elapsed_ms: u64) -> bool {
+    if program["audit_policy_version"] != 2 {
+        return true;
+    }
+    let generation_ms = generation_duration(program, "backward");
+    let final_transitions = 2 * REASONING_ADMISSION_RESERVE + 32;
+    let remaining = MAX_APP_TRANSITIONS.saturating_sub(transition_count(program));
+    let capacity = remaining.saturating_sub(REASONING_ADMISSION_RESERVE + final_transitions);
+    let time_ok = elapsed_ms
+        .saturating_add(generation_ms)
+        .saturating_add(ENDPOINT_EVALUATION_DRAIN_MS)
+        .saturating_add(WORLD_TIME_RESERVE_MS)
+        < MAX_MS;
+    let admitted = capacity >= 16 && time_ok;
+    let receipt = json!({"admitted":admitted,"status":if admitted{"generating"}else{"declined"},"generation_ms":generation_ms,"evaluation_transition_capacity":capacity,"generation_transition_reserve":REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":final_transitions,"evaluation_time_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_time_reserve_ms":WORLD_TIME_RESERVE_MS,"elapsed_ms":elapsed_ms,"output_cost_known":false,"estimated_mandatory_transitions":null,"estimate_basis":"Generated graph and changed evidence are not known before the reply; native receiver must measure mandatory work before applying it.","original_deadline_ms":MAX_MS,"reason":if admitted{Value::Null}else if !time_ok{json!("time_budget")}else{json!("transition_budget")}});
+    if admitted {
+        program["admitted_work"] = receipt;
+    } else {
+        program["backward_work_refusal"] = receipt;
+    }
+    admitted
+}
+
 // Optional comparison work must leave the first two complete routes and the
 // existing finalization window. Preserve phase-specific observed durations and
 // the existing 15-minute fallback; this is admission, not a completion promise.
 pub fn optional_repair_time_admission(program: &Value, elapsed_ms: u64) -> Value {
-    let duration = |phase: &str| {
-        program["reasoning_durations_ms"][phase]
-            .as_u64()
-            .filter(|v| *v > 0)
-            .unwrap_or(900_000)
+    let duration = |phase: &str| generation_duration(program, phase);
+    let first_route_turns = if program["audit_policy_version"] == 2 {
+        1
+    } else {
+        2
     };
-    let route_ms = duration("backward").saturating_mul(2);
+    let route_ms = duration("backward").saturating_mul(first_route_turns);
     let generation_ms = duration("explore");
     let required = generation_ms
         .saturating_add(route_ms)
         .saturating_add(ENDPOINT_EVALUATION_DRAIN_MS)
         .saturating_add(WORLD_TIME_RESERVE_MS);
-    json!({"admitted":elapsed_ms.saturating_add(required) < MAX_MS,"elapsed_ms":elapsed_ms,"required_ms":required,"generation_ms":generation_ms,"first_route_turns":2,"route_reserve_ms":route_ms,"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_reserve_ms":WORLD_TIME_RESERVE_MS,"original_deadline_ms":MAX_MS,"guaranteed":false})
+    json!({"admitted":elapsed_ms.saturating_add(required) < MAX_MS,"elapsed_ms":elapsed_ms,"required_ms":required,"generation_ms":generation_ms,"first_route_turns":first_route_turns,"route_reserve_ms":route_ms,"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_reserve_ms":WORLD_TIME_RESERVE_MS,"original_deadline_ms":MAX_MS,"guaranteed":false})
 }
 
 pub fn research_time_limit(program: &Value) -> u64 {
@@ -370,6 +445,15 @@ pub fn transition_count(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 pub fn transition_limit(program: &Value) -> u64 {
+    if program["audit_policy_version"] == 2
+        && program["admitted_work"]["admitted"] == true
+        && matches!(
+            field(program, "stage"),
+            "exploration" | "routes" | "proposals"
+        )
+    {
+        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+    }
     if program["route_finalization"]["admitted"] == true
         && matches!(program["stage"].as_str(), Some("routes" | "exploration"))
     {

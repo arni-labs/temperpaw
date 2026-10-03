@@ -107,3 +107,46 @@ from a small sample.
 
 Deployment remains the dedicated Railway acceptance service and Vercel preview.
 Genesis and main promotion remain deferred by the accepted task scope.
+
+## Capacity and initial coverage (audit policy 2)
+
+Pass15 exposed two different omissions in the same lifecycle. Education accepted a
+second backward response at minute 59.16 with 87 candidate checks outstanding. Its
+recorded nine-minute generation estimate described one child, while corrections
+made each observed generation interval about 21 minutes. Music reached the
+exploration cutoff with 14 candidate checks outstanding; the route-only drain did
+not include prerequisite checks. Its preserved complete remaining workload is 102
+transitions under the new mandatory policy, not merely the four novelty transitions.
+Neither historical failure is erased or claimed recoverable.
+
+New runs reserve a useful unit through generation, candidate admission, route
+checks, current novelty comparison, and final writing. Generation timing includes
+corrective children from the initial request until acceptance. The original run
+clock, 480-transition hard bound, and existing finalization reserve remain unchanged.
+The generator receives available evaluation capacity; the receiver computes the
+mandatory workload before applying a reply. An oversized proposal is corrected
+within the existing correction allowance, not partially applied. Contingent work
+has an explicit conservative bound; admission is not a provider-time guarantee.
+
+The first generation reconstructs two complete originals within the same 24-node
+and 64-KiB response bounds. Currently passed novelty comparisons receive priority
+only when their exact evidence/context request remains current. Exact prerequisites
+may be shared; commitments are never dropped to fit. Historical programs retain
+their recorded batch policy. Targeted evidence research addresses missing bridges;
+relevant evidence is never removed to avoid reassessment.
+
+The mandatory-work allowance spans candidate, route, and deferred-comparison
+stages. A declined later generation cannot erase the allowance for accepted work.
+Grounding and causal checks remain required; optional diagnostic estimates do not
+certify missing mechanisms. The shared search task policy supplies execution,
+admission and reporting rather than counting optional work as completed checks.
+The native receiver may still decline work that cannot fit, and any unresolved
+path remains visible alongside model estimates.
+
+`audit_policy_version = 2` is stamped only on new runs. `semantic_search` owns
+both mandatory and optional task selection. Initial coverage excludes conditional
+on/off sweeps; after active worlds have fresh joint estimates, diagnostics target
+unresolved transitions or competing routes. Reporting distinguishes selected
+experiments from `not_run` experiments. Historical runs keep their original full
+sweep. Mandatory candidate/route/comparison work stops with the existing ten-minute
+finalization time and 120-transition tail still protected.
