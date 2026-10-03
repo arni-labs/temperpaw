@@ -50,3 +50,20 @@ encoding: 130,405 bytes become 111,497 bytes. These are byte measurements, not t
 counts or evidence of provider acceptance. The original failed response recorded
 only `max_tokens_exceeded`; new failed receipts also record request bytes, task count
 and the validated token-overflow classification without exporting the raw body.
+
+
+The likelihood transport separates prior evaluation judgments from execution
+records. Only typed task addresses, cache/comparison hashes and world revision
+numbers leave those prior contexts; source IDs, branch conditions, rounds,
+world passes, normalized choices, raw distributions and unknown fields remain.
+Unknown fields inside task/comparison objects also remain. A canonical request
+SHA-256 and exact context JSON pointers bind the unchanged original receipts.
+The projection is used only if its complete payload, including provenance, is
+smaller than the earlier exact-value encoding.
+
+On captured pass13 games this reduces the failed 105,732-byte request to 100,553
+bytes including provenance. Replaying the earlier encoding matches the failed
+request hash exactly. These byte measurements still do not establish provider
+acceptance. Local integration documentation records a 32k-token limit for state
+plus the longest question and 64k for the complete request; neither is a byte
+limit or a reason to increase the application's bounds.

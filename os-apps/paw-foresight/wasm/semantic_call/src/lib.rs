@@ -82,6 +82,27 @@ fn safe_rejected_response(response: &serde_json::Value, secret: &str) -> serde_j
     serde_json::from_str(&safe).unwrap_or(json!({"error":"response redaction failed"}))
 }
 
+// Usage belongs to the HTTP request, not each answer in its fanout.
+// Keep only documented token counts; absent/null usage is not a zero measurement.
+fn record_provider_usage(
+    entry: &mut serde_json::Value,
+    response: &serde_json::Value,
+    answer_offset: usize,
+) {
+    if answer_offset != 0 {
+        return;
+    }
+    let mut usage = serde_json::Map::new();
+    for key in ["input_tokens", "output_tokens"] {
+        if let Some(count) = response["usage"][key].as_u64() {
+            usage.insert(key.into(), json!(count));
+        }
+    }
+    if !usage.is_empty() {
+        entry["providerUsage"] = serde_json::Value::Object(usage);
+    }
+}
+
 fn call(ctx: &Context) -> Result<(), String> {
     let mut p = core::parse(core::field(&ctx.entity_state, "program_json"))?;
     let mut trace = core::parse(core::field(&ctx.entity_state, "trace_json"))?;
@@ -196,6 +217,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["stop_reason"] = json!("");
         }
         let answers = core::batch::answers(&batch, &response)?;
+        let provider_response = response;
         for (offset, (decision, mut evaluation, response)) in answers.into_iter().enumerate() {
             let task = &batch.tasks[offset];
             let node = core::field(task, "nodeId");
@@ -233,7 +255,8 @@ fn call(ctx: &Context) -> Result<(), String> {
             p["evaluations"][node][function] = evaluation.clone();
             p["cursor"] = json!(cursor + offset + 1);
             let index = trace.as_array().unwrap().len();
-            let entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"premise_judgments":state["premise_judgments"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
+            let mut entry = json!({"index":index,"nodeId":node,"function":function,"task":task,"depth":task["depth"],"decision":decision,"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"httpCallId":http_call,"questionKey":batch.question_key(offset),"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"caseHash":format!("{:x}",Sha256::digest(individual.to_string().as_bytes())),"requestFormat":"fanout-case-v1","request":{"model":individual["model"],"questions":individual["questions"],"state_ref":{"nodeId":node,"worldId":snapshot["world"]["Id"],"context":context,"branch_state":state["branch_state"],"premise_judgments":state["premise_judgments"],"prerequisiteIds":state["prerequisites"].as_array().into_iter().flatten().map(|v|v["id"].clone()).collect::<Vec<_>>(),"prerequisiteAssessments":state["prerequisites"],"comparisonIds":state["comparisons"].as_array().into_iter().flatten().map(|v|v["Id"].clone()).collect::<Vec<_>>(),"assessment":state["assessment"],"evaluations":state["evaluations"],"context_encoding":state["context_encoding"],"evidence_sets":state["evidence_sets"]}},"response":response,"forecastProbability":evaluation["probability"]});
+            record_provider_usage(&mut entry, &provider_response, offset);
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
         }
     }
@@ -332,4 +355,66 @@ fn transient_failures_retry_twice_but_permissions_billing_and_invalid_requests_d
     assert!(!transient_retry(&mut p));
     assert_eq!(p["cursor"], 17);
     assert_eq!(p["http_calls"], 616);
+}
+
+#[test]
+fn successful_fanout_records_usage_once_per_http_request() {
+    let response = json!({"usage":{"input_tokens":321,"output_tokens":8,"raw":"do not retain"}});
+    let mut trace = Vec::new();
+    for http_call in [1, 2] {
+        for offset in 0..3 {
+            let mut entry = json!({"httpCallId":http_call,"questionKey":format!("q{offset}")});
+            record_provider_usage(&mut entry, &response, offset);
+            trace.push(entry);
+        }
+    }
+    for http_call in [1, 2] {
+        let receipts: Vec<_> = trace
+            .iter()
+            .filter(|entry| entry["httpCallId"] == http_call)
+            .filter_map(|entry| entry.get("providerUsage"))
+            .collect();
+        assert_eq!(
+            receipts,
+            vec![&json!({"input_tokens":321,"output_tokens":8})]
+        );
+    }
+    assert_eq!(
+        trace
+            .iter()
+            .filter_map(|entry| entry["providerUsage"]["input_tokens"].as_u64())
+            .sum::<u64>(),
+        642
+    );
+}
+
+#[test]
+fn missing_or_invalid_usage_is_not_reported_as_zero() {
+    for response in [
+        json!({}),
+        json!({"usage":null}),
+        json!({"usage":{"input_tokens":null,"output_tokens":null}}),
+        json!({"usage":{"input_tokens":"secret","output_tokens":-1}}),
+    ] {
+        let mut entry = json!({"httpCallId":1});
+        record_provider_usage(&mut entry, &response, 0);
+        assert!(entry.get("providerUsage").is_none());
+    }
+    let mut entry = json!({"httpCallId":1});
+    record_provider_usage(&mut entry, &json!({"usage":{"input_tokens":0}}), 0);
+    assert_eq!(entry["providerUsage"], json!({"input_tokens":0}));
+}
+
+#[test]
+fn overflow_without_usage_keeps_error_diagnostics_without_token_counts() {
+    let body = r#"{"detail":{"error_type":"max_tokens_exceeded"}}"#;
+    assert!(is_token_overflow(400, body));
+    assert_eq!(
+        provider_error(400, body, "secret"),
+        "Semantic provider HTTP 400: max_tokens_exceeded"
+    );
+    let mut entry = json!({"httpCallId":1,"tokenOverflow":true});
+    record_provider_usage(&mut entry, &serde_json::from_str(body).unwrap(), 0);
+    assert!(entry.get("providerUsage").is_none());
+    assert_eq!(entry["tokenOverflow"], true);
 }

@@ -89,6 +89,17 @@ fn provider_request(individual: &Value) -> Value {
     request
 }
 pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Batch, String> {
+    finish(prepare_raw(snapshot, program, remaining)?)
+}
+#[cfg(test)]
+pub fn canonical_request(snapshot: &Value, program: &Value, remaining: usize) -> Value {
+    prepare_raw(snapshot, program, remaining).unwrap().request
+}
+#[cfg(test)]
+pub fn restore_likelihood_receipts(request: &Value, canonical: &Value) -> Value {
+    likelihood_projection::restore_receipts(request, canonical)
+}
+fn prepare_raw(snapshot: &Value, program: &Value, remaining: usize) -> Result<Batch, String> {
     let cap = byte_cap(program);
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     let tasks = program["tasks"].as_array().ok_or("Missing tasks")?;
@@ -215,7 +226,7 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
             if batch.tasks.is_empty() {
                 // Try the individual without wrapper overhead. finish enforces
                 // the same provider bound after any joint-world encoding.
-                return finish(Batch {
+                return Ok(Batch {
                     request: provider_request(&individual),
                     tasks: vec![task.clone()],
                     individual: vec![individual],
@@ -230,7 +241,7 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
     if batch.tasks.is_empty() {
         return Err("No question budget remains".into());
     }
-    finish(batch)
+    Ok(batch)
 }
 fn intern_event(state: &mut Value, value: Value) -> usize {
     if !state["event_catalog"].is_array() {
@@ -259,6 +270,56 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 #[cfg(test)]
 mod domain_cap_tests {
     use super::*;
+    #[test]
+    #[ignore = "requires captured pass13 checkpoint via FORESIGHT_LIKELIHOOD_PASS13_CAPTURE"]
+    fn captured_pass13_likelihood_preserves_estimate_inputs_and_binds_receipts() {
+        use sha2::{Digest, Sha256};
+        let record: Value = serde_json::from_slice(
+            &std::fs::read(std::env::var("FORESIGHT_LIKELIHOOD_PASS13_CAPTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let snapshot: Value =
+            serde_json::from_str(record["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let mut program: Value =
+            serde_json::from_str(record["fields"]["program_json"].as_str().unwrap()).unwrap();
+        program.as_object_mut().unwrap().remove("world_refinement");
+        let canonical = canonical_request(&snapshot, &program, 100);
+        let previous = likelihood_projection::previous_encoding(&canonical);
+        assert_eq!(previous.to_string().len(), 105732);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(previous.to_string().as_bytes())),
+            "9c3cfe8bbaac452ea574723154e99eb4d8ec179c896ccf079f5929d498240b6a"
+        );
+        let batch = prepare(&snapshot, &program, 100).unwrap();
+        assert_eq!(batch.tasks.len(), 1);
+        assert_eq!(
+            restore_likelihood_receipts(&batch.request, &canonical),
+            canonical
+        );
+        assert!(batch.request.to_string().len() < previous.to_string().len());
+        eprintln!(
+            "pass13 recorded={} projected_with_provenance={}",
+            previous.to_string().len(),
+            batch.request.to_string().len()
+        );
+        let mut changed = snapshot.clone();
+        let evidence = changed["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|node| node["kind"] == "evidence")
+            .unwrap();
+        evidence["statement"] = json!(format!(
+            "{} Changed observation.",
+            evidence["statement"].as_str().unwrap()
+        ));
+        let changed = prepare(&changed, &program, 100).unwrap();
+        assert_ne!(
+            Sha256::digest(changed.request.to_string().as_bytes()),
+            Sha256::digest(batch.request.to_string().as_bytes())
+        );
+    }
+
     #[test]
     fn likelihood_transport_encoding_keeps_canonical_receipts_and_answer_keys() {
         let source = json!({"statement":"Exact evidence statement retained without any truncation or qualification changes.","date":"2026-10-03"});

@@ -497,8 +497,13 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
     }
     candidates.sort_by_key(|e| priority.iter().position(|id| *id == e["id"]).unwrap());
     let mut program = old.clone();
-    if old["proposal_pool"]["novelty_repair"]["status"] == "pending" {
-        let repair = &old["proposal_pool"]["novelty_repair"];
+    let repair_key = if old["proposal_pool"]["creative_repair"]["status"] == "pending" {
+        "creative_repair"
+    } else {
+        "novelty_repair"
+    };
+    if old["proposal_pool"][repair_key]["status"] == "pending" {
+        let repair = &old["proposal_pool"][repair_key];
         let targets = repair["target_ids"]
             .as_array()
             .ok_or("Missing targeted comparison repair IDs")?;
@@ -524,8 +529,23 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
                 != Some(candidate)
         }) || old["baseline"] != repair["original_baseline"]
             || json!(evidence::active_sources(snapshot)) != repair["original_sources"];
-        program["proposal_pool"]["novelty_repair"]["status"] = json!("completed");
-        program["proposal_pool"]["novelty_repair"]["progress"] = json!(if changed {
+        let revised_commitments = candidates.iter().any(|candidate| {
+            let original = repair["original_candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == candidate["id"])
+                .unwrap();
+            candidate["commitments"] != original["commitments"]
+                || candidate["original_statement"] != original["original_statement"]
+        });
+        program["proposal_pool"][repair_key]["status"] = json!("completed");
+        program["proposal_pool"][repair_key]["creative_development_used"] =
+            json!(revised_commitments);
+        if revised_commitments && repair_key == "novelty_repair" {
+            program["proposal_pool"]["creative_repair"] = json!({"status":"completed","used_in":"joint_comparison_repair","creative_development_used":true});
+        }
+        program["proposal_pool"][repair_key]["progress"] = json!(if changed {
             "changed_comparison_or_present_evidence"
         } else {
             "unchanged_no_progress"
@@ -842,6 +862,27 @@ fn select_distinct_candidates(
     selected
 }
 
+// Estimate current affected work with the same request packer used at runtime.
+// Future revisions can add work, so native limits still apply after generation.
+fn repair_admission(
+    snapshot: &Value,
+    p: &Value,
+    candidates: &[Value],
+    worlds: usize,
+) -> Result<Value, String> {
+    let mut fresh = p.clone();
+    fresh["endpoint_proposal_history"] = json!([]);
+    let individual = schedule(snapshot, &fresh, candidates.to_vec(), "individual")?;
+    let pairs = schedule(snapshot, &fresh, candidates.to_vec(), "pairs")?;
+    let checks = check_transitions(snapshot, &individual)? + check_transitions(snapshot, &pairs)?;
+    let required = (worlds as u64 + 3) * REASONING_ADMISSION_RESERVE + checks + 32 + 8;
+    let remaining =
+        super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
+    Ok(
+        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"packed_check_transitions":checks,"reserved_route_turns":worlds,"reserved_generation_turns":1,"reserved_composition_writing_turns":2,"guaranteed":false}),
+    )
+}
+
 pub fn finish(
     snapshot: &Value,
     p: &mut Value,
@@ -850,6 +891,7 @@ pub fn finish(
 ) -> Result<(), String> {
     // The targeted repair consumes its one generation even when it produces no
     // progress; subsequent failed checks cannot reopen generic revision loops.
+    let can_develop = allow_retry;
     let allow_retry = allow_retry && p["proposal_pool"]["novelty_repair"]["status"] != "completed";
     let mut a = p["endpoint_proposal_attempt"].clone();
     let mut checks = vec![];
@@ -906,13 +948,15 @@ pub fn finish(
             if passed < 2
                 && allow_retry
                 && !p["proposal_pool"]["novelty_repair"].is_object()
-                && admits(remaining, 1, candidates.len() * 8)
+                && repair_admission(snapshot, p, candidates, selected.len())?["admitted"] == true
             {
                 let targets: Vec<_> = selected
                     .iter()
                     .filter(|id| !novelty_passed(p, id.as_str().unwrap_or("")))
                     .cloned()
                     .collect();
+                p["proposal_pool"]["repair_admission"] =
+                    repair_admission(snapshot, p, candidates, selected.len())?;
                 p["proposal_pool"]["novelty_repair"] = json!({"status":"pending","target_ids":targets,"original_candidates":p["proposal_pool"]["candidates"],"original_baseline":p["baseline"],"original_sources":evidence::active_sources(snapshot),"comparison_receipts":p["endpoint_novelty"],"attempt_limit":1});
                 p["proposal_pool"]["stage"] = json!("contrast");
                 p["endpoint_proposal_attempt"]["status"] = json!("targeted_comparison_repair");
@@ -946,15 +990,43 @@ pub fn finish(
             if !p["endpoint_novelty"].is_object() {
                 p["endpoint_novelty"] = json!({});
             }
-            for endpoint in &viable {
+            for endpoint in candidates {
                 if let Some(check) = checks.iter().find(|c| {
                     c["task"]["endpoint_id"] == endpoint["id"]
                         && c["task"]["function"] == "check_proposal_change"
                 }) {
-                    p["endpoint_novelty"][field(endpoint, "id")] = json!({"status":if check["passed"] == true {"passed"} else {"provisional"},"initial_check":check});
+                    p["endpoint_novelty"][field(endpoint, "id")] = json!({"status":if check["passed"] == true {"passed"} else if check["result"] == "unresolved" {"provisional"} else if check["result"].is_string() {"rejected"} else {"unresolved"},"initial_check":check});
                 }
             }
             p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]) && novelty_passed(p,field(e,"id")),"explorable":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
+        }
+        // A completed factual comparison is not a used creative-development
+        // attempt. If it defeats the selected set, develop only its uncertain
+        // slots through the same explicit-revision receiver, once.
+        if a["pool_stage"] == "individual"
+            && viable.len() < 3
+            && can_develop
+            && p["proposal_pool"]["novelty_repair"]["status"] == "completed"
+            && p["proposal_pool"]["novelty_repair"]["progress"] != "unchanged_no_progress"
+            && !p["proposal_pool"]["creative_repair"].is_object()
+        {
+            let selected = p["proposal_pool"]["selected_ids"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let targets: Vec<_> = selected
+                .iter()
+                .filter(|id| !viable.iter().any(|e| e["id"] == **id) || !novelty_passed(p, id.as_str().unwrap_or("")))
+                .cloned()
+                .collect();
+            let admission = repair_admission(snapshot, p, candidates, selected.len())?;
+            p["proposal_pool"]["creative_repair_admission"] = admission.clone();
+            if !targets.is_empty() && admission["admitted"] == true {
+                p["proposal_pool"]["creative_repair"] = json!({"status":"pending","target_ids":targets,"original_candidates":p["proposal_pool"]["candidates"],"original_baseline":p["baseline"],"original_sources":evidence::active_sources(snapshot),"comparison_receipts":p["endpoint_novelty"],"attempt_limit":1});
+                p["proposal_pool"]["stage"] = json!("contrast");
+                p["endpoint_proposal_attempt"]["status"] = json!("targeted_creative_repair");
+                return Ok(());
+            }
         }
         // Failed initial comparisons should trigger creative development, not
         // repeated research over unchanged arrangements. This is provisional:
@@ -1050,6 +1122,86 @@ pub fn finish(
 mod tests {
     use super::*;
     #[test]
+    fn fresh_failed_novelty_replaces_stale_pass_before_creative_targets() {
+        let fixture: Value = serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
+        let mut p = fixture["program"].clone();
+        let id = "kitchen-becomes-a-barrier";
+        p["endpoint_novelty"][id] = json!({"status":"passed","initial_check":{"result":"changed_arrangement"}});
+        let history = json!({"checks":[{"task":{"endpoint_id":id},"result":"changed_arrangement"}]});
+        p["endpoint_proposal_history"] = json!([history.clone()]);
+        finish(&fixture["snapshot"], &mut p, true, false).unwrap();
+        assert_eq!(p["endpoint_novelty"][id]["status"], "provisional");
+        assert!(p["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!(id)));
+        assert_eq!(p["endpoint_proposal_history"][0], history);
+        assert_eq!(p["endpoint_novelty"]["flavor-separates-from-food"]["status"], "passed");
+        assert!(!p["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!("flavor-separates-from-food")));
+        let mut failed_frontier = fixture["program"].clone();
+        failed_frontier["tasks"] = failed_frontier["endpoint_proposal_attempt"]["tasks"].clone();
+        record(&mut failed_frontier, pass);
+        finish(&fixture["snapshot"], &mut failed_frontier, true, false).unwrap();
+        assert_eq!(failed_frontier["endpoint_novelty"][id]["status"], "passed");
+        assert!(failed_frontier["proposal_pool"]["creative_repair"]["target_ids"].as_array().unwrap().contains(&json!(id)), "A separate failed frontier check still makes this slot repairable");
+    }
+
+    #[test]
+    fn captured_food_factual_repair_does_not_consume_creative_development() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
+        let snapshot = &fixture["snapshot"];
+        let mut p = fixture["program"].clone();
+        assert_eq!(p["transition_count"], 112);
+        assert_eq!(p["proposal_pool"]["novelty_repair"]["status"], "completed");
+        assert!(
+            p["proposal_pool"]["revisions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let originals = p["proposal_pool"]["candidates"].clone();
+        finish(snapshot, &mut p, true, false).unwrap();
+        assert!(research_pending(&p));
+        assert_eq!(
+            p["endpoint_proposal_attempt"]["status"],
+            "targeted_creative_repair"
+        );
+        assert_eq!(p["proposal_pool"]["candidates"], originals);
+        assert!(
+            !p["proposal_pool"]["creative_repair"]["target_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("flavor-separates-from-food"))
+        );
+        let admission = &p["proposal_pool"]["creative_repair_admission"];
+        eprintln!("captured food creative admission: {admission}");
+        assert_eq!(admission["remaining_transitions"], 368);
+        assert!(admission["required_transitions"].as_u64().unwrap() <= 368);
+        let candidates = p["proposal_pool"]["candidates"].as_array().unwrap();
+        let reply = json!({"hypotheses":[],"research_evidence":[],"proposal_contrasts":candidates.iter().map(|e|json!({"endpoint_id":e["id"],"contrast":e["contrast"]})).collect::<Vec<_>>(),"comparison_priority":candidates.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()});
+        let mut no_progress = contrasts(snapshot, &p, &reply).unwrap();
+        assert_eq!(
+            no_progress["proposal_pool"]["creative_repair"]["status"],
+            "completed"
+        );
+        assert_eq!(
+            no_progress["proposal_pool"]["creative_repair"]["creative_development_used"],
+            false
+        );
+        finish(snapshot, &mut no_progress, true, false).unwrap();
+        assert!(
+            !research_pending(&no_progress),
+            "Unchanged creative attempt cannot loop"
+        );
+        let mut refused = fixture["program"].clone();
+        refused["transition_count"] = json!(450);
+        finish(snapshot, &mut refused, true, false).unwrap();
+        assert!(!research_pending(&refused));
+        assert_eq!(
+            refused["proposal_pool"]["creative_repair_admission"]["admitted"],
+            false
+        );
+    }
+
+    #[test]
     fn captured_food_equal_breadth_retains_currently_passed_candidate() {
         let f: Value =
             serde_json::from_str(include_str!("semantic_food_selection_fixture.json")).unwrap();
@@ -1125,6 +1277,10 @@ mod tests {
         let mut developed_reply = reply.clone();
         developed_reply["endpoint_revisions"] = json!([{"endpoint_id":target,"reason":"Address the unresolved defining capability","replacement":replacement}]);
         let developed = contrasts(&snapshot, &p, &developed_reply).unwrap();
+        assert_eq!(
+            developed["proposal_pool"]["creative_repair"]["creative_development_used"],
+            true
+        );
         assert!(
             !developed["tasks"].as_array().unwrap().is_empty(),
             "Changed commitments require new judgments"
@@ -1148,7 +1304,13 @@ mod tests {
         );
         let mut rejected = repaired.clone();
         rejected["tasks"] = rejected["endpoint_proposal_attempt"]["tasks"].clone();
-        record(&mut rejected, |task| if task["function"] == "check_proposal_change" { "present_or_adoption_only".into() } else { pass(task) });
+        record(&mut rejected, |task| {
+            if task["function"] == "check_proposal_change" {
+                "present_or_adoption_only".into()
+            } else {
+                pass(task)
+            }
+        });
         finish(&snapshot, &mut rejected, true, false).unwrap();
         assert!(!research_pending(&rejected));
         assert_ne!(rejected["proposal_pool"]["stage"], "enrich");

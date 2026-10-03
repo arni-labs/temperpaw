@@ -639,7 +639,9 @@ fn captured_whole_world_likelihood_request() {
     program.as_object_mut().unwrap().remove("world_refinement");
     let batch = super::batch::prepare(&snapshot, &program, 100).unwrap();
     use sha2::{Digest, Sha256};
-    let restored = super::batch::restore_likelihood_request(&batch.request);
+    let canonical = super::batch::canonical_request(&snapshot, &program, 100);
+    let restored = super::batch::restore_likelihood_receipts(&batch.request, &canonical);
+    assert_eq!(restored, canonical);
     assert_eq!(
         format!("{:x}", Sha256::digest(restored.to_string().as_bytes())),
         "69a6507d0787c4e65d1ba03de705ebfb8970658c196e928dd1dcc64709e5e5b7"
