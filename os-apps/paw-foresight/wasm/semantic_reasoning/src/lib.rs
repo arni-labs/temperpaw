@@ -602,6 +602,12 @@ fn setup(ctx: &Context) -> Result<(), String> {
     let phase = core::field(&ctx.entity_state, "phase");
     let snapshot = core::parse(core::field(&ctx.entity_state, "snapshot_json"))?;
     let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+    if phase == "synthesize" && program["presentation_repair"]["attempt"] == 1 {
+        let issues=program["presentation_repair"]["issues"].clone();
+        core::start_reasoning_timing(&mut program,phase,Context::get_time_millis() as u64);
+        set_success_result("LaunchReasoning",&json!({"program_json":program.to_string(),"system_prompt":"Repair only the listed presentation text lengths. Shorten each supplied text without adding claims, evidence, certainty or estimates, and retain its factual qualifications and explicit uncertainty. Return JSON only: {text_repairs:[{path:exact supplied path,text:revised text}]}. Return each listed path exactly once; no other fields. Definitions, sources, evaluated worlds and actual estimates are immutable and remain attached by the engine. No research or new predictions.","user_message":json!({"text_issues":issues}).to_string(),"tools_enabled":"","tool_choice":"none","max_turns":"1"}));
+        return Ok(());
+    }
     let scope_repair = phase == "explore" && program["scope_repair"]["status"] == "pending";
     let pool_research = phase == "explore" && core::proposals::pool::research_pending(&program);
     let prompt = match phase {
@@ -671,6 +677,9 @@ fn setup(ctx: &Context) -> Result<(), String> {
             .map(|candidate| candidate["id"].clone())
             .collect();
         input["contrast_target_ids"] = json!(ids);
+        if program["proposal_pool"]["novelty_repair"]["status"] == "pending" {
+            input["targeted_novelty_repair_instruction"] = json!("One bounded repair before freezing: inspect novelty_repair.target_ids and exact comparison_receipts. Resolve specific missing present comparisons using sourced findings, or explicitly develop only those candidates through endpoint_revisions while preserving ambitious interacting consequences. Do not rewrite non-target candidates: return their existing contrast unchanged. Preserve original/replacement history. Do not repeat an unchanged comparison as progress or invent evidence to clear uncertainty. Unknown may remain unknown; provisional path exploration remains possible after this attempt.");
+        }
         format!(
             "Authoritative current contrast targets: {}. Return proposal_contrasts and comparison_priority for exactly these IDs, once each. Only proposal_pool.candidates contains the current candidate texts and commitments. proposal_quality_history, development.originals, revisions, candidate_receipts and response_correction.rejected_draft are audit history, not additional targets. Do not revive historical candidates even when a rejected draft includes them.",
             json!(ids)

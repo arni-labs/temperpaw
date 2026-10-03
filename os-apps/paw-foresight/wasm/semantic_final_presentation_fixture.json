@@ -1,0 +1,124 @@
+{
+  "schema": "foresight-worlds-v3",
+  "headline": "Making games could mean rewriting a world you played\u2014or teaching software the moves of a finished adventure",
+  "horizon": "2030-12-31",
+  "probability_basis": "model_implied_world_estimate",
+  "probability_model": "overlapping_worlds",
+  "calibrated": false,
+  "summary": "One world turns players into authors of alternate histories that others can change again. The other lets tiny teams demonstrate intended play and ship fixed, downloadable games. Both depend on software preserving what already works; neither removes the human work of choosing, testing and deciding what is worth playing.",
+  "evidence_limits": [
+    "These are two possible answers, not an exhaustive forecast. They may coexist, and no probabilities should be added or normalized.",
+    "Neither world has a completed whole-world likelihood estimate. Both have unknown odds; the recorded conditional estimates cannot substitute for them.",
+    "The engine stopped with provider_error after an evaluation request exceeded its token limit. Neither world's refinement converged or verified accuracy; each has one incomplete round.",
+    "For ref_0058, all 76 planned world checks completed. Six pairs were judged compatible, but whole-world consistency remained uncertain. Completing checks did not establish feasibility.",
+    "For ref_0059, none of 79 planned world checks completed. Earlier route judgments remain available, but they do not establish whole-world consistency. Null results are unfinished checks, not passes.",
+    "Conditional estimates concern particular hypothetical prerequisites. A condition in which not all prerequisites occur means at least one is absent\u2014not that every prerequisite fails.",
+    "Repeated model judgments concern the same proposed mechanisms, not independent evidence. Similar scores would not establish accuracy.",
+    "Both completed comparison judgments called these alternative answers, but their declared organizing branches were not inherited by the worlds. The overall distinction remains unresolved; correction hit a transition budget.",
+    "The baseline is dated 2026-10-03 but emphasizes AI and selected platforms. Typical costs, staffing, demand, geography, device differences and ordinary production remain poorly established.",
+    "Achron, Dwarf Fortress and software replay methods support parts of historical rebuilding, not dependable preservation or substantial, repeatedly publishable games needing little repair.",
+    "Stagecast supplies a historical demonstration-authoring precedent. Whether the proposed example-and-correction prototype is itself a new capability remains unresolved.",
+    "Other components are classified as future changes, not verified firsts or predictions proven likely. Positive proposal comparisons do not settle missing comparisons with existing capabilities.",
+    "Several sources are vendor accounts, undated documentation or bounded indexed excerpts. Retrieval dates do not date the underlying capability; proposed 2027\u20132030 milestones are not observed results.",
+    "The supplied lineage also retains unresolved possibilities for cultivated worlds, private adaptive games and worlds generated during play. They lack complete eligible routes and are not additional composed outcomes here.",
+    "Exploration admission is unspecified. The stopped search cannot be described as converged, and its limited coverage does not establish that other futures are unavailable."
+  ],
+  "research_questions": [
+    "For editable histories, does any existing platform reliably identify an edit's consequences while preserving unrelated material? The supplied present comparison remains unknown.",
+    "Does any existing workflow let players publish substantial historical branches, then branch them again, without repairing most affected content? That comparison remains unknown.",
+    "Can dependency records capture searches, absent resources and shared rules without making nearly every historical edit require rebuilding the whole game?",
+    "Will players pay enough for historical branches to cover licensed starting games, rebuilding, review and maintenance of old versions?",
+    "For demonstration-led production, do existing commercial tools already accept playable examples as the primary specification for complete games? The supplied comparison remains unknown.",
+    "Do games made through that complete process already run offline with stable rules and reproducible saves? Ordinary offline games do not settle this comparison.",
+    "Can automated tests catch a tool's misunderstanding of a creator's example rather than approve the same misunderstanding in both the game and its test?",
+    "Can teams finish multi-hour games with less implementation work in each of code, animation, audio and levels once repairs, assistance and release obligations are counted?",
+    "For cultivated worlds, do players already manipulate exactly the same causal rules used to select worlds, and do selected worlds sustain multi-hour play without hidden rescues? Both comparisons remain unknown.",
+    "For private adaptive games, do existing services combine independent creators' reusable mechanics under enforceable adaptation limits? This comparison remains unknown.",
+    "Can players inspect and erase the actual preference-and-ability model governing adaptation, and enforce their chosen objectives? Both present comparisons remain unknown.",
+    "For worlds generated during play, do creators already replace most location and dialogue authoring with enforceable constraints and consistency tests? The complete-workflow comparison remains unknown."
+  ],
+  "outcomes": [
+    {
+      "id": "history-forks",
+      "world_id": "ref_0058",
+      "title": "Players publish new games by changing an existing world's past",
+      "definition": "By 2030, some persistent games could expose their causal histories as an authoring medium. A player changes an earlier event or rule, and the system rebuilds the consequences into a playable alternate world while preserving unaffected material. New games emerge from counterfactual editing after play has begun, rather than from copying assets and manually rebuilding every dependent quest, relationship and location.",
+      "component_ids": [
+        "ref_0034",
+        "ref_0038",
+        "ref_0037",
+        "ref_0033",
+        "ref_0036",
+        "ref_0035",
+        "ref_0029",
+        "ref_0032",
+        "ref_0031",
+        "ref_0030"
+      ],
+      "counter_ids": [],
+      "scene": "Imagined, not evidence: after finishing a river-trading game, you cancel the dam's construction and change the flooding rule. The preview explains which towns move and why a mountain village stays untouched. A merchant remembers using the ferry, and your delivery goal follows that route. You test the result and publish it. A friend changes its founding war to make another game.",
+      "narrative": "By end-2030, playing a purpose-built world could supply the material for making its descendants. Players choose changes, explore the consequences and publish versions others can change again\u2014not merely produce a fixed adventure faster.\n\nThe proposed path starts with reproducible histories in 2027 and checked dependencies in 2028: records of what each event or object relies on, including missing prerequisites. Software reruns changed causes instead of copying obsolete outcomes. In 2029, maps, supplies, memories and goals draw from the same rebuilt facts, while unrelated material keeps its stored version. Licensed starting games and preserved rules enable commercial publishing in 2030.\n\nPlayers gain an authoring role; creators and the operator carry permissions, review and old-version upkeep. Outside trials must yield multi-hour games and further branches with little repair. This works only in games built to record their causes, not arbitrary downloads. Trade and migration can spread a small edit widely, making rebuilding costly. Missed links can break goals; coherent results can still be dull. Reliable preservation and low-repair public branching remain the crucial unverified bridges.",
+      "what_you_can_do": [
+        "Test a consequential edit: remove a route or resource, then check geography, character memories and goals together.",
+        "Ask for repair logs and unsuccessful attempts, including a player's branch of another player's release.",
+        "Check derivative permissions, rebuilding charges and what happens when a parent game is updated or withdrawn."
+      ],
+      "signals": [
+        "An unchanged recorded history reproduces its saved world, while editing a separate version leaves the original playable.",
+        "By June 2029, an unprepared historical edit changes terrain, resources, memories and objectives together, with a goal testers can complete.",
+        "Selective rebuilding matches a complete rerun, including edits that introduce previously absent objects or resources.",
+        "A commercial editor lets paying players change executable rules as well as past events, rather than choose prewritten endings.",
+        "By September 2030, outside trials disclose multi-hour second-generation games, rejected edits, staff assistance and modest manual repair."
+      ],
+      "falsifiers": [
+        "Historical edits mainly change descriptions or select predefined alternatives rather than rebuild playable consequences.",
+        "Hidden dependencies repeatedly leave broken objectives or preserve material that should have changed.",
+        "Most consequential edits require manual reconstruction comparable to making a conventional expansion.",
+        "Further branching accumulates contradictions, or only tiny edits produce usable games.",
+        "Permissions or rebuilding, storage and maintenance costs prevent public releases that players can change again."
+      ]
+    },
+    {
+      "id": "sketch-to-release",
+      "world_id": "ref_0059",
+      "title": "Teams of three or fewer turn playable examples into complete downloadable games",
+      "definition": "By 2030, small teams could make substantial standalone games by showing a system how play should feel, correcting its playable attempts and commissioning automated testing. The system produces the implementation, assets and release files. Unlike a world invented during play, the resulting game is a fixed product that runs without a generative service; creators retain control through examples and measurable requirements.",
+      "component_ids": [
+        "ref_0050",
+        "ref_0046",
+        "ref_0044",
+        "ref_0048",
+        "ref_0045",
+        "ref_0053",
+        "ref_0052",
+        "ref_0051",
+        "ref_0047",
+        "ref_0049"
+      ],
+      "counter_ids": [],
+      "scene": "Imagined, not evidence: two friends demonstrate a rope rescue in a rough climbing game. They mark the takeoff delay as right and the landing as too forgiving. The next build changes the jump, animation, sound and ledges together. A test blocks release because the last checkpoint fails. Months later, a buyer resumes the finished adventure with Wi-Fi off.",
+      "narrative": "By end-2030, teams of up to three could turn intended play into multi-hour standalone games. They demonstrate interactions and correct attempts; software implements most code, animation, sound and levels, tests revisions and packages a fixed release. Unlike historical branching, the starting point is what creators want players to do.\n\nThe proposed 2027 foundation pairs inspectable examples with licensed, compatible game parts. Whether example capture itself is new remains unsettled; the leap is dependable completion. In 2028, shared timing and movement descriptions coordinate changes across those parts, while automated players test real controls and physics. Offline export and checks that block faulty releases follow in 2029; outside teams finish games in 2030.\n\nCreators still choose, arrange, playtest and approve. The supplier takes on integration and maintenance; buyers need no generation service. But a tool can misunderstand a move and write a test approving the same mistake. Too many clarifying examples, expensive testing, restrictive rights or final repairs could restore the usual workload. Success requires disclosed work records, not hidden production crews or impressive short sketches.",
+      "what_you_can_do": [
+        "Record wanted and unwanted behavior, including what must stay unchanged after a revision.",
+        "Evaluate a tool through several revisions and a complete release, not only its first playable sketch.",
+        "Track human hours separately for code, animation, audio, levels, testing and final repairs; include supplier assistance.",
+        "Test the distributed game with network access blocked, including installation and repeated save restoration."
+      ],
+      "signals": [
+        "Outside users teach an unprepared interaction and correct an overgeneralization without writing its implementation.",
+        "Repeated revisions coordinate movement, sound and level geometry while preserving previously accepted behavior.",
+        "Tests detect deliberately broken jumps, missing progression items, save failures and performance overruns in actual playable builds.",
+        "Release preparation stops on failed requirements; changing a requirement needs explicit creator approval.",
+        "By June 2030, outside teams disclose multi-hour release candidates, work in each production area, failed attempts, purchased content and assistance.",
+        "Publicly released games preserve rules and saved state without contacting the generation supplier, including after updates."
+      ],
+      "falsifiers": [
+        "Commercial tools stop at short sketches, with conventional implementation teams needed to finish substantial releases.",
+        "Creators still separately implement most of any named area: code, animation, audio or level content.",
+        "Automated checks miss real input and physics failures or silently weaken requirements after revisions.",
+        "Undisclosed contractors or supplier staff perform most implementation behind supposedly automated small-team releases.",
+        "A generation outage prevents play, or loading a save loses relevant state or changes the game's rules."
+      ]
+    }
+  ]
+}

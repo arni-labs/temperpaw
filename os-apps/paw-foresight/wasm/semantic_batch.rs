@@ -1,5 +1,8 @@
 // Independent questions share payloads without changing their individual contexts.
 use serde_json::{Value, json};
+mod likelihood_projection {
+    include!("semantic_likelihood_projection.rs");
+}
 pub struct Batch {
     pub request: Value,
     pub tasks: Vec<Value>,
@@ -7,12 +10,28 @@ pub struct Batch {
 }
 impl Batch {
     pub fn question_key(&self, index: usize) -> String {
-        if self.request["state"]["cases"].is_object() {
+        if self.request["questions"].get("q0").is_some() {
             format!("q{index}")
         } else {
             "result".into()
         }
     }
+}
+#[cfg(test)]
+pub fn restore_likelihood_request(request: &Value) -> Value {
+    likelihood_projection::restore(request)
+}
+fn finish(mut batch: Batch) -> Result<Batch, String> {
+    if batch.tasks.len() == 1
+        && batch.tasks[0]["function"] == "estimate_likelihood"
+        && batch.individual[0]["state"]["node"]["kind"] == "world"
+    {
+        batch.request = likelihood_projection::project(&batch.request);
+    }
+    if batch.request.to_string().len() > 128 * 1024 {
+        return Err("Semantic provider request exceeds 128 KB after lossless encoding".into());
+    }
+    Ok(batch)
 }
 // Learned byte limits are conservative proxies for provider token limits. A
 // route payload and a world audit have different encodings; contract 2 learns
@@ -194,9 +213,9 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         }
         if candidate_bytes > 128 * 1024 {
             if batch.tasks.is_empty() {
-                // request_task already enforces the individual hard limit. The
-                // batch wrapper must not reject an otherwise valid single request.
-                return Ok(Batch {
+                // Try the individual without wrapper overhead. finish enforces
+                // the same provider bound after any joint-world encoding.
+                return finish(Batch {
                     request: provider_request(&individual),
                     tasks: vec![task.clone()],
                     individual: vec![individual],
@@ -211,7 +230,7 @@ pub fn prepare(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
     if batch.tasks.is_empty() {
         return Err("No question budget remains".into());
     }
-    Ok(batch)
+    finish(batch)
 }
 fn intern_event(state: &mut Value, value: Value) -> usize {
     if !state["event_catalog"].is_array() {
@@ -240,6 +259,34 @@ pub fn answers(batch: &Batch, response: &Value) -> Result<Vec<(String, Value, Va
 #[cfg(test)]
 mod domain_cap_tests {
     use super::*;
+    #[test]
+    fn likelihood_transport_encoding_keeps_canonical_receipts_and_answer_keys() {
+        let source = json!({"statement":"Exact evidence statement retained without any truncation or qualification changes.","date":"2026-10-03"});
+        let individual = json!({"model":super::super::MODEL,"state":{"node":{"kind":"world","statement":"Whole joint world"},"sources":vec![source;8]},"questions":{"result":{"type":"noul","instructions":"Estimate the whole world"}}});
+        let outbound = json!({"model":super::super::MODEL,"state":{"cases":{"q0":individual["state"]},"common":{}},"questions":{"q0":individual["questions"]["result"]}});
+        let batch = finish(Batch {
+            request: outbound.clone(),
+            tasks: vec![json!({"function":"estimate_likelihood","nodeId":"w"})],
+            individual: vec![individual.clone()],
+        })
+        .unwrap();
+        assert_eq!(batch.individual[0], individual);
+        assert_eq!(restore_likelihood_request(&batch.request), outbound);
+        assert_eq!(batch.question_key(0), "q0");
+        let response =
+            json!({"model":super::super::MODEL,"answers":{"q0":{"type":"noul","noul":0.31}}});
+        assert_eq!(answers(&batch, &response).unwrap()[0].0, "0.31");
+        let oversized = json!({"state":{"node":{"kind":"world","statement":"x".repeat(128*1024)}},"questions":{"result":{"type":"noul"}}});
+        assert!(
+            finish(Batch {
+                request: oversized.clone(),
+                tasks: batch.tasks,
+                individual: vec![oversized]
+            })
+            .is_err()
+        );
+    }
+
     #[test]
     fn token_backoff_halves_case_bytes_without_halving_shared_evidence() {
         let batch = Batch {

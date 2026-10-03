@@ -15,6 +15,42 @@ pub fn enabled(program: &Value) -> bool {
 pub fn research_pending(program: &Value) -> bool {
     enabled(program) && program["proposal_pool"]["stage"] == "contrast"
 }
+pub fn skip_prefreeze_repair(p: &mut Value) -> bool {
+    if p["proposal_pool"]["novelty_repair"]["status"] != "pending" {
+        return false;
+    }
+    p["proposal_pool"]["novelty_repair"]["status"] = json!("not_admitted");
+    let selected = p["proposal_pool"]["selected_ids"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let candidates = p["proposal_pool"]["candidates"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    freeze_selected(p, &candidates, &selected);
+    true
+}
+
+fn freeze_selected(p: &mut Value, candidates: &[Value], selected: &[Value]) {
+    let accepted: Vec<_> = candidates
+        .iter()
+        .filter(|e| selected.contains(&e["id"]))
+        .cloned()
+        .collect();
+    p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"deferred_novelty_contract":1,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
+    p["endpoint_proposal_attempt"]["status"] = json!(if selected
+        .iter()
+        .all(|id| novelty_passed(p, id.as_str().unwrap_or("")))
+    {
+        "accepted"
+    } else {
+        "examined"
+    });
+    p["proposal_pool"]["stage"] = json!("accepted");
+    p["stage"] = json!("exploration");
+}
+
 pub fn is_task(task: &Value) -> bool {
     matches!(
         field(task, "function"),
@@ -461,6 +497,40 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
     }
     candidates.sort_by_key(|e| priority.iter().position(|id| *id == e["id"]).unwrap());
     let mut program = old.clone();
+    if old["proposal_pool"]["novelty_repair"]["status"] == "pending" {
+        let repair = &old["proposal_pool"]["novelty_repair"];
+        let targets = repair["target_ids"]
+            .as_array()
+            .ok_or("Missing targeted comparison repair IDs")?;
+        for candidate in &candidates {
+            if !targets.contains(&candidate["id"]) {
+                let original = repair["original_candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["id"] == candidate["id"])
+                    .ok_or("Unknown repair candidate")?;
+                if candidate != original {
+                    return Err("Targeted comparison repair must preserve every non-target candidate and its contrast exactly".into());
+                }
+            }
+        }
+        let changed = candidates.iter().any(|candidate| {
+            repair["original_candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == candidate["id"])
+                != Some(candidate)
+        }) || old["baseline"] != repair["original_baseline"]
+            || json!(evidence::active_sources(snapshot)) != repair["original_sources"];
+        program["proposal_pool"]["novelty_repair"]["status"] = json!("completed");
+        program["proposal_pool"]["novelty_repair"]["progress"] = json!(if changed {
+            "changed_comparison_or_present_evidence"
+        } else {
+            "unchanged_no_progress"
+        });
+    }
     if !local_sources.is_empty() {
         program["round"] = json!(round);
     }
@@ -688,7 +758,9 @@ pub fn request(attempt: &Value, t: &Value) -> Result<Value, String> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|n| n["evidence_metadata"]["kind"] == "finding" && !evidence::is_projection(n))
+                .filter(|n| {
+                    n["evidence_metadata"]["kind"] == "finding" && !evidence::is_projection(n)
+                })
                 .collect();
             (
                 json!({"baseline":attempt["baseline"],"analogue":e["contrast"]["present_analogue"],"frontier_challenge":e["contrast"]["frontier_challenge"],"source_evidence":sources,"defining_commitments":e["commitments"].as_array().into_iter().flatten().filter(|c|e["contrast"]["defining_commitment_ids"].as_array().is_some_and(|ids|ids.contains(&c["id"]))).collect::<Vec<_>>(),"consequences":e["contrast"]["consequences"]}),
@@ -727,12 +799,58 @@ fn allowed(t: &Value, result: &Value) -> bool {
             _ => "",
         }
 }
+// Preserve maximum set breadth; among equally broad compatible sets retain
+// more currently passed comparisons instead of discarding them by input order.
+fn select_distinct_candidates(
+    candidates: &[Value],
+    checks: &[Value],
+    max_selected: usize,
+    p: &Value,
+) -> Vec<Value> {
+    let mut selected = vec![];
+    let mut selected_passed = 0;
+    for bits in 0usize..(1usize << candidates.len()) {
+        let ids: Vec<_> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| bits & (1 << i) != 0)
+            .map(|(_, e)| e["id"].clone())
+            .collect();
+        let passed = ids
+            .iter()
+            .filter(|id| novelty_passed(p, id.as_str().unwrap_or("")))
+            .count();
+        if ids.len() < 3
+            || ids.len() > max_selected
+            || ids.len() < selected.len()
+            || (ids.len() == selected.len() && passed <= selected_passed)
+        {
+            continue;
+        }
+        if checks
+            .iter()
+            .filter(|c| {
+                ids.contains(&c["task"]["endpoint_id"])
+                    && ids.contains(&c["task"]["other_endpoint_id"])
+            })
+            .all(|c| c["passed"] == true)
+        {
+            selected = ids;
+            selected_passed = passed;
+        }
+    }
+    selected
+}
+
 pub fn finish(
     snapshot: &Value,
     p: &mut Value,
     allow_retry: bool,
     exhausted: bool,
 ) -> Result<(), String> {
+    // The targeted repair consumes its one generation even when it produces no
+    // progress; subsequent failed checks cannot reopen generic revision loops.
+    let allow_retry = allow_retry && p["proposal_pool"]["novelty_repair"]["status"] != "completed";
     let mut a = p["endpoint_proposal_attempt"].clone();
     let mut checks = vec![];
     for t in a["tasks"].as_array().ok_or("Missing pool tasks")? {
@@ -777,42 +895,30 @@ pub fn finish(
             .saturating_sub(remaining_reasoning_turns)
             .min(5) as usize;
         p["proposal_pool"]["selection_budget"] = json!({"remaining_transitions":remaining,"max_selected":max_selected,"reserved_reasoning_turns_per_selected_world":1,"development_research_composition_writing_turns":remaining_reasoning_turns,"evaluation_tail":32});
-        let mut selected = vec![];
-        // At most twelve candidates: exhaustively select the largest compatible
-        // subset, not a greedy first-fit cluster. Ties retain stable input order.
-        for bits in 0usize..(1usize << candidates.len()) {
-            let ids: Vec<_> = candidates
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| bits & (1 << i) != 0)
-                .map(|(_, e)| e["id"].clone())
-                .collect();
-            if ids.len() < 3 || ids.len() > max_selected || ids.len() <= selected.len() {
-                continue;
-            }
-            if checks
-                .iter()
-                .filter(|c| {
-                    ids.contains(&c["task"]["endpoint_id"])
-                        && ids.contains(&c["task"]["other_endpoint_id"])
-                })
-                .all(|c| c["passed"] == true)
-            {
-                selected = ids;
-            }
-        }
+        let selected = select_distinct_candidates(candidates, &checks, max_selected, p);
         p["proposal_pool"]["selected_ids"] = json!(selected);
         p["proposal_pool"]["selection_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"selected":selected.contains(&e["id"]),"reason":if selected.contains(&e["id"]){"pairwise_distinct_set"}else{"not_in_bounded_distinct_set"}})).collect::<Vec<_>>());
         if selected.len() >= 3 {
-            let accepted: Vec<_> = candidates
+            let passed = selected
                 .iter()
-                .filter(|e| selected.contains(&e["id"]))
-                .cloned()
-                .collect();
-            p["endpoint_search"] = json!({"status":"imagined","backward_batch_contract":2,"deferred_novelty_contract":1,"endpoints":accepted,"routes":[],"amendments":[],"rounds":[]});
-            p["endpoint_proposal_attempt"]["status"] = json!(if selected.iter().all(|id| novelty_passed(p,id.as_str().unwrap_or(""))) {"accepted"} else {"examined"});
-            p["proposal_pool"]["stage"] = json!("accepted");
-            p["stage"] = json!("exploration");
+                .filter(|id| novelty_passed(p, id.as_str().unwrap_or("")))
+                .count();
+            if passed < 2
+                && allow_retry
+                && !p["proposal_pool"]["novelty_repair"].is_object()
+                && admits(remaining, 1, candidates.len() * 8)
+            {
+                let targets: Vec<_> = selected
+                    .iter()
+                    .filter(|id| !novelty_passed(p, id.as_str().unwrap_or("")))
+                    .cloned()
+                    .collect();
+                p["proposal_pool"]["novelty_repair"] = json!({"status":"pending","target_ids":targets,"original_candidates":p["proposal_pool"]["candidates"],"original_baseline":p["baseline"],"original_sources":evidence::active_sources(snapshot),"comparison_receipts":p["endpoint_novelty"],"attempt_limit":1});
+                p["proposal_pool"]["stage"] = json!("contrast");
+                p["endpoint_proposal_attempt"]["status"] = json!("targeted_comparison_repair");
+                return Ok(());
+            }
+            freeze_selected(p, candidates, &selected);
             return Ok(());
         }
     } else {
@@ -827,15 +933,25 @@ pub fn finish(
                     && checks
                         .iter()
                         .filter(|c| c["task"]["endpoint_id"] == e["id"])
-                        .all(|c| c["passed"] == true || (c["task"]["function"] == "check_proposal_change" && c["result"] == "unresolved" && c["evaluation"]["type"] == "choice"))
+                        .all(|c| {
+                            c["passed"] == true
+                                || (c["task"]["function"] == "check_proposal_change"
+                                    && c["result"] == "unresolved"
+                                    && c["evaluation"]["type"] == "choice")
+                        })
             })
             .cloned()
             .collect();
         if a["pool_stage"] == "individual" {
-            if !p["endpoint_novelty"].is_object() { p["endpoint_novelty"] = json!({}); }
+            if !p["endpoint_novelty"].is_object() {
+                p["endpoint_novelty"] = json!({});
+            }
             for endpoint in &viable {
-                if let Some(check) = checks.iter().find(|c| c["task"]["endpoint_id"] == endpoint["id"] && c["task"]["function"] == "check_proposal_change") {
-                    p["endpoint_novelty"][field(endpoint,"id")] = json!({"status":if check["passed"] == true {"passed"} else {"provisional"},"initial_check":check});
+                if let Some(check) = checks.iter().find(|c| {
+                    c["task"]["endpoint_id"] == endpoint["id"]
+                        && c["task"]["function"] == "check_proposal_change"
+                }) {
+                    p["endpoint_novelty"][field(endpoint, "id")] = json!({"status":if check["passed"] == true {"passed"} else {"provisional"},"initial_check":check});
                 }
             }
             p["proposal_pool"]["candidate_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"admissible":viable.iter().any(|v|v["id"]==e["id"]) && novelty_passed(p,field(e,"id")),"explorable":viable.iter().any(|v|v["id"]==e["id"]),"analogue_status":e["contrast"]["present_analogue"]["status"],"frontier_comparison_status":frontier_status(e),"failed_relations":checks.iter().filter(|c|c["task"]["endpoint_id"]==e["id"] && c["passed"]!=true).cloned().collect::<Vec<_>>()})).collect::<Vec<_>>());
@@ -934,13 +1050,163 @@ pub fn finish(
 mod tests {
     use super::*;
     #[test]
+    fn captured_food_equal_breadth_retains_currently_passed_candidate() {
+        let f: Value =
+            serde_json::from_str(include_str!("semantic_food_selection_fixture.json")).unwrap();
+        let candidates = f["candidates"].as_array().unwrap();
+        let checks = f["checks"].as_array().unwrap();
+        let selected = select_distinct_candidates(candidates, checks, 5, &f);
+        assert_eq!(selected.len(), 5);
+        assert!(selected.contains(&json!("meals-learn-your-body")));
+        // A passed candidate cannot bypass a known pairwise incompatibility.
+        let mut conflicting = checks.clone();
+        for c in &mut conflicting {
+            if c["task"]["endpoint_id"] == "meals-learn-your-body"
+                || c["task"]["other_endpoint_id"] == "meals-learn-your-body"
+            {
+                c["passed"] = json!(false);
+            }
+        }
+        let preserved = select_distinct_candidates(candidates, &conflicting, 5, &f);
+        assert_eq!(preserved.len(), 5);
+        assert!(!preserved.contains(&json!("meals-learn-your-body")));
+    }
+
+    #[test]
+    fn unresolved_selected_set_repairs_once_and_preserves_successful_candidates() {
+        let (snapshot, mut p) = pool();
+        let passed = p["proposal_pool"]["candidates"][0]["id"].clone();
+        // Fixture alternatives otherwise duplicate exact comparison inputs.
+        for key in ["proposal_pool", "endpoint_proposal_attempt"] {
+            let array = if key == "proposal_pool" {
+                "candidates"
+            } else {
+                "endpoints"
+            };
+            p[key][array][0]["contrast"]["present_analogue"]["statement"] =
+                json!("A uniquely scoped observed comparison for this candidate");
+        }
+        record(&mut p, |t| {
+            if t["function"] == "check_proposal_change" && t["endpoint_id"] != passed {
+                "unresolved".into()
+            } else {
+                pass(t)
+            }
+        });
+        finish(&snapshot, &mut p, true, false).unwrap();
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, true, false).unwrap();
+        assert!(research_pending(&p));
+        assert!(p["endpoint_search"].is_null());
+        assert!(
+            !p["proposal_pool"]["novelty_repair"]["target_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&passed)
+        );
+        let candidates = p["proposal_pool"]["candidates"].as_array().unwrap();
+        let reply = json!({"hypotheses":[],"research_evidence":[],"proposal_contrasts":candidates.iter().map(|e|json!({"endpoint_id":e["id"],"contrast":e["contrast"]})).collect::<Vec<_>>(),"comparison_priority":candidates.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()});
+        let mut rewritten = reply.clone();
+        rewritten["proposal_contrasts"][0]["contrast"]["present_analogue"]["statement"] =
+            json!("Changed successful comparison");
+        assert!(
+            contrasts(&snapshot, &p, &rewritten)
+                .unwrap_err()
+                .contains("preserve every non-target")
+        );
+        let target = &p["proposal_pool"]["novelty_repair"]["target_ids"][0];
+        let mut replacement = candidates
+            .iter()
+            .find(|e| e["id"] == *target)
+            .unwrap()
+            .clone();
+        replacement["commitments"][0]["statement"] =
+            json!("A changed defining capability with interacting household consequences");
+        let mut developed_reply = reply.clone();
+        developed_reply["endpoint_revisions"] = json!([{"endpoint_id":target,"reason":"Address the unresolved defining capability","replacement":replacement}]);
+        let developed = contrasts(&snapshot, &p, &developed_reply).unwrap();
+        assert!(
+            !developed["tasks"].as_array().unwrap().is_empty(),
+            "Changed commitments require new judgments"
+        );
+        assert_eq!(
+            developed["proposal_pool"]["revisions"][0]["replacement"]["commitments"],
+            replacement["commitments"]
+        );
+        assert_eq!(
+            developed["proposal_pool"]["revisions"][0]["original"]["commitments"],
+            candidates.iter().find(|e| e["id"] == *target).unwrap()["commitments"]
+        );
+        let mut repaired = contrasts(&snapshot, &p, &reply).unwrap();
+        assert_eq!(
+            repaired["proposal_pool"]["novelty_repair"]["progress"],
+            "unchanged_no_progress"
+        );
+        assert!(
+            repaired["tasks"].as_array().unwrap().is_empty(),
+            "Unchanged requests must reuse exact checks"
+        );
+        let mut rejected = repaired.clone();
+        rejected["tasks"] = rejected["endpoint_proposal_attempt"]["tasks"].clone();
+        record(&mut rejected, |task| if task["function"] == "check_proposal_change" { "present_or_adoption_only".into() } else { pass(task) });
+        finish(&snapshot, &mut rejected, true, false).unwrap();
+        assert!(!research_pending(&rejected));
+        assert_ne!(rejected["proposal_pool"]["stage"], "enrich");
+        finish(&snapshot, &mut repaired, true, false).unwrap();
+        assert!(repaired["tasks"].as_array().unwrap().is_empty());
+        finish(&snapshot, &mut repaired, true, false).unwrap();
+        assert!(!research_pending(&repaired));
+        assert!(
+            repaired["endpoint_search"]["routes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repaired["endpoint_novelty"][passed.as_str().unwrap()]["status"],
+            "passed"
+        );
+        assert!(
+            repaired["endpoint_search"]["endpoints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| !novelty_passed(&repaired, field(e, "id")))
+        );
+        let mut declined = p;
+        assert!(skip_prefreeze_repair(&mut declined));
+        assert_eq!(
+            declined["proposal_pool"]["novelty_repair"]["status"],
+            "not_admitted"
+        );
+        assert!(!research_pending(&declined));
+        assert!(!skip_prefreeze_repair(&mut declined));
+        let (snapshot, mut successful) = pool();
+        record(&mut successful, pass);
+        finish(&snapshot, &mut successful, true, false).unwrap();
+        record(&mut successful, pass);
+        finish(&snapshot, &mut successful, true, false).unwrap();
+        assert!(successful["proposal_pool"]["novelty_repair"].is_null());
+        assert!(successful["endpoint_search"].is_object());
+    }
+
+    #[test]
     fn contrast_targets_report_surplus_history_missing_and_duplicate_ids() {
         let (snapshot, mut program) = pool();
-        let current = json!([{"id":"current-1"},{"id":"current-2"},{"id":"current-3"},{"id":"current-4"}]);
+        let current =
+            json!([{"id":"current-1"},{"id":"current-2"},{"id":"current-3"},{"id":"current-4"}]);
         program["proposal_pool"]["candidates"] = current.clone();
-        let mut rows: Vec<Value> = current.as_array().unwrap().iter().map(|e|json!({"endpoint_id":e["id"],"contrast":{}})).collect();
-        rows.extend((1..=6).map(|i|json!({"endpoint_id":format!("historical-{i}"),"contrast":{}})));
-        let error = contrasts(&snapshot, &program, &json!({"proposal_contrasts":rows})).unwrap_err();
+        let mut rows: Vec<Value> = current
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| json!({"endpoint_id":e["id"],"contrast":{}}))
+            .collect();
+        rows.extend(
+            (1..=6).map(|i| json!({"endpoint_id":format!("historical-{i}"),"contrast":{}})),
+        );
+        let error =
+            contrasts(&snapshot, &program, &json!({"proposal_contrasts":rows})).unwrap_err();
         assert!(error.contains("missing: []"), "{error}");
         assert!(error.contains("extra: [\"historical-1\""), "{error}");
         assert!(error.contains("current-4"), "{error}");
@@ -1123,7 +1389,13 @@ mod tests {
     fn unresolved_change_gets_paths_then_current_evidence_recheck_without_erasing_routes() {
         let (mut snapshot, mut p) = pool();
         p["proposal_pool"]["development"] = json!({"status":"completed","originals":p["proposal_pool"]["candidates"],"developed":p["proposal_pool"]["candidates"]});
-        record(&mut p, |t| if t["function"] == "check_proposal_change" {"unresolved".into()} else {pass(t)});
+        record(&mut p, |t| {
+            if t["function"] == "check_proposal_change" {
+                "unresolved".into()
+            } else {
+                pass(t)
+            }
+        });
         finish(&snapshot, &mut p, false, false).unwrap();
         assert_eq!(p["proposal_pool"]["stage"], "pairs");
         record(&mut p, pass);
@@ -1528,16 +1800,28 @@ mod tests {
     #[test]
     fn direct_freeze_keeps_unresolved_novelty_provisional() {
         let (snapshot, mut program) = pool();
-        record(&mut program, |t| if t["function"] == "check_proposal_change" { "unresolved".into() } else { pass(t) });
+        record(&mut program, |t| {
+            if t["function"] == "check_proposal_change" {
+                "unresolved".into()
+            } else {
+                pass(t)
+            }
+        });
         finish(&snapshot, &mut program, true, false).unwrap();
         let receipts = program["endpoint_novelty"].clone();
         record(&mut program, pass);
-        finish(&snapshot, &mut program, true, false).unwrap();
+        finish(&snapshot, &mut program, false, false).unwrap();
         assert_eq!(program["stage"], "exploration");
         assert!(program["proposal_pool"]["development"].is_null());
         assert_eq!(program["endpoint_novelty"], receipts);
         assert_eq!(program["endpoint_proposal_attempt"]["status"], "examined");
-        assert!(program["endpoint_search"]["endpoints"].as_array().unwrap().iter().all(|e|!novelty_passed(&program,field(e,"id"))));
+        assert!(
+            program["endpoint_search"]["endpoints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|e| !novelty_passed(&program, field(e, "id")))
+        );
     }
 
     #[test]

@@ -173,7 +173,7 @@ fn call(ctx: &Context) -> Result<(), String> {
                     .take(2048)
                     .collect();
                 let index = trace.as_array().unwrap().len();
-                trace.as_array_mut().unwrap().push(json!({"index":index,"nodeId":node,"function":function,"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"error":error,"requestFormat":"failed-attempt-hash-only","httpCallId":http_call,"task":task,"rejectedResponse":rejected_response.as_ref().map(|v| safe_rejected_response(v, key))}));
+                trace.as_array_mut().unwrap().push(json!({"index":index,"nodeId":node,"function":function,"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"error":error,"requestFormat":"failed-attempt-hash-only","requestBytes":encoded.len(),"taskCount":batch.tasks.len(),"tokenOverflow":token_overflow,"httpCallId":http_call,"task":task,"rejectedResponse":rejected_response.as_ref().map(|v| safe_rejected_response(v, key))}));
                 p["stop_reason"] = if transient_error && transient_retry(&mut p) {
                     json!("provider_retry")
                 } else if rejected_response.is_some() && validation_retry(&mut p) {

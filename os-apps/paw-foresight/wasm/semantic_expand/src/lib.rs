@@ -1483,6 +1483,32 @@ fn bounded_texts(
     }
     Ok(())
 }
+fn presentation_repair_receipt(
+    answer: &Value,
+    program: &Value,
+    error: &str,
+    elapsed: u64,
+    remaining: u64,
+) -> Option<Value> {
+    let issues = outlook::presentation_issues(answer);
+    let predicted = program["reasoning_durations_ms"]["synthesize"]
+        .as_u64()
+        .unwrap_or(core::SYNTHESIS_TIME_RESERVE_MS);
+    if program["presentation_repair"]["attempt"] == 1
+        || issues.is_empty()
+        || !issues.iter().all(|i| {
+            i["editable"] == true && i["text"].as_str().is_some_and(|s| !s.trim().is_empty())
+        })
+        || remaining < core::REASONING_ADMISSION_RESERVE + 2
+        || elapsed.saturating_add(predicted).saturating_add(60_000) >= core::MAX_MS
+    {
+        return None;
+    }
+    Some(
+        json!({"attempt":1,"draft":answer,"issues":issues,"validation_error":error,"predicted_duration_ms":predicted}),
+    )
+}
+
 fn attach_world_probabilities(
     answer: &mut Value,
     program: &Value,
@@ -2051,9 +2077,16 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
     let raw_owned = generated.to_string();
     let raw = raw_owned.as_str();
     if phase == "synthesize" {
+        let mut program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
+        if program["presentation_repair"]["attempt"] == 1 {
+            let receipt=&program["presentation_repair"];
+            let answer=outlook::apply_presentation_repairs(&receipt["draft"],&generated,receipt["issues"].as_array().ok_or("Missing presentation issues")?)?;
+            outlook::validate(&answer,&snapshot)?;
+            set_success_result("Complete",&json!({"answer":answer.to_string(),"finished_at_ms":Context::get_time_millis().to_string()}));
+            return Ok(());
+        }
         let mut answer = core::parse(raw)?;
         references::References::new(&snapshot)?.resolve_generated(&mut answer);
-        let program = core::parse(core::field(&ctx.entity_state, "program_json"))?;
         if program["stage"] == "worlds" || answer["schema"] == "foresight-worlds-v3" {
             attach_world_probabilities(&mut answer, &program, &snapshot)?;
         } else {
@@ -2062,7 +2095,16 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             }
             attach_probabilities(&mut answer, &program)?;
         }
-        outlook::validate(&answer, &snapshot)?;
+        if let Err(error)=outlook::validate(&answer, &snapshot) {
+            let elapsed=(Context::get_time_millis() as u64).saturating_sub(core::field(&ctx.entity_state,"started_at_ms").parse::<u64>().map_err(|_|"Missing original run clock")?);
+            let remaining=core::MAX_APP_TRANSITIONS.saturating_sub(core::transition_count(&ctx.entity_state));
+            if let Some(receipt)=presentation_repair_receipt(&answer,&program,&error,elapsed,remaining) {
+                program["presentation_repair"]=receipt;
+                set_success_result("CompositionRejected",&json!({"program_json":program.to_string()}));
+                return Ok(());
+            }
+            return Err(error);
+        }
         set_success_result(
             "Complete",
             &json!({"answer":answer.to_string(),"finished_at_ms":Context::get_time_millis().to_string()}),
@@ -2419,6 +2461,54 @@ mod tests {
                 .unwrap_err()
                 .contains("non-array")
         );
+    }
+
+    #[test]
+    #[ignore = "requires explicitly supplied generated pass12 checkpoint"]
+    fn captured_presentation_repair_preserves_actual_partial_audits() {
+        let capture:Value=serde_json::from_str(&std::fs::read_to_string(std::env::var("FORESIGHT_WRITER_CHECKPOINT").unwrap()).unwrap()).unwrap();
+        let snapshot:Value=serde_json::from_str(capture["snapshot_json"].as_str().unwrap()).unwrap();
+        let program:Value=serde_json::from_str(capture["program_json"].as_str().unwrap()).unwrap();
+        let mut draft:Value=serde_json::from_str(include_str!("../../semantic_final_presentation_fixture.json")).unwrap();
+        references::References::new(&snapshot).unwrap().resolve_generated(&mut draft);
+        attach_world_probabilities(&mut draft,&program,&snapshot).unwrap();
+        let error=outlook::validate(&draft,&snapshot).unwrap_err();
+        let receipt=presentation_repair_receipt(&draft,&program,&error,2_800_000,92).unwrap();
+        let repairs=json!({"text_repairs":[{"path":"/outcomes/0/narrative","text":"An imagined player edits an earlier event and explores changed consequences. The supplied causal paths remain uncertain; no whole-world likelihood estimate completed."},{"path":"/outcomes/1/narrative","text":"An imagined team teaches a game through examples and tests a standalone build. This world's audit and likelihood evaluation remain incomplete."}]});
+        let answer=outlook::apply_presentation_repairs(&draft,&repairs,receipt["issues"].as_array().unwrap()).unwrap();
+        outlook::validate(&answer,&snapshot).unwrap();
+        for (a,b) in answer["outcomes"].as_array().unwrap().iter().zip(draft["outcomes"].as_array().unwrap()) {
+            assert!(a["probability"].is_null());
+            for key in ["definition","component_ids","counter_ids","probability","evaluation_status","audit","novelty_admission"] {assert_eq!(a[key],b[key],"{key}");}
+        }
+    }
+
+    #[test]
+    fn captured_final_writer_has_one_bounded_presentation_only_repair() {
+        let mut draft:Value=serde_json::from_str(include_str!("../../semantic_final_presentation_fixture.json")).unwrap();
+        // These fields are native-attached before production presentation validation.
+        draft["baseline"]=json!({"as_of":"2026-10-03","observed":[],"assumptions":[],"unknowns":[]});
+        draft["evaluation_note"]=json!("No whole-world estimates completed.");
+        let issues=outlook::presentation_issues(&draft);
+        assert_eq!(issues.len(),2);
+        assert_eq!(issues[0]["path"],"/outcomes/0/narrative");assert_eq!(issues[0]["actual"],1202);
+        assert_eq!(issues[1]["path"],"/outcomes/1/narrative");assert_eq!(issues[1]["actual"],1211);
+        let program=json!({"reasoning_durations_ms":{"synthesize":180000}});
+        let receipt=presentation_repair_receipt(&draft,&program,"length",2_800_000,92).expect("Saved writer must enter bounded correction, not fail immediately");
+        let repairs=json!({"text_repairs":[{"path":"/outcomes/0/narrative","text":draft["outcomes"][0]["narrative"].as_str().unwrap().replace("could ","")},{"path":"/outcomes/1/narrative","text":draft["outcomes"][1]["narrative"].as_str().unwrap().replace("could ","")}]});
+        // Test edits below deliberately use shorter supplied text without creating new fields.
+        let mut repairs=repairs;
+        repairs["text_repairs"][0]["text"]=json!("An imagined player edits an earlier event and explores its consequences. The causal history remains conjectural; reliability and audit limitations are unresolved.");
+        repairs["text_repairs"][1]["text"]=json!("An imagined team teaches a game through examples and tests a standalone build. The proposal remains uncertain and has no completed whole-world likelihood estimate.");
+        let patched=outlook::apply_presentation_repairs(&draft,&repairs,receipt["issues"].as_array().unwrap()).unwrap();
+        assert!(outlook::presentation_issues(&patched).is_empty());
+        let mut restored=patched.clone();for i in 0..2 { restored["outcomes"][i]["narrative"]=draft["outcomes"][i]["narrative"].clone(); }assert_eq!(restored,draft);
+        let mut malicious=repairs.clone();malicious["text_repairs"][0]["path"]=json!("/outcomes/0/definition");assert!(outlook::apply_presentation_repairs(&draft,&malicious,&issues).is_err());
+        malicious=repairs.clone();malicious["outcomes"]=json!([]);assert!(outlook::apply_presentation_repairs(&draft,&malicious,&issues).is_err());
+        for path in ["/outcomes/0/probability","/outcomes/0/world_id","/baseline/observed/0/evidence_ids","/outcomes/0/audit"] { malicious=repairs.clone();malicious["text_repairs"][0]["path"]=json!(path);assert!(outlook::apply_presentation_repairs(&draft,&malicious,&issues).is_err()); }
+        assert!(presentation_repair_receipt(&draft,&json!({"presentation_repair":{"attempt":1}}),"length",0,92).is_none());
+        assert!(presentation_repair_receipt(&draft,&program,"length",core::MAX_MS,92).is_none());
+        assert!(presentation_repair_receipt(&draft,&program,"length",0,45).is_none());
     }
 
     #[test]

@@ -513,6 +513,8 @@ fn step(ctx: &Context) -> Result<(), String> {
                 "Reason",
                 &json!({"phase":"explore","program_json":program.to_string(),"trace_json":trace.to_string(),"reasoning_phase_polls":0}),
             );
+        } else if core::proposals::pool::skip_prefreeze_repair(&mut program) {
+            set_success_result("SearchPlanned", &json!({"program_json":program.to_string()}));
         } else {
             set_success_result(
                 "Fail",

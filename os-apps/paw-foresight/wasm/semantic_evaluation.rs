@@ -342,7 +342,11 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
             .remove("probability");
     }
     compact_evaluation_contexts(&mut request["state"]);
-    if request.to_string().len() > 128 * 1024 {
+    // Joint worlds receive a lossless transport projection in batch::finish;
+    // the same hard provider byte bound is enforced there after encoding.
+    if request.to_string().len() > 128 * 1024
+        && !(is_world && task["function"] == "estimate_likelihood")
+    {
         return Err("Semantic request exceeds 128 KB".into());
     }
     Ok(request)
@@ -618,4 +622,69 @@ fn joint_likelihood_preserves_sources_components_and_counters_not_novelty_sample
         json!({"classify_gap":{"selected":"evidence"},"estimate_likelihood":{"probability":0.4}})
     );
     assert_eq!(program["evaluations"]["h"], judgments);
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "requires captured native checkpoint via FORESIGHT_LIKELIHOOD_CAPTURE"]
+fn captured_whole_world_likelihood_request() {
+    let capture: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_LIKELIHOOD_CAPTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let snapshot: Value = serde_json::from_str(capture["snapshot_json"].as_str().unwrap()).unwrap();
+    let mut program: Value =
+        serde_json::from_str(capture["program_json"].as_str().unwrap()).unwrap();
+    // The failed pass was recorded after the last request; it was not prior feedback.
+    program.as_object_mut().unwrap().remove("world_refinement");
+    let batch = super::batch::prepare(&snapshot, &program, 100).unwrap();
+    use sha2::{Digest, Sha256};
+    let restored = super::batch::restore_likelihood_request(&batch.request);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(restored.to_string().as_bytes())),
+        "69a6507d0787c4e65d1ba03de705ebfb8970658c196e928dd1dcc64709e5e5b7"
+    );
+    assert!(batch.request.to_string().len() * 100 < restored.to_string().len() * 90);
+    eprintln!(
+        "original bytes={} projected bytes={}",
+        restored.to_string().len(),
+        batch.request.to_string().len()
+    );
+    assert_eq!(batch.tasks.len(), 1);
+    assert_eq!(batch.tasks[0]["function"], "estimate_likelihood");
+    eprintln!(
+        "likelihood request bytes={} state fields={:?}",
+        batch.request.to_string().len(),
+        batch.individual[0]["state"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k, v.to_string().len()))
+            .collect::<Vec<_>>()
+    );
+    let mut changed = snapshot.clone();
+    let evidence = changed["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["kind"] == "evidence")
+        .unwrap();
+    evidence["statement"] = json!(format!(
+        "{} Changed observed fact.",
+        evidence["statement"].as_str().unwrap()
+    ));
+    let changed_batch = super::batch::prepare(&changed, &program, 100).unwrap();
+    assert_ne!(
+        Sha256::digest(changed_batch.request.to_string().as_bytes()),
+        Sha256::digest(batch.request.to_string().as_bytes())
+    );
+    let resumed: Value = serde_json::from_str(capture["program_json"].as_str().unwrap()).unwrap();
+    let resumed = super::batch::prepare(&snapshot, &resumed, 100).unwrap();
+    eprintln!(
+        "resumed checkpoint bytes={}",
+        resumed.request.to_string().len()
+    );
+    if let Ok(path) = std::env::var("FORESIGHT_LIKELIHOOD_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&batch.request).unwrap()).unwrap();
+    }
 }

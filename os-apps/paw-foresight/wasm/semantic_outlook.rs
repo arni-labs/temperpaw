@@ -24,10 +24,125 @@ fn list(value: &Value, min: usize, max: usize, limit: usize) -> Result<(), Strin
     }
     Ok(())
 }
+/// Inspect every bounded text field in the current whole-world answer at once.
+/// Identity, evaluated meaning and source baseline fields are never editable.
+pub fn presentation_issues(answer: &Value) -> Vec<Value> {
+    if answer["schema"] != "foresight-worlds-v3" {
+        return vec![];
+    }
+    let mut fields: Vec<(String, usize, bool, bool)> = vec![];
+    for (key, max) in [
+        ("headline", 160),
+        ("summary", 400),
+        ("evaluation_note", 2000),
+    ] {
+        fields.push((format!("/{key}"), max, true, key == "evaluation_note"));
+    }
+    for (key, max, editable) in [
+        ("evidence_limits", 240, true),
+        ("research_questions", 240, true),
+        ("baseline/assumptions", 240, false),
+        ("baseline/unknowns", 240, false),
+    ] {
+        for i in 0..answer
+            .pointer(&format!("/{key}"))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+        {
+            fields.push((format!("/{key}/{i}"), max, editable, false));
+        }
+    }
+    fields.push(("/baseline/as_of".into(), 32, false, false));
+    for i in 0..answer["baseline"]["observed"]
+        .as_array()
+        .map_or(0, Vec::len)
+    {
+        fields.push((format!("/baseline/observed/{i}/claim"), 400, false, false));
+    }
+    for (i, outcome) in answer["outcomes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for (key, max, editable) in [
+            ("id", 50, false),
+            ("title", 100, true),
+            ("definition", 1000, false),
+            ("scene", 600, true),
+            ("narrative", 1200, true),
+        ] {
+            fields.push((format!("/outcomes/{i}/{key}"), max, editable, false));
+        }
+        for key in ["what_you_can_do", "signals", "falsifiers"] {
+            for j in 0..outcome[key].as_array().map_or(0, Vec::len) {
+                fields.push((format!("/outcomes/{i}/{key}/{j}"), 240, true, false));
+            }
+        }
+    }
+    fields.into_iter().filter_map(|(path,max,editable,allow_empty)| {
+        let value=answer.pointer(&path).unwrap_or(&Value::Null);
+        let actual=value.as_str().map(|s|s.chars().count());
+        let valid=value.as_str().is_some_and(|s|(allow_empty || !s.trim().is_empty()) && s.chars().count()<=max);
+        (!valid).then(||serde_json::json!({"path":path,"min":if allow_empty {0}else{1},"max":max,"actual":actual,"editable":editable,"text":value}))
+    }).collect()
+}
+
+pub fn apply_presentation_repairs(
+    draft: &Value,
+    reply: &Value,
+    issues: &[Value],
+) -> Result<Value, String> {
+    if reply
+        .as_object()
+        .is_none_or(|o| o.len() != 1 || !o.contains_key("text_repairs"))
+    {
+        return Err("Presentation repair must contain only text_repairs".into());
+    }
+    let patches = reply["text_repairs"]
+        .as_array()
+        .ok_or("Missing text_repairs")?;
+    if patches.len() != issues.len() {
+        return Err("Repair every listed text path exactly once".into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut answer = draft.clone();
+    for patch in patches {
+        if patch
+            .as_object()
+            .is_none_or(|o| o.len() != 2 || !o.contains_key("path") || !o.contains_key("text"))
+        {
+            return Err("Text repair accepts only path and text".into());
+        }
+        let path = patch["path"].as_str().ok_or("Missing repair path")?;
+        let issue = issues
+            .iter()
+            .find(|i| i["path"] == path && i["editable"] == true)
+            .ok_or("Repair cannot change immutable or unlisted fields")?;
+        if !seen.insert(path) {
+            return Err("Repeated repair path".into());
+        }
+        let text = patch["text"]
+            .as_str()
+            .ok_or("Repair text must be a string")?;
+        if text.chars().count() > issue["max"].as_u64().unwrap_or(0) as usize
+            || (issue["min"] != 0 && text.trim().is_empty())
+        {
+            return Err(format!("Repair remains outside text bound at {path}"));
+        }
+        *answer
+            .pointer_mut(path)
+            .ok_or("Repair path absent from draft")? = patch["text"].clone();
+    }
+    Ok(answer)
+}
+
 /// The modeled scenarios are an explicit finite partition; `other` retains
 /// probability mass for real futures outside that deliberately incomplete model.
 pub fn validate(answer: &Value, snapshot: &Value) -> Result<(), String> {
     if answer["schema"] == "foresight-worlds-v3" {
+        let issues=presentation_issues(answer);
+        if !issues.is_empty() { return Err(format!("Final presentation text violations: {}",serde_json::json!(issues))); }
         return validate_v3(answer, snapshot);
     }
     if answer["schema"] == "foresight-outlook-v2" {

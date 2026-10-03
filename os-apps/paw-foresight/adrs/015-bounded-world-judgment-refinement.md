@@ -31,3 +31,22 @@ Repeated evaluation provenance ID arrays use a request-local lookup table. Refer
 After bounded same-world refinement, only a recorded structural conflict triggers recomposition. Uncertain or incomplete audits remain visible on the existing worlds with their estimates and history; uncertainty alone does not justify replacing their definitions or imply that another rewrite can resolve it.
 
 Composition and final writing receive every refinement round's judgments, evidence IDs, completeness and stop status, with typed estimates projected using the existing compact evaluation format. Repeated provider envelopes and per-question provenance stay in the persisted receipts instead of being duplicated into the writing context. The final answer still receives the full engine-owned refinement history.
+
+
+### Singleton likelihood transport
+
+Batch splitting cannot repair a single joint-world request. Whole-world likelihood
+singletons therefore use a transport-only exact-value catalog when it reduces the
+complete request size. Repeated JSON values are stored once; instructions expand
+references before interpreting the existing common/cases and evidence-set formats.
+Every original field and ordered value, including unknown semantic fields and receipt
+provenance, survives exact reconstruction. Canonical individual requests and stored
+judgments are unchanged. A reserved-key collision keeps the original request.
+The 128 KiB outbound bound remains in force after encoding; no claim or evidence
+is truncated and no component probabilities substitute for a fresh joint estimate.
+
+Captured pass12 games request reconstruction matches its recorded SHA-256 before
+encoding: 130,405 bytes become 111,497 bytes. These are byte measurements, not token
+counts or evidence of provider acceptance. The original failed response recorded
+only `max_tokens_exceeded`; new failed receipts also record request bytes, task count
+and the validated token-overflow classification without exporting the raw body.

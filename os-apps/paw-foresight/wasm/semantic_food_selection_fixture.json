@@ -1,0 +1,150 @@
+{
+  "provenance": "Exact candidate order, recorded pair outcomes and initial novelty statuses projected from pass12 food. No generated answers or unrelated context.",
+  "candidates": [
+    {
+      "id": "same-dinner-different-textures"
+    },
+    {
+      "id": "neighborhood-fermentation"
+    },
+    {
+      "id": "dinner-as-utility"
+    },
+    {
+      "id": "freshness-without-fridges"
+    },
+    {
+      "id": "homes-inside-food-gardens"
+    },
+    {
+      "id": "meals-learn-your-body"
+    }
+  ],
+  "checks": [
+    {
+      "task": {
+        "endpoint_id": "dinner-as-utility",
+        "other_endpoint_id": "freshness-without-fridges"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "dinner-as-utility",
+        "other_endpoint_id": "homes-inside-food-gardens"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "dinner-as-utility",
+        "other_endpoint_id": "meals-learn-your-body"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "freshness-without-fridges",
+        "other_endpoint_id": "homes-inside-food-gardens"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "freshness-without-fridges",
+        "other_endpoint_id": "meals-learn-your-body"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "homes-inside-food-gardens",
+        "other_endpoint_id": "meals-learn-your-body"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "neighborhood-fermentation",
+        "other_endpoint_id": "dinner-as-utility"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "neighborhood-fermentation",
+        "other_endpoint_id": "freshness-without-fridges"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "neighborhood-fermentation",
+        "other_endpoint_id": "homes-inside-food-gardens"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "neighborhood-fermentation",
+        "other_endpoint_id": "meals-learn-your-body"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "same-dinner-different-textures",
+        "other_endpoint_id": "dinner-as-utility"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "same-dinner-different-textures",
+        "other_endpoint_id": "freshness-without-fridges"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "same-dinner-different-textures",
+        "other_endpoint_id": "homes-inside-food-gardens"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "same-dinner-different-textures",
+        "other_endpoint_id": "meals-learn-your-body"
+      },
+      "passed": true
+    },
+    {
+      "task": {
+        "endpoint_id": "same-dinner-different-textures",
+        "other_endpoint_id": "neighborhood-fermentation"
+      },
+      "passed": true
+    }
+  ],
+  "endpoint_novelty": {
+    "dinner-as-utility": {
+      "status": "provisional"
+    },
+    "freshness-without-fridges": {
+      "status": "provisional"
+    },
+    "homes-inside-food-gardens": {
+      "status": "provisional"
+    },
+    "meals-learn-your-body": {
+      "status": "passed"
+    },
+    "neighborhood-fermentation": {
+      "status": "provisional"
+    },
+    "same-dinner-different-textures": {
+      "status": "provisional"
+    }
+  }
+}
