@@ -246,7 +246,6 @@ fn frontier_admissible(endpoint: &Value, required: bool) -> bool {
         return false;
     };
     challenge["research_basis"] != "unavailable"
-        && rows.iter().all(|r| r["result"] != "unknown")
         && rows.iter().any(|r| r["result"] == "different_arrangement")
 }
 
@@ -1034,6 +1033,66 @@ mod tests {
             .unwrap();
         assert_eq!(receipt["admissible"], false);
         assert_eq!(receipt["frontier_comparison_status"], "already_present");
+    }
+
+    #[test]
+    fn captured_music_mixed_unknowns_retain_positive_checks_and_advance_to_pairs() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("semantic_music_frontier_fixture.json")).unwrap();
+        let attempt = fixture["attempt"].clone();
+        assert_eq!(attempt["checks"].as_array().unwrap().len(), 15);
+        assert!(
+            attempt["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["passed"] == true)
+        );
+        let (mut snapshot, mut program) = pool();
+        snapshot["world"] = attempt["world"].clone();
+        snapshot["nodes"] = attempt["source_evidence"].clone();
+        program["endpoint_proposal_attempt"] = attempt.clone();
+        program["endpoint_proposal_history"] = json!([]);
+        program["proposal_pool"]["candidates"] = attempt["endpoints"].clone();
+        program["proposal_pool"]["development"]["status"] = json!("completed");
+        for c in attempt["checks"].as_array().unwrap() {
+            program["results"][field(&c["task"], "nodeId")][field(&c["task"], "function")] =
+                c["result"].clone();
+            program["evaluations"][field(&c["task"], "nodeId")][field(&c["task"], "function")] =
+                c["evaluation"].clone();
+        }
+        for candidate in attempt["endpoints"].as_array().unwrap() {
+            assert_eq!(frontier_status(candidate), "unresolved");
+            assert!(frontier_admissible(candidate, true));
+        }
+        let original = program.clone();
+        finish(&snapshot, &mut program, false, false).unwrap();
+        assert_eq!(program["proposal_pool"]["stage"], "pairs");
+        assert_eq!(
+            program["endpoint_proposal_attempt"]["endpoints"],
+            attempt["endpoints"]
+        );
+        assert!(program["proposal_pool"]["candidate_receipts"].as_array().unwrap().iter().all(|r| r["admissible"] == true && r["frontier_comparison_status"] == "unresolved"));
+        for variant in ["unsupported_analogue", "already_present", "unknown"] {
+            let mut rejected = original.clone();
+            for candidate in rejected["endpoint_proposal_attempt"]["endpoints"]
+                .as_array_mut()
+                .unwrap()
+            {
+                if variant == "unsupported_analogue" {
+                    candidate["contrast"]["present_analogue"]["status"] = json!("unknown");
+                } else {
+                    for row in candidate["contrast"]["frontier_challenge"]["comparisons"]
+                        .as_array_mut()
+                        .unwrap()
+                    {
+                        row["result"] = json!(variant);
+                    }
+                }
+            }
+            finish(&snapshot, &mut rejected, false, false).unwrap();
+            assert_ne!(rejected["proposal_pool"]["stage"], "pairs", "{variant}");
+        }
     }
 
     #[test]

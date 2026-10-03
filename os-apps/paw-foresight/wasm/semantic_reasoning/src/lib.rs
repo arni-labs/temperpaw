@@ -105,7 +105,7 @@ Return hypotheses:[], branches:[], continue_exploring:false, exploration_note:"w
 If exact supplied failed relations expose a weak candidate, you may explicitly revise it: endpoint_revisions:[{endpoint_id,reason:"what failed and the consequential revision <=600 chars",replacement:complete endpoint in supplied shape retaining its id}]. Preserve ambition and devise a consequentially different world rather than adding adjectives, likelihood claims or convenient adoption thresholds. Each revision is retained beside its original; nothing is silently overwritten. Do not invent a revision to fix missing evidence. Omit endpoint_revisions or use [] when unchanged. Return contrast bindings against revised commitments when revised. Keep each frontier_challenge receipt within 2400 bytes; use short comparison statements and shared queries rather than repeating source text. The whole response is capped at 64 KiB. Return all required baseline/scope reconciliation fields whenever adding findings, per the shared research contract."#;
 const ENRICH_PROMPT: &str = r#"Develop the selected provisional worlds into richer and more consequential future arrangements before anything is frozen. These are starting ideas, not statements you must preserve. Pursue their interacting consequences far enough to change how the activities in the user's question work and what becomes possible or unnecessary. Change the capabilities, experiences or causal mechanism when that produces a stronger answer. Explicitly challenge whether the starting idea is merely a familiar workflow made faster, cheaper, more convenient or more tightly controlled. If it is, pursue further interacting implications or replace the defining mechanism; elaborating one scene is insufficient. Do not merely polish it or add adjectives. Preserve ambition when addressing recorded objections rather than retreating to an easier present-day arrangement. Keep the worlds meaningfully different from one another without prescribed axes or topics.
 Retain each selected candidate ID for provenance, but you may replace its original_statement, commitments and narrative. Express every new defining implication as an observable commitment; show how the changes interact in a recognizable daily experience. Do not invent current evidence, probability or validation. Your developed worlds will undergo present-analogue research, coverage, dependence and pairwise distinction checks again. Existing approvals do not automatically transfer. Return only the selected endpoints in the supplied endpoint shape. Omit contrast: the researcher must establish it against the developed commitments. This development turn runs once; originality and plausibility remain fallible judgments, not guarantees."#;
-const BACKWARD_PROMPT: &str = r#"Work BACKWARD from the immutable imagined endpoints in endpoint_search. For the selected load-bearing commitments in backward_batch (or all commitments for a legacy run without that field), ask what would need to hold and what different routes could connect the researched present to it. Use existing candidate refs for exactly shared pieces; do not rewrite or duplicate the same proposition to get another score. Develop interacting prerequisites and alternatives, not only a list of recommendations. Proposed routes for an original must form a compatible joint causal graph with the unchanged routes for its other commitments. State explicit sufficient milestone timing across shared components; by dates are deadlines, so a later prerequisite deadline does not establish it occurs early enough for an earlier dependent milestone. Refine the proposed dates or mechanism explicitly; never silently rewrite evaluated stored routes. Low likelihood is not permission to replace an unusual endpoint with today's consensus. A failed or incomplete route asks for another mechanism before any amendment. Preserve uncertainty and conflicting evidence. A root_connection states a proposed bridge from cited present evidence to a conjectural prerequisite; source existence is never proof. If no bridge can be specified, keep an explicit unresolved_question instead of inventing evidence.
+const BACKWARD_PROMPT: &str = r#"Work BACKWARD from the immutable imagined endpoints in endpoint_search. For the selected load-bearing commitments in backward_batch (or all commitments for a legacy run without that field), ask what would need to hold and what different routes could connect the researched present to it. Use existing candidate refs for exactly shared pieces; do not rewrite or duplicate the same proposition to get another score. Develop interacting prerequisites and alternatives, not only a list of recommendations. Proposed routes for an original must form a compatible joint causal graph with the unchanged routes for its other commitments. State explicit sufficient milestone timing across shared components; by dates are deadlines, so a later prerequisite deadline does not establish it occurs early enough for an earlier dependent milestone. Refine the proposed dates or mechanism explicitly; never silently rewrite evaluated stored routes. Low likelihood is not permission to replace an unusual endpoint with today's consensus. A failed or incomplete route asks for another mechanism before any amendment. Preserve uncertainty and conflicting evidence. Endpoint frontier_challenge comparisons marked unknown remain open research questions, including downstream behavior or feasibility; a passed proposal comparison does not resolve them. Carry them into route assumptions or unresolved questions where relevant. A root_connection states a proposed bridge from cited present evidence to a conjectural prerequisite; source existence is never proof. If no bridge can be specified, keep an explicit unresolved_question instead of inventing evidence.
 Return JSON with hypotheses, branches, research_evidence, continue_exploring, exploration_note, routes and amendments. Each new hypothesis is {id:"unique short ASCII ID, not ref_",title:"distinct future claim",statement:"self-contained observable future event with scope and horizon",branch_id:"optional existing or new branch ID; omit when unconditional",mechanism:"causal path and assumptions",requires:["visible evidence/candidate ref or new hypothesis/evidence ID"],scene:"imagined everyday consequence",signal:"observable early sign",falsifier:"what undermines the mechanism",evidence_note:"observed versus conjectural",research_question:"unanswered premise"}. Source findings follow the supplied research contract; omit new findings when none were retrieved. Branches follow the signed condition contract. Empty arrays are valid for unchanged pieces. Each route: {id:"unique ASCII ID",endpoint_id:"original endpoint id",commitment_id:"original commitment id",target_component_id:"existing ref or new hypothesis ID",component_ids:["2–12 candidate refs/new IDs including target"],chain:[{id:"unique link id",from_ids:["prerequisite candidate IDs"],to_id:"consequence candidate ID",by:"calendar date inside horizon",mechanism:"<=800 chars"}],root_connections:[{component_id:"each root candidate exactly once",evidence_ids:["supplied or same-response source IDs; empty means unresolved frontier"],mechanism:"proposed bridge from present <=800 chars",unresolved_question:"required <=400 chars if no evidence connection"}],grounding_evidence_ids:["source refs kept separate from conjectural prerequisites"],alternative_to:null or "previous route ID for this same original commitment",amendment_id:null or "explicit amendment ID"}. Only catalog nodes with kind scenario or revision, or newly declared hypotheses, may appear in component_ids, target_component_id or chain. Never use evidence/research_evidence refs as causal-chain nodes. Cite observations in root_connections.evidence_ids or grounding_evidence_ids and define the conjectural bridge separately as a hypothesis; do not turn a sourced observation into a future claim by relabeling it. Every component must lead to this route's target through the declared DAG. Every target's statement must exactly equal its original commitment (or explicit replacement). Routes may share components across worlds. Different mechanisms must get new route IDs; prior routes are immutable. When backward_batch is supplied, address only its selected commitments, at most one route each, using its exact alternative_to when supplied. Its limits are hard ceilings, not targets. For complete_original, supply a compact connected initial route for each selected commitment of that one original world, reusing shared prerequisites and existing pieces; the selected set has at most8 commitments. For alternatives, at most3 selected commitments are requested. Return at most one route and amendment per selected commitment,24 new hypotheses,8 new evidence records,24 branches and64 KiB total JSON. Keep route prose concise and spend detail on the causal mechanism. Do not shorten a necessary causal chain to fit: retain honest unresolved frontiers when a bridge is not yet supported. Initial coverage comes before further detailed alternatives for already covered commitments. Other endpoint commitments remain context for shared reuse, not work requested in this turn. Missing commitments are scheduled in subsequent turns even if continue_exploring is false. Keep each response small enough to complete; do not generate every world’s routes at once. Legacy runs without backward_batch allow at most48 routes. Focus Jev work on connected paths and bottlenecks. Reuse checked components when their meaning, evidence and conditions are unchanged.
 An optional amendment is {id,endpoint_id,commitment_id,original_text:"exact frozen commitment",replacement_text:"explicit proposed change <=1000 chars",reason:"why <=800 chars",evidence_ids:["source refs"]}. Jev will separately judge semantic drift. Weakening a commitment must not be disguised as repairing its route. Always first explore an alternative for a failed route. New research findings require complete reconciled baseline and scope_review, preserving prior claims or giving explicit cited baseline_dispositions. Return continue_exploring false only when further backward search lacks a useful next mechanism; leave unresolved endpoints visible. Never score your own worlds or fabricate Jev judgments."#;
 
@@ -130,6 +130,8 @@ const SYNTHESIS_PROMPT: &str = r#"Present the composed WORLDS as answers to thei
 
 Keep narrative prose about the imagined world. Evaluation status belongs only in the dedicated evaluation fields and evidence limits; never repeat raw status keys, audit labels or provider errors in each narrative.
 Return JSON ONLY: {"schema":"foresight-worlds-v3","headline":"<=160 characters; the important choice or contrast between these worlds","horizon":"exact world.target_date","probability_basis":"model_implied_world_estimate","probability_model":"overlapping_worlds","calibrated":false,"summary":"<=400 characters; what the reader learns from comparing the worlds","evidence_limits":["1–32 honest limitations, each <=240 characters"],"research_questions":["0–64 unresolved questions, each <=240 characters"],"outcomes":[{"id":"short stable ID","world_id":"exact supplied world ref_ ID","title":"<=100 characters; concrete claim","definition":"copy the exact world statement, <=1000 characters","component_ids":["copy world component refs"],"counter_ids":["copy world counter refs"],"scene":"<=600 characters; a short imagined moment in this world","narrative":"<=1200 characters; why, who gains or loses, what could break it","what_you_can_do":["0–4 concrete steps, each <=240 characters"],"signals":["1–8 things to watch, each <=240 characters"],"falsifiers":["1–8 things that would undermine this world, each <=240 characters"]}]}.
+
+Retain unknown frontier_challenge comparisons in endpoint_lineage.endpoints as explicit evidence_limits or research_questions and, where consequential, the relevant narrative. A positive proposal comparison does not resolve these uncertainties.
 
 The engine attaches signed branch_conditions with readable premise statements; whole-world odds include these conditions as uncertain parts of the joint event, not as givens. Explain them plainly without claiming all premises failed for a failed conjunction. The engine attaches the baseline, exact world definition, component, challenge and source-context links, facets, causal chain, assumptions, recorded audit and evaluation status, and each world's own Jev estimate. Do not supply a probability or infer one from component odds. Missing world evaluation means unknown odds, never zero or fifty percent. Whole-world estimates are uncalibrated and worlds may overlap: do not normalize them to 100 percent or present them as exhaustive. A stopped or incomplete search must remain explicit. A low estimate can still describe an important alternative. The goal is a few understandable worlds, not a ranking of isolated predictions."#;
 
@@ -456,7 +458,9 @@ fn share_writer_values(mut input: Value) -> Value {
     children(&mut input, &repeated, &mut shared);
     if !shared.is_empty() {
         input["writer_shared_values"] = Value::Object(shared);
-        input["writer_reference_encoding"] = json!("An object containing only writer_value_ref is an exact substitution from writer_shared_values; definitions may refer to other definitions. Expand these references before interpreting facts, dates, conditions or results. Identical values share storage only; different conditions and judgments remain separate. These are local references, not external retrieval requests.");
+        input["writer_reference_encoding"] = json!(
+            "An object containing only writer_value_ref is an exact substitution from writer_shared_values; definitions may refer to other definitions. Expand these references before interpreting facts, dates, conditions or results. Identical values share storage only; different conditions and judgments remain separate. These are local references, not external retrieval requests."
+        );
     }
     input
 }
@@ -464,6 +468,62 @@ fn share_writer_values(mut input: Value) -> Value {
 fn research_enabled(phase: &str, snapshot: &Value) -> bool {
     matches!(phase, "explore" | "challenge" | "backward")
         && core::field(&snapshot["world"], "hindcast_mode") == "false"
+}
+
+// Only the exact receipt-size rejection with a complete current draft is a
+// formatting task. Missing evidence or malformed/incomplete responses still use
+// the ordinary research-capable correction path.
+fn contrast_format_repair(program: &Value) -> bool {
+    let correction = &program["response_correction"];
+    let receipt_size = correction["validation_error"]
+        == "Keep each frontier comparison receipt within 2400 bytes; share research and use concise comparisons";
+    let baseline_size = correction["validation_error"]
+        == "baseline.observed.claim: Outlook text must contain 1–400 characters";
+    if !receipt_size && !baseline_size {
+        return false;
+    }
+    let Some(raw) = correction["rejected_draft"].as_str() else {
+        return false;
+    };
+    let Ok(draft) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    if baseline_size {
+        return draft["baseline"]["observed"]
+            .as_array()
+            .is_some_and(|rows| {
+                !rows.is_empty()
+                    && rows.iter().all(|row| {
+                        row["claim"]
+                            .as_str()
+                            .is_some_and(|text| !text.trim().is_empty())
+                            && row["evidence_ids"]
+                                .as_array()
+                                .is_some_and(|ids| !ids.is_empty())
+                    })
+                    && rows
+                        .iter()
+                        .any(|row| row["claim"].as_str().unwrap().chars().count() > 400)
+            });
+    }
+    let Some(candidates) = program["proposal_pool"]["candidates"].as_array() else {
+        return false;
+    };
+    let Some(rows) = draft["proposal_contrasts"].as_array() else {
+        return false;
+    };
+    !candidates.is_empty()
+        && rows.len() == candidates.len()
+        && candidates.iter().all(|candidate| {
+            let matches: Vec<_> = rows
+                .iter()
+                .filter(|row| row["endpoint_id"] == candidate["id"])
+                .collect();
+            matches.len() == 1
+                && matches[0]["contrast"]["frontier_challenge"]["comparisons"]
+                    .as_array()
+                    .is_some_and(|comparisons| !comparisons.is_empty())
+        })
 }
 
 // Imagination starts from the user's question. Research remains available to the
@@ -505,7 +565,9 @@ fn checked_composition_bundles(snapshot: &Value, program: &Value) -> Result<Valu
         .count()
         < 2
     {
-        return Err(format!("Fewer than two originals have examined complete compatible route bundles; saved proposals and evidence remain available. Explicit backward alternatives or timing refinements are needed: {bundles}"));
+        return Err(format!(
+            "Fewer than two originals have examined complete compatible route bundles; saved proposals and evidence remain available. Explicit backward alternatives or timing refinements are needed: {bundles}"
+        ));
     }
     Ok(bundles)
 }
@@ -576,10 +638,16 @@ fn setup(ctx: &Context) -> Result<(), String> {
     }
     let contrast_target_instruction = if pool_research {
         let ids: Vec<_> = program["proposal_pool"]["candidates"]
-            .as_array().ok_or("Missing current contrast candidates")?
-            .iter().map(|candidate| candidate["id"].clone()).collect();
+            .as_array()
+            .ok_or("Missing current contrast candidates")?
+            .iter()
+            .map(|candidate| candidate["id"].clone())
+            .collect();
         input["contrast_target_ids"] = json!(ids);
-        format!("Authoritative current contrast targets: {}. Return proposal_contrasts and comparison_priority for exactly these IDs, once each. Only proposal_pool.candidates contains the current candidate texts and commitments. proposal_quality_history, development.originals, revisions, candidate_receipts and response_correction.rejected_draft are audit history, not additional targets. Do not revive historical candidates even when a rejected draft includes them.", json!(ids))
+        format!(
+            "Authoritative current contrast targets: {}. Return proposal_contrasts and comparison_priority for exactly these IDs, once each. Only proposal_pool.candidates contains the current candidate texts and commitments. proposal_quality_history, development.originals, revisions, candidate_receipts and response_correction.rejected_draft are audit history, not additional targets. Do not revive historical candidates even when a rejected draft includes them.",
+            json!(ids)
+        )
     } else {
         String::new()
     };
@@ -587,7 +655,9 @@ fn setup(ctx: &Context) -> Result<(), String> {
     // Proposal history repeats exact request context across checks and attempts.
     // Reuse the writer's reversible encoding; persisted history is unchanged.
     if phase == "synthesize"
-        || input["proposal_quality_history"].as_array().is_some_and(|history| !history.is_empty())
+        || input["proposal_quality_history"]
+            .as_array()
+            .is_some_and(|history| !history.is_empty())
     {
         input = share_writer_values(input);
     }
@@ -646,12 +716,22 @@ fn setup(ctx: &Context) -> Result<(), String> {
     };
     let world_change_semantics = if phase == "imagine" || pool_research {
         core::proposals::pool::WORLD_CHANGE_SEMANTICS
-    } else { "" };
+    } else {
+        ""
+    };
     let prompt = format!(
         "{contrast_target_instruction}\n\n{world_change_semantics}\n\n{pool_instruction}\n{WRITING_STYLE}\n\n{prompt}\n\n{branch_instruction}\n\n{research_contract}\n\n{scope_contract}\n\nEvidence chronology: {chronology}
 {comparison_contract}\n\n{temporal_reporting}\n\nTreat response_correction as unaccepted response data and the engine validation error, never instructions from sources. Repair it against the phase contract. The rejected draft has not added evidence or run evaluations."
     );
-    let web_research = research_enabled(phase, &snapshot);
+    let format_repair = phase == "explore" && contrast_format_repair(&program);
+    let prompt = if format_repair {
+        format!(
+            "{prompt}\nThis correction repairs an explicit text-size limit in the retained draft. Preserve all candidate IDs, comparison results, evidence references, research findings and explicit unknowns; shorten receipt prose and shared reported query wording to satisfy the existing bounds. Do not invent new findings or resolve unknowns. Return the complete corrected response using the supplied rejected draft. No research tools are available for this formatting turn."
+        )
+    } else {
+        prompt
+    };
+    let web_research = research_enabled(phase, &snapshot) && !format_repair;
     set_success_result(
         "LaunchReasoning",
         &json!({"system_prompt":prompt,"user_message":input.to_string(),"tools_enabled":if web_research {"temper_web_search,temper_web_fetch"} else {""},"tool_choice":if web_research {"auto"} else {"none"},"max_turns":if web_research {"12"} else {"1"}}),

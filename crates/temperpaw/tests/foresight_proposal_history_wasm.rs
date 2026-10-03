@@ -149,3 +149,100 @@ async fn captured_proposal_history_is_losslessly_shared_by_native_producer() {
         std::fs::write(path,json!({"fields":{"system_prompt":new["system_prompt"],"user_message":new["user_message"]}}).to_string()).unwrap();
     }
 }
+
+#[tokio::test]
+async fn structural_correction_is_tool_free_and_unknowns_reach_backward_and_writer() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../os-apps/paw-foresight/wasm/semantic_music_frontier_fixture.json"
+    ))
+    .unwrap();
+    let a = &fixture["attempt"];
+    let snapshot = json!({"world":a["world"],"nodes":a["source_evidence"],"branches":[]});
+    let mut snapshot = snapshot;
+    snapshot["world"]["hindcast_mode"] = json!("false");
+    let mut program = json!({"endpoint_proposal_contract":2,"proposal_pool":{"stage":"contrast","candidates":a["endpoints"]},"endpoint_proposal_history":[],"baseline":a["baseline"],"world_search_contract":1,"endpoint_search":{"endpoints":a["endpoints"],"routes":[],"amendments":[]},"tasks":[],"results":{}});
+    let draft = json!({"proposal_contrasts":a["endpoints"].as_array().unwrap().iter().map(|e|json!({"endpoint_id":e["id"],"contrast":e["contrast"]})).collect::<Vec<_>>()});
+    program["response_correction"] = json!({"validation_error":"Keep each frontier comparison receipt within 2400 bytes; share research and use concise comparisons","rejected_draft":draft.to_string()});
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = std::env::var("FORESIGHT_HISTORY_NEW_WASM").unwrap_or_else(|_|root.join("os-apps/paw-foresight/wasm/semantic_reasoning/target/wasm32-unknown-unknown/release/semantic_reasoning.wasm").to_string_lossy().into_owned());
+    let bytes = std::fs::read(path).unwrap();
+    let fields = |phase: &str, p: &Value| json!({"phase":phase,"snapshot_json":snapshot.to_string(),"program_json":p.to_string()});
+    let repaired = invoke(&bytes, &fields("explore", &program)).await;
+    assert_eq!(repaired["tools_enabled"], "");
+    assert_eq!(repaired["max_turns"], "1");
+    assert!(
+        repaired["system_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("explicit text-size limit")
+    );
+    for error in [
+        "Unknown source reference",
+        "Missing strongest-present comparison; report unknown rather than certify novelty",
+    ] {
+        program["response_correction"]["validation_error"] = json!(error);
+        let substantive = invoke(&bytes, &fields("explore", &program)).await;
+        assert_eq!(substantive["max_turns"], "12");
+        assert!(
+            substantive["tools_enabled"]
+                .as_str()
+                .unwrap()
+                .contains("temper_web_search")
+        );
+    }
+    program["response_correction"] = json!({"validation_error":"baseline.observed.claim: Outlook text must contain 1–400 characters","rejected_draft":json!({"baseline":{"observed":[{"claim":"Long claim ".repeat(50),"evidence_ids":["source"]}]}}).to_string()});
+    assert_eq!(
+        invoke(&bytes, &fields("explore", &program)).await["max_turns"],
+        "1"
+    );
+    // Empty claims need substantive repair; this error string also covers them.
+    program["response_correction"]["rejected_draft"] = json!(
+        json!({"baseline":{"observed":[{"claim":"","evidence_ids":["source"]}]}}).to_string()
+    );
+    assert_eq!(
+        invoke(&bytes, &fields("explore", &program)).await["max_turns"],
+        "12"
+    );
+    program["response_correction"] = Value::Null;
+    // Minimal composed world placeholders exercise the writer's actual input
+    // projection; this does not assert these are evaluated live worlds.
+    for id in ["writer-world-a", "writer-world-b"] {
+        snapshot["nodes"].as_array_mut().unwrap().push(json!({"Id":id,"kind":"world","statement":"Writer input fixture","component_ids":[],"edges":"[]"}));
+    }
+    let fields = |phase: &str, p: &Value| json!({"phase":phase,"snapshot_json":snapshot.to_string(),"program_json":p.to_string()});
+    for phase in ["backward", "synthesize"] {
+        let actual = invoke(&bytes, &fields(phase, &program)).await;
+        let encoded: Value =
+            serde_json::from_str(actual["user_message"].as_str().unwrap()).unwrap();
+        let restored = expand(&encoded, &encoded["writer_shared_values"]);
+        let endpoints = if phase == "backward" {
+            &restored["endpoint_search"]["endpoints"]
+        } else {
+            &restored["endpoint_lineage"]["endpoints"]
+        };
+        assert_eq!(endpoints.as_array().unwrap().len(), 3);
+        for (sent, original) in endpoints
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(a["endpoints"].as_array().unwrap())
+        {
+            let unknowns = |e: &Value| {
+                e["contrast"]["frontier_challenge"]["comparisons"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r["result"] == "unknown")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(unknowns(sent), unknowns(original));
+        }
+        assert!(
+            actual["system_prompt"]
+                .as_str()
+                .unwrap()
+                .contains("unknown")
+        );
+    }
+}

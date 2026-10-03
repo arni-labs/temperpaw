@@ -142,21 +142,23 @@ fn progress_callback_is_runtime_only() {
     .unwrap();
     let attrs = std::collections::HashMap::new();
     let runtime = SecurityContext::from_resolved_identity("service:wasm-runtime", "system", None);
-    assert!(
-        engine
-            .authorize(&runtime, "ReasoningProgress", "SemanticRun", &attrs)
-            .is_allowed()
-    );
-    for (id, kind) in [
-        ("operator", "operator"),
-        ("ordinary", "agent"),
-        ("other-system", "system"),
-    ] {
-        let principal = SecurityContext::from_resolved_identity(id, kind, None);
+    for action in ["ReasoningProgress", "ResumeReasoned"] {
         assert!(
-            !engine
-                .authorize(&principal, "ReasoningProgress", "SemanticRun", &attrs)
+            engine
+                .authorize(&runtime, action, "SemanticRun", &attrs)
                 .is_allowed()
         );
+        for (id, kind) in [
+            ("operator", "operator"),
+            ("ordinary", "agent"),
+            ("other-system", "system"),
+        ] {
+            let principal = SecurityContext::from_resolved_identity(id, kind, None);
+            assert!(
+                !engine
+                    .authorize(&principal, action, "SemanticRun", &attrs)
+                    .is_allowed()
+            );
+        }
     }
 }

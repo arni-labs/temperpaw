@@ -1,0 +1,1797 @@
+{
+  "attempt": {
+    "attempt": 2,
+    "baseline": {
+      "as_of": "2026-10-03",
+      "assumptions": [],
+      "observed": [
+        {
+          "claim": "Music Venue Trust's January 2026 report says UK grassroots venues averaged a 2.5% profit margin in 2025 and 53% made no profit. It also reports 175 towns and cities without regular professional touring shows. These are trade-charity findings about 2025, not an October 2026 census.",
+          "evidence_ids": [
+            "en-01a0ff32-a270-73a3-9118-fac1f046a738"
+          ]
+        },
+        {
+          "claim": "The Guardian's January 2026 account of MVT data reports 30 permanent closures, 48 other spaces ending grassroots operation and 69 returning spaces: a net decline of nine for its July 2024\u20132025 comparison. It reports 38% were not-for-profit. This is not an independent census; active venues and profitable operators are different counts.",
+          "evidence_ids": [
+            "en-01a0ff34-cb10-7113-bae6-bb17a36daa74"
+          ]
+        },
+        {
+          "claim": "On 23 July 2026, MVT announced the purchase of Brighton's Pipeline, the tenth building secured through Own Our Venues. It reported about \u00a37 million raised since 2022 and over 2,500 community investors. This is a first-hand acquisition claim, not checked land-title evidence; owning a building does not establish that its shows cover operating costs.",
+          "evidence_ids": [
+            "en-01a0ff34-cc88-7511-9dff-6739f433f428"
+          ]
+        },
+        {
+          "claim": "A Westword indexed excerpt reports that Denver's Ante Up opened in January 2026 as an all-ages sober space, run by about 30 volunteers with suggested donations and a building shared with a handyman business. Only two of about 30 landlords contacted reportedly accepted the use. This is one reported case, not inspected premises or audited accounts.",
+          "evidence_ids": [
+            "en-01a0ff34-ce04-7023-8e7f-df6de471726d"
+          ]
+        },
+        {
+          "claim": "NIVA's June 2025 study release reports that 64% of US independent stages were unprofitable in 2024 and artist/booking fees accounted for 31% of expenses. Its scope includes venues, festivals and promoters. The inspected trade-body release does not supply the sampling method or isolate the causes of losses.",
+          "evidence_ids": [
+            "en-01a0ff38-0cbf-73c1-ad65-898708a6442f"
+          ]
+        },
+        {
+          "claim": "Undated DICE help excerpts retrieved on 3 October 2026 describe an optional sold-out-event queue: a buyer gets a refund only when someone buys the returned ticket; unsold tickets go back to the owner's account. This documents a conditional service, not a live app test, verified use by small venues or a measured reduction in ticket scalping.",
+          "evidence_ids": [
+            "en-01a0ff38-0e10-76c1-bb19-9b2232f601f3",
+            "en-01a0ff38-0f1d-75f2-9925-868f5300aed5"
+          ]
+        },
+        {
+          "claim": "A Live DMA indexed summary of a study commissioned in 2024 reports noise-related soundproofing costs and financial limits on booking emerging artists, drawing on 16 European venues and stakeholders. This small interview base does not establish prevalence. Direct fetch failed; publication and interview dates are unconfirmed.",
+          "evidence_ids": [
+            "scope-repair_europe_venues"
+          ]
+        },
+        {
+          "claim": "A November 2024 Australian Music Association account of a survey of over 1,000 adults reports cheaper tickets would encourage 74% to attend more live music and closer venues 50%. Local provision was sufficient for 43%, insufficient for 31%. These are preferences, not purchases or small-venue-only results; direct fetch failed and the indexed excerpt is truncated.",
+          "evidence_ids": [
+            "scope-repair_australia_audience"
+          ]
+        },
+        {
+          "claim": "StageIt's undated service page describes paid remote concerts with audience questions, song requests and tips, and says shows are not archived. It does not establish hosted physical-room circuits, pooled receipts or protection against audience recording.",
+          "evidence_ids": [
+            "r1-contrast_stageit"
+          ]
+        },
+        {
+          "claim": "The 2020 Ars Electronica archive describes The Welcome Chorus generating music from a musician-created library and visitors' voices, including pieces based on previous hours' input. This is a historical demonstration, not verified current operation or a continuing paid concert repertoire.",
+          "evidence_ids": [
+            "r1-contrast_chorus"
+          ]
+        },
+        {
+          "claim": "013 Poppodium's undated accessibility page lists a low-stimulus room and wheelchair-platform access. The inspected text does not establish simultaneous quiet concert viewing, adjustable audio, tactile rhythm or live text.",
+          "evidence_ids": [
+            "r1-contrast_013"
+          ]
+        },
+        {
+          "claim": "Orcas Center's direct account dates microgrid commissioning to September 2025 and operations to October 2025. It claims continued performances and community services during outages. This strengthens the indexed account but is not an inspected operating test; heat-refuge cooling limits and actual outage performances remain unverified.",
+          "evidence_ids": [
+            "r1-contrast_orcas",
+            "r2-contrast_orcas_direct"
+          ]
+        },
+        {
+          "claim": "NME reports that most of Joanna Newsom's March 2023 set was unreleased material; its indexed article also contains audience clips. This demonstrates unreleased live repertoire, not lasting room-only access or income supporting permanent non-release.",
+          "evidence_ids": [
+            "r1-contrast_newsom"
+          ]
+        },
+        {
+          "claim": "SYN.Tropia's project page describes combined sound, dance and tactile listening for deaf and hearing audiences, with around 60 seats at its debut and testing with the Portuguese Deaf Association. Listed performances span 2017\u20132022; current operation, independent channel controls and separated sound environments are unverified.",
+          "evidence_ids": [
+            "r2-contrast_syn_tropia"
+          ]
+        },
+        {
+          "claim": "An indexed historical FMOL manual describes storing and developing contributed compositions and an intended registration route for selected authors' rights. Its planned 1998 performance is not an observed outcome. Direct fetch failed; continuing payment, live audience decisions and cross-room branching are not established by the excerpt.",
+          "evidence_ids": [
+            "r2-contrast_fmol_manual"
+          ]
+        }
+      ],
+      "unknowns": [
+        "Evidence now includes European venue interviews and Australian audience preferences, but remains geographically uneven; conditions in many other places are unexamined.",
+        "UK grassroots venues, US independent stages, European interview cases and Australian live-music audiences are different populations; their figures cannot be treated as directly comparable.",
+        "Small-venue-specific audience and musician experiences, disability access and sound quality remain largely uncovered; sensory-performance examples do not establish recurring attendance outcomes.",
+        "The Denver venue and UK building purchases do not establish how common or financially durable these arrangements are.",
+        "The supplied and retrieved evidence does not establish October 2026 trading conditions or what venues will be like in 2030.",
+        "Earlier European and Australian findings rely on indexed excerpts; European publication and interview dates and Australian survey fieldwork dates and full methods remain unconfirmed.",
+        "Comparable accounts separating ticket sales, drinks, donations, grants, rent, staff and artist payments are missing; the causes of financial strain cannot be isolated.",
+        "MVT's attribution of 6,000 lost jobs to tax changes and NIVA's explanations for financial difficulty are source interpretations, not independently isolated effects.",
+        "The indexed Westword excerpt's publication date needs source-page confirmation. DICE's publication and version dates are unknown; retrieval dates do not establish when its documented service applied.",
+        "DICE's adoption by small venues, actual refund rates and effects on ticket access or resale prices are unverified.",
+        "Australian respondents' stated preferences do not establish how lower prices, shorter journeys or better transport would change actual small-venue attendance.",
+        "Failed searches and fetches leave portable-room circuits, paid audience ensembles and locally financed long residencies insufficiently compared; missing results do not establish novelty.",
+        "Contrast sources include undated service pages, historical demonstrations and indexed excerpts; they do not establish complete candidate arrangements or their present prevalence.",
+        "Repeat-night musical memory, simultaneous sensory access, room-only repertoire and safe performances during outages remain unverified as complete operating arrangements.",
+        "FMOL's indexed manual and failed archive fetch leave branching histories, inherited live constraints and continuing contributor payments insufficiently verified.",
+        "Orcas Center claims outage performance capability, but heat-limit tests, actual outage show logs, safety-triggered set changes and musician shift-pay terms were not retrieved."
+      ]
+    },
+    "checks": [
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "changed_arrangement",
+            "confidence": 0.68,
+            "probabilities": {
+              "changed_arrangement": 0.76,
+              "present_or_adoption_only": 0.01,
+              "unresolved": 0.18,
+              "unsupported_analogue": 0.05
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [
+              "en-01a0ff32-a270-73a3-9118-fac1f046a738",
+              "en-01a0ff34-cb10-7113-bae6-bb17a36daa74",
+              "en-01a0ff34-cc88-7511-9dff-6739f433f428",
+              "en-01a0ff34-ce04-7023-8e7f-df6de471726d",
+              "en-01a0ff38-0cbf-73c1-ad65-898708a6442f",
+              "en-01a0ff38-0e10-76c1-bb19-9b2232f601f3",
+              "en-01a0ff38-0f1d-75f2-9925-868f5300aed5",
+              "scope-repair_europe_venues",
+              "scope-repair_australia_audience",
+              "r1-contrast_stageit",
+              "r1-contrast_chorus",
+              "r1-contrast_013",
+              "r1-contrast_orcas",
+              "r1-contrast_newsom",
+              "r2-contrast_syn_tropia",
+              "r2-contrast_orcas_direct",
+              "r2-contrast_fmol_manual"
+            ],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "many-ways-to-hear",
+              "function": "check_proposal_change",
+              "nodeId": "pool-2-check_proposal_change-many-ways-to-hear--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "changed_arrangement",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "changed_arrangement",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "many-ways-to-hear",
+          "function": "check_proposal_change",
+          "nodeId": "pool-2-check_proposal_change-many-ways-to-hear--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "changed_arrangement",
+            "confidence": 0.64,
+            "probabilities": {
+              "changed_arrangement": 0.73,
+              "present_or_adoption_only": 0.01,
+              "unresolved": 0.2,
+              "unsupported_analogue": 0.06
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [
+              "en-01a0ff32-a270-73a3-9118-fac1f046a738",
+              "en-01a0ff34-cb10-7113-bae6-bb17a36daa74",
+              "en-01a0ff34-cc88-7511-9dff-6739f433f428",
+              "en-01a0ff34-ce04-7023-8e7f-df6de471726d",
+              "en-01a0ff38-0cbf-73c1-ad65-898708a6442f",
+              "en-01a0ff38-0e10-76c1-bb19-9b2232f601f3",
+              "en-01a0ff38-0f1d-75f2-9925-868f5300aed5",
+              "scope-repair_europe_venues",
+              "scope-repair_australia_audience",
+              "r1-contrast_stageit",
+              "r1-contrast_chorus",
+              "r1-contrast_013",
+              "r1-contrast_orcas",
+              "r1-contrast_newsom",
+              "r2-contrast_syn_tropia",
+              "r2-contrast_orcas_direct",
+              "r2-contrast_fmol_manual"
+            ],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "music-through-outages",
+              "function": "check_proposal_change",
+              "nodeId": "pool-2-check_proposal_change-music-through-outages--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "changed_arrangement",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "changed_arrangement",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "music-through-outages",
+          "function": "check_proposal_change",
+          "nodeId": "pool-2-check_proposal_change-music-through-outages--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "changed_arrangement",
+            "confidence": 0.45,
+            "probabilities": {
+              "changed_arrangement": 0.58,
+              "present_or_adoption_only": 0.01,
+              "unresolved": 0.33,
+              "unsupported_analogue": 0.08
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [
+              "en-01a0ff32-a270-73a3-9118-fac1f046a738",
+              "en-01a0ff34-cb10-7113-bae6-bb17a36daa74",
+              "en-01a0ff34-cc88-7511-9dff-6739f433f428",
+              "en-01a0ff34-ce04-7023-8e7f-df6de471726d",
+              "en-01a0ff38-0cbf-73c1-ad65-898708a6442f",
+              "en-01a0ff38-0e10-76c1-bb19-9b2232f601f3",
+              "en-01a0ff38-0f1d-75f2-9925-868f5300aed5",
+              "scope-repair_europe_venues",
+              "scope-repair_australia_audience",
+              "r1-contrast_stageit",
+              "r1-contrast_chorus",
+              "r1-contrast_013",
+              "r1-contrast_orcas",
+              "r1-contrast_newsom",
+              "r2-contrast_syn_tropia",
+              "r2-contrast_orcas_direct",
+              "r2-contrast_fmol_manual"
+            ],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "room-keeps-the-songs",
+              "function": "check_proposal_change",
+              "nodeId": "pool-2-check_proposal_change-room-keeps-the-songs--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "changed_arrangement",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "changed_arrangement",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "room-keeps-the-songs",
+          "function": "check_proposal_change",
+          "nodeId": "pool-2-check_proposal_change-room-keeps-the-songs--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "represented",
+            "confidence": 0.72,
+            "probabilities": {
+              "missing_defining_implication": 0.05,
+              "represented": 0.81,
+              "unresolved": 0.14
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "many-ways-to-hear",
+              "function": "check_proposal_coverage",
+              "nodeId": "pool-2-check_proposal_coverage-many-ways-to-hear--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "represented",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "represented",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "many-ways-to-hear",
+          "function": "check_proposal_coverage",
+          "nodeId": "pool-2-check_proposal_coverage-many-ways-to-hear--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "represented",
+            "confidence": 0.77,
+            "probabilities": {
+              "missing_defining_implication": 0.04,
+              "represented": 0.85,
+              "unresolved": 0.11
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "music-through-outages",
+              "function": "check_proposal_coverage",
+              "nodeId": "pool-2-check_proposal_coverage-music-through-outages--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "represented",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "represented",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "music-through-outages",
+          "function": "check_proposal_coverage",
+          "nodeId": "pool-2-check_proposal_coverage-music-through-outages--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "represented",
+            "confidence": 0.76,
+            "probabilities": {
+              "missing_defining_implication": 0.04,
+              "represented": 0.84,
+              "unresolved": 0.12
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "room-keeps-the-songs",
+              "function": "check_proposal_coverage",
+              "nodeId": "pool-2-check_proposal_coverage-room-keeps-the-songs--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "represented",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "represented",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "room-keeps-the-songs",
+          "function": "check_proposal_coverage",
+          "nodeId": "pool-2-check_proposal_coverage-room-keeps-the-songs--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.91,
+            "probabilities": {
+              "dependent": 0.94,
+              "independent_decoration": 0.01,
+              "unresolved": 0.05
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "many-ways-to-hear",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "many-ways-to-hear",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.89,
+            "probabilities": {
+              "dependent": 0.93,
+              "independent_decoration": 0.0,
+              "unresolved": 0.07
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "many-ways-to-hear",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--1",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 1
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "many-ways-to-hear",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--1",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 1
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.89,
+            "probabilities": {
+              "dependent": 0.93,
+              "independent_decoration": 0.0,
+              "unresolved": 0.07
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "many-ways-to-hear",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--2",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 2
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "many-ways-to-hear",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--2",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 2
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.83,
+            "probabilities": {
+              "dependent": 0.89,
+              "independent_decoration": 0.0,
+              "unresolved": 0.11
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "music-through-outages",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-music-through-outages--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "music-through-outages",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-music-through-outages--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.82,
+            "probabilities": {
+              "dependent": 0.88,
+              "independent_decoration": 0.01,
+              "unresolved": 0.11
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "music-through-outages",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-music-through-outages--1",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 1
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "music-through-outages",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-music-through-outages--1",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 1
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.92,
+            "probabilities": {
+              "dependent": 0.94,
+              "independent_decoration": 0.01,
+              "unresolved": 0.05
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "music-through-outages",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-music-through-outages--2",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 2
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "music-through-outages",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-music-through-outages--2",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 2
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.87,
+            "probabilities": {
+              "dependent": 0.92,
+              "independent_decoration": 0.0,
+              "unresolved": 0.08
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "room-keeps-the-songs",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--0",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 0
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "room-keeps-the-songs",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--0",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 0
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.81,
+            "probabilities": {
+              "dependent": 0.87,
+              "independent_decoration": 0.01,
+              "unresolved": 0.12
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "room-keeps-the-songs",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--1",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 1
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "room-keeps-the-songs",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--1",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 1
+        }
+      },
+      {
+        "evaluation": {
+          "answer": {
+            "choice": "dependent",
+            "confidence": 0.97,
+            "probabilities": {
+              "dependent": 0.98,
+              "independent_decoration": 0.0,
+              "unresolved": 0.02
+            },
+            "type": "choice"
+          },
+          "context": {
+            "branch_state": null,
+            "evidence_ids": [],
+            "round": 2,
+            "task": {
+              "depth": 0,
+              "endpoint_id": "room-keeps-the-songs",
+              "function": "check_proposal_dependence",
+              "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--2",
+              "other_endpoint_id": "",
+              "proposal_attempt": 2,
+              "relation_index": 2
+            },
+            "world_pass": null,
+            "world_revision": 0
+          },
+          "selected": "dependent",
+          "type": "choice"
+        },
+        "passed": true,
+        "result": "dependent",
+        "task": {
+          "depth": 0,
+          "endpoint_id": "room-keeps-the-songs",
+          "function": "check_proposal_dependence",
+          "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--2",
+          "other_endpoint_id": "",
+          "proposal_attempt": 2,
+          "relation_index": 2
+        }
+      }
+    ],
+    "contract": 2,
+    "endpoints": [
+      {
+        "commitments": [
+          {
+            "id": "persistent-repertoire",
+            "statement": "By end-2030, several small venues run recurring paid programs around named works whose saved musical structures persist across nights and changes of performer. Earlier states remain available for deliberate revival rather than being silently overwritten."
+          },
+          {
+            "id": "adaptive-live-production",
+            "statement": "By end-2030, contributing composers supply playable phrases, recognizable recurring elements and rules governing possible changes. Resident musicians direct software and live players within those rules, including accepting or rejecting proposed changes during performance."
+          },
+          {
+            "id": "crowd-leaves-traces",
+            "statement": "By end-2030, audiences make explicit, bounded musical decisions during these programs, such as retaining an answering phrase or replacing a recurring section. Accepted decisions change the saved structure used on later nights, not merely a recording or a popularity score."
+          },
+          {
+            "id": "history-constrains-future-music",
+            "statement": "By end-2030, retained changes alter subsequent musical possibilities: later sections must answer, develop or deliberately undo earlier additions. Performances identify these connections so returning listeners can recognize consequences of previous nights."
+          },
+          {
+            "id": "branching-between-rooms",
+            "statement": "By end-2030, participating venues exchange playable versions with their histories. The receiving room can develop a separate branch, and musicians can stage encounters between branches without replacing either room's repertoire with one centrally updated version."
+          },
+          {
+            "id": "paid-source-material",
+            "statement": "By end-2030, agreements explicitly permit continuing transformation, transfer between participating rooms and performance by replacement musicians. Composers and contributors whose additions are retained receive agreed payment, with records linking performed versions to their source material."
+          },
+          {
+            "id": "repertoire-led-attendance",
+            "statement": "By end-2030, repeat audiences buy tickets for named works and particular local branches even when the billed musicians change. Recordings are available as historical snapshots, but do not contain the rules and live decisions needed to continue the work."
+          }
+        ],
+        "contrast": {
+          "consequences": [
+            {
+              "commitment_id": "history-constrains-future-music",
+              "depends_on": [
+                "crowd-leaves-traces",
+                "adaptive-live-production"
+              ],
+              "mechanism": "Saved audience decisions supply material that later players must answer, develop or deliberately undo; the playable rules make those obligations musically usable. Remove saved decisions and there is no inherited audience history to reckon with. Remove the rules and retaining files alone need not affect the next performance."
+            },
+            {
+              "commitment_id": "branching-between-rooms",
+              "depends_on": [
+                "persistent-repertoire",
+                "history-constrains-future-music",
+                "paid-source-material"
+              ],
+              "mechanism": "Persistent playable states give another room something to inherit; constraints preserve a recognizable lineage; permissions let new musicians develop it. Without these, an exchange can become a recording swap, an unrelated improvisation or an unauthorized derivative rather than two continuing branches."
+            },
+            {
+              "commitment_id": "repertoire-led-attendance",
+              "depends_on": [
+                "history-constrains-future-music",
+                "branching-between-rooms"
+              ],
+              "mechanism": "Audible consequences and divergent local histories give listeners something specific to follow when musicians change. Remove them and the proposed reason to buy another ticket largely disappears. This does not guarantee demand: the pieces must remain recognizable and compelling, and audiences may still prefer particular performers."
+            }
+          ],
+          "defining_commitment_ids": [
+            "persistent-repertoire",
+            "adaptive-live-production",
+            "crowd-leaves-traces",
+            "history-constrains-future-music",
+            "branching-between-rooms",
+            "paid-source-material",
+            "repertoire-led-attendance"
+          ],
+          "frontier_challenge": {
+            "comparisons": [
+              {
+                "commitment_id": "persistent-repertoire",
+                "evidence_ids": [
+                  "r2-contrast_fmol_manual"
+                ],
+                "present_match": "FMOL describes stored compositions open to continuing development.",
+                "remaining_difference": "Recurring paid nights, performer replacement and deliberate revival are not established.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "adaptive-live-production",
+                "evidence_ids": [
+                  "r1-contrast_chorus"
+                ],
+                "present_match": "The Welcome Chorus generates music from a contributed library.",
+                "remaining_difference": "Resident players accepting changes within composer-supplied development rules are unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "crowd-leaves-traces",
+                "evidence_ids": [
+                  "r1-contrast_chorus"
+                ],
+                "present_match": "The Welcome Chorus uses previous hours' visitor input.",
+                "remaining_difference": "Explicit audience decisions changing saved structures across concert nights are unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "history-constrains-future-music",
+                "evidence_ids": [],
+                "present_match": "No adequately inspected score establishes inherited obligations for later live sections.",
+                "remaining_difference": "Required answers, development or deliberate undoing remain insufficiently compared.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "branching-between-rooms",
+                "evidence_ids": [],
+                "present_match": "FMOL branching surfaced in archive search text; full HTTPS retrieval failed.",
+                "remaining_difference": "Playable local branches and live encounters between them remain underchecked.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "paid-source-material",
+                "evidence_ids": [],
+                "present_match": "FMOL planned rights registration, not verified continuing payment.",
+                "remaining_difference": "Transformation, transfers and replacement-player permissions remain unverified.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "repertoire-led-attendance",
+                "evidence_ids": [],
+                "present_match": "No retrieved repeat-purchase evidence separates repertoire loyalty from performer loyalty.",
+                "remaining_difference": "Demand for local branches despite changing musicians is unverified.",
+                "result": "unknown"
+              }
+            ],
+            "query_provenance": "researcher_report_not_verified_against_tool_trace",
+            "reported_queries": [
+              "Faust Music On Line FMOL composition tree database descendants collective composition",
+              "FMOL user manual copyright evolving composition tree royalties"
+            ],
+            "research_basis": "live_research"
+          },
+          "present_analogue": {
+            "evidence_ids": [
+              "r1-contrast_chorus",
+              "r2-contrast_fmol_manual"
+            ],
+            "statement": "The strongest retrieved precedents are historical, not verified current venue programs. The Welcome Chorus used earlier visitors' input in later music. FMOL's manual describes contributed compositions stored for further development and an intended authors' rights arrangement. Musical memory, collaborative development and reusable material therefore cannot carry the novelty claim alone. The candidate goes further by making retained choices constrain later live music, carrying playable branches between rooms and surviving performer changes. Those stronger comparisons remain incompletely verified; a failed archive fetch does not establish absence.",
+            "status": "supported"
+          }
+        },
+        "falsifiers": [
+          "Saved histories have no audible effect on later performances, which function as disposable generated music.",
+          "The repertoire depends on its original performer and cannot survive a change of resident musicians.",
+          "Listeners follow only celebrity appearances, or accumulated permissions make continued development impractical."
+        ],
+        "id": "room-keeps-the-songs",
+        "original_narrative": "Saving an improvisation or letting a crowd choose the next song would only make a familiar request night more elaborate. Here, what happened before changes what the music can do next, and that history survives the original performers.\n\nImagine returning on Friday to a piece you first heard a month ago. Last week's audience kept a short, uneasy answering phrase. Tonight's players must build toward it, answer it or announce a return to an earlier version. They cannot simply press a button for another unrelated tune. A resident musician rehearses these possibilities and discards changes that do not work.\n\nA month later, another venue sends back its branch of the same piece. Its musicians turned that answering phrase into a slower opening. You hear the two histories meet in a special performance, then continue separately. A visiting drummer can join because the venue holds playable parts and instructions, not only recordings of how the former drummer performed them.\n\nYou can listen to last Friday's recording at home. What brings you back is discovering what this particular piece becomes, including whether a choice you supported survives. The song can outlast a residency without becoming a fixed tribute to it.\n\nThis requires more than capable software. The music needs enough identity to be remembered and enough room to change. Permissions must cover inherited additions; payment records must remain manageable. If listeners cannot distinguish one history from another, there is little reason to maintain the arrangement.",
+        "original_statement": "An imagined 2030: several small venues maintain living repertoires whose musical history can be played, changed and passed to another room. Composers supply phrases and rules for how they can develop, not just recordings. Resident musicians and audiences make bounded decisions that change later performances. Different rooms grow recognizable branches of the same work, and visiting players inherit those histories. A ticket buys an encounter with a particular song's continuing development, not simply another rendition or an endlessly generated soundtrack.",
+        "signals": [
+          "Programs advertise named works, local versions and encounters between branches alongside performer names.",
+          "Replacement musicians successfully continue a repertoire using saved parts, rules and change histories.",
+          "Contributor agreements and payments follow retained musical additions across venue transfers."
+        ],
+        "status": "imagined",
+        "title": "Songs acquire local histories that the next performance must reckon with"
+      },
+      {
+        "commitments": [
+          {
+            "id": "separated-listening",
+            "statement": "By end-2030, a group of small venues regularly presents one visible live stage to acoustically separated quiet and louder audience areas; measurements during occupied performances establish that bass and crowd noise do not defeat the advertised quiet conditions."
+          },
+          {
+            "id": "multiple-performance-channels",
+            "statement": "By end-2030, these venues provide independently adjustable audio and seat vibration, optional visual musical cues, and text for spoken introductions. Visitors can disable unwanted channels rather than having to accept the entire sensory package."
+          },
+          {
+            "id": "multisensory-repertoire",
+            "statement": "By end-2030, recurring programs include works composed with linked sound, vibration and visual parts. Rehearsals with intended users test whether major entries, exchanges and endings remain perceptible without relying on loud audio; the venue does not claim that the different versions produce identical experiences."
+          },
+          {
+            "id": "continuous-sensory-switching",
+            "statement": "By end-2030, visitors can move between listening areas through sound-buffered routes during performances while retaining access to the live music through personal receivers; quiet-area capacity is reserved so moving away from loud sound does not depend on a vacant premium seat."
+          },
+          {
+            "id": "production-changes",
+            "statement": "By end-2030, booked acts rehearse separate instrument feeds, tactile and visual parts, and transitions between them. Performers can see audience responses from each area rather than treating quiet listeners as an absent or disengaged crowd."
+          },
+          {
+            "id": "access-changes-attendance",
+            "statement": "By end-2030, recurring patrons include people previously unable to remain through amplified shows, attending with companions who choose other listening conditions. Follow-up accounts establish that they stay for performances rather than mainly using a retreat room."
+          }
+        ],
+        "contrast": {
+          "consequences": [
+            {
+              "commitment_id": "production-changes",
+              "depends_on": [
+                "multisensory-repertoire",
+                "multiple-performance-channels"
+              ],
+              "mechanism": "Linked musical parts and independently controlled channels require rehearsal and usable separate feeds. Remove those requirements and an act can return to delivering one sound mix with optional decoration. Paid preparation time and reliable equipment remain necessary."
+            },
+            {
+              "commitment_id": "continuous-sensory-switching",
+              "depends_on": [
+                "separated-listening",
+                "multiple-performance-channels"
+              ],
+              "mechanism": "A genuinely quiet destination and a continuing personal feed let someone reduce stimulation without abandoning the performance. Remove either and moving may mean entering another noisy space or missing the music. Buffered routes and reserved capacity are additional requirements, not automatic results."
+            },
+            {
+              "commitment_id": "access-changes-attendance",
+              "depends_on": [
+                "continuous-sensory-switching",
+                "multisensory-repertoire"
+              ],
+              "mechanism": "People who need to change stimulation levels can remain connected to meaningful musical events rather than merely retreating. That can make repeated attendance possible with companions. It will not do so if controls are difficult, alternative parts are uninformative or other access barriers remain."
+            }
+          ],
+          "defining_commitment_ids": [
+            "separated-listening",
+            "multiple-performance-channels",
+            "multisensory-repertoire",
+            "continuous-sensory-switching",
+            "production-changes",
+            "access-changes-attendance"
+          ],
+          "frontier_challenge": {
+            "comparisons": [
+              {
+                "commitment_id": "separated-listening",
+                "evidence_ids": [
+                  "r1-contrast_013"
+                ],
+                "present_match": "013 provides a low-stimulus room.",
+                "remaining_difference": "Shared stage views and measured isolation during occupied shows are not established.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "multiple-performance-channels",
+                "evidence_ids": [
+                  "r2-contrast_syn_tropia"
+                ],
+                "present_match": "SYN.Tropia combines audible, visible and tactile performance.",
+                "remaining_difference": "Independent adjustment, disabling channels and spoken-content text are unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "multisensory-repertoire",
+                "evidence_ids": [
+                  "r2-contrast_syn_tropia"
+                ],
+                "present_match": "SYN.Tropia integrates dance, piano and tactile listening, tested with deaf participants.",
+                "remaining_difference": "Multisensory creation exists; tests of key musical exchanges without loud audio remain unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "continuous-sensory-switching",
+                "evidence_ids": [],
+                "present_match": "No inspected arrangement verifies switching while retaining music and reserved quiet capacity.",
+                "remaining_difference": "The complete switching capability remains underchecked, not proven absent.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "production-changes",
+                "evidence_ids": [
+                  "r2-contrast_syn_tropia"
+                ],
+                "present_match": "SYN.Tropia has coordinated dance, piano, lighting and tactile production.",
+                "remaining_difference": "Routine visiting-act preparation and performer feedback from separated areas are unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "access-changes-attendance",
+                "evidence_ids": [],
+                "present_match": "No retrieved follow-up tracks formerly excluded patrons through recurring complete shows.",
+                "remaining_difference": "Mixed-audience performances alone do not establish this attendance change.",
+                "result": "unknown"
+              }
+            ],
+            "query_provenance": "researcher_report_not_verified_against_tool_trace",
+            "reported_queries": [
+              "concert multisensory composition deaf haptic visual quiet room stage view adjustable sound"
+            ],
+            "research_basis": "live_research"
+          },
+          "present_analogue": {
+            "evidence_ids": [
+              "r2-contrast_syn_tropia",
+              "r1-contrast_013"
+            ],
+            "statement": "SYN.Tropia is the stronger performance analogue: deaf and hearing audiences experience a pianist and dancer through sound, movement and tactile seating developed with deaf participants. Its documented shows are historical, not verified current touring. 013 separately documents a low-stimulus room. Multisensory music and quiet space therefore are not themselves new. Neither source establishes one visible stage with measured quiet/loud separation, independent channel controls and uninterrupted switching. The candidate's difference rests on that combined freedom and on meaningful musical access, not merely adding vibration.",
+            "status": "supported"
+          }
+        },
+        "falsifiers": [
+          "Bass leakage or crowd noise repeatedly makes the quiet areas unusable during real shows.",
+          "Alternative channels convey only a beat or decoration, leaving essential musical events inaccessible to their intended listeners.",
+          "Space and rehearsal costs restrict the arrangement to occasional demonstrations rather than recurring small-venue programs."
+        ],
+        "id": "many-ways-to-hear",
+        "original_narrative": "A better quiet room alone would leave the familiar concert unchanged: some people would still withdraw from the main experience. This world instead changes both the building and what musicians write for it.\n\nImagine attending with a friend who wants strong bass. You begin together in the quiet area, watching the drummer behind acoustic glass. You choose gentle seat vibration and low-volume vocals. Your friend later moves to the louder area. Neither of you loses your view of the players.\n\nDuring one piece, a repeated pulse passes between percussion and a moving light pattern. You feel its interruption before the singer answers; your friend hears the same exchange through drums and bass. These are deliberately composed parts, not decorative lighting or an automatic claim to translate every detail of music. The performers can see both areas respond.\n\nWhen you need less stimulation, you turn off the vibration without abandoning the song. At the interval you meet your friend in the quiet shared space. You no longer have to choose between enduring the entire room's sound and missing the evening.\n\nThe difficult work is physical and musical. Glass, doors and structural isolation must contain bass; headphones cannot do that alone. Artists need paid rehearsal time, and listeners must find the alternative parts meaningful. Some buildings and some performances will remain unsuitable.",
+        "original_statement": "An imagined 2030: some small venues stop treating loud sound as the performance and everything else as an accommodation. A visible stage serves quiet listening areas and an acoustically isolated louder area. Musicians prepare linked versions in sound, seat vibration and visual cues, so a musical exchange can remain understandable without every listener hearing it. Visitors can change their sensory experience during a set without leaving the performance. This also creates a repertoire written for several senses, rather than merely translating conventional concerts afterward.",
+        "signals": [
+          "Venues publish occupied-room sound measurements and offer quiet capacity as part of ordinary admission.",
+          "Artists bring rehearsed tactile and visual musical parts, not only a finished sound mix and captions.",
+          "Mixed-needs groups return and report staying through complete performances."
+        ],
+        "status": "imagined",
+        "title": "Friends share a live performance without having to share its loudness"
+      },
+      {
+        "commitments": [
+          {
+            "id": "dual-use-hours",
+            "statement": "By end-2030, a group of small venues in heat-stressed districts provides regular cooled public space with free refuge access and an adjacent quiet rest area while paid musicians perform. Refuge users are not required to buy tickets or leave when music begins."
+          },
+          {
+            "id": "outage-operation",
+            "statement": "By end-2030, these venues demonstrate safe occupied operation and limited live performances during locally common outages within a published operating envelope. Insulation, stored electricity and cooling or thermal storage are sized together for stated heat, occupancy and outage-duration conditions."
+          },
+          {
+            "id": "safety-first-energy-budget",
+            "statement": "By end-2030, staff reserve energy for cooling, ventilation, essential lighting and communications before allocating power to music. Measured temperature, air quality and remaining energy trigger reductions in show equipment or attendance, and cancellation or safe relocation when the operating limits cannot be maintained."
+          },
+          {
+            "id": "recomposable-show",
+            "statement": "By end-2030, booked musicians prepare connected short sets in several equipment configurations. They can repeat an entry point for new arrivals, change instrumentation or pause between sections without requiring audiences to hear one uninterrupted full-power show."
+          },
+          {
+            "id": "changed-show-clock",
+            "statement": "By end-2030, these venues routinely schedule repeated performances around locally safer travel windows and available energy rather than a single late-night start. Ticket holders can leave and return, or move to another scheduled performance, without buying again."
+          },
+          {
+            "id": "paid-availability",
+            "statement": "By end-2030, participating musicians are paid for defined performance shifts and preparation of alternative sets, rather than only delivery of one fixed concert. Refuge-service funding covers the building's essential public-use costs; music income and specified support cover artist pay even when a set is shortened for safety."
+          }
+        ],
+        "contrast": {
+          "consequences": [
+            {
+              "commitment_id": "recomposable-show",
+              "depends_on": [
+                "safety-first-energy-budget",
+                "outage-operation"
+              ],
+              "mechanism": "When safe occupancy has first claim on limited electricity, a fixed full-power show may no longer fit. Prepared short sections and alternative equipment let music continue within the tested limits. Without that priority, batteries could simply preserve the conventional concert until they run out. Severe conditions still require cancellation."
+            },
+            {
+              "commitment_id": "changed-show-clock",
+              "depends_on": [
+                "recomposable-show",
+                "dual-use-hours",
+                "safety-first-energy-budget"
+              ],
+              "mechanism": "Repeated entry points let people arrive during safer travel windows without missing an entire one-shot concert. A room open as refuge makes staying between sets possible, while the energy budget limits when louder or larger sets can run. Flexible tickets and transport coordination are additional choices; equipment alone does not create them."
+            },
+            {
+              "commitment_id": "paid-availability",
+              "depends_on": [
+                "recomposable-show",
+                "safety-first-energy-budget"
+              ],
+              "mechanism": "Artists preparing several configurations and accepting safety-driven changes need payment for availability and preparation, not only completion of a fixed show. Shift pay removes pressure to keep playing merely to earn the agreed fee. The operating model creates that need but cannot fund it automatically; explicit support and contracts are essential."
+            }
+          ],
+          "defining_commitment_ids": [
+            "dual-use-hours",
+            "outage-operation",
+            "safety-first-energy-budget",
+            "recomposable-show",
+            "changed-show-clock",
+            "paid-availability"
+          ],
+          "frontier_challenge": {
+            "comparisons": [
+              {
+                "commitment_id": "dual-use-hours",
+                "evidence_ids": [
+                  "r2-contrast_orcas_direct"
+                ],
+                "present_match": "Orcas Center combines arts, community services and an emergency-center role.",
+                "remaining_difference": "Free cooled refuge and adjacent quiet rest during paid shows are not established.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "outage-operation",
+                "evidence_ids": [
+                  "r2-contrast_orcas_direct"
+                ],
+                "present_match": "Orcas explicitly claims performances and essential services can continue without grid power.",
+                "remaining_difference": "Observed heat-safe occupancy and shows within published tested limits remain unverified.",
+                "result": "different_arrangement"
+              },
+              {
+                "commitment_id": "safety-first-energy-budget",
+                "evidence_ids": [],
+                "present_match": "Controls for independent operation are reported, not safety-first show allocation rules.",
+                "remaining_difference": "Measured safety triggers, reserved cooling energy and relocation procedures are underchecked.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "recomposable-show",
+                "evidence_ids": [],
+                "present_match": "No inspected program documents connected short sets with alternative equipment configurations.",
+                "remaining_difference": "Repeated entry points and rehearsed power-dependent changes remain unverified.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "changed-show-clock",
+                "evidence_ids": [],
+                "present_match": "No retrieved schedule links repeated sets and flexible return rights to safe travel and energy.",
+                "remaining_difference": "The complete scheduling arrangement remains underchecked, not absent.",
+                "result": "unknown"
+              },
+              {
+                "commitment_id": "paid-availability",
+                "evidence_ids": [],
+                "present_match": "No retrieved contract separates refuge costs from musician shift and preparation pay.",
+                "remaining_difference": "Pay preserved through safety-driven shortening remains unverified.",
+                "result": "unknown"
+              }
+            ],
+            "query_provenance": "researcher_report_not_verified_against_tool_trace",
+            "reported_queries": [
+              "music venue resilience hub cooling power outage performances solar battery safety",
+              "music venue heat cooling refuge concerts power outages solar batteries load shedding"
+            ],
+            "research_basis": "live_research"
+          },
+          "present_analogue": {
+            "evidence_ids": [
+              "r2-contrast_orcas_direct"
+            ],
+            "statement": "Orcas Center is a stronger counterexample than backup equipment alone. Its direct account reports commissioned solar, batteries, a generator and an emergency-center role, explicitly claiming that performances and community services can continue during outages. Independent power plus music plus refuge is therefore not the defining difference. The candidate instead makes tested heat limits and essential services govern the structure, timing and payment of concerts. The retrieved account does not establish those operating rules or actual outage performance logs. Its emphasis on warmth also does not establish a heat-refuge cooling capability.",
+            "status": "supported"
+          }
+        },
+        "falsifiers": [
+          "Cooling and ventilation exhaust stored energy so quickly that live music cannot recur during ordinary local outages.",
+          "Music disrupts refuge use, or ticketing effectively excludes people seeking safe shelter.",
+          "Flexible attendance and shortened sets leave artist shifts unfunded, forcing a return to fixed concerts or unpaid emergency performances."
+        ],
+        "id": "music-through-outages",
+        "original_narrative": "A battery behind an ordinary stage would merely make the usual show harder to interrupt. This world changes the concert's clock and structure because cooling the room and getting people home safely govern what can happen.\n\nImagine reaching your local venue in a cooler morning travel window. You can stay in its quiet rest area without buying anything. You have also bought a music pass, so you join the next short set rather than waiting for evening doors to open. Someone arriving later will hear another complete entry into the program, not only its ending.\n\nThe electricity supply fails after lunch. Staff check the reserved cooling capacity and announce that the next section will use a small sound system without stage lighting. The musicians switch to a rehearsed arrangement. Ventilation continues; nobody opens the doors simply to make an acoustic set tolerable in dangerous heat.\n\nYou stay through the hottest hours and catch another set before leaving in the next safer travel window. A friend who cannot travel that day moves their booking rather than losing the ticket. The artists are paid for their shift, so shortening a performance does not force a choice between wages and the room's safety limits.\n\nThis is not a promise to play through every emergency. A prolonged outage or heat beyond the building's design can still end the music and require relocation. The defining achievement is recurring, tested operation within clear limits\u2014not a refuge label attached to untested backup equipment.",
+        "original_statement": "An imagined 2030: in some heat-stressed districts, small venues organize music around keeping a neighborhood room safely habitable. Cooling, ventilation and essential services have first claim on stored electricity. Musicians prepare performances that can change length, equipment and audience size as available power changes. Repeated short sets and flexible return visits replace some one-shot evening concerts, allowing people to arrive and leave during safer travel windows. The venue remains a refuge during ordinary local outages without treating uninterrupted entertainment as more important than safety.",
+        "signals": [
+          "Venues publish tested occupancy and outage limits, including cooling and ventilation loads rather than only battery capacity.",
+          "Booking calendars offer repeated short sets and flexible return access around local travel conditions.",
+          "Artist contracts pay for alternative arrangements and defined shifts, while refuge access remains free."
+        ],
+        "status": "imagined",
+        "title": "The concert becomes something you can stay with, not one late-night appointment"
+      }
+    ],
+    "pool_stage": "individual",
+    "source_evidence": [
+      {
+        "Id": "en-01a0ff32-a270-73a3-9118-fac1f046a738",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2025",
+            "start": "2025"
+          },
+          "publication_date": "2026-01-21",
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "observed",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://www.musicvenuetrust.com/2026/01/music-venue-trust-annual-report-2025/ | 2026-01-21 | \u201cMore than half (53%) of the UK\u2019s GMVs showed no profit at all in 2025\u201d\"]",
+        "statement": "Music Venue Trust reported on 21 January 2026 that UK grassroots venues averaged a 2.5% profit margin in 2025 and 53% made no profit. It reported 30 permanent closures over the past year and 175 towns/cities without regular professional touring shows. Its claim that tax changes caused 6,000 lost jobs is the trade charity\u2019s causal interpretation, not an independently isolated effect. These are 2025 conditions, not an October 2026 census."
+      },
+      {
+        "Id": "en-01a0ff34-cb10-7113-bae6-bb17a36daa74",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2025",
+            "start": "2024-07"
+          },
+          "publication_date": "2026-01-20",
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "observed",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://www.theguardian.com/music/2026/jan/21/uk-grassroots-music-venues-show-lowest-decline-since-2018-as-sector-stabilises-post-pandemic | 2026-01-20 | \u201c69 spaces that had previously ceased operating as GMVs returned to the sector\u201d\"]",
+        "statement": "The Guardian\u2019s report (displayed 20 January 2026 EST) complicates a simple UK collapse account: 30 permanent closures and 48 spaces ceasing grassroots operation were offset by 69 returning spaces, leaving a net decline of nine. It gives the closure comparison as July 2024 to 2025. It reports 38% of grassroots venues are not-for-profit. Counts of buildings, active grassroots programmes and profitable operators are different measures; this is reporting on MVT data, not an independent census."
+      },
+      {
+        "Id": "en-01a0ff34-cc88-7511-9dff-6739f433f428",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": "2026-07-23",
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "observed",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://www.musicvenuetrust.com/2026/07/music-venue-properties-announces-tenth-grassroots-music-venue-secured-following-purchase-of-the-pipeline-in-brighton/ | 2026-07-23 | \u201cThe purchase brings the total number of Grassroots Music Venues secured through the Own Our Venues initiative to ten.\u201d\"]",
+        "statement": "MVT\u2019s page dated 23 July 2026 announces that Music Venue Properties has bought The Pipeline in Brighton, its tenth building under the Own Our Venues programme. It reports around \u00a37 million raised since 2022 and more than 2,500 community investors; operator Thomas Evrenos describes relief from property insecurity. This is a first-hand acquisition claim, not independently checked land-title evidence. The source\u2019s promises of permanent protection and future success do not establish continuing operating solvency."
+      },
+      {
+        "Id": "en-01a0ff34-ce04-7023-8e7f-df6de471726d",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2026-04",
+            "start": "2026-01"
+          },
+          "publication_date": "2026-04-28",
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "observed",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://www.westword.com/music/ante-up-denver-diy-punk-venue-40878508/ | 2026-04-28 | \u201cIt is also an all-ages sober space.\u201d\"]",
+        "statement": "Westword reports that Ante Up in Denver opened in January 2026 as an all-ages sober punk/community space run by about 30 volunteers. Visitors pay suggested donations, sometimes discounted for material donations to another nonprofit. The building also houses the owners\u2019 handyman-business warehouse; its first event reportedly drew about 300 people and collected 200 food items. Only two of about 30 landlords contacted were comfortable with this use. Direct fetch failed (query never completed); evidence is the returned indexed article excerpt, not site inspection or audited accounts. This single case demonstrates a non-bar, shared-use practice, not its prevalence or viability."
+      },
+      {
+        "Id": "en-01a0ff38-0cbf-73c1-ad65-898708a6442f",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2024",
+            "start": "2024"
+          },
+          "publication_date": "2025-06-23",
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "observed",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://www.nivassoc.org/statements/2025/independent-stages-generate-1531-billion-in-economic-investment-across-us-based-on-new-national-independent-venue-association-niva-research-study | 2025-06-23 | \u201c64% of stages were not profitable in 2024\u201d\"]",
+        "statement": "NIVA\u2019s 23 June 2025 release of its TEConomy study reports that 64% of US independent stages were not profitable in 2024 and artist/booking fees absorbed 31% of expenses. This is a historical baseline covering venues, festivals and promoters, not just small music rooms or October 2026 trading. Economic-output estimates including spillovers are not venue revenue or profit. The trade body attributes difficulties to inflation, anti-competitive practices and resale; the inspected release does not isolate their effects or supply the sampling method."
+      },
+      {
+        "Id": "en-01a0ff38-0e10-76c1-bb19-9b2232f601f3",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "weak_signal",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://dicefm.zendesk.com/hc/en-gb/articles/4409669441169-Buy-tickets-to-a-sold-out-event-via-the-Wait-List | None | \u201cthe event organiser has the option to activate the wait list\u201d\"]",
+        "statement": "DICE\u2019s undated help documentation describes an already available app wait-list: organisers may activate it for sold-out events; returned tickets are offered in queue order, with 20-minute to two-hour purchase windows and an automatic full refund to the original buyer after purchase. A user can join only one ticket type per event. Direct fetch failed (query never completed); this is returned indexed-excerpt evidence, not a live app test, verified small-venue deployment or an established October 2026 version. No adoption or measured anti-scalping effect is established."
+      },
+      {
+        "Id": "en-01a0ff38-0f1d-75f2-9925-868f5300aed5",
+        "Status": "Proposed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "kind": "evidence",
+        "probability": "",
+        "provenance": "weak_signal",
+        "resolution": "",
+        "resolve_by": "2030-12-31",
+        "source_refs": "[\"https://dicefm.zendesk.com/hc/en-gb/articles/19958537912593-If-your-tickets-don-t-sell-on-the-Wait-List | None | \u201cIf your ticket isn\u2019t snapped up, we\u2019ll return it to your DICE account\u201d\"]",
+        "statement": "DICE\u2019s undated help page says unsold wait-list tickets are returned to the owner\u2019s account; sending to a friend is another option only where enabled. Removing tickets is subject to the wait-list deadline and whether someone has already purchased them. Thus the documented resale facility is conditional, not a guaranteed refund. Direct fetch failed (query never completed); returned indexed excerpt only, with publication/version date and real small-venue usage unverified."
+      },
+      {
+        "Id": "scope-repair_europe_venues",
+        "Status": "Reported",
+        "claim_type": "weak_signal",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "Venues frequently bear the financial burden of soundproofing and mediation with neighbors",
+        "source_refs": "[\"https://live-dma.eu/wp-content/uploads/2025/02/Summary-Live-music-challenges-in-european-cities.pdf\"]",
+        "source_session_id": "01a0ff3c-ac6a-7343-a78e-f1d8e1199a6e",
+        "statement": "An indexed summary of a study commissioned by Live DMA in 2024 draws on 16 venues and stakeholders across Europe. It reports that noise complaints can leave venues paying for soundproofing and mediation, while financial pressure limits their ability to book emerging artists or experiment with programming. These are reported experiences and interpretations from a small interview base, not measured prevalence across Europe. Direct fetch failed with a storage error; support is the returned indexed summary. Publication and interview dates are unconfirmed."
+      },
+      {
+        "Id": "scope-repair_australia_audience",
+        "Status": "Reported",
+        "claim_type": "weak_signal",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": "2024-11-28",
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "32% of people overall said better transport options would get them across the line to attend more shows.",
+        "source_refs": "[\"https://australianmusic.asn.au/winarch-group-releases-live-music-census/\"]",
+        "source_session_id": "01a0ff3c-ac6a-7343-a78e-f1d8e1199a6e",
+        "statement": "The Australian Music Association's 28 November 2024 account of Winarch Group's survey of over 1,000 Australian adults reports that cheaper tickets would encourage 74% to attend more live music, closer venues would encourage 50%, and better transport would encourage 32%. It reports 43% thought local venue provision sufficient, 31% insufficient and 26% were neutral. These are stated preferences about live music generally, not observed purchases or results isolated to small venues. Direct fetch returned no readable text; support is a search-returned excerpt truncated at 5,000 characters. Survey fieldwork dates and full methods were not established."
+      },
+      {
+        "Id": "r1-contrast_stageit",
+        "Status": "Reported",
+        "claim_type": "observed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "Fans are encouraged to ask the artist questions, request songs, and even chat with other fans during the show.",
+        "source_refs": "[\"https://www.stageit.com/static/static_pages/what_is_stageit\"]",
+        "statement": "StageIt's directly retrieved, undated service page describes ticketed live online performances, audience questions and song requests, tips, and payment to artists. It says shows are not recorded or archived by the service. This establishes an existing remote, interactive, paid concert arrangement, not a circuit of hosted physical rooms, pooled room receipts, reliable artist earnings or prevention of audience recording. The page's publication and service-version dates are unknown."
+      },
+      {
+        "Id": "r1-contrast_chorus",
+        "Status": "Reported",
+        "claim_type": "observed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2020",
+            "start": "2020"
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "Every few minutes, the Welcoming Choir performs a short piece based on the previous hours\u2019 input.",
+        "source_refs": "[\"https://ars.electronica.art/keplersgardens/en/the-welcome-chorus/\"]",
+        "statement": "The directly retrieved 2020 Ars Electronica festival archive describes Yuri Suzuki's The Welcome Chorus: local musicians helped create a sound library, visitors supplied spoken input, and software generated melodies and recurring pieces based on previous hours' input. This is a historical demonstration of audience contributions affecting later music, not evidence of present operation, persistent repertoire across concert nights, resident-player direction or payment for continuing transformations."
+      },
+      {
+        "Id": "r1-contrast_013",
+        "Status": "Reported",
+        "claim_type": "observed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "the use of our low-stimulus room",
+        "source_refs": "[\"https://www.013.nl/en/bezoekersinfo/accessibility\"]",
+        "statement": "013 Poppodium's directly retrieved accessibility page lists a low-stimulus room called Pause, wheelchair-platform access and other visitor assistance. The inspected text establishes a quiet-space service at an actual music venue. It does not establish an acoustically separated concert-viewing area, individually adjustable concert audio, tactile rhythm, live text, or measured attendance changes. Publication and facility-introduction dates are unknown."
+      },
+      {
+        "Id": "r1-contrast_orcas",
+        "Status": "Reported",
+        "claim_type": "weak_signal",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "Orcas Center has completed commissioning of a landmark solar and battery storage microgrid",
+        "source_refs": "[\"https://orcascenter.org/administrative/microgrid/\"]",
+        "statement": "An indexed source excerpt from Orcas Center reports completed commissioning of a solar-and-battery microgrid at its performing-arts and community building and designation as an Emergency Operations Center. It describes concerts, classes and community gatherings, and vulnerability to outages from reliance on an undersea cable. This is the operator's account, not an inspected operating test. The available excerpt does not establish cooled daytime refuge, performances during outages, cooling capacity or changes to concert schedules. Publication and commissioning dates remain unconfirmed; support here is the indexed excerpt."
+      },
+      {
+        "Id": "r1-contrast_newsom",
+        "Status": "Reported",
+        "claim_type": "weak_signal",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2023-03-22",
+            "start": "2023-03-22"
+          },
+          "publication_date": "2023-03-23",
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "The bulk of her set was all unreleased songs",
+        "source_refs": "[\"https://www.nme.com/news/music/watch-joanna-newsom-debut-new-music-as-surprise-fleet-foxes-opener-3419081\"]",
+        "statement": "NME's 23 March 2023 article reports that most of Joanna Newsom's preceding night's seven-song set consisted of unreleased songs. The returned indexed article text embeds audience posts containing clips of new music. This supports live presentation of a largely unreleased repertoire but also shows why unreleased does not mean accessible only in the room. It does not establish deliberate permanent non-release, recording restrictions, recurring live-only income or a circuit. No direct fetch of this article was completed."
+      },
+      {
+        "Id": "r2-contrast_syn_tropia",
+        "Status": "Reported",
+        "claim_type": "observed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2022",
+            "start": "2017"
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "A dance and music performance that combines in the same audience those who can and those who cannot hear.",
+        "source_refs": "[\"https://ypsc.pt/en/syn-tropia-en/\"]",
+        "statement": "The directly retrieved SYN.Tropia project page describes a dance-and-music performance for deaf and hearing audiences, with sound heard, seen and felt through a pianist, dancer and tactile seating device. It reports development and testing with the Portuguese Deaf Association and an initial deployment of around 60 seats. Its performance list includes 2017\u20132019 and 2022. This is a stronger precedent for deliberately multisensory performance than a quiet retreat room. The page does not establish independently adjustable channels, acoustically separated audiences, continuous sensory switching or measured comprehension of musical exchanges. Publication date and current touring status are unknown."
+      },
+      {
+        "Id": "r2-contrast_orcas_direct",
+        "Status": "Reported",
+        "claim_type": "observed",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": "2025-10",
+            "start": "2025-09"
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "Commissioning Completed: September 2025",
+        "source_refs": "[\"https://orcascenter.org/administrative/microgrid/\"]",
+        "statement": "Orcas Center's directly retrieved operator account dates microgrid commissioning to September 2025 and the start of operations to October 2025. It reports a 134 kW solar array, 1.3 MWh battery, 150 kW propane generator and controls for independent operation. It explicitly says the system enables continued performances, warmth, food, charging and communications during island outages. This strengthens the earlier indexed finding: performance continuity is a claimed capability, not merely an inference from equipment. It remains an operator claim, not a retrieved outage test or performance log. The page does not establish a heat-refuge cooling envelope, measured safety-triggered reductions in shows, flexible concert attendance or musician shift pay. Publication date is unknown."
+      },
+      {
+        "Id": "r2-contrast_fmol_manual",
+        "Status": "Reported",
+        "claim_type": "weak_signal",
+        "edges": "[]",
+        "evidence_metadata": {
+          "kind": "finding",
+          "observation_period": {
+            "end": null,
+            "start": null
+          },
+          "publication_date": null,
+          "retrieved_at": "2026-10-03"
+        },
+        "evidence_note": "Retrieved report, not proof of a future event.",
+        "kind": "research_evidence",
+        "observed_at": null,
+        "provenance": "session_research_report",
+        "quote": "will permit the audition and ongoing development of these compositions",
+        "source_refs": "[\"https://manualzilla.com/doc/5771028/fmol-user-s-manual\"]",
+        "statement": "A search-returned transcript of the historical FMOL user's manual describes an internet invitation to contribute music for Faust version 3.0, a server storing compositions and permitting their ongoing development, and software combining real-time synthesis with server communication. It says the Spanish authors' society would simplify registration for selected contributors to receive their lawful rights. Its April 1998 premiere and proposed tour are plans in the manual, not observed outcomes. This is a precedent for reusable collaborative musical material and an intended rights arrangement, not proof of paid continuing transformation, audience decisions during concerts or cross-room branching. Direct fetch returned HTTP 403; support is an indexed excerpt with incomplete context. Publication date is unconfirmed."
+      }
+    ],
+    "status": "examined",
+    "tasks": [
+      {
+        "depth": 0,
+        "endpoint_id": "many-ways-to-hear",
+        "function": "check_proposal_change",
+        "nodeId": "pool-2-check_proposal_change-many-ways-to-hear--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "music-through-outages",
+        "function": "check_proposal_change",
+        "nodeId": "pool-2-check_proposal_change-music-through-outages--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "room-keeps-the-songs",
+        "function": "check_proposal_change",
+        "nodeId": "pool-2-check_proposal_change-room-keeps-the-songs--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "many-ways-to-hear",
+        "function": "check_proposal_coverage",
+        "nodeId": "pool-2-check_proposal_coverage-many-ways-to-hear--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "music-through-outages",
+        "function": "check_proposal_coverage",
+        "nodeId": "pool-2-check_proposal_coverage-music-through-outages--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "room-keeps-the-songs",
+        "function": "check_proposal_coverage",
+        "nodeId": "pool-2-check_proposal_coverage-room-keeps-the-songs--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "many-ways-to-hear",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "many-ways-to-hear",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--1",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 1
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "many-ways-to-hear",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-many-ways-to-hear--2",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 2
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "music-through-outages",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-music-through-outages--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "music-through-outages",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-music-through-outages--1",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 1
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "music-through-outages",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-music-through-outages--2",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 2
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "room-keeps-the-songs",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--0",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 0
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "room-keeps-the-songs",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--1",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 1
+      },
+      {
+        "depth": 0,
+        "endpoint_id": "room-keeps-the-songs",
+        "function": "check_proposal_dependence",
+        "nodeId": "pool-2-check_proposal_dependence-room-keeps-the-songs--2",
+        "other_endpoint_id": "",
+        "proposal_attempt": 2,
+        "relation_index": 2
+      }
+    ],
+    "world": {
+      "Id": "foresight-ba810687-4368-42ac-b201-90dbfdcf210f",
+      "description": "What will small music venues be like in 2030?",
+      "domain": "What will small music venues be like in 2030?",
+      "evidence_contract": "v1",
+      "hindcast_mode": "false",
+      "last_ingest_date": "2026-10-03",
+      "learning_mode": "observed",
+      "name": "What will small music venues be like in 2030?",
+      "target_date": "2030-12-31"
+    }
+  },
+  "disclosure": "Captured pass8 music individual checks. Repeated request values omitted; producer reconstructs requests from the retained attempt context. Not a future accuracy test."
+}
