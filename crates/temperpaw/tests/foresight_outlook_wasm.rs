@@ -84,7 +84,7 @@ async fn research_recommendation_explores_without_resetting_global_budget() {
         reasoning["callback_params"]["tools_enabled"],
         "temper_web_search,temper_web_fetch"
     );
-    assert_eq!(reasoning["callback_params"]["max_turns"], "32");
+    assert_eq!(reasoning["callback_params"]["max_turns"], "12");
     assert_eq!(reasoning["callback_params"]["tool_choice"], "auto");
 
     fields["reasoning_result"]=json!(json!({"continue_exploring":true,"exploration_note":"Investigate an alternate mechanism","research_evidence":[],"hypotheses":[{"id":"r1","parent":"s","statement":"A revised hypothetical mechanism","requires":["e"],"research_question":"What adoption evidence is still missing?"}]}).to_string());
@@ -188,4 +188,18 @@ async fn provider_402_without_estimates_fails_before_synthesis() {
     let preserved = invoke(&engine, "semantic_step", fields).await;
     assert_eq!(preserved["callback_action"], "Reason");
     assert_eq!(preserved["callback_params"]["phase"], "synthesize");
+}
+
+#[tokio::test]
+async fn research_launch_reserves_final_handoff_after_twelve_continuations() {
+    let engine = WasmEngine::new().unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let snapshot = json!({"world":{"target_date":"2027-09-19","hindcast_mode":"false"},"nodes":[]});
+    let fields = json!({"phase":"explore","snapshot_json":snapshot.to_string(),"program_json":json!({"tasks":[],"results":{},"issues":[]}).to_string(),"trace_json":"[]","started_at_ms":now.to_string()});
+    let out = invoke(&engine,"semantic_reasoning",fields).await;
+    assert_eq!(out["callback_action"],"LaunchReasoning","{out}");
+    assert_eq!(out["callback_params"]["max_turns"],"12");
+    assert_eq!(out["callback_params"]["tool_choice"],"auto");
+    assert_eq!(out["callback_params"]["tools_enabled"],"temper_web_search,temper_web_fetch");
+    assert!(out["callback_params"].get("started_at_ms").is_none());
 }

@@ -88,7 +88,12 @@ impl WasmHost for Provider {
                 json!({"type":"response.output_text.delta","delta":"ab"})
             ));
         }
-        response.push_str(&format!("data: {}\n\n",json!({"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"ab".repeat(size/2)}]}],"usage":{"input_tokens":1,"output_tokens":1}}})));
+        let output = if size == 0 {
+            json!([{"type":"function_call","call_id":"unexpected","name":"temper_web_search","arguments":"{}"}])
+        } else {
+            json!([{"type":"message","content":[{"type":"output_text","text":"ab".repeat(size/2)}]}])
+        };
+        response.push_str(&format!("data: {}\n\n",json!({"type":"response.completed","response":{"output":output,"usage":{"input_tokens":1,"output_tokens":1}}})));
         Ok((200, response.into_bytes()))
     }
 
@@ -109,7 +114,29 @@ async fn invoke(
     chunk_bytes: usize,
     emit_deltas: bool,
 ) -> (String, Value, Vec<Value>) {
-    let mut prepared = json!({"version":1,"messages":[{"role":"user","content":"Compose a detailed answer"}],"tools":[],"system_prompt":"test","system_prompt_hash":"hash","system_prompt_file_id":"","conversation_file_id":"","session_file_id":"","session_leaf_id":"","workspace_id":"","use_session_tree":false,"context_tokens":1,"context_bytes":1,"entries_loaded":1,"content_files_loaded":0});
+    invoke_budget(
+        engine,
+        hash,
+        output_bytes,
+        chunk_bytes,
+        emit_deltas,
+        Value::Null,
+        0,
+        "auto",
+    )
+    .await
+}
+async fn invoke_budget(
+    engine: &WasmEngine,
+    hash: &str,
+    output_bytes: usize,
+    chunk_bytes: usize,
+    emit_deltas: bool,
+    limit: Value,
+    turns: u64,
+    tool_choice: &str,
+) -> (String, Value, Vec<Value>) {
+    let mut prepared = json!({"version":1,"messages":[{"role":"user","content":"Compose a detailed answer"}],"tools":[{"name":"temper_web_search","description":"research","input_schema":{"type":"object","properties":{}}}],"system_prompt":"test","system_prompt_hash":"hash","system_prompt_file_id":"","conversation_file_id":"","session_file_id":"","session_leaf_id":"","workspace_id":"","use_session_tree":false,"context_tokens":1,"context_bytes":1,"entries_loaded":1,"content_files_loaded":0});
     if let Ok(path) = std::env::var("FORESIGHT_PROVIDER_SESSION_FIXTURE") {
         let session: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         prepared["messages"] = json!([{"role":"user","content":session["fields"]["user_message"]}]);
@@ -122,7 +149,7 @@ async fn invoke(
         trigger_action: "CallProvider".into(),
         wasm_module: Some("provider_caller".into()),
         trigger_params: json!({}),
-        entity_state: json!({"fields":{"prepared_context_inline_json":prepared.to_string(),"provider":"openai","model":"test","tool_choice":"auto"}}),
+        entity_state: json!({"fields":{"prepared_context_inline_json":prepared.to_string(),"provider":"openai","model":"test","tool_choice":tool_choice,"max_turns":limit},"counters":{"turn_count":turns}}),
         agent_id: None,
         session_id: None,
         integration_config: BTreeMap::from([
@@ -194,5 +221,59 @@ async fn fragmented_completed_frame_keeps_exact_output_with_same_fuel() {
     let artifact: Value =
         serde_json::from_str(params["provider_response_inline_json"].as_str().unwrap()).unwrap();
     assert_eq!(artifact["content"][0]["text"], "ab".repeat(50_000));
+    assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn exhausted_turn_budget_removes_stale_tools_and_preserves_required_contract() {
+    let engine = WasmEngine::new().unwrap();
+    let path=std::env::var("FORESIGHT_PROVIDER_WASM").unwrap_or_else(|_|format!("{}/../../os-apps/paw-agent/wasm/provider_caller/target/wasm32-unknown-unknown/release/provider_caller.wasm",env!("CARGO_MANIFEST_DIR")));
+    let hash = engine
+        .compile_and_cache(&std::fs::read(path).unwrap())
+        .unwrap();
+    for (limit, turns, choice, exhausted) in [
+        (json!("12"), 11, "auto", false),
+        (json!("12"), 12, "auto", true),
+        (json!("12"), 13, "auto", true),
+        (json!("0"), 33, "auto", false),
+        (Value::Null, 33, "auto", false),
+    ] {
+        let (action, params, calls) =
+            invoke_budget(&engine, &hash, 8, 8192, true, limit, turns, choice).await;
+        assert_eq!(action, "ProviderResponseReady", "{params}");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_none_or(|v| v.is_empty()),
+            exhausted,
+            "{}",
+            calls[0]
+        );
+    }
+    let (action, params, calls) =
+        invoke_budget(&engine, &hash, 8, 8192, true, json!("12"), 12, "required").await;
+    assert_ne!(action, "ProviderResponseReady");
+    assert!(
+        params
+            .to_string()
+            .contains("required typed tool completion"),
+        "{params}"
+    );
+    assert!(calls.is_empty());
+    let (_, _, before_calls) =
+        invoke_budget(&engine, &hash, 8, 8192, true, json!("12"), 11, "required").await;
+    assert!(!before_calls.is_empty());
+    assert_eq!(before_calls[0]["tool_choice"], "required");
+    let (action, params, calls) =
+        invoke_budget(&engine, &hash, 0, 8192, false, json!("12"), 12, "auto").await;
+    assert_ne!(action, "ProviderResponseReady");
+    assert!(
+        params
+            .to_string()
+            .contains("tool call after the Session turn budget"),
+        "{params}"
+    );
     assert_eq!(calls.len(), 1);
 }

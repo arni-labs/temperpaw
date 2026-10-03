@@ -4264,7 +4264,17 @@ pub fn run_provider_caller() -> Result<(), String> {
             "error"
         },
     );
-    let prepared = prepared_result?;
+    let mut prepared = prepared_result?;
+    let final_handoff = wasm_helpers::session_turn_budget_exhausted(&ctx.entity_state);
+    if final_handoff {
+        if tool_choice_required(&ctx) {
+            return Err(
+                "Session turn budget exhausted before required typed tool completion".into(),
+            );
+        }
+        // Recheck the native boundary even if a stale prepared artifact still advertises tools.
+        prepared.tools.clear();
+    }
     check_phase_budget(
         &ctx,
         "provider_caller",
@@ -4463,6 +4473,17 @@ pub fn run_provider_caller() -> Result<(), String> {
         return Ok(());
     }
     let response = response_result?;
+    if final_handoff
+        && (response.stop_reason == "tool_use"
+            || response
+                .content
+                .as_array()
+                .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "tool_use")))
+    {
+        return Err(
+            "Provider returned a tool call after the Session turn budget was exhausted".into(),
+        );
+    }
     check_phase_budget(
         &ctx,
         "provider_caller",

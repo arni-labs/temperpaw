@@ -10,6 +10,34 @@ use std::collections::BTreeMap;
 
 use temper_wasm_sdk::prelude::*;
 
+/// Positive configured Session continuation limit. Missing or zero means unlimited.
+/// Counts completed tool batches and steering/plan continuations, as owned by Session.
+/// Counters are authoritative in native state; serialized field projections are supported too.
+pub fn session_turn_budget_exhausted(state: &Value) -> bool {
+    let fields = state.get("fields").unwrap_or(state);
+    let number = |value: &Value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
+    };
+    let limit = fields
+        .get("max_turns")
+        .or_else(|| fields.get("MaxTurns"))
+        .and_then(number)
+        .unwrap_or(0);
+    let turns = state
+        .get("counters")
+        .and_then(|v| v.get("turn_count"))
+        .or_else(|| fields.get("turn_count"))
+        .or_else(|| fields.get("TurnCount"))
+        .and_then(number)
+        .unwrap_or(0);
+    limit > 0 && turns >= limit
+}
+
+/// Applied only after a complete tool batch, without altering the research already received.
+pub const SESSION_FINAL_HANDOFF: &str = "The configured research/tool turn budget is exhausted. No further tools are available. Produce the final response now using the completed tool results and existing evidence, preserving the required output format. State unresolved questions and missing evidence honestly; do not claim absent evidence proves absence or invent findings. Do not request another tool call.";
+
 pub const SESSION_ENTRIES_REF_PREFIX: &str = "session-entries:";
 const TEMPERFS_READ_ATTEMPTS: usize = 10;
 const TEMPERFS_WRITE_ATTEMPTS: usize = 5;
@@ -3104,4 +3132,34 @@ fn find_channel_session_for_typing(
 fn is_discord_snowflake(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty() && value.as_bytes().iter().all(u8::is_ascii_digit)
+}
+
+#[cfg(test)]
+mod turn_budget_tests {
+    use super::*;
+    #[test]
+    fn positive_limit_uses_completed_native_turns_only() {
+        for (limit, turns, exhausted) in [
+            (json!("12"), 11, false),
+            (json!("12"), 12, true),
+            (json!("12"), 13, true),
+            (json!("0"), 99, false),
+            (Value::Null, 99, false),
+            (json!("invalid"), 99, false),
+            (json!("-1"), 99, false),
+        ] {
+            assert_eq!(
+                session_turn_budget_exhausted(
+                    &json!({"fields":{"max_turns":limit},"counters":{"turn_count":turns}})
+                ),
+                exhausted
+            );
+        }
+        assert!(!session_turn_budget_exhausted(
+            &json!({"fields":{"max_turns":"12","turn_count":99},"counters":{"turn_count":11}})
+        ));
+        assert!(session_turn_budget_exhausted(
+            &json!({"fields":{"MaxTurns":"12","TurnCount":12}})
+        ));
+    }
 }

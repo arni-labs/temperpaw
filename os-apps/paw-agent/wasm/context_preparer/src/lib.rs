@@ -842,7 +842,15 @@ pub fn run_context_preparer() -> Result<(), String> {
     messages = repair_interrupted_tool_use_messages(&ctx, messages);
     prune_old_tool_results(&mut messages, prune_after_turns);
 
-    let tools = build_tool_definitions(tools_enabled, sandbox_url, workdir);
+    let final_handoff = wasm_helpers::session_turn_budget_exhausted(&ctx.entity_state);
+    let tools = if final_handoff {
+        Vec::new()
+    } else {
+        build_tool_definitions(tools_enabled, sandbox_url, workdir)
+    };
+    if final_handoff {
+        messages.push(json!({"role":"user","content":wasm_helpers::SESSION_FINAL_HANDOFF}));
+    }
     let context_tokens = if use_session_tree {
         session_tree
             .as_ref()
