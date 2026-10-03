@@ -866,6 +866,46 @@ fn set_audit_projection(state: &mut Value) {
     }
 }
 
+// Projection only: the persisted audit keeps complete declared paths. Substitute
+// only an exact, uniquely identified link already supplied in the owning world.
+fn request_binding_audit(mut audit: Value, world: &Value) -> Value {
+    let owner = field(world, "Id");
+    if owner.is_empty() {
+        return audit;
+    }
+    let chain = world["chain"].as_array();
+    for path in audit
+        .get_mut("paths")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if path["kind"] != "declared_chain" {
+            continue;
+        }
+        for link in path
+            .get_mut("links")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            let id = field(link, "id");
+            if id.is_empty() {
+                continue;
+            }
+            let matches: Vec<_> = chain
+                .into_iter()
+                .flatten()
+                .filter(|candidate| field(candidate, "id") == id)
+                .collect();
+            if matches.len() == 1 && matches[0] == link {
+                *link = json!({"exact_world_chain_link":{"world_id":owner,"link_id":id}});
+            }
+        }
+    }
+    audit
+}
+
 pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value, String> {
     validate_task(snapshot, task)?;
     let nodes = snapshot["nodes"].as_array().ok_or("Missing nodes")?;
@@ -941,7 +981,7 @@ pub fn request(snapshot: &Value, program: &Value, task: &Value) -> Result<Value,
                     .filter(|w| w["comparison_contract"] == "v1");
                 if let Some(world) = bound {
                     let counterpart = world["trajectory_binding"]["counterpart_world_id"].clone();
-                    state["focal_comparison"] = json!({"counterpart_world_id":counterpart,"binding_audit":program["comparison_bindings"][focal.as_str().unwrap()],"counterpart_binding_audit":program["comparison_bindings"][counterpart.as_str().unwrap_or("")],"interpretation":"Inspect this named pair only for the alternative relationship; other worlds are context, not substitutes. The frame is not assumed true and cannot change any event scope. A supported path is an author-declared mechanism, not proof."});
+                    state["focal_comparison"] = json!({"counterpart_world_id":counterpart,"binding_audit":request_binding_audit(program["comparison_bindings"][focal.as_str().unwrap()].clone(),world),"counterpart_binding_audit":request_binding_audit(program["comparison_bindings"][counterpart.as_str().unwrap_or("")].clone(),state["proposed_worlds"].as_array().unwrap().iter().find(|w|w["Id"]==counterpart).unwrap_or(&Value::Null)),"path_encoding":"An exact_world_chain_link is the exact full link in proposed_worlds whose Id equals world_id and chain link id equals link_id. Substitute that complete object, including every prerequisite, mechanism and date, when reading the path; inline links remain unchanged.","interpretation":"Inspect this named pair only for the alternative relationship; other worlds are context, not substitutes. The frame is not assumed true and cannot change any event scope. A supported path is an author-declared mechanism, not proof."});
                 }
                 json!({"type":"choice","instructions":"Judge only focal_world_id against ALL other supplied worlds, using their full definitions, conditions, components, scopes and the shared question. Does this focal world supply a substantively different overall trajectory for the SAME underlying situation as at least one other world? A different region, population, sector or activity alone is a complementary slice, not an alternative trajectory. A duplicate or paraphrase is not an alternative. A genuine rival pair elsewhere in the set does not qualify this focal world. Differences must follow organizing mechanisms and downstream consequences; shared events and overlap are allowed, and neither mutual exclusivity nor exhaustive opposites are required. This is structural comparison, not evidence verification, likelihood or a reward for unsupported novelty. Source qualifications and baseline limits remain supplied; full source bodies and prior scores are not inputs.","criteria":{"alternative_answers":"This focal world provides a substantive alternative trajectory to at least one other supplied world for the same underlying situation and question.","complementary_slices":"This focal world merely adds a separate topic, population or setting, or duplicates another account, without an alternative trajectory for the same situation.","uncertain":"The supplied accounts do not establish whether this focal world has such an alternative relationship."}})
             } else {
@@ -2488,4 +2528,9 @@ mod world_set_tests {
         let duplicate = world_set_task(&[json!("w1"), json!("w1")]);
         assert!(validate_task(&snapshot, &duplicate).is_err());
     }
+}
+
+#[cfg(test)]
+mod binding_projection_tests {
+    include!("semantic_binding_projection_tests.rs");
 }
