@@ -1365,6 +1365,7 @@ fn compose(snapshot: &mut Value, generated: &Value, old: &Value) -> Result<Value
         "admitted_work",
         "initial_world_finalization",
         "shared_bridge_receipts",
+        "context_limited_checks",
         "answer_checkpoint",
         "targeted_repair",
         "targeted_repair_history",
@@ -1627,6 +1628,7 @@ fn attach_world_probabilities(
             }
         }
         outcome["audit"] = core::search::audit_world(node, program);
+        core::execution_limits::annotate_audit(snapshot,node,program,&mut outcome["audit"]);
         if !program["world_refinement"][&id].is_null() {
             outcome["refinement"] = program["world_refinement"][&id].clone();
         } else if let Some(object) = outcome.as_object_mut() {
@@ -1788,6 +1790,7 @@ fn replan(snapshot: &Value, old: &Value, generated: &Value, added: usize) -> Res
         "admitted_work",
         "initial_world_finalization",
         "shared_bridge_receipts",
+        "context_limited_checks",
         "answer_checkpoint",
         "targeted_repair",
         "targeted_repair_history",

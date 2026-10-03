@@ -195,6 +195,9 @@ pub mod evaluation {
 pub mod search {
     include!("semantic_search.rs");
 }
+pub mod execution_limits {
+    include!("semantic_execution_limits.rs");
+}
 pub mod batch {
     include!("semantic_batch.rs");
 }

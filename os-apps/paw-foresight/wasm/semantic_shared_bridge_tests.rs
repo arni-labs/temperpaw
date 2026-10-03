@@ -90,6 +90,9 @@ fn semantic_changes_prevent_reuse_and_unknown_fields_survive() {
         changed["state"][field] = json!({"changed":true});
         assert_ne!(fingerprint(&changed), original, "{field}");
     }
+    let mut deadline = request.clone();
+    deadline["state"]["bridge"]["by"] = json!("2029-01-01");
+    assert_ne!(fingerprint(&deadline), original);
     let mut changed = snapshot.clone();
     changed["nodes"][3]["unknown_semantic_condition"] = json!("Requires public ownership");
     let second =
@@ -401,7 +404,10 @@ fn captured_bridge_overflow_request_replay() {
             );
             for key in ["evidence_ids", "branch_state", "probability_comparison"] {
                 assert_eq!(
-                    current["evaluations"][function]["context"][key],
+                    restored_context(
+                        &current["evaluations"][function]["context"],
+                        &new["source_evidence"]
+                    )[key],
                     evaluation["context"][key]
                 );
             }
@@ -430,4 +436,207 @@ fn prior_outcome_projection_preserves_unknown_context_and_raw_decisions() {
     }
     assert!(projected["context"].get("task").is_none());
     assert!(projected["context"].get("round").is_none());
+}
+
+fn restored_context(context: &Value, sources: &Value) -> Value {
+    let mut restored = context.clone();
+    if restored["assessed_against_current_sources"] == true {
+        restored
+            .as_object_mut()
+            .unwrap()
+            .remove("assessed_against_current_sources");
+        restored["evidence_ids"] = json!(
+            sources
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|source| source["Id"].clone())
+                .collect::<Vec<_>>()
+        );
+    }
+    restored
+}
+#[test]
+fn current_source_provenance_requires_exact_order_and_preserves_other_context() {
+    let ids = json!(["a", "b"]);
+    let sources = json!([{"Id":"a"},{"Id":"b"}]);
+    let evaluation = json!({"answer":{"choice":"gap","probabilities":{"gap":0.6,"uncertain":0.4}},"selected":"uncertain","context":{"evidence_ids":ids,"branch_state":{"condition":"not all"},"unknown_semantic_constraint":"public ownership","probability_comparison":{"scope":"regional"}}});
+    let projected = outcomes(json!({"classify_gap":evaluation}), &ids);
+    assert_eq!(
+        projected["classify_gap"]["context"]["assessed_against_current_sources"],
+        true
+    );
+    assert_eq!(
+        restored_context(&projected["classify_gap"]["context"], &sources),
+        evaluation["context"]
+    );
+    assert_eq!(projected["classify_gap"]["answer"], evaluation["answer"]);
+    assert_eq!(
+        projected["classify_gap"]["selected"],
+        evaluation["selected"]
+    );
+    for historical in [json!(["b", "a"]), json!(["a", "c"]), json!(["a"])] {
+        let mut old = evaluation.clone();
+        old["context"]["evidence_ids"] = historical;
+        assert_eq!(
+            outcomes(json!({"classify_gap":old}), &ids)["classify_gap"],
+            old
+        );
+    }
+    let mut collision = evaluation.clone();
+    collision["context"]["assessed_against_current_sources"] = json!(false);
+    assert_eq!(
+        outcomes(json!({"classify_gap":collision}), &ids)["classify_gap"],
+        collision
+    );
+}
+#[test]
+fn full_prior_context_remains_bound_to_bridge_cache_identity() {
+    let (snapshot, mut program, _) = fixture();
+    let event = program["endpoint_search"]["bridges"]["bridge"]["from_ids"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A prior receipt's provenance remains part of identity even for fields
+    // intentionally absent from model state.
+    program["evaluations"][&event]["classify_gap"] =
+        json!({"selected":"uncertain","context":{"task":{"nodeId":"old-address"}}});
+    let first =
+        super::super::super::search::request(&snapshot, &program, &program["tasks"][0]).unwrap();
+    program["evaluations"][&event]["classify_gap"]["context"]["task"]["nodeId"] =
+        json!("new-address");
+    let second =
+        super::super::super::search::request(&snapshot, &program, &program["tasks"][0]).unwrap();
+    assert_eq!(first["state"], second["state"]);
+    assert_ne!(fingerprint(&first), fingerprint(&second));
+}
+#[test]
+#[ignore = "requires frozen pass18 captures and exact old native request replays"]
+fn captured_current_source_projection_preserves_games_and_food_semantics() {
+    use sha2::{Digest, Sha256};
+    let captures = std::env::var("FORESIGHT_PASS18_CAPTURE_DIR").unwrap();
+    let requests = std::env::var("FORESIGHT_PASS18_REQUEST_DIR").unwrap();
+    for (topic, request_file, bytes, hash) in [
+        (
+            "games",
+            "pass18-failed-replay.json",
+            87729,
+            "c55d41833825e3a41c4ae4a650fb52037cc41de4b39e57af4dddf298335d9709",
+        ),
+        (
+            "food",
+            "pass18-food-replay.json",
+            90252,
+            "65acfd7ea5787bd14bcea2de6a36b029985962f56919c4faa6f3e41b5dba98db",
+        ),
+    ] {
+        let record: Value =
+            serde_json::from_slice(&std::fs::read(format!("{captures}/{topic}.json")).unwrap())
+                .unwrap();
+        let snapshot: Value =
+            serde_json::from_str(record["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let mut program: Value =
+            serde_json::from_str(record["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let canonical = program["evaluations"].clone();
+        let trace: Value =
+            serde_json::from_str(record["fields"]["trace_json"].as_str().unwrap()).unwrap();
+        program["tasks"] = json!([trace.as_array().unwrap().last().unwrap()["task"]]);
+        program["cursor"] = json!(0);
+        let old: Value =
+            serde_json::from_slice(&std::fs::read(format!("{requests}/{request_file}")).unwrap())
+                .unwrap();
+        let raw = old["request"].to_string();
+        assert_eq!(raw.len(), bytes);
+        assert_eq!(format!("{:x}", Sha256::digest(raw.as_bytes())), hash);
+        let batch = super::super::super::batch::prepare(&snapshot, &program, 1).unwrap();
+        let mut reconstructed = batch.individual[0]["state"].clone();
+        let sources = reconstructed["source_evidence"].clone();
+        reconstructed
+            .as_object_mut()
+            .unwrap()
+            .remove("prior_source_provenance_contract");
+        for (_, prior) in reconstructed["prerequisite_judgments"]
+            .as_object_mut()
+            .unwrap()
+        {
+            for (_, evaluation) in prior["evaluations"].as_object_mut().unwrap() {
+                evaluation["context"] = restored_context(&evaluation["context"], &sources);
+            }
+        }
+        assert_eq!(
+            reconstructed, old["individual"]["state"],
+            "all substantive fields roundtrip for {topic}"
+        );
+        assert_eq!(
+            program["evaluations"], canonical,
+            "canonical receipts unchanged"
+        );
+        assert!(batch.request.get("validation").is_none());
+        assert!(batch.request.to_string().len() < bytes);
+        eprintln!(
+            "{topic}: {bytes} -> {} provider bytes",
+            batch.request.to_string().len()
+        );
+    }
+}
+
+#[test]
+fn context_limit_is_exact_execution_state_not_a_judgment() {
+    let (snapshot, mut p, _) = fixture();
+    p["endpoint_search"]["routes"] = json!([{"id":"route-a","endpoint_id":"e","commitment_id":"c","world_node_id":"r1"},{"id":"route-b","endpoint_id":"e","commitment_id":"c","world_node_id":"r2"}]);
+    let task = p["tasks"][0].clone();
+    let request = super::super::super::evaluation::request_task(&snapshot, &p, &task).unwrap();
+    let results = p["results"].clone();
+    let evaluations = p["evaluations"].clone();
+    super::super::super::execution_limits::record(&mut p, &task, &request, 90000, 3, 4);
+    assert_eq!(p["results"], results);
+    assert_eq!(p["evaluations"], evaluations);
+    let work = super::super::pending_mandatory_work(&snapshot, &p).unwrap();
+    assert_eq!(work["context_limited_checks"], 2);
+    assert!(
+        work["route_tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task["function"] != "check_transition")
+    );
+    assert!(super::super::super::execution_limits::skip_current(&snapshot, &mut p).unwrap());
+    assert!(
+        super::super::super::execution_limits::skip_current(&snapshot, &mut p).unwrap(),
+        "Exact bridge alias reuses inability, not a judgment"
+    );
+    let world = &snapshot["nodes"][2];
+    let mut audit = super::super::super::search::audit_world(world, &p);
+    super::super::super::execution_limits::annotate_audit(&snapshot, world, &p, &mut audit);
+    assert_eq!(audit["context_limited_checks"], 1);
+    assert_eq!(audit["completed_checks"], 0);
+    assert_ne!(audit["status"], "no_conflict_found");
+    let check = audit["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["execution"].is_object())
+        .unwrap();
+    assert!(check["result"].is_null() && check["probability"].is_null());
+    let mut changed = snapshot.clone();
+    changed["nodes"][0]["statement"] = json!("Opposite prerequisite with a changed deadline");
+    assert!(super::super::super::execution_limits::lookup(&changed, &p, &task).is_none());
+    let mut changed_request = request.clone();
+    changed_request["model"] = json!("changed-provider-model");
+    assert_ne!(
+        super::super::super::execution_limits::fingerprint(&request),
+        super::super::super::execution_limits::fingerprint(&changed_request)
+    );
+}
+
+#[test]
+fn unverified_existing_current_source_marker_is_not_reinterpreted() {
+    let (snapshot, mut program, _) = fixture();
+    program["evaluations"]["a"]["classify_gap"] =
+        json!({"selected":"uncertain","context":{"assessed_against_current_sources":true}});
+    let saved = program["evaluations"].clone();
+    let error = super::super::super::search::request(&snapshot, &program, &program["tasks"][0])
+        .unwrap_err();
+    assert!(error.contains("unverified current-source marker"));
+    assert_eq!(program["evaluations"], saved);
 }

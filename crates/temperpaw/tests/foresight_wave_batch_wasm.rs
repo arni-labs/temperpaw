@@ -340,3 +340,62 @@ async fn accepted_candidate_stamps_exact_prerequisite_context_and_invalidates_ch
     core::endpoints::invalidate_changed_candidates(&snapshot, &mut recorded, &saved);
     assert!(recorded["results"]["child"]["estimate_likelihood"].is_null());
 }
+
+#[tokio::test]
+#[ignore = "Requires captured pass18 failure; deterministic provider boundary, not live acceptance"]
+async fn captured_context_limit_continues_independent_work_without_judgment() {
+    let capture:Value=serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_CONTEXT_LIMIT_CAPTURE").unwrap()).unwrap()).unwrap();
+    let f=&capture["fields"];
+    let snapshot:Value=serde_json::from_str(f["snapshot_json"].as_str().unwrap()).unwrap();
+    let mut p:Value=serde_json::from_str(f["program_json"].as_str().unwrap()).unwrap();
+    let trace:Value=serde_json::from_str(f["trace_json"].as_str().unwrap()).unwrap();
+    let failed=trace.as_array().unwrap().iter().rev().find(|entry|entry["tokenOverflow"]==true && entry["taskCount"]==1).unwrap()["task"].clone();
+    let independent=trace.as_array().unwrap().iter().find(|entry|entry["function"]=="classify_claim_role").unwrap()["task"].clone();
+    p["tasks"]=json!([failed,independent]); p["cursor"]=json!(0); p["stop_reason"]=json!("");
+    p["stage"]=json!("routes"); p["context_limited_checks"]=json!({});
+    let original_results=p["results"].clone(); let original_evaluations=p["evaluations"].clone();
+
+    let engine=WasmEngine::new().unwrap();
+    let bytes=std::fs::read(format!("{}/../../os-apps/paw-foresight/wasm/semantic_call/target/wasm32-unknown-unknown/release/semantic_call.wasm",env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let hash=engine.compile_and_cache(&bytes).unwrap();
+    let mut fields=json!({"snapshot_json":snapshot.to_string(),"program_json":p.to_string(),"trace_json":"[]","started_at_ms":"9999999999999"});
+    let overflow=json!({"detail":{"error_type":"max_tokens_exceeded"}});
+    let out=invoke(&engine,&hash,fields.clone(),400,&overflow).await;
+    let mut limited:Value=serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(limited["cursor"],1); assert_ne!(limited["stop_reason"],"provider_error");
+    assert_eq!(limited["results"],original_results); assert_eq!(limited["evaluations"],original_evaluations);
+    assert_eq!(limited["context_limited_checks"].as_object().unwrap().len(),1);
+    let batch=core::batch::prepare(&snapshot,&limited,10).unwrap();
+    let mut answers=json!({}); answers[batch.question_key(0)]=trace.as_array().unwrap().iter().find(|entry|entry["function"]=="classify_claim_role").unwrap()["response"]["answers"]["result"].clone();
+    fields["program_json"]=out["program_json"].clone();fields["trace_json"]=out["trace_json"].clone();
+    let done=invoke(&engine,&hash,fields.clone(),200,&json!({"model":core::MODEL,"answers":answers})).await;
+    limited=serde_json::from_str(done["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(limited["cursor"],2,"{}",limited["last_error"]); assert_eq!(limited["http_calls"].as_u64().unwrap(),p["http_calls"].as_u64().unwrap()+2);
+    assert_eq!(limited["results"][independent["nodeId"].as_str().unwrap()]["classify_claim_role"],"event");
+    if let Ok(path)=std::env::var("FORESIGHT_CONTEXT_LIMIT_PRODUCER") {
+        let mut envelope=capture.clone();
+        envelope["fields"]["snapshot_json"]=json!(snapshot.to_string());
+        envelope["fields"]["program_json"]=done["program_json"].clone();
+        envelope["fields"]["trace_json"]=done["trace_json"].clone();
+        envelope["provenance"]=json!("Actual WASM over captured pass18 inputs, injected exact400 context-limit response and recorded independent answer; not live acceptance");
+        std::fs::write(path,envelope.to_string()).unwrap();
+    }
+    // Revisit exact failed work: cursor advances with no HTTP and no new trace.
+    limited["tasks"]=json!([failed]);limited["cursor"]=json!(0);
+    fields["program_json"]=json!(limited.to_string());fields["trace_json"]=done["trace_json"].clone();
+    let reused=invoke(&engine,&hash,fields.clone(),403,&json!({"error":"must not call provider"})).await;
+    let reused_p:Value=serde_json::from_str(reused["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(reused_p["cursor"],1);assert_eq!(reused_p["http_calls"],limited["http_calls"]);assert_eq!(reused["trace_json"],fields["trace_json"]);
+    let mut changed=snapshot.clone(); changed["world"]["description"]=json!("Changed question context");
+    fields["snapshot_json"]=json!(changed.to_string());
+    let changed_result=invoke(&engine,&hash,fields.clone(),400,&overflow).await;
+    let changed_program:Value=serde_json::from_str(changed_result["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(changed_program["context_limited_checks"].as_object().unwrap().len(),2);
+    assert_eq!(changed_program["http_calls"].as_u64().unwrap(),limited["http_calls"].as_u64().unwrap()+1);
+    fields["snapshot_json"]=json!(snapshot.to_string());
+    // A refusal is never converted into a context-limit disposition.
+    fields["program_json"]=json!(p.to_string());fields["trace_json"]=json!("[]");
+    let denied=invoke(&engine,&hash,fields,403,&overflow).await;
+    let denied:Value=serde_json::from_str(denied["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(denied["stop_reason"],"provider_error");assert_eq!(denied["cursor"],0);assert_eq!(denied["context_limited_checks"],json!({}));
+}

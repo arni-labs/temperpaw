@@ -480,3 +480,28 @@ async fn captured_pass17_blocking_error_cannot_complete_unperformed_comparisons(
     assert_eq!(terminal["callback_action"],"Fail");
     assert!(terminal["callback_params"]["error_message"].as_str().unwrap().contains("max_tokens_exceeded"));
 }
+
+#[tokio::test]
+#[ignore = "Requires actual-WASM context-limit producer over captured input"]
+async fn context_limit_audit_preserves_unperformed_receipt() {
+    let mut envelope:Value=serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_CONTEXT_LIMIT_PRODUCER").unwrap()).unwrap()).unwrap();
+    let mut p:Value=serde_json::from_str(envelope["fields"]["program_json"].as_str().unwrap()).unwrap();
+    p["stage"]=json!("routes");p["tasks"]=json!([]);p["cursor"]=json!(0);p["stop_reason"]=json!("");
+    envelope["fields"]["program_json"]=json!(p.to_string());
+    envelope["fields"]["started_at_ms"]=json!((std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64-1_800_000).to_string());
+    let engine=WasmEngine::new().unwrap();
+    let out=invoke(&engine,"semantic_step",&envelope["fields"],&json!({})).await;
+    let encoded=out["callback_params"]["program_json"].as_str().unwrap_or_else(||panic!("{out}"));
+    let program:Value=serde_json::from_str(encoded).unwrap();
+    let routes=program["endpoint_search"]["routes"].as_array().unwrap();
+    let limited:Vec<_>=routes.iter().filter(|r|r["audit"]["context_limited_checks"].as_u64().unwrap_or(0)>0).collect();
+    assert!(!limited.is_empty());
+    for route in limited {
+        assert_ne!(route["status"],"checked");
+        for check in route["audit"]["checks"].as_array().unwrap().iter().filter(|c|c["execution"].is_object()) {
+            assert!(check["result"].is_null()&&check["probability"].is_null());
+        }
+    }
+    envelope["fields"]["program_json"]=json!(encoded);
+    if let Ok(path)=std::env::var("FORESIGHT_CONTEXT_LIMIT_AUDIT_PRODUCER") {std::fs::write(path,envelope.to_string()).unwrap();}
+}

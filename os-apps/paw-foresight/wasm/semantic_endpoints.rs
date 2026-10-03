@@ -597,6 +597,7 @@ pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value
         }
     }
     let mut route_tasks = Vec::new();
+    let mut context_limited = Vec::new();
     for amendment in program["endpoint_search"]["amendments"]
         .as_array()
         .into_iter()
@@ -621,6 +622,7 @@ pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value
         let basis_current = program["route_basis"][field(world, "Id")]
             == candidate_basis(snapshot, program, field(world, "Id"));
         for task in search::mandatory_audit_tasks(world, program) {
+            if let Some(receipt)=super::execution_limits::lookup(snapshot,program,&task) { context_limited.push(receipt); continue; }
             if !basis_current
                 || program["results"][field(&task, "nodeId")][field(&task, "function")].is_null()
             {
@@ -691,7 +693,7 @@ pub fn pending_mandatory_work(snapshot: &Value, program: &Value) -> Result<Value
     unknowns.dedup();
     let requests = packed + contingent;
     Ok(
-        json!({"candidate_tasks":candidate_tasks,"route_tasks":route_tasks,"novelty_rechecks":novelty_rechecks,"questions":candidate_tasks.len()+route_tasks.len()+novelty_rechecks,"known_packed_http_requests":packed,"contingent_questions":contingent,"conservative_http_requests":requests,"required_transitions":requests*2+4,"packing_known":contingent==0,"unknowns":unknowns,"semantics":"Known batches are packed against current inputs. Contingent work is a conservative upper bound, not a claim that it executes as singleton calls or that completion is guaranteed."}),
+        json!({"context_limited_checks":context_limited.len(),"context_limit_receipts":context_limited,"candidate_tasks":candidate_tasks,"route_tasks":route_tasks,"novelty_rechecks":novelty_rechecks,"questions":candidate_tasks.len()+route_tasks.len()+novelty_rechecks,"known_packed_http_requests":packed,"contingent_questions":contingent,"conservative_http_requests":requests,"required_transitions":requests*2+4,"packing_known":contingent==0,"unknowns":unknowns,"semantics":"Known batches are packed against current inputs. Contingent work is a conservative upper bound, not a claim that it executes as singleton calls or that completion is guaranteed."}),
     )
 }
 
@@ -746,6 +748,7 @@ pub fn plan_routes(snapshot: &Value, program: &mut Value) -> bool {
         }
         program["route_basis"][field(world, "Id")] = basis;
         for task in route_tasks(world, program) {
+            if super::execution_limits::lookup(snapshot,program,&task).is_some() { continue; }
             if program["results"][field(&task, "nodeId")][field(&task, "function")].is_null()
                 && scheduled.insert(task.to_string())
             {
@@ -826,6 +829,7 @@ pub fn finish_routes(snapshot: &Value, program: &mut Value) {
         });
         audit["planned_checks"] = json!(planned);
         audit["completed_checks"] = json!(completed);
+        super::execution_limits::annotate_audit(snapshot,world,&current,&mut audit);
         let admitted = world["component_ids"]
             .as_array()
             .into_iter()

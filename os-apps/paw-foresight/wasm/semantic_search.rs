@@ -1800,6 +1800,7 @@ pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) 
     let mut cursor = 0usize;
     while cursor < tasks.len() {
         scratch["cursor"] = json!(cursor);
+        if super::execution_limits::skip_current(snapshot,&mut scratch).unwrap_or(false) { cursor += 1; continue; }
         match super::batch::prepare(snapshot, &scratch, tasks.len() - cursor) {
             Ok(batch) => {
                 cursor += batch.tasks.len();

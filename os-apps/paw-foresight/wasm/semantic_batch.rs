@@ -157,6 +157,7 @@ fn prepare_raw(snapshot: &Value, program: &Value, remaining: usize) -> Result<Ba
         // Structural requests take their task explicitly; avoid cloning the whole
         // accumulated program for every independent question.
         let individual = super::evaluation::request_task(snapshot, program, task)?;
+        if super::execution_limits::lookup_request(program,task,&individual).is_some() { break; }
         if !batch.tasks.is_empty()
             && (batch.individual[0]["state"]["assessment_contract"] == "whole_world_assessment_v1"
                 || individual["state"]["assessment_contract"] == "whole_world_assessment_v1")

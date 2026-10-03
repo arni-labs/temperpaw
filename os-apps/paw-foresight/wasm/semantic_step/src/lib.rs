@@ -26,7 +26,7 @@ fn ready_admitted_worlds(snapshot: &Value, program: &Value) -> Option<Value> {
         return None;
     }
     let work = core::endpoints::pending_mandatory_work(snapshot, program).ok()?;
-    (work["questions"] == 0).then(|| json!({"endpoint_ids":ready,"pending_mandatory_questions":0,"semantics":"Ready for composition, not causal proof. Unresolved route checks and unconstructed originals remain explicit; final world estimates still require evaluation."}))
+    (work["questions"] == 0).then(|| json!({"endpoint_ids":ready,"pending_mandatory_questions":0,"not_evaluated_context_limit":work["context_limited_checks"],"semantics":"Ready for composition, not causal proof. Unresolved route checks and unconstructed originals remain explicit; final world estimates still require evaluation."}))
 }
 
 fn next_phase(
@@ -123,7 +123,10 @@ fn next_phase(
                         json!({"status":"not_admitted","error":error});
                 }
             }
-            program["admitted_work"]["status"] = json!("completed");
+            let pending=core::endpoints::pending_mandatory_work(snapshot,program).ok();
+            let limited=pending.as_ref().and_then(|work|work["context_limited_checks"].as_u64()).unwrap_or(0);
+            program["admitted_work"]["context_limited_checks"]=json!(limited);
+            program["admitted_work"]["status"] = json!(if limited>0 {"limited"} else {"completed"});
         }
         if let Some(receipt) = ready_admitted_worlds(snapshot, program) {
             program["initial_world_finalization"] = receipt;
@@ -364,6 +367,7 @@ fn exploration_admission(snapshot: &Value, program: &Value) -> Result<Value, Str
     let mut cursor = 0usize;
     while cursor < task_count {
         scratch["cursor"] = json!(cursor);
+        if core::execution_limits::skip_current(snapshot,&mut scratch)? { cursor += 1; continue; }
         let batch = core::batch::prepare(snapshot, &scratch, task_count - cursor)?;
         cursor += batch.tasks.len();
         batches += 1;
@@ -532,6 +536,7 @@ fn admit_route_finalization(
     let mut batches = 0u64;
     while cursor < count {
         scratch["cursor"] = json!(cursor);
+        if core::execution_limits::skip_current(snapshot,&mut scratch)? { cursor += 1; continue; }
         let batch = core::batch::prepare(snapshot, &scratch, count - cursor)?;
         if batch.tasks.is_empty() {
             return Err("Route finalization cannot pack pending work".into());

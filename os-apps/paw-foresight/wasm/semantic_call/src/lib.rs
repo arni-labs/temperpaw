@@ -117,7 +117,7 @@ fn call(ctx: &Context) -> Result<(), String> {
     let trace_bytes = trace.to_string().len();
     'batch: {
         core::skip_nonfuture_tasks(&mut p)?;
-        while core::endpoints::bridges::reuse_current(&snapshot, &mut p)? {}
+        while core::execution_limits::skip_current(&snapshot, &mut p)? || core::endpoints::bridges::reuse_current(&snapshot, &mut p)? {}
         let cursor = p["cursor"].as_u64().ok_or("Missing cursor")? as usize;
         if cursor >= p["tasks"].as_array().ok_or("Missing tasks")?.len() {
             break 'batch;
@@ -196,6 +196,15 @@ fn call(ctx: &Context) -> Result<(), String> {
                     .collect();
                 let index = trace.as_array().unwrap().len();
                 trace.as_array_mut().unwrap().push(json!({"index":index,"nodeId":node,"function":function,"requestHash":format!("{:x}",Sha256::digest(encoded.as_bytes())),"startedAtMs":started,"elapsedMs":Context::get_time_millis()-started,"error":error,"requestFormat":"failed-attempt-hash-only","requestBytes":encoded.len(),"taskCount":batch.tasks.len(),"tokenOverflow":token_overflow,"httpCallId":http_call,"task":task,"rejectedResponse":rejected_response.as_ref().map(|v| safe_rejected_response(v, key))}));
+                if token_overflow && request["questions"].as_object().is_some_and(|questions|questions.len()==1) && batch.tasks.iter().all(|task|task["function"]=="check_transition") && batch.individual.iter().all(|input|input==&batch.individual[0]) {
+                    core::execution_limits::record(&mut p,&task,&batch.individual[0],encoded.len(),index,http_call);
+                    p["cursor"]=json!(cursor+batch.tasks.len());
+                    p["last_error"]=json!(error);
+                    // The error stays in the trace and execution receipt. Other
+                    // independent work is still eligible; no Jev result exists.
+                    p["stop_reason"]=json!("");
+                    break 'batch;
+                }
                 p["stop_reason"] = if transient_error && transient_retry(&mut p) {
                     json!("provider_retry")
                 } else if rejected_response.is_some() && validation_retry(&mut p) {

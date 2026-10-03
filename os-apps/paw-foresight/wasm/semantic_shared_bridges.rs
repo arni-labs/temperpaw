@@ -106,8 +106,8 @@ fn semantic_branch(mut branch: Value) -> Value {
     branch
 }
 // These fields locate execution receipts, not the prior judgment's premises.
-// Evidence IDs, branch state, probability qualifications and unknown context
-// fields remain present even when repeated.
+// Branch state, probability qualifications and unknown context remain intact.
+// Matching evidence provenance is represented explicitly by outcomes below.
 fn outcome_context(mut evaluation: Value) -> Value {
     if let Some(context) = evaluation["context"].as_object_mut() {
         for key in [
@@ -124,10 +124,19 @@ fn outcome_context(mut evaluation: Value) -> Value {
     }
     evaluation
 }
-fn outcomes(mut evaluations: Value) -> Value {
+fn outcomes(mut evaluations: Value, current_sources: &Value) -> Value {
     if let Some(values) = evaluations.as_object_mut() {
         for evaluation in values.values_mut() {
             *evaluation = outcome_context(evaluation.clone());
+            if let Some(context) = evaluation["context"].as_object_mut() {
+                if current_sources.is_array()
+                    && context.get("evidence_ids") == Some(current_sources)
+                    && !context.contains_key("assessed_against_current_sources")
+                {
+                    context.remove("evidence_ids");
+                    context.insert("assessed_against_current_sources".into(), json!(true));
+                }
+            }
         }
     }
     evaluations
@@ -221,7 +230,47 @@ pub fn project_request(
         dependencies
             .push(json!({"original":original,"amendments":amendments,"novelty_admission":novelty}));
     }
-    let judgments:Value=ids.iter().map(|id| (id.clone(),json!({"normalized":program["results"][id],"evaluations":outcomes(program["evaluations"][id].clone())}))).collect();
+    let current_sources = state["source_evidence"]
+        .as_array()
+        .and_then(|sources| {
+            sources
+                .iter()
+                .map(|source| source["Id"].as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        })
+        .map_or(Value::Null, |ids| json!(ids));
+    let prior_contexts: Value = ids
+        .iter()
+        .map(|id| (id.clone(), program["evaluations"][id].clone()))
+        .collect();
+    if prior_contexts
+        .as_object()
+        .unwrap()
+        .values()
+        .any(|evaluations| {
+            evaluations
+                .as_object()
+                .into_iter()
+                .flat_map(|entries| entries.values())
+                .any(|evaluation| {
+                    evaluation["context"]["assessed_against_current_sources"] == true
+                        && evaluation["context"].get("evidence_ids").is_none()
+                })
+        })
+    {
+        return Err(
+            "Prior assessment contains an unverified current-source marker without evidence IDs"
+                .into(),
+        );
+    }
+    let judgments:Value=ids.iter().map(|id| (id.clone(),json!({"normalized":program["results"][id],"evaluations":outcomes(program["evaluations"][id].clone(), &current_sources)}))).collect();
+    // Engine-only provenance is part of the exact cache identity, never sent
+    // as model state. Canonical evaluations themselves remain unchanged.
+    use sha2::{Digest, Sha256};
+    let prior_context_hash = format!(
+        "{:x}",
+        Sha256::digest(prior_contexts.to_string().as_bytes())
+    );
     // Start from the complete structural state: future unknown fields survive.
     let mut local = state.clone();
     local
@@ -297,15 +346,17 @@ pub fn project_request(
     local["declared_dependencies"] = json!(dependencies);
     local["prerequisite_judgments"] = judgments;
     local["snapshot_branches"] = snapshot["branches"].clone();
+    local["prior_source_provenance_contract"] = json!(1);
+    request["validation"]["shared_bridge_prior_context_hash"] = json!(prior_context_hash);
     request["state"] = local;
     request["questions"]["result"]["instructions"] = json!(format!(
-        "{} This is shared_bridge_v2: definitions contains each exact event once; event_roles identifies direct prerequisites, ancestors, unassigned alternatives and target by their event IDs. Assess only this bridge under its explicit ancestor state and assumptions. Declared endpoint originals and amendments preserve scope, not events assumed to have happened; do not condition on downstream outcomes. Event qualifications preserve signed branch restrictions. Prior raw and normalized judgments are model assessments, not source evidence. Different containing routes do not create independent confirmation.",
+        "{} This is shared_bridge_v2: definitions contains each exact event once; event_roles identifies direct prerequisites, ancestors, unassigned alternatives and target by their event IDs. Assess only this bridge under its explicit ancestor state and assumptions. Declared endpoint originals and amendments preserve scope, not events assumed to have happened; do not condition on downstream outcomes. Event qualifications preserve signed branch restrictions. In a prior assessment context with no evidence_ids, assessed_against_current_sources:true means its evidence IDs are exactly the ordered Id values of the full source_evidence inventory supplied here; historical or differing evidence_ids remain explicit. Prior raw and normalized judgments are cautions, not source evidence or independent confirmations. Conditional mechanism plausibility does not establish that prerequisites or the target will occur. Different containing routes do not create independent confirmation.",
         field(&request["questions"]["result"], "instructions")
     ));
     Ok(())
 }
 pub const PROVIDER_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
-const PROVIDER_CONTRACT: &str = "typesafe.systemone.v1";
+pub const PROVIDER_CONTRACT: &str = "typesafe.systemone.v1";
 fn fingerprint_for(
     request: &Value,
     provider: &str,
