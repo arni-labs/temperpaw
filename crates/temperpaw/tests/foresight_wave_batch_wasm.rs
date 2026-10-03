@@ -280,3 +280,63 @@ async fn actual_step_reserves_writer_before_native_hop_exhaustion() {
     assert_eq!(p["results"]["w"]["estimate_likelihood"], "0.37");
     assert_eq!(out["reasoning_phase_polls"], 0);
 }
+
+#[tokio::test]
+async fn accepted_candidate_stamps_exact_prerequisite_context_and_invalidates_changed_parent() {
+    let engine = WasmEngine::new().unwrap();
+    let path=std::env::var("ARN518_WAVE_WASM").unwrap_or_else(|_|format!("{}/../../os-apps/paw-foresight/wasm/semantic_call/target/wasm32-unknown-unknown/release/semantic_call.wasm",env!("CARGO_MANIFEST_DIR")));
+    let hash = engine
+        .compile_and_cache(&std::fs::read(path).unwrap())
+        .unwrap();
+    let snapshot = json!({"world":{"description":"Question"},"nodes":[{"Id":"parent","kind":"scenario","statement":"Prior event","edges":"[]"},{"Id":"child","kind":"scenario","statement":"Dependent event","edges":"[{\"kind\":\"requires\",\"to_id\":\"parent\"}]"}]});
+    let task = json!({"nodeId":"child","function":"estimate_likelihood","depth":1});
+    let mut program = json!({"world_search_contract":1,"stage":"exploration","cursor":0,"tasks":[task],"baseline":{},"results":{},"evaluations":{}});
+    let before = program.clone();
+    core::endpoints::invalidate_changed_candidates(&snapshot, &mut program, &before);
+    program["results"]["parent"]["estimate_likelihood"] = json!("0.2");
+    program["results"]["child"]["classify_temporal"] = json!("future_change");
+    program["results"]["child"]["classify_gap"] = json!("none");
+    let expected =
+        core::evaluation::candidate_prerequisite_fingerprint(&snapshot, &program, "child")
+            .unwrap()
+            .unwrap();
+    let fields = json!({"snapshot_json":snapshot.to_string(),"program_json":program.to_string(),"trace_json":"[]","started_at_ms":"9999999999999"});
+    let out = invoke_host(
+        &engine,
+        &hash,
+        fields,
+        Arc::new(WaveHost(std::sync::atomic::AtomicUsize::new(0))),
+        "Recorded",
+    )
+    .await;
+    let mut recorded: Value = serde_json::from_str(out["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        recorded["evaluations"]["child"]["estimate_likelihood"]["context"]["prerequisite_input_fingerprint"],
+        expected
+    );
+    let saved = recorded.clone();
+    core::endpoints::invalidate_changed_candidates(&snapshot, &mut recorded, &saved);
+    assert_eq!(recorded["results"]["child"]["estimate_likelihood"], "0.37");
+    recorded["results"]["parent"]["classify_temporal"] = json!("future_change");
+    recorded["results"]["parent"]["classify_gap"] = json!("none");
+    recorded["tasks"] = json!([{"nodeId":"parent","function":"estimate_likelihood","depth":0}]);
+    recorded["cursor"] = json!(0);
+    let fields = json!({"snapshot_json":snapshot.to_string(),"program_json":recorded.to_string(),"trace_json":out["trace_json"],"started_at_ms":"9999999999999"});
+    let refreshed = invoke_host(
+        &engine,
+        &hash,
+        fields,
+        Arc::new(WaveHost(std::sync::atomic::AtomicUsize::new(0))),
+        "Recorded",
+    )
+    .await;
+    let refreshed: Value =
+        serde_json::from_str(refreshed["program_json"].as_str().unwrap()).unwrap();
+    assert!(refreshed["results"]["child"]["estimate_likelihood"].is_null());
+    assert_eq!(refreshed["cursor"], 1);
+    assert_eq!(refreshed["tasks"][1]["nodeId"], "child");
+    assert_eq!(refreshed["tasks"][1]["function"], "estimate_likelihood");
+    recorded["results"]["parent"]["estimate_likelihood"] = json!("0.8");
+    core::endpoints::invalidate_changed_candidates(&snapshot, &mut recorded, &saved);
+    assert!(recorded["results"]["child"]["estimate_likelihood"].is_null());
+}

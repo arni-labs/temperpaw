@@ -1172,6 +1172,115 @@ pub fn invalidate_changed_candidates(snapshot: &Value, program: &mut Value, old:
         basis[id] = current;
     }
     program["candidate_basis"] = basis;
+    invalidate_changed_prerequisite_inputs(snapshot, program);
+}
+
+/// Refresh cached descendants immediately after a provider batch. Preserve the
+/// completed prefix; only pending candidates use the existing dependency order.
+pub fn refresh_changed_candidate_inputs(
+    snapshot: &Value,
+    program: &mut Value,
+) -> Result<(), String> {
+    if !enabled(program) {
+        return Ok(());
+    }
+    let removed = invalidate_changed_prerequisite_inputs(snapshot, program);
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let cursor = program["cursor"]
+        .as_u64()
+        .ok_or("Missing candidate cursor")? as usize;
+    let tasks = program["tasks"]
+        .as_array()
+        .ok_or("Missing candidate tasks")?;
+    if cursor > tasks.len() {
+        return Err("Invalid candidate cursor".into());
+    }
+    let plan = super::plan(snapshot["nodes"].as_array().ok_or("Missing nodes")?)?;
+    let canonical = plan["tasks"]
+        .as_array()
+        .ok_or("Missing planned candidate tasks")?;
+    let key = |t: &Value| {
+        (
+            field(t, "nodeId").to_owned(),
+            field(t, "function").to_owned(),
+        )
+    };
+    let mut wanted = removed;
+    wanted.extend(tasks[cursor..].iter().map(key));
+    let mut pending: Vec<Value> = canonical
+        .iter()
+        .filter(|t| wanted.contains(&key(t)))
+        .cloned()
+        .collect();
+    let ordered: BTreeSet<_> = pending.iter().map(key).collect();
+    pending.extend(
+        tasks[cursor..]
+            .iter()
+            .filter(|t| !ordered.contains(&key(t)))
+            .cloned(),
+    );
+    let mut combined = tasks[..cursor].to_vec();
+    combined.extend(pending);
+    program["tasks"] = json!(combined);
+    Ok(())
+}
+
+// Clearing a stale parent changes its descendants' inputs too. Reach a fixed
+// point so snapshot ordering cannot leave an indirectly stale child reusable.
+fn invalidate_changed_prerequisite_inputs(
+    snapshot: &Value,
+    program: &mut Value,
+) -> BTreeSet<(String, String)> {
+    let mut removed = BTreeSet::new();
+    let candidates: Vec<_> = snapshot["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|n| matches!(field(n, "kind"), "scenario" | "revision"))
+        .map(|n| field(n, "Id").to_owned())
+        .collect();
+    loop {
+        let mut stale = vec![];
+        for id in &candidates {
+            let Ok(Some(current)) =
+                super::evaluation::candidate_prerequisite_fingerprint(snapshot, program, id)
+            else {
+                continue;
+            };
+            for function in program["results"][id]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.keys())
+            {
+                // Admission requests intentionally omit prerequisite judgments.
+                if matches!(
+                    function.as_str(),
+                    "classify_claim_role" | "classify_temporal"
+                ) {
+                    continue;
+                }
+                if program["evaluations"][id][function]["context"]["prerequisite_input_fingerprint"]
+                    != current
+                {
+                    stale.push((id.clone(), function.clone()));
+                }
+            }
+        }
+        if stale.is_empty() {
+            break;
+        }
+        for (id, function) in stale {
+            removed.insert((id.clone(), function.clone()));
+            for collection in ["results", "evaluations"] {
+                if let Some(values) = program[collection][&id].as_object_mut() {
+                    values.remove(&function);
+                }
+            }
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -1767,4 +1876,9 @@ mod tests {
         generated["unreconstructed_endpoints"] = json!([{"endpoint_id":"e","reason":"Both proposed routes remain blocked; retain original as unresolved"}]);
         validate_composition(&p, &generated).unwrap();
     }
+}
+
+#[cfg(test)]
+mod candidate_reuse_tests {
+    include!("semantic_candidate_reuse_tests.rs");
 }

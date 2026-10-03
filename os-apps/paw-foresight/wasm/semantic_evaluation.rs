@@ -88,6 +88,79 @@ pub fn compact_evaluation_contexts(state: &mut Value) {
     }
 }
 
+fn prerequisite_inputs(
+    nodes: &[Value],
+    program: &Value,
+    edges: &Value,
+) -> Result<Vec<Value>, String> {
+    Ok(edges.as_array().ok_or("Invalid edges")?.iter().filter(|e| e["kind"] == "requires").map(|edge| {
+        let target = edge["to_id"].as_str().unwrap_or("");
+        json!({"id":target,"node":nodes.iter().find(|n|field(n,"Id")==target).map(digest),"assessment":program["results"][target],"evaluations":program["evaluations"][target]})
+    }).collect())
+}
+
+/// Uses the same inputs as candidate requests without constructing unrelated fields.
+pub fn candidate_prerequisite_fingerprint(
+    snapshot: &Value,
+    program: &Value,
+    id: &str,
+) -> Result<Option<Value>, String> {
+    let nodes = snapshot["nodes"]
+        .as_array()
+        .ok_or("Missing snapshot nodes")?;
+    let node = nodes
+        .iter()
+        .find(|n| field(n, "Id") == id)
+        .ok_or("Missing candidate")?;
+    let edges = parse(field(node, "edges"))?;
+    let inputs = prerequisite_inputs(nodes, program, &edges)?;
+    Ok(prerequisite_input_fingerprint(
+        &json!({"state":{"prerequisites":inputs}}),
+    ))
+}
+
+/// Exact prerequisite input supplied to this individual question, independent of
+/// its own result and unrelated judgments. Resolve request-only evidence aliases.
+pub fn prerequisite_input_fingerprint(request: &Value) -> Option<Value> {
+    let mut prerequisites = request["state"]["prerequisites"].clone();
+    if prerequisites.as_array().is_none_or(Vec::is_empty) {
+        return None;
+    }
+    fn expand(value: &mut Value, sets: &Value) {
+        match value {
+            Value::Object(object) => {
+                if let Some(index) = object.get("$evidence_set_ref").and_then(Value::as_u64)
+                    && object.len() == 1
+                    && sets[index as usize].is_array()
+                {
+                    *value = sets[index as usize].clone();
+                } else {
+                    for child in object.values_mut() {
+                        expand(child, sets);
+                    }
+                    // JSON object insertion order is not semantic input. Keep the
+                    // digest stable across host and WASM serde feature settings.
+                    let ordered: std::collections::BTreeMap<_, _> =
+                        std::mem::take(object).into_iter().collect();
+                    object.extend(ordered);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    expand(child, sets);
+                }
+            }
+            _ => (),
+        }
+    }
+    expand(&mut prerequisites, &request["state"]["evidence_sets"]);
+    use sha2::{Digest, Sha256};
+    Some(json!(format!(
+        "{:x}",
+        Sha256::digest(prerequisites.to_string().as_bytes())
+    )))
+}
+
 pub fn request(snapshot: &Value, program: &Value) -> Result<Value, String> {
     let cursor = program["cursor"].as_u64().ok_or("Missing cursor")? as usize;
     request_task(snapshot, program, &program["tasks"][cursor])
@@ -123,10 +196,7 @@ pub fn request_task(snapshot: &Value, program: &Value, task: &Value) -> Result<V
         return Err("Claim is not an admitted future event in the current context".into());
     }
     let edges = parse(field(node, "edges"))?;
-    let mut prerequisites: Vec<Value> = edges.as_array().ok_or("Invalid edges")?.iter().filter(|e| e["kind"] == "requires").map(|edge| {
-        let target = edge["to_id"].as_str().unwrap_or("");
-        json!({"id":target,"node":nodes.iter().find(|n|field(n,"Id")==target).map(digest),"assessment":program["results"][target],"evaluations":program["evaluations"][target]})
-    }).collect();
+    let mut prerequisites = prerequisite_inputs(nodes, program, &edges)?;
     let candidates: Vec<_> = nodes
         .iter()
         .filter(|n| field(n, "Id") != id && matches!(field(n, "kind"), "scenario" | "revision"))

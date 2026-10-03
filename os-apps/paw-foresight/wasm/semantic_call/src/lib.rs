@@ -217,6 +217,9 @@ fn call(ctx: &Context) -> Result<(), String> {
             if function == "estimate_likelihood" {
                 context["probability_comparison"] = core::coherence::receipt(state);
             }
+            if let Some(basis) = core::evaluation::prerequisite_input_fingerprint(individual) {
+                context["prerequisite_input_fingerprint"] = basis;
+            }
             evaluation["context"] = context.clone();
             for key in ["results", "evaluations"] {
                 if !p[key].is_object() {
@@ -234,6 +237,7 @@ fn call(ctx: &Context) -> Result<(), String> {
             trace.as_array_mut().ok_or("Missing trace")?.push(entry);
         }
     }
+    core::endpoints::refresh_changed_candidate_inputs(&snapshot, &mut p)?;
     set_success_result(
         "Recorded",
         &json!({"program_json":p.to_string(),"trace_json":trace.to_string()}),
