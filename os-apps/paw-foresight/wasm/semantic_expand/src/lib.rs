@@ -2983,6 +2983,114 @@ mod tests {
     }
 
     #[test]
+    fn passed_novelty_is_rechecked_after_actual_present_research_expansion() {
+        let (mut snapshot, _, mut old) = world_fixture();
+        snapshot["world"]["hindcast_mode"] = json!("false");
+        snapshot["world"]["description"] = json!("How could the system change?");
+        snapshot["world"]["last_ingest_date"] = json!("2026-10-02");
+        snapshot["nodes"][0]["evidence_metadata"] = json!({"kind":"finding","publication_date":"2026-09-01","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-02"});
+        old["baseline"] = json!({"as_of":"2026-10-02","observed":[{"claim":"Observed baseline","evidence_ids":["e"]}],"assumptions":[],"unknowns":["Comparison coverage is limited"]});
+        let endpoint = json!({"id":"original","original_statement":"A, B and C change the system together","original_narrative":"Interacting future capabilities","commitments":[{"id":"c1","statement":"Component A"},{"id":"c2","statement":"Component B"},{"id":"c3","statement":"Component C"}],"contrast":{"present_analogue":{"status":"supported","statement":"Observed baseline","evidence_ids":["e"]},"defining_commitment_ids":["c1"],"frontier_challenge":{"research_basis":"live_research","reported_queries":["Current capability"],"comparisons":[{"commitment_id":"c1","result":"different_arrangement","present_match":"The inspected baseline","remaining_difference":"The proposed interaction","evidence_ids":["e"]}]},"consequences":[]}});
+        old["world_search_contract"] = json!(1);
+        old["endpoint_proposal_contract"] = json!(2);
+        old["endpoint_search"] = json!({"deferred_novelty_contract":1,"endpoints":[endpoint],"routes":[{"id":"stored-route","endpoint_id":"original","commitment_id":"c1","component_ids":["a"],"target_component_id":"a","chain":[],"status":"checked"}],"amendments":[]});
+        let context = json!({"endpoints":[endpoint],"world":snapshot["world"],"baseline":old["baseline"],"source_evidence":[snapshot["nodes"][0]]});
+        let task = json!({"function":"check_proposal_change","endpoint_id":"original"});
+        let initial_request = core::proposals::pool::request(&context, &task).unwrap();
+        let probabilities: serde_json::Map<String, Value> =
+            initial_request["questions"]["result"]["criteria"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|k| {
+                    (
+                        k.clone(),
+                        json!(if k == "changed_arrangement" { 1.0 } else { 0.0 }),
+                    )
+                })
+                .collect();
+        let reply = json!({"model":core::MODEL,"answers":{"result":{"type":"choice","choice":"changed_arrangement","probabilities":probabilities}}});
+        let initial_check = json!({"task":task,"request":initial_request,"result":core::evaluation::validate(&initial_request,&reply).unwrap(),"evaluation":core::evaluation::evaluation_value(&initial_request,&reply).unwrap(),"passed":true});
+        old["endpoint_novelty"] = json!({"original":{"status":"passed","initial_check":initial_check,"final_check":initial_check}});
+        old["deferred_novelty_recheck"] = json!({"status":"completed"});
+        old["endpoint_proposal_history"] = json!([{ "checks":[initial_check] }]);
+        let id = core::field(&old["endpoint_search"]["endpoints"][0], "id").to_owned();
+        let mut unchanged = old.clone();
+        assert!(
+            !core::proposals::pool::defer_before_composition(&snapshot, &mut unchanged, false).unwrap()
+        );
+        let route_only = json!({"hypotheses":[{"id":"new-route-only","statement":"A hypothetical future prerequisite","requires":[]}],"research_evidence":[],"continue_exploring":false,"exploration_note":"Hypothetical route only"});
+        expand(&mut snapshot, &route_only, "backward", &old).unwrap();
+        let mut after_routes = replan(&snapshot, &old, &route_only, 1).unwrap();
+        assert!(
+            !core::proposals::pool::defer_before_composition(&snapshot, &mut after_routes, false)
+                .unwrap()
+        );
+        let finding = json!({"id":"present-counterexample","statement":"A current inspected offering already provides the proposed defining capability and interaction.","url":"https://example.org/current-comparison","quote":"Current capability and interaction","evidence_metadata":{"kind":"finding","publication_date":"2026-09-01","observation_period":{"start":null,"end":null},"retrieved_at":"2026-10-02"},"provenance":"observed"});
+        let reply = json!({"hypotheses":[],"research_evidence":[finding],"continue_exploring":false,"exploration_note":"New current counterexample","baseline":old["baseline"],"baseline_dispositions":[],"scope_review":{"requested_question":snapshot["world"]["description"],"evidence_scope":"Retained baseline and a newly inspected comparison","status":"narrowed","narrowing_basis":"evidence_availability","limitations":old["baseline"]["unknowns"]}});
+        let refresh = expand_with_baseline(&mut snapshot, &reply, "explore", &after_routes)
+            .unwrap()
+            .unwrap();
+        let mut revised = replan(&snapshot, &after_routes, &reply, 1).unwrap();
+        revised["baseline"] = refresh["baseline"].clone();
+        assert!(
+            core::proposals::pool::defer_before_composition(&snapshot, &mut revised, false).unwrap(),
+            "A prior pass cannot survive a changed present-comparison request without recheck"
+        );
+        assert!(!revised["tasks"].as_array().unwrap().is_empty());
+        assert_eq!(revised["endpoint_novelty"][&id]["status"], "provisional");
+        assert_eq!(revised["endpoint_search"], old["endpoint_search"]);
+        let request =
+            core::proposals::pool::request(&revised["endpoint_proposal_attempt"], &revised["tasks"][0])
+                .unwrap();
+        let prior = &old["endpoint_novelty"][core::field(&revised["tasks"][0], "endpoint_id")]["final_check"]
+            ["request"];
+        assert_ne!(&request, prior);
+        assert!(
+            request["state"]["source_evidence"]
+                .to_string()
+                .contains("current inspected offering")
+        );
+        assert!(
+            !request["state"]["source_evidence"]
+                .to_string()
+                .contains("new-route-only")
+        );
+        for task in revised["tasks"].as_array().unwrap().clone() {
+            let request =
+                core::proposals::pool::request(&revised["endpoint_proposal_attempt"], &task).unwrap();
+            let probabilities: serde_json::Map<String, Value> =
+                request["questions"]["result"]["criteria"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(|k| {
+                        (
+                            k.clone(),
+                            json!(if k == "present_or_adoption_only" {
+                                1.0
+                            } else {
+                                0.0
+                            }),
+                        )
+                    })
+                    .collect();
+            let reply = json!({"model":core::MODEL,"answers":{"result":{"type":"choice","choice":"present_or_adoption_only","probabilities":probabilities}}});
+            revised["results"][core::field(&task, "nodeId")]["check_proposal_change"] =
+                json!(core::evaluation::validate(&request, &reply).unwrap());
+            revised["evaluations"][core::field(&task, "nodeId")]["check_proposal_change"] =
+                core::evaluation::evaluation_value(&request, &reply).unwrap();
+        }
+        core::proposals::pool::finish(&snapshot, &mut revised, false, false).unwrap();
+        assert_eq!(revised["endpoint_novelty"][&id]["status"], "rejected");
+        assert_eq!(revised["endpoint_search"], old["endpoint_search"]);
+        assert_eq!(
+            revised["endpoint_novelty"][&id]["initial_check"],
+            old["endpoint_novelty"][&id]["initial_check"]
+        );
+    }
+
+    #[test]
     fn backward_replan_and_composition_preserve_deferred_admission_receipts() {
         let (mut snapshot, generated, mut old) = world_fixture();
         old["endpoint_novelty"] = json!({"original":{"status":"provisional","initial_check":{"result":"unresolved"}}});

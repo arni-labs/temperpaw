@@ -577,23 +577,50 @@ pub fn novelty_passed(program: &Value, id: &str) -> bool {
         || program["endpoint_novelty"][id]["status"] == "passed"
 }
 
-/// One change-only continuation after backward search. Only current source
+/// A change-only continuation after backward search. Unchanged passed requests
+/// are not reopened. Only current source
 /// findings and the original comparison context enter the request, not routes.
 pub fn defer_before_composition(
     snapshot: &Value,
     p: &mut Value,
     exhausted: bool,
 ) -> Result<bool, String> {
-    if p["deferred_novelty_recheck"]["status"].is_string() {
+    if matches!(
+        field(&p["deferred_novelty_recheck"], "status"),
+        "checking" | "not_admitted"
+    ) {
         return Ok(false);
     }
-    let pending: Vec<_> = p["endpoint_search"]["endpoints"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|e| p["endpoint_novelty"][field(e, "id")]["status"] == "provisional")
-        .cloned()
-        .collect();
+    let current = json!({"endpoints":p["endpoint_search"]["endpoints"],"baseline":p["baseline"],"world":snapshot["world"],"source_evidence":evidence::active_sources(snapshot)});
+    let mut pending = Vec::new();
+    for endpoint in current["endpoints"].as_array().into_iter().flatten() {
+        let id = field(endpoint, "id");
+        let receipt = &p["endpoint_novelty"][id];
+        let changed_pass = if receipt["status"] == "passed" {
+            let prior = if receipt["final_check"].is_object() {
+                &receipt["final_check"]
+            } else {
+                &receipt["initial_check"]
+            };
+            request(
+                &current,
+                &json!({"function":"check_proposal_change","endpoint_id":id}),
+            )? != prior["request"]
+        } else {
+            false
+        };
+        if receipt["status"] == "provisional" || changed_pass {
+            pending.push(endpoint.clone());
+            if changed_pass {
+                // A recorded pass remains in its receipt, but is not current
+                // admission once the exact present-comparison input changes.
+                p["endpoint_novelty"][id]["status"] = json!("provisional");
+                p["endpoint_novelty"][id]["reason"] = json!(
+                    "Present comparison context changed after the recorded judgment; a current recheck is required."
+                );
+            }
+        }
+    }
     if pending.is_empty() {
         return Ok(false);
     }
