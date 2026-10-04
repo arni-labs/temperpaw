@@ -178,29 +178,47 @@ fn validate_frontier_challenge(endpoint: &Value, snapshot: &Value) -> Result<(),
                 .into(),
         );
     }
+    let modern = challenge["retrieval_contract"] == 2;
+    if !challenge["retrieval_contract"].is_null() && !modern { return Err("Unknown retrieval contract".into()); }
+    let provenance = if modern { "retrieval_provenance" } else { "query_provenance" };
     let mut bounded = challenge.clone();
-    bounded["query_provenance"] = json!("researcher_report_not_verified_against_tool_trace");
+    bounded[provenance] = json!("researcher_report_not_verified_against_tool_trace");
     if bounded.to_string().len() > 2400 {
         return Err("Keep each frontier comparison receipt within 2400 bytes; share research and use concise comparisons".into());
     }
-    let queries = challenge["reported_queries"]
-        .as_array()
-        .filter(|v| v.len() <= 3)
-        .ok_or("Strongest-present comparison needs bounded reported_queries")?;
-    for query in queries {
-        text(query, 240)?;
-    }
-    if !matches!(
-        challenge["research_basis"].as_str(),
-        Some("live_research" | "frozen_corpus" | "unavailable")
-    ) {
+    if !matches!(challenge["research_basis"].as_str(), Some("live_research" | "frozen_corpus" | "unavailable")) {
         return Err("Invalid strongest-present research basis".into());
     }
-    if challenge["research_basis"] != "unavailable" && queries.is_empty() {
-        return Err(
-            "Report the mechanism-level research queries, shared across candidates when applicable"
-                .into(),
-        );
+    if modern {
+        if !challenge["reported_queries"].is_null() || !challenge["query_provenance"].is_null() { return Err("Retrieval contract 2 uses retrieval reports, not legacy query fields".into()); }
+        let reports = challenge["retrieval_reports"].as_array().filter(|r| r.len() <= 3)
+            .ok_or("Strongest-present comparison needs bounded retrieval_reports")?;
+        if reports.is_empty() && challenge["research_basis"] != "unavailable" { return Err("Report the actual retrieval mode, or unavailable research".into()); }
+        let sources = evidence::active_sources(snapshot);
+        for report in reports {
+            let allowed: &[&str] = match field(report, "mode") {
+                "search" => {
+                    text(&report["query"], 240)?;
+                    if !matches!(report["status"].as_str(), Some("completed" | "failed" | "unknown")) { return Err("Search completion must be reported explicitly; pending is unknown".into()); }
+                    &["mode", "query", "status"]
+                },
+                "direct_fetch" | "supplied_evidence" => {
+                    let refs = report["evidence_ids"].as_array().filter(|r| !r.is_empty() && r.len() <= 3).ok_or("Retrieval needs one to three finding references")?;
+                    for id in refs {
+                        let source = sources.iter().find(|n| n["Id"] == *id && n["evidence_metadata"]["kind"] == "finding" && !evidence::is_projection(n)).ok_or("Retrieval references must name active present findings")?;
+                        evidence::validate(&source["evidence_metadata"])?;
+                        evidence::within_vantage(&source["evidence_metadata"], field(&snapshot["world"], "last_ingest_date"))?;
+                    }
+                    &["mode", "evidence_ids"]
+                },
+                _ => return Err("Unknown reported retrieval mode".into()),
+            };
+            if report.as_object().is_none_or(|r| r.keys().any(|k| !allowed.contains(&k.as_str()))) { return Err("Unknown retrieval report field".into()); }
+        }
+    } else {
+        let queries = challenge["reported_queries"].as_array().filter(|v| v.len() <= 3).ok_or("Strongest-present comparison needs bounded reported_queries")?;
+        for query in queries { text(query, 240)?; }
+        if challenge["research_basis"] != "unavailable" && queries.is_empty() { return Err("Report the mechanism-level research queries, shared across candidates when applicable".into()); }
     }
     let defining = ids(&contrast["defining_commitment_ids"])?;
     let comparisons = challenge["comparisons"]
@@ -533,7 +551,8 @@ pub fn contrasts(snapshot: &Value, old: &Value, generated: &Value) -> Result<Val
             || !e["contrast"]["frontier_challenge"].is_null()
         {
             validate_frontier_challenge(e, snapshot)?;
-            e["contrast"]["frontier_challenge"]["query_provenance"] =
+            let provenance = if e["contrast"]["frontier_challenge"]["retrieval_contract"] == 2 { "retrieval_provenance" } else { "query_provenance" };
+            e["contrast"]["frontier_challenge"][provenance] =
                 json!("researcher_report_not_verified_against_tool_trace");
         }
     }
@@ -923,21 +942,30 @@ fn select_distinct_candidates(
             .iter()
             .filter(|id| novelty_passed(p, id.as_str().unwrap_or("")))
             .count();
-        if ids.len() < 3
+        if ids.len() < 2
             || ids.len() > max_selected
             || ids.len() < selected.len()
             || (ids.len() == selected.len() && passed <= selected_passed)
         {
             continue;
         }
-        if checks
-            .iter()
-            .filter(|c| {
-                ids.contains(&c["task"]["endpoint_id"])
-                    && ids.contains(&c["task"]["other_endpoint_id"])
+        // Every selected pair needs its own completed distinctness judgment;
+        // an absent pair is not vacuously a passed comparison.
+        if ids.iter().enumerate().all(|(i, left)| {
+            ids.iter().skip(i + 1).all(|right| {
+                let matching: Vec<_> = checks
+                    .iter()
+                    .filter(|c| {
+                        c["task"]["function"] == "check_proposal_pair"
+                            && ((c["task"]["endpoint_id"] == *left
+                                && c["task"]["other_endpoint_id"] == *right)
+                                || (c["task"]["endpoint_id"] == *right
+                                    && c["task"]["other_endpoint_id"] == *left))
+                    })
+                    .collect();
+                !matching.is_empty() && matching.iter().all(|c| c["passed"] == true)
             })
-            .all(|c| c["passed"] == true)
-        {
+        }) {
             selected = ids;
             selected_passed = passed;
         }
@@ -1036,7 +1064,7 @@ pub fn finish(
         let selected = select_distinct_candidates(candidates, &checks, max_selected, p);
         p["proposal_pool"]["selected_ids"] = json!(selected);
         p["proposal_pool"]["selection_receipts"]=json!(candidates.iter().map(|e|json!({"endpoint_id":e["id"],"selected":selected.contains(&e["id"]),"reason":if selected.contains(&e["id"]){"pairwise_distinct_set"}else{"not_in_bounded_distinct_set"}})).collect::<Vec<_>>());
-        if selected.len() >= 3 {
+        if selected.len() >= 2 {
             let passed = selected
                 .iter()
                 .filter(|id| novelty_passed(p, id.as_str().unwrap_or("")))
@@ -1100,7 +1128,7 @@ pub fn finish(
         // attempt. If it defeats the selected set, develop only its uncertain
         // slots through the same explicit-revision receiver, once.
         if a["pool_stage"] == "individual"
-            && viable.len() < 3
+            && viable.len() < 2
             && can_develop
             && p["proposal_pool"]["novelty_repair"]["status"] == "completed"
             && p["proposal_pool"]["novelty_repair"]["progress"] != "unchanged_no_progress"
@@ -1131,7 +1159,7 @@ pub fn finish(
         // repeated research over unchanged arrangements. This is provisional:
         // every changed claim still returns through the full admission checks.
         if a["pool_stage"] == "individual"
-            && viable.len() < 3
+            && viable.len() < 2
             && allow_retry
             && p["proposal_pool"]["development"]["status"] != "completed"
             && p["proposal_pool"]["research_attempts"]
@@ -1177,7 +1205,7 @@ pub fn finish(
                 return Ok(());
             }
         }
-        if a["pool_stage"] == "individual" && viable.len() >= 3 {
+        if a["pool_stage"] == "individual" && viable.len() >= 2 {
             let shortlist = viable;
             p["proposal_pool"]["shortlist_ids"] = json!(
                 shortlist
@@ -1220,6 +1248,143 @@ pub fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn two_current_candidates_need_distinct_pair_and_keep_novelty_provisional() {
+        let (snapshot, mut p) = pool();
+        let ids: Vec<_> = p["proposal_pool"]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(2)
+            .map(|e| e["id"].clone())
+            .collect();
+        record(&mut p, |t| {
+            if t["function"] == "check_proposal_change" {
+                if ids.contains(&t["endpoint_id"]) {
+                    "unresolved".into()
+                } else {
+                    "present_or_adoption_only".into()
+                }
+            } else {
+                pass(t)
+            }
+        });
+        let originals = p["proposal_pool"]["candidates"].clone();
+        finish(&snapshot, &mut p, true, false).unwrap();
+        assert_eq!(p["endpoint_proposal_attempt"]["pool_stage"], "pairs");
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 1);
+        assert!(p["proposal_pool"]["development_admission"].is_null());
+        let mut missing = p.clone();
+        finish(&snapshot, &mut missing, false, false).unwrap();
+        assert!(missing["endpoint_search"].is_null());
+        let mut nondistinct = p.clone();
+        record(&mut nondistinct, |_| "same_arrangement".into());
+        finish(&snapshot, &mut nondistinct, false, false).unwrap();
+        assert!(nondistinct["endpoint_search"].is_null());
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert_eq!(
+            p["endpoint_search"]["endpoints"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(p["proposal_pool"]["candidates"], originals);
+        for id in ids {
+            assert!(!current_novelty_passed(&snapshot, &p, id.as_str().unwrap()));
+        }
+        assert_eq!(p["endpoint_proposal_attempt"]["status"], "examined");
+        assert!(
+            super::super::super::endpoints::composition_bundles(&snapshot, &p)
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|bundle| bundle["status"] != "compatible")
+        );
+        let mut changed = snapshot.clone();
+        changed["nodes"][0]["statement"] = json!("Changed present finding");
+        let selected = p["endpoint_search"]["endpoints"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let refreshed = schedule(&changed, &p, selected, "individual").unwrap();
+        assert!(
+            !refreshed["tasks"].as_array().unwrap().is_empty(),
+            "Changed context must not reuse old judgments"
+        );
+    }
+
+    #[test]
+    fn one_viable_candidate_cannot_freeze_and_missing_pairs_are_not_passes() {
+        let (snapshot, mut p) = pool();
+        let id = p["proposal_pool"]["candidates"][0]["id"].clone();
+        record(&mut p, |t| {
+            if t["function"] == "check_proposal_change" && t["endpoint_id"] != id {
+                "present_or_adoption_only".into()
+            } else {
+                pass(t)
+            }
+        });
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert!(p["endpoint_search"].is_null());
+        let candidates = p["proposal_pool"]["candidates"].as_array().unwrap();
+        assert!(select_distinct_candidates(&candidates[..2], &[], 2, &p).is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires frozen authorized pass20 food capture"]
+    fn captured_food_two_explorable_candidates_reach_pair_check_without_redevelopment() {
+        let raw: Value = serde_json::from_slice(
+            &std::fs::read(std::env::var("FORESIGHT_PASS20_FOOD").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let snapshot: Value =
+            serde_json::from_str(raw["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let mut p: Value =
+            serde_json::from_str(raw["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let originals = p["proposal_pool"]["candidates"].clone();
+        assert_eq!(
+            p["endpoint_proposal_attempt"]["checks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            36
+        );
+        assert_eq!(p["endpoint_proposal_attempt"]["baseline"], p["baseline"]);
+        assert_eq!(
+            p["endpoint_proposal_attempt"]["source_evidence"],
+            json!(evidence::active_sources(&snapshot))
+        );
+        // Replay only the finish boundary. Recorded questions/evidence/judgments
+        // and original clock remain exact; remove its prior refusal outputs.
+        p.as_object_mut().unwrap().remove("stop_reason");
+        p["proposal_pool"]
+            .as_object_mut()
+            .unwrap()
+            .remove("development_admission");
+        finish(&snapshot, &mut p, true, false).unwrap();
+        assert_eq!(p["endpoint_proposal_attempt"]["pool_stage"], "pairs");
+        assert_eq!(p["tasks"].as_array().unwrap().len(), 1);
+        let ids: Vec<_> = p["endpoint_proposal_attempt"]["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a-kitchen-that-cooks", "food-as-treatment"]);
+        // Synthetic distinct-pair result isolates routing; not a live Jev claim.
+        record(&mut p, pass);
+        finish(&snapshot, &mut p, false, false).unwrap();
+        assert_eq!(
+            p["endpoint_search"]["endpoints"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(p["proposal_pool"]["candidates"], originals);
+        assert!(!current_novelty_passed(
+            &snapshot,
+            &p,
+            "a-kitchen-that-cooks"
+        ));
+        assert!(!current_novelty_passed(&snapshot, &p, "food-as-treatment"));
+    }
     #[test]
     fn completed_novelty_recheck_cost_reopens_only_changed_context() {
         let fixture: Value = serde_json::from_str(include_str!("semantic_pass15_order_fixture.json")).unwrap();
@@ -1291,11 +1456,30 @@ mod tests {
         );
     }
 
+    // Counterfactual negative result keeps this older creative-repair regression
+    // below the now-supported two-world minimum; no live judgment is rewritten.
+    fn reject_second_candidate_for_creative_control(p: &mut Value) {
+        let prior = p["results"].clone();
+        p["tasks"] = p["endpoint_proposal_attempt"]["tasks"].clone();
+        record(p, |t| {
+            if t["endpoint_id"] == "pantry-becomes-material"
+                && t["function"] == "check_proposal_change"
+            {
+                "present_or_adoption_only".into()
+            } else {
+                prior[field(t, "nodeId")][field(t, "function")]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            }
+        });
+    }
     #[test]
     fn fresh_failed_novelty_replaces_stale_pass_before_creative_targets() {
         let fixture: Value =
             serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
         let mut p = fixture["program"].clone();
+        reject_second_candidate_for_creative_control(&mut p);
         let id = "kitchen-becomes-a-barrier";
         p["endpoint_novelty"][id] =
             json!({"status":"passed","initial_check":{"result":"changed_arrangement"}});
@@ -1324,6 +1508,7 @@ mod tests {
         let mut failed_frontier = fixture["program"].clone();
         failed_frontier["tasks"] = failed_frontier["endpoint_proposal_attempt"]["tasks"].clone();
         record(&mut failed_frontier, pass);
+        reject_second_candidate_for_creative_control(&mut failed_frontier);
         finish(&fixture["snapshot"], &mut failed_frontier, true, false).unwrap();
         assert_eq!(failed_frontier["endpoint_novelty"][id]["status"], "passed");
         assert!(
@@ -1341,6 +1526,7 @@ mod tests {
             serde_json::from_str(include_str!("semantic_food_repair_fixture.json")).unwrap();
         let snapshot = &fixture["snapshot"];
         let mut p = fixture["program"].clone();
+        reject_second_candidate_for_creative_control(&mut p);
         assert_eq!(p["transition_count"], 112);
         assert_eq!(p["proposal_pool"]["novelty_repair"]["status"], "completed");
         assert!(
@@ -1384,6 +1570,7 @@ mod tests {
             "Unchanged creative attempt cannot loop"
         );
         let mut refused = fixture["program"].clone();
+        reject_second_candidate_for_creative_control(&mut refused);
         refused["transition_count"] = json!(450);
         finish(snapshot, &mut refused, true, false).unwrap();
         assert!(!research_pending(&refused));
@@ -1398,7 +1585,10 @@ mod tests {
         let f: Value =
             serde_json::from_str(include_str!("semantic_food_selection_fixture.json")).unwrap();
         let candidates = f["candidates"].as_array().unwrap();
-        let checks = f["checks"].as_array().unwrap();
+        let mut normalized=f["checks"].clone();
+        // This compact fixture omitted the known pair task tag.
+        for check in normalized.as_array_mut().unwrap(){check["task"]["function"]=json!("check_proposal_pair");}
+        let checks = normalized.as_array().unwrap();
         let selected = select_distinct_candidates(candidates, checks, 5, &f);
         assert_eq!(selected.len(), 5);
         assert!(selected.contains(&json!("meals-learn-your-body")));
@@ -1596,6 +1786,66 @@ mod tests {
             .collect();
         (s.clone(),contrasts(&s,&p,&json!({"proposal_contrasts":rows,"comparison_priority":candidates.iter().map(|e|e["id"].clone()).collect::<Vec<_>>()})).unwrap())
     }
+    #[test]
+    fn retrieval_modes_preserve_evidence_and_exact_request_context() {
+        let (snapshot, program) = pool();
+        let mut endpoint = program["proposal_pool"]["candidates"][0].clone();
+        let source = snapshot["nodes"][0]["Id"].clone();
+        let challenge = &mut endpoint["contrast"]["frontier_challenge"];
+        challenge.as_object_mut().unwrap().remove("reported_queries");
+        challenge.as_object_mut().unwrap().remove("query_provenance");
+        challenge["retrieval_contract"] = json!(2);
+        challenge["retrieval_reports"] = json!([{"mode":"direct_fetch","evidence_ids":[source]}, {"mode":"search","query":"A pending lookup","status":"unknown"}]);
+        validate_frontier_challenge(&endpoint,&snapshot).unwrap();
+        for mode in ["direct_fetch","supplied_evidence"] {
+            let mut bad=endpoint.clone();bad["contrast"]["frontier_challenge"]["retrieval_reports"]=json!([{"mode":mode,"evidence_ids":["missing"]}]);
+            assert!(validate_frontier_challenge(&bad,&snapshot).is_err());
+        }
+        for status in ["failed","unknown","completed"] {
+            let mut changed=endpoint.clone();changed["contrast"]["frontier_challenge"]["retrieval_reports"][1]["status"]=json!(status);
+            validate_frontier_challenge(&changed,&snapshot).unwrap();
+        }
+        let mut projected=snapshot.clone();projected["nodes"][0]["evidence_metadata"]["kind"]=json!("projection");
+        assert!(validate_frontier_challenge(&endpoint,&projected).is_err());
+        let reply=json!({"proposal_contrasts_delta":[{"endpoint_id":endpoint["id"],"contrast":endpoint["contrast"]}]});
+        let produced=contrasts(&snapshot,&program,&reply).unwrap();
+        assert_eq!(produced["proposal_pool"]["candidates"][0]["contrast"]["frontier_challenge"]["retrieval_provenance"],"researcher_report_not_verified_against_tool_trace");
+        let task=produced["tasks"].as_array().unwrap().iter().find(|t|t["function"]=="check_proposal_change" && t["endpoint_id"]==endpoint["id"]).unwrap();
+        let request1=request(&produced["endpoint_proposal_attempt"],task).unwrap();
+        let mut changed=produced["endpoint_proposal_attempt"].clone();
+        changed["endpoints"].as_array_mut().unwrap().iter_mut().find(|e|e["id"]==endpoint["id"]).unwrap()["contrast"]["frontier_challenge"]["retrieval_reports"][1]["status"]=json!("failed");
+        assert_ne!(request1,request(&changed,task).unwrap());
+        for (key,value) in [("query",json!("A different search")),("status",json!("completed"))] {
+            let mut changed=produced["endpoint_proposal_attempt"].clone();
+            changed["endpoints"].as_array_mut().unwrap().iter_mut().find(|e|e["id"]==endpoint["id"]).unwrap()["contrast"]["frontier_challenge"]["retrieval_reports"][1][key]=value;
+            assert_ne!(request1,request(&changed,task).unwrap());
+        }
+        let mut changed=produced["endpoint_proposal_attempt"].clone();
+        changed["source_evidence"][0]["statement"]=json!("A changed source observation");
+        assert_ne!(request1,request(&changed,task).unwrap());
+        if let Ok(path)=std::env::var("FORESIGHT_RETRIEVAL_PRODUCER") { std::fs::write(path,json!({"program":produced,"snapshot":snapshot}).to_string()).unwrap(); }
+    }
+
+    #[test]
+    #[ignore = "requires authorized pass20 generation capture"]
+    fn captured_direct_fetch_does_not_require_invented_search() {
+        let rows:Value=serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_RETRIEVAL_CAPTURE").unwrap()).unwrap()).unwrap();
+        let generated=&rows[2]["result"];
+        let row=generated["proposal_contrasts"].as_array().unwrap().iter().find(|r|r["endpoint_id"]=="games-as-performances").unwrap();
+        let mut endpoint=json!({"contrast":row["contrast"]});
+        assert_eq!(endpoint["contrast"]["frontier_challenge"]["reported_queries"],json!([]));
+        let snapshot=json!({"world":{"last_ingest_date":"2026-10-04"},"nodes":generated["research_evidence"].as_array().unwrap().iter().map(|r| {let mut n=r.clone();n["Id"]=r["id"].clone();n["kind"]=json!("evidence");n}).collect::<Vec<_>>()});
+        assert!(validate_frontier_challenge(&endpoint,&snapshot).is_err());
+        let challenge=&mut endpoint["contrast"]["frontier_challenge"];
+        challenge.as_object_mut().unwrap().remove("reported_queries");
+        challenge["retrieval_contract"]=json!(2);
+        challenge["retrieval_reports"]=json!([{"mode":"direct_fetch","evidence_ids":["cx_zeus","cx_paid_gms"]}]);
+        validate_frontier_challenge(&endpoint,&snapshot).unwrap();
+        assert_eq!(endpoint["contrast"]["frontier_challenge"]["comparisons"],row["contrast"]["frontier_challenge"]["comparisons"]);
+        let mut stale=snapshot.clone();stale["nodes"].as_array_mut().unwrap().retain(|r|r["Id"]!="cx_zeus");
+        assert!(validate_frontier_challenge(&endpoint,&stale).is_err());
+    }
+
     fn record(p: &mut Value, select: impl Fn(&Value) -> String) {
         for t in p["tasks"].as_array().unwrap().clone() {
             let r = request(&p["endpoint_proposal_attempt"], &t).unwrap();

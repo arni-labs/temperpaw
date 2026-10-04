@@ -592,3 +592,54 @@ async fn captured_patch_receiver_preserves_context_and_enforces_exact_capacity()
     );
     assert!(late["callback_params"].get("snapshot_json").is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires authorized pass20 captured candidate/evidence context"]
+async fn captured_retrieval_v2_crosses_native_receiver_boundary() {
+    let capture: Value = serde_json::from_slice(&std::fs::read(std::env::var("FORESIGHT_RETRIEVAL_NATIVE_CAPTURE").unwrap()).unwrap()).unwrap();
+    let mut fields = capture["fields"].clone();
+    let mut program: Value = serde_json::from_str(fields["program_json"].as_str().unwrap()).unwrap();
+    // Reconstructed receiver input, not replay of an expired run: retained
+    // candidate/evidence values, no new provider call or claimed live retrieval.
+    program["proposal_pool"]["stage"] = json!("contrast");
+    program["proposal_pool"]["retrieval_contract"] = json!(2);
+    for key in ["response_correction", "stop_reason", "scope_repair"] { program.as_object_mut().unwrap().remove(key); }
+    let mut rows=Vec::new();
+    for endpoint in program["proposal_pool"]["candidates"].as_array().unwrap() {
+        let mut contrast=endpoint["contrast"].clone();
+        let refs=contrast["present_analogue"]["evidence_ids"].clone();
+        let challenge=&mut contrast["frontier_challenge"];
+        for key in ["reported_queries","query_provenance","retrieval_provenance"] { challenge.as_object_mut().unwrap().remove(key); }
+        challenge["retrieval_contract"]=json!(2);
+        challenge["retrieval_reports"]=json!([{"mode":"direct_fetch","evidence_ids":refs}]);
+        rows.push(json!({"endpoint_id":endpoint["id"],"contrast":contrast}));
+    }
+    let generated=json!({"hypotheses":[],"research_evidence":[],"continue_exploring":false,"exploration_note":"Offline reconstructed retrieval boundary", "proposal_contrasts":rows,"comparison_priority":rows.iter().map(|r|r["endpoint_id"].clone()).collect::<Vec<_>>()});
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis().to_string();
+    fields["phase"]=json!("explore");fields["started_at_ms"]=json!(now);
+    fields["program_json"]=json!(program.to_string());fields["reasoning_result"]=json!(generated.to_string());
+    let engine=WasmEngine::new().unwrap();
+    let accepted=invoke(&engine,"semantic_expand",&fields,&json!({})).await;
+    assert_eq!(accepted["callback_action"],"Expanded", "{}", accepted["callback_params"]["program_json"].as_str().and_then(|s|serde_json::from_str::<Value>(s).ok()).map(|p|p["response_correction"]["validation_error"].clone()).unwrap_or_default());
+    let after:Value=serde_json::from_str(accepted["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+    assert_eq!(after["proposal_pool"]["candidates"].as_array().unwrap().len(),rows.len());
+    for (endpoint,row) in after["proposal_pool"]["candidates"].as_array().unwrap().iter().zip(&rows) {
+        assert_eq!(endpoint["contrast"]["frontier_challenge"]["retrieval_reports"],row["contrast"]["frontier_challenge"]["retrieval_reports"]);
+        assert_eq!(endpoint["contrast"]["frontier_challenge"]["retrieval_provenance"],"researcher_report_not_verified_against_tool_trace");
+    }
+    for (report,message) in [(json!({"mode":"direct_fetch","evidence_ids":["missing-finding"]}),"active present findings"),(json!({"mode":"invented-mode","evidence_ids":[]}),"Unknown reported retrieval mode")] {
+        let mut rejected=generated.clone();rejected["proposal_contrasts"][0]["contrast"]["frontier_challenge"]["retrieval_reports"]=json!([report]);
+        fields["reasoning_result"]=json!(rejected.to_string());
+        let result=invoke(&engine,"semantic_expand",&fields,&json!({})).await;
+        assert_eq!(result["callback_action"],"CompositionRejected","{result}");
+        let preserved:Value=serde_json::from_str(result["callback_params"]["program_json"].as_str().unwrap()).unwrap();
+        assert!(preserved["response_correction"]["validation_error"].as_str().unwrap().contains(message));
+        assert_eq!(preserved["proposal_pool"]["candidates"],program["proposal_pool"]["candidates"]);
+    }
+    if let Ok(path)=std::env::var("FORESIGHT_RETRIEVAL_NATIVE_OUTPUT") {
+        fields["program_json"]=accepted["callback_params"]["program_json"].clone();
+        fields["snapshot_json"]=accepted["callback_params"]["snapshot_json"].clone();
+        fields["answer"]=json!("");
+        std::fs::write(path,json!({"entity_id":"reconstructed-retrieval-v2-boundary","status":"Choosing","fields":fields,"provenance":"Actual WASM receiver over reconstructed captured pass20 context. Direct-fetch reports are explicit test transformations; not live retrieval verification or expired-run replay."}).to_string()).unwrap();
+    }
+}

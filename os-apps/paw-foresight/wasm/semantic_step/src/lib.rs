@@ -478,6 +478,11 @@ fn proposal_resource_message(program: &Value, reason: &str) -> String {
         .flatten()
         .filter(|c| !c["evaluation"].is_null())
         .count();
+    if program["proposal_pool"]["development_admission"]["admitted"] == false
+        && program["proposal_pool"]["development_admission"]["reason"] == reason
+    {
+        return format!("Optional candidate redevelopment was declined because it could not fit alongside reconstruction and final writing ({reason}). {completed} of {planned} comparison checks were completed. Saved ideas, research and judgments are preserved; no endpoint was accepted and no whole-world estimates were made.");
+    }
     format!(
         "Candidate comparison stopped because of {limit} ({reason}). {completed} of {planned} proposal checks were completed. Unevaluated checks are not failed novelty judgments. Saved research and comparison receipts are preserved; no endpoint was accepted and no whole-world estimates were made."
     )
@@ -933,6 +938,15 @@ mod tests {
     use super::*;
 
     include!("../../semantic_repair_fixture.rs");
+
+    #[test]
+    fn optional_development_refusal_does_not_claim_completed_comparisons_stopped() {
+        let p=json!({"proposal_pool":{"development_admission":{"admitted":false,"reason":"time_budget"}},"endpoint_proposal_attempt":{"tasks":[{},{}],"checks":[{"evaluation":{"type":"choice"}},{"evaluation":{"type":"choice"}}]}});
+        let message=proposal_resource_message(&p,"time_budget");
+        assert!(message.contains("Optional candidate redevelopment was declined"));
+        assert!(message.contains("2 of 2 comparison checks were completed"));
+        assert!(!message.contains("Candidate comparison stopped"));
+    }
 
     #[test]
     fn repair_queue_uses_current_recorded_checks_and_never_repeats_no_change() {
