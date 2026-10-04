@@ -7,6 +7,25 @@ pub const MAX_NODES: usize = 2048;
 pub const MAX_MS: u64 = 3_600_000;
 // The final writer needs wall-clock time after evaluation, not unused call credits.
 pub const SYNTHESIS_TIME_RESERVE_MS: u64 = 180_000;
+pub const PRESENTATION_CALLBACK_RESERVE_MS: u64 = 60_000;
+// A formatting turn is tool-free but still uses the same provider and poll chain.
+// Until measured separately, allow the same three minutes as an initial writer.
+pub fn presentation_correction_duration(program: &Value) -> u64 {
+    program["reasoning_durations_ms"]["presentation_correction"].as_u64()
+        .filter(|value| *value > 0).unwrap_or(SYNTHESIS_TIME_RESERVE_MS)
+}
+pub fn presentation_time_reserve(program: &Value) -> u64 {
+    let writer = program["reasoning_durations_ms"]["synthesize"].as_u64()
+        .filter(|value| *value > 0).unwrap_or(SYNTHESIS_TIME_RESERVE_MS);
+    writer.saturating_add(presentation_correction_duration(program))
+        .saturating_add(PRESENTATION_CALLBACK_RESERVE_MS)
+}
+pub fn finalization_time_reserve(program: &Value) -> u64 {
+    let compose = program["reasoning_episode_durations_ms"]["compose"].as_u64()
+        .or_else(|| program["reasoning_durations_ms"]["compose"].as_u64())
+        .filter(|v| *v > 0).unwrap_or(SYNTHESIS_TIME_RESERVE_MS);
+    WORLD_TIME_RESERVE_MS.max(compose.saturating_add(presentation_time_reserve(program)))
+}
 pub const MAX_TRACE_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_ROUNDS: u64 = 64;
 // Questions, not HTTP requests: independent structural questions can share a call.
@@ -31,9 +50,9 @@ pub fn call_limit(program: &Value) -> usize {
 // it never moves the original one-hour deadline or admits further research.
 pub const ENDPOINT_EVALUATION_DRAIN_MS: u64 = 120_000;
 pub fn time_limit(program: &Value) -> u64 {
-    if program["audit_policy_version"] == 2 && program["admitted_work"]["admitted"] == true
+    if program["audit_policy_version"] == 2 && (program["admitted_work"]["admitted"] == true || program["route_finalization"]["admitted"] == true)
         && matches!(field(program,"stage"), "exploration" | "routes" | "proposals") {
-        return MAX_MS - WORLD_TIME_RESERVE_MS;
+        return MAX_MS.saturating_sub(admitted_finalization_time(program));
     }
     if endpoints::enabled(program)
         && (matches!(program["stage"].as_str(), Some("exploration" | "routes"))
@@ -64,7 +83,7 @@ pub fn start_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
         now_ms
     };
     program["reasoning_timing"] =
-        json!({"phase":phase,"started_at_ms":now_ms,"episode_started_at_ms":episode_start});
+        json!({"phase":phase,"duration_kind":if phase == "synthesize" && correction {"presentation_correction"} else {phase},"started_at_ms":now_ms,"episode_started_at_ms":episode_start});
 }
 pub fn finish_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
     let timing = &program["reasoning_timing"];
@@ -78,10 +97,9 @@ pub fn finish_reasoning_timing(program: &mut Value, phase: &str, now_ms: u64) {
         return;
     };
     let elapsed = now_ms - start;
-    let prior = program["reasoning_durations_ms"][phase]
-        .as_u64()
-        .unwrap_or(0);
-    program["reasoning_durations_ms"][phase] = json!(prior.max(elapsed));
+    let duration_kind = if phase == "synthesize" && timing["duration_kind"] == "presentation_correction" { "presentation_correction" } else { phase };
+    let prior = program["reasoning_durations_ms"][duration_kind].as_u64().unwrap_or(0);
+    program["reasoning_durations_ms"][duration_kind] = json!(prior.max(elapsed));
     program["reasoning_timing"]["elapsed_ms"] = json!(elapsed);
     program["reasoning_timing"]["completed"] = json!(true);
     let episode_start = program["reasoning_timing"]["episode_started_at_ms"]
@@ -123,16 +141,16 @@ pub fn backward_work_admission(program: &mut Value, elapsed_ms: u64) -> bool {
         return true;
     }
     let generation_ms = generation_duration(program, "backward");
-    let final_transitions = 2 * REASONING_ADMISSION_RESERVE + 32;
+    let final_transitions = finalization_transition_reserve(32);
     let remaining = MAX_APP_TRANSITIONS.saturating_sub(transition_count(program));
     let capacity = remaining.saturating_sub(REASONING_ADMISSION_RESERVE + final_transitions);
     let time_ok = elapsed_ms
         .saturating_add(generation_ms)
         .saturating_add(ENDPOINT_EVALUATION_DRAIN_MS)
-        .saturating_add(WORLD_TIME_RESERVE_MS)
+        .saturating_add(finalization_time_reserve(program))
         < MAX_MS;
     let admitted = capacity >= 16 && time_ok;
-    let receipt = json!({"admitted":admitted,"status":if admitted{"generating"}else{"declined"},"generation_ms":generation_ms,"evaluation_transition_capacity":capacity,"generation_transition_reserve":REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":final_transitions,"evaluation_time_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_time_reserve_ms":WORLD_TIME_RESERVE_MS,"elapsed_ms":elapsed_ms,"output_cost_known":false,"estimated_mandatory_transitions":null,"estimate_basis":"Generated graph and changed evidence are not known before the reply; native receiver must measure mandatory work before applying it.","original_deadline_ms":MAX_MS,"reason":if admitted{Value::Null}else if !time_ok{json!("time_budget")}else{json!("transition_budget")}});
+    let receipt = json!({"admitted":admitted,"status":if admitted{"generating"}else{"declined"},"generation_ms":generation_ms,"evaluation_transition_capacity":capacity,"generation_transition_reserve":REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":final_transitions,"evaluation_time_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_time_reserve_ms":finalization_time_reserve(program),"elapsed_ms":elapsed_ms,"output_cost_known":false,"estimated_mandatory_transitions":null,"estimate_basis":"Generated graph and changed evidence are not known before the reply; native receiver must measure mandatory work before applying it.","original_deadline_ms":MAX_MS,"reason":if admitted{Value::Null}else if !time_ok{json!("time_budget")}else{json!("transition_budget")}});
     if admitted {
         program["admitted_work"] = receipt;
     } else {
@@ -156,16 +174,16 @@ pub fn optional_repair_time_admission(program: &Value, elapsed_ms: u64) -> Value
     let required = generation_ms
         .saturating_add(route_ms)
         .saturating_add(ENDPOINT_EVALUATION_DRAIN_MS)
-        .saturating_add(WORLD_TIME_RESERVE_MS);
-    json!({"admitted":elapsed_ms.saturating_add(required) < MAX_MS,"elapsed_ms":elapsed_ms,"required_ms":required,"generation_ms":generation_ms,"first_route_turns":first_route_turns,"route_reserve_ms":route_ms,"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_reserve_ms":WORLD_TIME_RESERVE_MS,"original_deadline_ms":MAX_MS,"guaranteed":false})
+        .saturating_add(finalization_time_reserve(program));
+    json!({"admitted":elapsed_ms.saturating_add(required) < MAX_MS,"elapsed_ms":elapsed_ms,"required_ms":required,"generation_ms":generation_ms,"first_route_turns":first_route_turns,"route_reserve_ms":route_ms,"evaluation_reserve_ms":ENDPOINT_EVALUATION_DRAIN_MS,"finalization_reserve_ms":finalization_time_reserve(program),"original_deadline_ms":MAX_MS,"guaranteed":false})
 }
 
 pub fn research_time_limit(program: &Value) -> u64 {
     match program["stage"].as_str() {
-        Some("worlds") => MAX_MS - SYNTHESIS_TIME_RESERVE_MS,
-        Some("routes") => MAX_MS - WORLD_TIME_RESERVE_MS,
-        Some("combinations") => MAX_MS - WORLD_TIME_RESERVE_MS + COMBINATION_TIME_BUDGET_MS,
-        _ => MAX_MS - WORLD_TIME_RESERVE_MS,
+        Some("worlds") => MAX_MS.saturating_sub(presentation_time_reserve(program)),
+        Some("routes") => MAX_MS.saturating_sub(finalization_time_reserve(program)),
+        Some("combinations") => MAX_MS.saturating_sub(finalization_time_reserve(program)) + COMBINATION_TIME_BUDGET_MS,
+        _ => MAX_MS.saturating_sub(finalization_time_reserve(program)),
     }
 }
 pub mod backward {
@@ -441,6 +459,26 @@ pub const MAX_APP_TRANSITIONS: u64 = 480;
 /// Planning allowance for admitting new work, not a hard limit on an active child.
 /// Actual reasoning remains bounded by the original clock and total transitions.
 pub const REASONING_ADMISSION_RESERVE: u64 = 44;
+pub const PRESENTATION_TRANSITION_RESERVE: u64 = 2 * REASONING_ADMISSION_RESERVE + 2;
+pub fn finalization_transition_reserve(audit_cost: u64) -> u64 {
+    REASONING_ADMISSION_RESERVE + PRESENTATION_TRANSITION_RESERVE + audit_cost.max(32)
+}
+/// Accepted work cannot consume the larger tail explicitly reserved for its
+/// finalization, including after retries or a route-drain fallback.
+pub fn admitted_finalization_transitions(program: &Value) -> u64 {
+    finalization_transition_reserve(32).max(
+        program["admitted_work"]["finalization_transition_reserve"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+}
+pub fn admitted_finalization_time(program: &Value) -> u64 {
+    finalization_time_reserve(program).max(
+        program["admitted_work"]["finalization_time_reserve_ms"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+}
 pub fn transition_count(state: &Value) -> u64 {
     state["counters"]["transition_count"]
         .as_u64()
@@ -455,28 +493,28 @@ pub fn transition_limit(program: &Value) -> u64 {
             "exploration" | "routes" | "proposals"
         )
     {
-        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+        return MAX_APP_TRANSITIONS.saturating_sub(admitted_finalization_transitions(program));
     }
     if program["route_finalization"]["admitted"] == true
         && matches!(program["stage"].as_str(), Some("routes" | "exploration"))
     {
-        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+        return MAX_APP_TRANSITIONS.saturating_sub(admitted_finalization_transitions(program));
     }
     // Deferred novelty is finalization work after route exploration, not a new
     // initial proposal search. Keep composition/writing and their tail reserved.
     if program["stage"] == "proposals"
         && program["endpoint_proposal_attempt"]["pool_stage"] == "deferred"
     {
-        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 32;
+        return MAX_APP_TRANSITIONS.saturating_sub(admitted_finalization_transitions(program));
     }
     if endpoints::enabled(program) && program["stage"] == "exploration" {
-        return MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 64;
+        return MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE - PRESENTATION_TRANSITION_RESERVE - 64;
     }
     match field(program, "stage") {
-        "worlds" => MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE,
-        "routes" => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 64,
-        "combinations" => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 128,
-        _ => MAX_APP_TRANSITIONS - 2 * REASONING_ADMISSION_RESERVE - 128 - 32,
+        "worlds" => MAX_APP_TRANSITIONS - PRESENTATION_TRANSITION_RESERVE,
+        "routes" => MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE - PRESENTATION_TRANSITION_RESERVE - 64,
+        "combinations" => MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE - PRESENTATION_TRANSITION_RESERVE - 128,
+        _ => MAX_APP_TRANSITIONS - REASONING_ADMISSION_RESERVE - PRESENTATION_TRANSITION_RESERVE - 128 - 32,
     }
 }
 pub fn temporal_allows_forecast(program: &Value, id: &str) -> bool {
@@ -754,15 +792,39 @@ mod tests {
     }
 
     #[test]
+    fn presentation_reserve_protects_writer_and_one_correction_without_double_counting() {
+        let mut p = json!({"stage":"worlds","started_at_ms":1791070100520u64});
+        assert_eq!(presentation_time_reserve(&p), 420_000);
+        // Pass19 food began writing at 56m26s and returned at 59m26.739s.
+        // That old admission leaves only 33.261s, insufficient for a correction.
+        let old_writer_start = 3_385_994;
+        assert!(old_writer_start < MAX_MS - SYNTHESIS_TIME_RESERVE_MS);
+        assert!(old_writer_start > research_time_limit(&p));
+        let original = p["started_at_ms"].clone();
+        start_reasoning_timing(&mut p, "synthesize", 1_000);
+        finish_reasoning_timing(&mut p, "synthesize", 181_745);
+        p["presentation_repair"] = json!({"attempt":1});
+        start_reasoning_timing(&mut p, "synthesize", 182_000);
+        finish_reasoning_timing(&mut p, "synthesize", 242_000);
+        assert_eq!(p["reasoning_durations_ms"]["synthesize"], 180_745);
+        assert_eq!(p["reasoning_durations_ms"]["presentation_correction"], 60_000);
+        assert_eq!(presentation_time_reserve(&p), 300_745);
+        assert_eq!(p["started_at_ms"], original);
+        assert!(p["results"].is_null());
+        assert_eq!(finalization_transition_reserve(32), 166);
+        assert_eq!(finalization_transition_reserve(44), 178);
+    }
+
+    #[test]
     fn admission_reserve_preserves_all_stage_budgets() {
         assert_eq!(REASONING_ADMISSION_RESERVE, 44);
         let exploration = transition_limit(&json!({"stage":"exploration"}));
         let combinations = transition_limit(&json!({"stage":"combinations"}));
         let worlds = transition_limit(&json!({"stage":"worlds"}));
-        assert_eq!((exploration, combinations, worlds), (232, 264, 436));
+        assert_eq!((exploration, combinations, worlds), (186, 218, 390));
         assert_eq!(exploration + 32, combinations);
         assert_eq!(combinations + 44 + 128, worlds);
-        assert_eq!(worlds + 44, MAX_APP_TRANSITIONS);
+        assert_eq!(worlds + PRESENTATION_TRANSITION_RESERVE, MAX_APP_TRANSITIONS);
         assert_eq!(MAX_APP_TRANSITIONS + 32, 512);
     }
     #[test]

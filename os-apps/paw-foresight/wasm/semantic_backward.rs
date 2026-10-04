@@ -129,6 +129,27 @@ pub fn repair_obligations(snapshot: &Value, program: &Value) -> Result<Vec<Value
             Some(item)
         })
         .collect();
+    // Root repair changes a shared future prerequisite, so cover every selected
+    // commitment that uses that exact root. These are separate route judgments,
+    // not equal-input reuse and not a claim that Jev isolated the root as cause.
+    for item in &mut queue {
+        if item["kind"] != "root_gap" { continue; }
+        let roots: BTreeSet<String> = item["subject"]["root_connections"].as_array().into_iter().flatten()
+            .filter(|root| root["evidence_ids"].as_array().is_none_or(Vec::is_empty))
+            .filter_map(|root| root["component_id"].as_str().map(str::to_owned)).collect();
+        if roots.is_empty() { continue; }
+        for route in program["endpoint_search"]["routes"].as_array().into_iter().flatten() {
+            if !active_routes.contains(super::field(route,"id")) { continue; }
+            let world_id=super::field(route,"world_node_id");
+            if program["route_basis"][world_id] != super::endpoints::candidate_basis(snapshot,program,world_id) { continue; }
+            if !route["root_connections"].as_array().into_iter().flatten().any(|r| roots.contains(super::field(r,"component_id"))) { continue; }
+            let commitment=json!({"endpoint_id":route["endpoint_id"],"commitment_id":route["commitment_id"],"route_id":route["id"]});
+            if !item["endpoint_commitments"].as_array().unwrap().contains(&commitment) {
+                item["endpoint_commitments"].as_array_mut().unwrap().push(commitment);
+            }
+        }
+        item["scope_semantics"]=json!("All selected commitments using an identical ungrounded root are repaired together. Recorded route judgments remain separate; this scope is not an inferred explanation or probability.");
+    }
     queue.sort_by_key(|item| {
         let explicit_root = item["kind"] == "root_gap"
             && item["observed_results"]
@@ -165,21 +186,12 @@ pub fn repair_admission(
     program: &Value,
     elapsed_ms: u64,
 ) -> Result<Value, String> {
-    let mut revalidation = program.clone();
-    for field in ["results", "evaluations", "candidate_basis", "route_basis"] {
-        revalidation[field] = json!({});
-    }
-    let work = super::endpoints::pending_mandatory_work(snapshot, &revalidation)?;
-    let endpoints = program["endpoint_search"]["endpoints"]
-        .as_array()
-        .map_or(0, Vec::len) as u64;
-    // A prospective finding has no exact request yet. Reserve comparison changes
-    // conservatively; actual acceptance uses the normal exact-context planner.
-    let novelty = work["novelty_rechecks"].as_u64().unwrap_or(0);
+    // This patch freezes existing semantic context. Only genuinely pending work
+    // belongs in the fixed cost; exact new-route contexts are priced on receipt.
+    let work = super::endpoints::pending_mandatory_work(snapshot, program)?;
     let fixed = work["required_transitions"]
         .as_u64()
-        .ok_or("Missing repair work cost")?
-        .saturating_add(endpoints.saturating_sub(novelty) * 2);
+        .ok_or("Missing repair work cost")?;
     let ids = program["active_world_ids"]
         .as_array()
         .cloned()
@@ -197,10 +209,10 @@ pub fn repair_admission(
     let audit_cost = final_audit["required_transitions"]
         .as_u64()
         .ok_or("Cannot reserve repair finalization audit")?;
-    let finalization = 2 * super::REASONING_ADMISSION_RESERVE + audit_cost.max(32);
+    let finalization = super::finalization_transition_reserve(audit_cost);
     let finalization_ms = super::WORLD_TIME_RESERVE_MS.max(
         super::generation_duration(program, "compose")
-            .saturating_add(super::generation_duration(program, "synthesize")),
+            .saturating_add(super::presentation_time_reserve(program)),
     );
     let required = fixed + super::REASONING_ADMISSION_RESERVE + finalization + 16;
     let remaining = super::MAX_APP_TRANSITIONS.saturating_sub(super::transition_count(program));
@@ -211,7 +223,85 @@ pub fn repair_admission(
         .saturating_add(finalization_ms)
         < super::MAX_MS;
     Ok(
-        json!({"admitted":time_ok&&required<=remaining,"reason":if !time_ok{"time_budget"}else if required>remaining{"transition_budget"}else{"reserved"},"required_transitions":required,"remaining_transitions":remaining,"existing_graph_revalidation_transitions":fixed,"new_work_minimum_reserve":16,"generation_transition_reserve":super::REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":finalization,"finalization_time_reserve_ms":finalization_ms,"finalization_audit":final_audit,"generation_ms":generation,"elapsed_ms":elapsed_ms,"original_deadline_ms":super::MAX_MS,"evaluation_transition_capacity":remaining.saturating_sub(super::REASONING_ADMISSION_RESERVE+finalization),"output_cost_known":false,"semantics":"Conservative current-graph revalidation reserve. New repair output must fit the same remaining capacity before application; no acceptance, timing guarantee or fresh allowance is implied."}),
+        json!({"admitted":time_ok&&required<=remaining,"reason":if !time_ok{"time_budget"}else if required>remaining{"transition_budget"}else{"reserved"},"required_transitions":required,"remaining_transitions":remaining,"existing_graph_revalidation_transitions":fixed,"new_work_minimum_reserve":16,"generation_transition_reserve":super::REASONING_ADMISSION_RESERVE,"finalization_transition_reserve":finalization,"finalization_time_reserve_ms":finalization_ms,"finalization_audit":final_audit,"generation_ms":generation,"elapsed_ms":elapsed_ms,"original_deadline_ms":super::MAX_MS,"evaluation_transition_capacity":remaining.saturating_sub(super::REASONING_ADMISSION_RESERVE+finalization),"patch_contract":"append_only_unchanged_evidence_v1","output_cost_known":false,"semantics":"Unchanged existing assessment context is reused exactly. New repair output must fit the same remaining capacity before application; no acceptance, timing guarantee or fresh allowance is implied."}),
+    )
+}
+
+/// Price the exact prospective replacement bundle, without asserting that its
+/// unperformed checks pass or mutating the currently displayed worlds.
+pub fn patch_finalization(snapshot: &Value, old: &Value, program: &Value) -> Result<Value, String> {
+    let mut worlds = Vec::new();
+    let routes = program["endpoint_search"]["routes"]
+        .as_array()
+        .ok_or("Missing patch routes")?;
+    for id in old["active_world_ids"].as_array().into_iter().flatten() {
+        let mut world = snapshot["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|n| n["Id"] == *id)
+            .ok_or("Missing saved world")?
+            .clone();
+        for selected in world["selected_route_ids"]
+            .as_array_mut()
+            .ok_or("Missing saved route selection")?
+        {
+            let replacements: Vec<_> = routes
+                .iter()
+                .filter(|r| {
+                    r["alternative_to"] == *selected
+                        && !old["endpoint_search"]["routes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|prior| prior["id"] == r["id"])
+                })
+                .collect();
+            if replacements.len() > 1 {
+                return Err("Patch must select one alternative per affected original route".into());
+            }
+            if let Some(replacement) = replacements.first() {
+                *selected = replacement["id"].clone();
+            }
+        }
+        for key in ["statement", "component_ids", "chain", "commitment_bindings"] {
+            world.as_object_mut().unwrap().remove(key);
+        }
+        worlds.push(world);
+    }
+    let mut generated = json!({"worlds":worlds});
+    super::endpoints::preserve_omitted_originals(program, &mut generated);
+    super::endpoints::assemble_composition(program, &mut generated)?;
+    let mut projected = snapshot.clone();
+    let mut tasks = Vec::new();
+    for world in generated["worlds"].as_array().unwrap() {
+        let node = projected["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| n["Id"] == world["Id"])
+            .unwrap();
+        *node = world.clone();
+        tasks.extend(super::search::audit_tasks(node, program));
+    }
+    tasks.extend(super::search::world_set_tasks(
+        old["active_world_ids"]
+            .as_array()
+            .ok_or("Missing active worlds")?,
+    ));
+    let mut audit_program = program.clone();
+    // Price the eventual world executor, not the current candidate stage. This
+    // affects admission eligibility only and records no completed assessment.
+    audit_program["stage"] = json!("worlds");
+    let audit = super::search::refinement_admission(&projected, &audit_program, &tasks);
+    let cost = audit["required_transitions"].as_u64().ok_or_else(|| {
+        format!(
+            "Cannot price patched finalization: {}",
+            audit["planning_error"]
+        )
+    })?;
+    Ok(
+        json!({"audit":audit,"required_transitions":super::finalization_transition_reserve(cost),"semantics":"Prospective exact route union; no check has been performed by this estimate"}),
     )
 }
 
@@ -224,11 +314,11 @@ pub fn batch(snapshot: &Value, program: &Value) -> Value {
     ) {
         let obligation = &program["targeted_repair"]["obligation"];
         let mut selected = BTreeSet::new();
-        let commitments:Vec<_>=obligation["endpoint_commitments"].as_array().into_iter().flatten().filter(|c|selected.insert((super::field(c,"endpoint_id"),super::field(c,"commitment_id")))).take(MAX_COMMITMENTS).map(|c| {
+        let commitments:Vec<_>=obligation["endpoint_commitments"].as_array().into_iter().flatten().filter(|c|selected.insert((super::field(c,"endpoint_id"),super::field(c,"commitment_id")))).map(|c| {
             let statement=program["endpoint_search"]["endpoints"].as_array().into_iter().flatten().find(|e|e["id"]==c["endpoint_id"]).and_then(|e|e["commitments"].as_array()).and_then(|cs|cs.iter().find(|item|item["id"]==c["commitment_id"])).map(|c|c["statement"].clone()).unwrap_or(Value::Null);
             json!({"endpoint_id":c["endpoint_id"],"commitment_id":c["commitment_id"],"statement":statement,"alternative_to":c["route_id"],"reason":"targeted_recorded_gap","repair_fingerprint":obligation["input_fingerprint"]})
         }).collect();
-        return json!({"contract":program["endpoint_search"]["backward_batch_contract"],"mode":"alternatives","commitments":commitments,"repair_obligation":obligation,"limits":{"routes":commitments.len(),"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}});
+        return json!({"contract":program["endpoint_search"]["backward_batch_contract"],"mode":"alternatives","commitments":commitments,"repair_obligation":obligation,"patch_contract":program["targeted_repair"]["admission"]["patch_contract"],"limits":{"routes":commitments.len(),"hypotheses":24,"research_evidence":8,"response_bytes":MAX_RESPONSE_BYTES}});
     }
     let routes: Vec<_> = program["endpoint_search"]["routes"]
         .as_array()
@@ -366,6 +456,87 @@ pub fn repair_disposition(
     }
 }
 
+/// Patch replies may append hypotheses and alternatives, never change the
+/// assessment context whose exact receipts made the admission affordable.
+pub fn validate_patch_reply(program: &Value, generated: &Value) -> Result<(), String> {
+    if program["targeted_repair"]["admission"]["patch_contract"]
+        != "append_only_unchanged_evidence_v1"
+    {
+        return Ok(());
+    }
+    for key in [
+        "research_evidence",
+        "source_corrections",
+        "amendments",
+        "branches",
+        "endpoint_revisions",
+    ] {
+        if generated[key].as_array().is_some_and(|a| !a.is_empty())
+            || (!generated[key].is_null() && !generated[key].is_array())
+        {
+            return Err(format!(
+                "Unchanged-evidence patch cannot change {key}; declare no_change if new research or revisions are necessary"
+            ));
+        }
+    }
+    for key in [
+        "baseline",
+        "baseline_delta",
+        "scope_review",
+        "scope_disposition",
+        "world",
+        "endpoints",
+    ] {
+        if !generated[key].is_null() {
+            return Err(format!("Unchanged-evidence patch must omit {key}"));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_patch_state(before: &Value, after: &Value, program: &Value) -> Result<(), String> {
+    if program["targeted_repair"]["admission"]["patch_contract"]
+        != "append_only_unchanged_evidence_v1"
+    {
+        return Ok(());
+    }
+    if before["world"] != after["world"] {
+        return Err("Patch changed original question context".into());
+    }
+    for node in before["nodes"].as_array().into_iter().flatten() {
+        if !after["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|candidate| candidate == node)
+        {
+            return Err(format!(
+                "Patch changed existing node {}",
+                super::field(node, "Id")
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_patch_program(old: &Value, new: &Value) -> Result<(), String> {
+    if old["targeted_repair"]["admission"]["patch_contract"] != "append_only_unchanged_evidence_v1"
+    {
+        return Ok(());
+    }
+    for key in ["baseline", "scope_review"] {
+        if old[key] != new[key] {
+            return Err(format!("Patch changed accepted {key}"));
+        }
+    }
+    for key in ["endpoints", "amendments"] {
+        if old["endpoint_search"][key] != new["endpoint_search"][key] {
+            return Err(format!("Patch changed original {key}"));
+        }
+    }
+    Ok(())
+}
+
 /// Called before any route mutations. Historical runs retain their old contract.
 pub fn validate(snapshot: &Value, program: &Value, generated: &Value) -> Result<(), String> {
     if !enabled(program) {
@@ -374,6 +545,7 @@ pub fn validate(snapshot: &Value, program: &Value, generated: &Value) -> Result<
     if generated.to_string().len() > MAX_RESPONSE_BYTES {
         return Err("Backward batch exceeds 64 KiB; return only the selected commitments and concise shared pieces".into());
     }
+    validate_patch_reply(program, generated)?;
     repair_disposition(program, generated)?;
     let selected = batch(snapshot, program);
     let route_limit = selected["limits"]["routes"].as_u64().unwrap_or(0) as usize;
@@ -418,7 +590,7 @@ pub fn validate(snapshot: &Value, program: &Value, generated: &Value) -> Result<
         }
     }
     if program["audit_policy_version"] == 2
-        && selected["mode"] == "complete_original"
+        && (selected["mode"] == "complete_original" || selected["patch_contract"] == "append_only_unchanged_evidence_v1")
         && seen.len() != selected["commitments"].as_array().unwrap().len()
     {
         return Err("Return one route for every commitment of both selected originals within the shared bounds; do not leave a partial initial reconstruction".into());
@@ -456,6 +628,52 @@ mod tests {
     fn program() -> Value {
         json!({"endpoint_search":{"backward_batch_contract":1,"endpoints":(0..6).map(|e|json!({"id":format!("e{e}"),"commitments":(0..8).map(|c|json!({"id":format!("c{c}"),"statement":format!("Original {e}/{c}")})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"routes":[]}})
     }
+    #[test]
+    fn saved_larger_finalization_reserve_survives_execution_and_fallback() {
+        let mut p = json!({"audit_policy_version":2,"stage":"routes","admitted_work":{"admitted":true,"status":"checking","finalization_transition_reserve":190,"finalization_time_reserve_ms":1400000}});
+        assert_eq!(super::super::transition_limit(&p), 290);
+        assert_eq!(super::super::time_limit(&p), 2200000);
+        p["admitted_work"]["admitted"] = json!(false);
+        p["route_finalization"] = json!({"admitted":true});
+        assert_eq!(super::super::transition_limit(&p), 290);
+        assert_eq!(super::super::time_limit(&p), 2200000);
+    }
+    #[test]
+    fn append_only_patch_preserves_existing_context_and_complete_group() {
+        let mut p = json!({"endpoint_search":{"backward_batch_contract":2,"endpoints":[],"routes":[]},"targeted_repair":{"status":"admitted","admission":{"patch_contract":"append_only_unchanged_evidence_v1"},"obligation":{"input_fingerprint":"same","endpoint_commitments":(0..4).map(|i|json!({"endpoint_id":"e","commitment_id":format!("c{i}"),"route_id":format!("r{i}")})).collect::<Vec<_>>()}}});
+        let before = json!({"world":{"question":"Original"},"nodes":[{"Id":"source","statement":"Present fact"}]});
+        assert_eq!(
+            batch(&before, &p)["commitments"].as_array().unwrap().len(),
+            4
+        );
+        let good = json!({"hypotheses":[{"id":"new"}],"routes":[{"id":"alternative"}]});
+        validate_patch_reply(&p, &good).unwrap();
+        for key in [
+            "research_evidence",
+            "source_corrections",
+            "amendments",
+            "branches",
+            "endpoint_revisions",
+            "baseline",
+            "baseline_delta",
+            "scope_review",
+        ] {
+            let mut bad = good.clone();
+            bad[key] = json!([{"changed":true}]);
+            assert!(validate_patch_reply(&p, &bad).is_err(), "{key}");
+        }
+        let mut after = before.clone();
+        after["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"Id":"new","statement":"Future hypothesis"}));
+        validate_patch_state(&before, &after, &p).unwrap();
+        after["nodes"][0]["statement"] = json!("Changed present fact");
+        assert!(validate_patch_state(&before, &after, &p).is_err());
+        p["targeted_repair"]["admission"]["patch_contract"] = Value::Null;
+        validate_patch_reply(&p, &json!({"research_evidence":[{"id":"legacy"}]})).unwrap();
+    }
+
     #[test]
     fn new_policy_covers_two_complete_originals_under_shared_bounds() {
         let mut p = program();

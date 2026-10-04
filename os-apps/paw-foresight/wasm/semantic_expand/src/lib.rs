@@ -1,3 +1,4 @@
+mod checkpoint;
 #[allow(dead_code)]
 mod scope {
     include!("../../semantic_scope.rs");
@@ -1501,16 +1502,14 @@ fn presentation_repair_receipt(
     remaining: u64,
 ) -> Option<Value> {
     let issues = outlook::presentation_issues(answer);
-    let predicted = program["reasoning_durations_ms"]["synthesize"]
-        .as_u64()
-        .unwrap_or(core::SYNTHESIS_TIME_RESERVE_MS);
+    let predicted = core::presentation_correction_duration(program);
     if program["presentation_repair"]["attempt"] == 1
         || issues.is_empty()
         || !issues.iter().all(|i| {
             i["editable"] == true && i["text"].as_str().is_some_and(|s| !s.trim().is_empty())
         })
         || remaining < core::REASONING_ADMISSION_RESERVE + 2
-        || elapsed.saturating_add(predicted).saturating_add(60_000) >= core::MAX_MS
+        || elapsed.saturating_add(predicted).saturating_add(core::PRESENTATION_CALLBACK_RESERVE_MS) >= core::MAX_MS
     {
         return None;
     }
@@ -2209,16 +2208,30 @@ fn answer_completion(
         };
         let mut repair = json!({"status":"declined","obligation":queue.first(),"admission":admission,"assessment_context_changed":false,"warning":""});
         if admission["admitted"] == true {
-            use sha2::{Digest, Sha256};
             let snapshot_raw = snapshot.to_string();
             let program_raw = program.to_string();
-            let digest = |s: &str| format!("{:x}", Sha256::digest(s.as_bytes()));
-            let checkpoint = json!({"version":1,"answer":answer,"snapshot_json":snapshot_raw,"program_json":program_raw,"trace_json":trace_raw,"started_at_ms":started.to_string(),"created_at_ms":now.to_string(),"snapshot_sha256":digest(&snapshot_raw),"program_sha256":digest(&program_raw),"trace_sha256":digest(trace_raw),"source_context_fingerprint":assessment_context(snapshot,program)});
+            let mut checkpoint = match checkpoint::encode(&snapshot_raw, &program_raw, trace_raw) {
+                Ok(saved) => saved,
+                Err(reason) => {
+                    repair["admission"]["admitted"] = json!(false);
+                    repair["admission"]["reason"] = json!(reason);
+                    program["targeted_repair"] = repair;
+                    return Ok(
+                        json!({"action":"Complete","params":{"answer":answer.to_string(),"program_json":program.to_string(),"finished_at_ms":now.to_string()}}),
+                    );
+                }
+            };
+            checkpoint["answer"] = answer.clone();
+            checkpoint["started_at_ms"] = json!(started.to_string());
+            checkpoint["created_at_ms"] = json!(now.to_string());
+            checkpoint["source_context_fingerprint"] = json!(assessment_context(snapshot, program));
             let mut candidate = program.clone();
             candidate["answer_checkpoint"] = checkpoint;
             let mut admitted_repair = repair.clone();
             admitted_repair["status"] = json!("admitted");
-            admitted_repair["warning"] = json!("The displayed answer is the completed initial assessment. Optional repair research is not incorporated until a newly validated answer is completed.");
+            admitted_repair["warning"] = json!(
+                "The displayed answer is the completed initial assessment. Optional repair research is not incorporated until a newly validated answer is completed."
+            );
             candidate["targeted_repair"] = admitted_repair;
             candidate["stage"] = json!("exploration");
             candidate["tasks"] = json!([]);
@@ -2230,7 +2243,9 @@ fn answer_completion(
             // original program has no checkpoint, so history is stored once.
             if candidate.to_string().len() <= 8 * 1024 * 1024 {
                 *program = candidate;
-                return Ok(json!({"action":"Expanded","params":{"answer":answer.to_string(),"snapshot_json":snapshot.to_string(),"program_json":program.to_string()}}));
+                return Ok(
+                    json!({"action":"Expanded","params":{"answer":answer.to_string(),"snapshot_json":snapshot.to_string(),"program_json":program.to_string()}}),
+                );
             }
             repair["admission"]["admitted"] = json!(false);
             repair["admission"]["reason"] = json!("checkpoint_storage_bound");
@@ -2469,7 +2484,8 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         }
     } else {
         let generated = core::parse(raw)?;
-        let expansion = if scope_pending(&old) {
+        let patch_before = snapshot.clone();
+        let expansion = core::backward::validate_patch_reply(&old, &generated).and_then(|_| if scope_pending(&old) {
             let mut candidate = snapshot.clone();
             expand(&mut candidate, &generated, phase, &old).and_then(|_| {
                 finish_scope_repair(&candidate, &generated, &old)?;
@@ -2480,7 +2496,7 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
             expand_with_baseline(&mut snapshot, &generated, phase, &old).map(|refresh| {
                 baseline_refresh = refresh;
             })
-        };
+        }).and_then(|_| core::backward::validate_patch_state(&patch_before, &snapshot, &old));
         if let Err(error) = expansion {
             if !matches!(phase, "challenge" | "explore" | "backward") {
                 return Err(error);
@@ -2564,20 +2580,33 @@ fn run_inner(ctx: &Context) -> Result<(), String> {
         program["endpoint_search"] =
             core::endpoints::add_routes(&original, &mut candidate, &old, &generated)?;
     }
+    if phase == "backward" {
+        core::backward::validate_patch_program(&old, &program)?;
+    }
     if phase == "backward" && program["audit_policy_version"] == 2 {
         let started = core::field(&ctx.entity_state, "started_at_ms")
             .parse::<u64>()
             .map_err(|_| "Missing original run clock")?;
         let elapsed = (Context::get_time_millis() as u64).saturating_sub(started);
+        let finalization_time = core::finalization_time_reserve(&program).max(
+            old["admitted_work"]["finalization_time_reserve_ms"].as_u64().unwrap_or(0));
         if elapsed
             .saturating_add(core::ENDPOINT_EVALUATION_DRAIN_MS)
-            .saturating_add(core::WORLD_TIME_RESERVE_MS)
+            .saturating_add(finalization_time)
             >= core::MAX_MS
         {
             return Err("The completed generation leaves insufficient original time for mandatory evaluation and final writing; its unaccepted draft cannot invalidate saved estimates. Original proposals and accepted research remain preserved.".into());
         }
         let work = core::endpoints::pending_mandatory_work(&snapshot, &program)?;
-        let remaining = (core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32)
+        let mut finalization_reserve = old["admitted_work"]["finalization_transition_reserve"].as_u64()
+            .unwrap_or_else(||core::finalization_transition_reserve(32));
+        if old["targeted_repair"]["admission"]["patch_contract"] == "append_only_unchanged_evidence_v1" {
+            let finalization=core::backward::patch_finalization(&snapshot,&old,&program)?;
+            finalization_reserve=finalization_reserve.max(finalization["required_transitions"].as_u64().ok_or("Missing patch finalization reserve")?);
+            program["admitted_work"]["patch_finalization"]=finalization;
+            program["admitted_work"]["finalization_transition_reserve"]=json!(finalization_reserve);
+        }
+        let remaining = core::MAX_APP_TRANSITIONS.saturating_sub(finalization_reserve)
             .saturating_sub(core::transition_count(&ctx.entity_state));
         let capacity = old["admitted_work"]["evaluation_transition_capacity"]
             .as_u64()
@@ -2635,6 +2664,125 @@ mod tests {
     include!("../../semantic_repair_fixture.rs");
 
     #[test]
+    #[ignore = "requires authorized captured pass19 games checkpoint"]
+    fn captured_unchanged_evidence_patch_prices_only_affected_contexts() {
+        let capture: Value = serde_json::from_slice(
+            &std::fs::read(std::env::var("FORESIGHT_COMPRESSED_CAPTURE").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let s: Value = core::parse(capture["fields"]["snapshot_json"].as_str().unwrap()).unwrap();
+        let p: Value = core::parse(capture["fields"]["program_json"].as_str().unwrap()).unwrap();
+        let before = core::endpoints::pending_mandatory_work(&s, &p).unwrap();
+        let mut after_s = s.clone();
+        let mut after_p = p.clone();
+        for route in p["endpoint_search"]["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["endpoint_id"] == "games-share-working-parts")
+        {
+            let mut world = s["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["Id"] == route["world_node_id"])
+                .unwrap()
+                .clone();
+            let mut alternative = route.clone();
+            world["Id"] = json!(format!("counterfactual-{}", core::field(route, "id")));
+            alternative["id"] = json!(format!("alternative-{}", core::field(route, "id")));
+            alternative["world_node_id"] = world["Id"].clone();
+            alternative["alternative_to"] = route["id"].clone();
+            alternative["status"] = json!("unresolved");
+            alternative.as_object_mut().unwrap().remove("audit");
+            let link = json!({"id":"counterfactual-bridge","from_ids":["r2-bounded_rule_packages"],"to_id":"r2-independent_game_pact","by":"2027-12-31","mechanism":"Synthetic unvalidated commercial-incentive mechanism solely to measure a bounded alternative route's work; not evidence or a claimed plausible repair"});
+            world["chain"].as_array_mut().unwrap().insert(0, link);
+            world["root_connections"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|r| r["component_id"] != "r2-independent_game_pact");
+            alternative["chain"] = world["chain"].clone();
+            alternative["root_connections"] = world["root_connections"].clone();
+            after_s["nodes"].as_array_mut().unwrap().push(world.clone());
+            after_p["endpoint_search"]["routes"]
+                .as_array_mut()
+                .unwrap()
+                .push(alternative);
+        }
+        core::endpoints::invalidate_changed_candidates(&after_s, &mut after_p, &p);
+        let after = core::endpoints::pending_mandatory_work(&after_s, &after_p).unwrap();
+        let changed_existing: Vec<_> = s["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| {
+                core::endpoints::candidate_basis(&s, &p, core::field(n, "Id"))
+                    != core::endpoints::candidate_basis(&after_s, &after_p, core::field(n, "Id"))
+            })
+            .map(|n| n["Id"].clone())
+            .collect();
+
+        assert_eq!(before["questions"], 0);
+        assert_eq!(after["required_transitions"], 48);
+        let finalization = core::backward::patch_finalization(&after_s, &p, &after_p).unwrap();
+        assert!(finalization["required_transitions"].as_u64().unwrap() >= 166);
+        eprintln!(
+            "captured patch required={} finalization={}",
+            after["required_transitions"], finalization["required_transitions"]
+        );
+
+        assert_eq!(after["novelty_rechecks"], 0);
+        assert!(changed_existing.is_empty());
+        let mut patch_program = p.clone();
+        patch_program["targeted_repair"]["admission"]["patch_contract"] =
+            json!("append_only_unchanged_evidence_v1");
+        core::backward::validate_patch_state(&s, &after_s, &patch_program).unwrap();
+        core::backward::validate_patch_program(&patch_program, &after_p).unwrap();
+        // Same planner is used by the receiver: sufficient allocation admits
+        // all affected checks; one transition short must reject the proposal.
+        assert!(after["required_transitions"].as_u64().unwrap() <= 48);
+        assert!(after["required_transitions"].as_u64().unwrap() > 47);
+        let admission = core::backward::repair_admission(&s, &p, 0).unwrap();
+        assert_eq!(admission["existing_graph_revalidation_transitions"], 4);
+        let obligations = core::backward::repair_obligations(&s, &p).unwrap();
+        assert_eq!(
+            obligations[0]["endpoint_commitments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        if let Ok(path) = std::env::var("FORESIGHT_PATCH_FIXTURE") {
+            let mut planned = p.clone();
+            planned["targeted_repair"] = json!({"status":"admitted","obligation":obligations[0],"admission":admission,"assessment_context_changed":false,"warning":"Synthetic cost-boundary test, not a live repair"});
+            planned["admitted_work"] = json!({"status":"generating","evaluation_transition_capacity":200,"finalization_transition_reserve":finalization["required_transitions"]});
+            let routes: Vec<_> = after_p["endpoint_search"]["routes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["id"].as_str().unwrap().starts_with("alternative-"))
+                .cloned()
+                .collect();
+            let generated = json!({"hypotheses":[],"branches":[],"routes":routes,"research_evidence":[],"amendments":[],"repair_disposition":{"input_fingerprint":obligations[0]["input_fingerprint"],"status":"proposed","note":"Synthetic structural patch for receiver-cost testing, not a claimed causal repair"},"exploration_note":"Synthetic receiver boundary test","continue_exploring":false});
+            std::fs::write(path,json!({"snapshot":s,"program":planned,"generated":generated,"disclosure":"Captured semantic contexts with explicitly synthetic unvalidated alternatives and prospective allowance; not a live run"}).to_string()).unwrap();
+        }
+
+        let mut changed = s.clone();
+        changed["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|n| matches!(core::field(n, "kind"), "evidence" | "research_evidence"))
+            .unwrap()["statement"] = json!("Deliberately changed evidence");
+        assert!(core::backward::validate_patch_state(&s, &changed, &patch_program).is_err());
+        let id = core::field(&s["nodes"][0], "Id");
+        assert_ne!(
+            core::endpoints::candidate_basis(&s, &p, id),
+            core::endpoints::candidate_basis(&changed, &p, id)
+        );
+    }
+
+    #[test]
     fn answer_checkpoint_is_once_bounded_and_decline_keeps_validated_answer() {
         let repair = json!({"targeted_repair":{"status":"admitted","obligation":{"input_fingerprint":"exact"}}});
         let mut unchanged = json!({"repair_disposition":{"input_fingerprint":"exact","status":"no_change","note":"No supported alternative found"}});
@@ -2653,11 +2801,11 @@ mod tests {
         assert_eq!(p["targeted_repair"]["status"], "admitted");
         assert_eq!(p["answer_checkpoint"]["answer"], answer);
         assert_eq!(
-            core::parse(p["answer_checkpoint"]["program_json"].as_str().unwrap()).unwrap(),
+            core::parse(checkpoint::decode(&p["answer_checkpoint"]).unwrap()["program_json"].as_str().unwrap()).unwrap(),
             before
         );
         assert!(
-            core::parse(p["answer_checkpoint"]["program_json"].as_str().unwrap())
+            core::parse(checkpoint::decode(&p["answer_checkpoint"]).unwrap()["program_json"].as_str().unwrap())
                 .unwrap()
                 .get("answer_checkpoint")
                 .is_none()
@@ -2704,7 +2852,7 @@ mod tests {
         assert_eq!(stop["action"], "Complete");
         assert_eq!(
             oversized["targeted_repair"]["admission"]["reason"],
-            "checkpoint_storage_bound"
+            "checkpoint_context_bound"
         );
         if let Ok(path) = std::env::var("FORESIGHT_REPAIR_BOUNDARY_FIXTURE") {
             std::fs::write(path,json!({"provenance":"Synthetic already-validated-answer boundary, not a captured provider response","snapshot":snapshot,"program":core::parse(completion["params"]["program_json"].as_str().unwrap()).unwrap(),"answer":answer,"callback":completion}).to_string()).unwrap();
@@ -2947,6 +3095,10 @@ mod tests {
         assert_eq!(issues[1]["path"],"/outcomes/1/narrative");assert_eq!(issues[1]["actual"],1211);
         let program=json!({"reasoning_durations_ms":{"synthesize":180000}});
         let receipt=presentation_repair_receipt(&draft,&program,"length",2_800_000,92).expect("Saved writer must enter bounded correction, not fail immediately");
+        let measured = json!({"stage":"worlds","reasoning_durations_ms":{"synthesize":180745}});
+        assert!(presentation_repair_receipt(&draft,&measured,"length",3_566_739,152).is_none(), "The actual pass19 remaining 33 seconds cannot be repaired by resetting its clock");
+        let earlier_writer_completion = core::research_time_limit(&measured) - 1_000 + 180_745;
+        assert!(presentation_repair_receipt(&draft,&measured,"length",earlier_writer_completion,46).is_some(), "Reserved writer plus correction fits the same original deadline");
         let repairs=json!({"text_repairs":[{"path":"/outcomes/0/narrative","text":draft["outcomes"][0]["narrative"].as_str().unwrap().replace("could ","")},{"path":"/outcomes/1/narrative","text":draft["outcomes"][1]["narrative"].as_str().unwrap().replace("could ","")}]});
         // Test edits below deliberately use shorter supplied text without creating new fields.
         let mut repairs=repairs;

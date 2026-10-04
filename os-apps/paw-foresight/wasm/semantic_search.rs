@@ -1809,7 +1809,7 @@ pub fn refinement_admission(snapshot: &Value, program: &Value, tasks: &[Value]) 
             Err(error) => return json!({"admitted":false,"planning_error":error}),
         }
     }
-    let limit = super::MAX_APP_TRANSITIONS - super::REASONING_ADMISSION_RESERVE;
+    let limit = super::MAX_APP_TRANSITIONS - super::PRESENTATION_TRANSITION_RESERVE;
     let remaining = limit.saturating_sub(super::transition_count(program));
     // One SearchPlanned callback, then Evaluate/Recorded for each HTTP attempt.
     let set_checkpoint = u64::from(
@@ -2223,7 +2223,7 @@ mod refinement_tests {
         let nominal = 1 + initial["estimated_batches"].as_u64().unwrap() * 2;
         program["transition_count"] = json!(
             super::super::MAX_APP_TRANSITIONS
-                - super::super::REASONING_ADMISSION_RESERVE
+                - super::super::PRESENTATION_TRANSITION_RESERVE
                 - nominal
                 - 4
         );

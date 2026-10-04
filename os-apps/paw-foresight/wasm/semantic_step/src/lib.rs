@@ -112,7 +112,7 @@ fn next_phase(
         {
             let cannot_finish = elapsed_ms >= core::time_limit(program)
                 || core::transition_count(program)
-                    >= core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32
+                    >= core::MAX_APP_TRANSITIONS.saturating_sub(core::admitted_finalization_transitions(program))
                 || trace_len >= core::call_limit(program);
             match core::proposals::pool::defer_before_composition(snapshot, program, cannot_finish)
             {
@@ -239,7 +239,7 @@ fn next_phase(
             && exhausted.is_empty()
             && program["world_revision"].as_u64().unwrap_or(1) < 3
             && core::MAX_CALLS.saturating_sub(trace_len) >= next_questions
-            && elapsed_ms < core::MAX_MS.saturating_sub(180_000)
+            && elapsed_ms < core::MAX_MS.saturating_sub(core::presentation_time_reserve(program))
         {
             program["stop_reason"] = json!("world_revision_needed");
             return "compose";
@@ -558,7 +558,7 @@ fn admit_route_finalization(
         .saturating_mul(2)
         .saturating_add(novelty_cost)
         .saturating_add(4);
-    let limit = core::MAX_APP_TRANSITIONS - 2 * core::REASONING_ADMISSION_RESERVE - 32;
+    let limit = core::MAX_APP_TRANSITIONS.saturating_sub(core::admitted_finalization_transitions(program));
     let remaining = limit.saturating_sub(core::transition_count(program));
     let admitted = required <= remaining;
     program["route_finalization"] = json!({"admitted":admitted,"pending_checks":count.saturating_sub(start),"estimated_batches":batches,"novelty_transitions":novelty_cost,"handoff_transitions":4,"required_transitions":required,"remaining_transitions":remaining,"transition_limit":limit,"prior_stop_reason":program["stop_reason"],"new_research_allowed":false});
@@ -1036,11 +1036,11 @@ mod tests {
     fn admitted_work_capacity_spans_candidates_routes_and_novelty_without_reset() {
         let mut p = json!({"audit_policy_version":2,"world_search_contract":1,"stage":"exploration","transition_count":60,"reasoning_episode_durations_ms":{"backward":1260000}});
         assert!(core::backward_work_admission(&mut p, 16 * 60000));
-        assert_eq!(p["admitted_work"]["evaluation_transition_capacity"], 256);
+        assert_eq!(p["admitted_work"]["evaluation_transition_capacity"], 210);
         p["admitted_work"]["status"] = json!("checking");
         for stage in ["exploration", "routes", "proposals"] {
             p["stage"] = json!(stage);
-            assert_eq!(core::transition_limit(&p), 360);
+            assert_eq!(core::transition_limit(&p), 314);
             assert_eq!(core::time_limit(&p), 50*60_000);
         }
         let admitted = p["admitted_work"].clone();
@@ -1249,6 +1249,10 @@ mod tests {
             receipt["status"] = json!("passed");
             receipt.as_object_mut().unwrap().remove("reason");
         }
+        let mut at_original_capacity = program.clone();
+        assert!(!admit_route_finalization(snapshot, &mut at_original_capacity, 357, 2_500_483).unwrap(), "The old tail does not reserve presentation correction");
+        // Same accepted work, admitted 46 transitions earlier; never reset a live run.
+        program["transition_count"] = json!(282);
         let before = program.clone();
         assert_eq!(program["cursor"], 104);
         assert_eq!(program["tasks"].as_array().unwrap().len(), 116);
@@ -1258,7 +1262,7 @@ mod tests {
         assert_eq!(receipt["novelty_transitions"], 4);
         assert_eq!(receipt["required_transitions"], 26);
         assert_eq!(receipt["remaining_transitions"], 32);
-        assert_eq!(core::transition_limit(&program), 360);
+        assert_eq!(core::transition_limit(&program), 314);
         assert_eq!(
             core::research_admission(&program, "backward", 1000)["admitted"],
             false
@@ -1275,7 +1279,7 @@ mod tests {
         assert_eq!(program["tasks"], before["tasks"]);
         assert_eq!(program["cursor"], before["cursor"]);
         let mut insufficient = before.clone();
-        insufficient["transition_count"] = json!(335);
+        insufficient["transition_count"] = json!(289);
         assert!(!admit_route_finalization(snapshot, &mut insufficient, 357, 2_500_483).unwrap());
         assert_eq!(
             insufficient["route_finalization"]["remaining_transitions"],
@@ -1332,7 +1336,7 @@ mod tests {
         routes["endpoint_proposal_attempt"]["pool_stage"] = json!("individual");
         assert_eq!(core::time_limit(&routes), 50 * minute);
         assert_eq!(core::time_limit(&json!({"stage":"exploration"})), 50 * minute);
-        assert_eq!(core::time_limit(&json!({"stage":"worlds"})), 57 * minute);
+        assert_eq!(core::time_limit(&json!({"stage":"worlds"})), 53 * minute);
         assert_eq!(core::MAX_MS, 60 * minute);
         let snapshot = json!({"nodes":[]});
         let mut no_routes = json!({"world_search_contract":1,"stage":"exploration","endpoint_search":{"endpoints":[],"routes":[],"rounds":[]}});
@@ -1346,7 +1350,7 @@ mod tests {
         let snapshot = json!({"nodes":[{"Id":"h","kind":"scenario","statement":"A future event","edges":"[]"}]});
         let program = json!({"world_search_contract":1,"stage":"exploration","baseline_status":"established","transition_count":252,"cursor":0,"tasks":[{"nodeId":"h","function":"classify_claim_role","depth":0}],"results":{},"evaluations":{}});
         assert!(program["cursor"].as_u64().unwrap() < program["tasks"].as_array().unwrap().len() as u64);
-        assert_eq!(core::transition_limit(&program), 328);
+        assert_eq!(core::transition_limit(&program), 282);
         assert!(!challenge_due(&snapshot, &program, 0), "The legacy transition trigger must not preempt pending endpoint evaluations");
         assert!(!challenge_due(&snapshot, &program, core::REASONING_ADMISSION_RESERVE));
         assert!(core::request(&snapshot, &program).is_ok(), "The queued assessment remains executable");
@@ -1474,12 +1478,12 @@ mod tests {
 
     #[test]
     fn transition_budget_reserves_world_work_and_writer_without_clock_reset() {
-        assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 232);
+        assert_eq!(core::transition_limit(&json!({"stage":"exploration"})), 186);
         assert_eq!(
             core::transition_limit(&json!({"stage":"combinations"})),
-            264
+            218
         );
-        assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 436);
+        assert_eq!(core::transition_limit(&json!({"stage":"worlds"})), 390);
         const { assert!(core::MAX_APP_TRANSITIONS + 32 <= 512) };
         let mut p = json!({"stage":"exploration","stop_reason":"transition_budget"});
         assert_eq!(
@@ -1499,7 +1503,7 @@ mod tests {
         let snapshot = json!({"nodes":[]});
         let mut program = json!({"stage":"worlds","active_world_ids":[],"tasks":[],"cursor":0});
         let cutoff = core::time_limit(&program);
-        assert_eq!(core::MAX_MS - cutoff, 180_000);
+        assert_eq!(core::MAX_MS - cutoff, core::presentation_time_reserve(&program));
         assert_eq!(
             next_phase(&snapshot, &mut program, 100, cutoff),
             "synthesize"
@@ -1706,7 +1710,7 @@ mod tests {
         assert_eq!(core::call_limit(&program), core::MAX_CALLS);
         assert_eq!(
             core::time_limit(&program),
-            core::MAX_MS - core::SYNTHESIS_TIME_RESERVE_MS
+            core::MAX_MS - core::presentation_time_reserve(&program)
         );
     }
     #[test]

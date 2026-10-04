@@ -505,3 +505,90 @@ async fn context_limit_audit_preserves_unperformed_receipt() {
     envelope["fields"]["program_json"]=json!(encoded);
     if let Ok(path)=std::env::var("FORESIGHT_CONTEXT_LIMIT_AUDIT_PRODUCER") {std::fs::write(path,envelope.to_string()).unwrap();}
 }
+
+#[tokio::test]
+#[ignore = "Requires captured-context synthetic append-only patch fixture and rebuilt expand"]
+async fn captured_patch_receiver_preserves_context_and_enforces_exact_capacity() {
+    let fixture: Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("FORESIGHT_PATCH_FIXTURE").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut program = fixture["program"].clone();
+    program["transition_count"] = json!(40);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut fields = json!({"snapshot_json":fixture["snapshot"].to_string(),"program_json":program.to_string(),"trace_json":"[]","phase":"backward","reasoning_result":fixture["generated"].to_string(),"transition_count":40,"started_at_ms":now.saturating_sub(1000).to_string()});
+    let engine = WasmEngine::new().unwrap();
+    let accepted = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+    let diagnostic = accepted["callback_params"]["program_json"]
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .map(|p| p["response_correction"]["validation_error"].clone());
+    assert_eq!(
+        accepted["callback_action"], "Expanded",
+        "{:?} {}",
+        diagnostic, accepted["callback_params"]["error_message"]
+    );
+    let after: Value = serde_json::from_str(
+        accepted["callback_params"]["snapshot_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    for node in fixture["snapshot"]["nodes"].as_array().unwrap() {
+        assert!(after["nodes"].as_array().unwrap().contains(node));
+    }
+    let checked: Value = serde_json::from_str(
+        accepted["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let required = checked["admitted_work"]["actual_mandatory_transitions"]
+        .as_u64()
+        .unwrap();
+    assert!(required > 0);
+    program["admitted_work"]["evaluation_transition_capacity"] = json!(required - 1);
+    fields["program_json"] = json!(program.to_string());
+    let rejected = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+    assert_eq!(
+        rejected["callback_action"], "CompositionRejected",
+        "{}",
+        rejected["callback_params"]["error_message"]
+    );
+    assert!(rejected["callback_params"].get("snapshot_json").is_none());
+    assert!(rejected["callback_params"].get("started_at_ms").is_none());
+    let mut changed = fixture["generated"].clone();
+    changed["baseline_delta"] = json!({"unknowns":["Changed"]});
+    fields["reasoning_result"] = json!(changed.to_string());
+    let forbidden = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+    assert_eq!(forbidden["callback_action"], "CompositionRejected");
+    let receipt: Value = serde_json::from_str(
+        forbidden["callback_params"]["program_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        receipt["response_correction"]["validation_error"]
+            .as_str()
+            .unwrap()
+            .contains("omit baseline_delta")
+    );
+    program["admitted_work"]["evaluation_transition_capacity"] = json!(200);
+    program["admitted_work"]["finalization_time_reserve_ms"] = json!(1_400_000);
+    fields["program_json"] = json!(program.to_string());
+    fields["reasoning_result"] = json!(fixture["generated"].to_string());
+    fields["started_at_ms"] = json!(now.saturating_sub(2_200_000).to_string());
+    let late = invoke(&engine, "semantic_expand", &fields, &json!({})).await;
+    assert_eq!(late["callback_action"], "Fail");
+    assert!(
+        late["callback_params"]["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("insufficient original time")
+    );
+    assert!(late["callback_params"].get("snapshot_json").is_none());
+}

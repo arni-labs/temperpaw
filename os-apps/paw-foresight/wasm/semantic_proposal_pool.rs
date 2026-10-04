@@ -801,8 +801,8 @@ pub fn defer_before_composition(
     let cost = check_transitions(snapshot, &next)? + 2;
     let remaining =
         super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
-    let admitted = !exhausted && remaining >= cost + 2 * REASONING_ADMISSION_RESERVE + 32;
-    let admission = json!({"status":if admitted {"checking"} else {"not_admitted"},"required_transitions":cost,"remaining_transitions":remaining,"reserved_finalization":2 * REASONING_ADMISSION_RESERVE + 32});
+    let admitted = !exhausted && remaining >= cost + super::super::admitted_finalization_transitions(p);
+    let admission = json!({"status":if admitted {"checking"} else {"not_admitted"},"required_transitions":cost,"remaining_transitions":remaining,"reserved_finalization":super::super::admitted_finalization_transitions(p)});
     if admitted {
         next["deferred_novelty_recheck"] = admission;
         *p = next;
@@ -958,11 +958,11 @@ fn repair_admission(
     let individual = schedule(snapshot, &fresh, candidates.to_vec(), "individual")?;
     let pairs = schedule(snapshot, &fresh, candidates.to_vec(), "pairs")?;
     let checks = check_transitions(snapshot, &individual)? + check_transitions(snapshot, &pairs)?;
-    let required = (worlds as u64 + 3) * REASONING_ADMISSION_RESERVE + checks + 32 + 8;
+    let required = (worlds as u64 + 1) * REASONING_ADMISSION_RESERVE + super::super::finalization_transition_reserve(32) + checks + 8;
     let remaining =
         super::super::MAX_APP_TRANSITIONS.saturating_sub(super::super::transition_count(p));
     Ok(
-        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"packed_check_transitions":checks,"reserved_route_turns":worlds,"reserved_generation_turns":1,"reserved_composition_writing_turns":2,"guaranteed":false}),
+        json!({"admitted":remaining >= required,"remaining_transitions":remaining,"required_transitions":required,"packed_check_transitions":checks,"reserved_route_turns":worlds,"reserved_generation_turns":1,"reserved_composition_writing_turns":3,"guaranteed":false}),
     )
 }
 
@@ -1152,7 +1152,7 @@ pub fn finish(
                         .map(|e| e["contrast"]["consequences"].as_array().map_or(0, Vec::len))
                         .sum::<usize>()
                     + n * (n - 1) / 2;
-                remaining >= (*n as u64 + 4) * REASONING_ADMISSION_RESERVE + 2 * checks as u64 + 32
+                remaining >= (*n as u64 + 2) * REASONING_ADMISSION_RESERVE + super::super::finalization_transition_reserve(32) + 2 * checks as u64
             });
             p["proposal_pool"]["development_admission"] = json!({
                 "remaining_transitions":remaining,"admitted":count.is_some(),
@@ -2119,7 +2119,7 @@ mod tests {
             &response(&candidates),
         )
         .unwrap();
-        p["transition_count"] = json!(88);
+        p["transition_count"] = json!(42); // Leave the newly protected correction allowance.
         let only = candidates[0]["id"].clone();
         record(&mut p, |task| {
             if task["function"] == "check_proposal_change" && task["endpoint_id"] != only {
@@ -2164,7 +2164,7 @@ mod tests {
             next["proposal_pool"]["research_attempts"],
             before["proposal_pool"]["research_attempts"]
         );
-        assert_eq!(next["transition_count"], 88);
+        assert_eq!(next["transition_count"], before["transition_count"]);
         let mut unchecked = contrasts(&s, &next, &response(&developed)).unwrap();
         assert!(!unchecked["tasks"].as_array().unwrap().is_empty());
         finish(&s, &mut unchecked, true, false).unwrap();
