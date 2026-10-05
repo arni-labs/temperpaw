@@ -302,6 +302,18 @@ sandbox.bash("cd /workspace/repo && git push -u origin fix/my-change")
 sandbox.bash("cd /workspace/repo && gh pr create --title 'fix' --body 'description'")
 ```
 
+### Pushing app bundles to Genesis (temper-git)
+Genesis requires auth on push — an anonymous `git push` fails with
+`could not read Username`. Supply the Genesis token as the Basic-auth
+**username** (Genesis maps it to your principal + scopes). Use this for
+publishing a new app or updating an existing one in the Genesis registry.
+```python
+genesis_token = temper.get_secret("genesis_token")
+genesis = "genesis-production-164d.up.railway.app"  # or env TEMPERPAW_GENESIS_REGISTRY_URL host
+# create or update an app bundle repo, then push it:
+sandbox.bash(f"cd /workspace/app && git push https://{genesis_token}@{genesis}/<owner>/<repo>.git main")
+```
+
 ### Local development loop (verify before PRing)
 ```python
 sandbox.bash("cd /workspace/repo && pip install -r requirements.txt")

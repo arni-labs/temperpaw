@@ -1489,6 +1489,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             "github_token",
             config.github_token
         );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "genesis_token",
+            config.genesis_token
+        );
         seed_secret!(vault, &storage, &tenant, "dd_api_key", config.dd_api_key);
         seed_secret!(vault, &storage, &tenant, "dd_app_key", config.dd_app_key);
         seed_secret!(vault, &storage, &tenant, "exa_api_key", config.exa_api_key);
