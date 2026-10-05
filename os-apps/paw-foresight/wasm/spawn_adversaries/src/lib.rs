@@ -100,10 +100,16 @@ fn adversary_prompt(
          \"contradiction|incentive|lag|miracle\", \"severity\": \"low|medium|high\", \"note\": \
          \"...\"}}]. You refute; you never repair, and you never compute scores — do not add \
          or fix EventNodes, and costing is deterministic and runs elsewhere.\n\n\
-         Write a challenge log with temper.write (markdown: each attack with its reasoning), \
-         then self-report:\n\
+         Write your challenge log (markdown: each attack with its reasoning) with the \
+         temper.write tool — this is the ONLY way to create a file, and your workspace already \
+         exists. Do NOT create Files, Directories, or Workspaces yourself, and do NOT invent a \
+         file-creation API via temper.action — temper.write is the whole job. Call it exactly \
+         like this:\n\
+         result = temper.write(\"/challenge-log.md\", \"<your markdown challenge log>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as challenge_log_file_id below, then self-report:\n\
          temper.action(\"Paths\", \"{path_id}\", \"ChallengeComplete\", \
-         {{\"challenge_log_file_id\": \"<file-id-from-temper.write>\", \"challenge_flags\": \
+         {{\"challenge_log_file_id\": \"<result file_id>\", \"challenge_flags\": \
          \"[{{\\\"kind\\\": \\\"...\\\", \\\"severity\\\": \\\"...\\\", \\\"note\\\": \
          \\\"...\\\"}}]\"}})\n\
          Then call temper.done(\"complete\")."
@@ -459,6 +465,27 @@ mod tests {
         // The adversary's flags land in challenge_flags — never in the
         // repairer's field.
         assert!(!p.contains("cost_flags"));
+    }
+
+    #[test]
+    fn adversary_prompt_gives_explicit_file_write_recipe() {
+        let p = prompt(false);
+        assert!(
+            p.contains("temper.write(\"/challenge-log.md\""),
+            "adversary prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "adversary prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "adversary prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone: the recipe captures result[\"file_id\"]"
+        );
     }
 
     #[test]

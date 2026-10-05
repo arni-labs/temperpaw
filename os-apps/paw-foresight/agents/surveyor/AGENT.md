@@ -36,14 +36,24 @@ temper.create("EventNodes", {
 })
 ```
 
+## Writing Your Skeleton Summary
+
+`temper.write` is the ONLY way to create a FILE, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API — `temper.create` is for EventNodes only, never for files. Call it exactly like this:
+
+```python
+result = temper.write("/skeleton.md", "...one-page skeleton summary, markdown...")
+# result == {"file_id": "...", "path": "...", "workspace_id": "..."}
+graph_snapshot_file_id = result["file_id"]
+```
+
 ## Self-Reporting Completion
 
-Write a one-page skeleton summary with `temper.write` (markdown), then report to the World before finishing:
+Report to the World before finishing:
 
 ```python
 temper.action("Worlds", "<world_id>", "SeedComplete", {
     "skeleton_node_count": "<n>",
-    "graph_snapshot_file_id": "<file-id-from-temper.write>"
+    "graph_snapshot_file_id": graph_snapshot_file_id
 })
 temper.done("complete")
 ```

@@ -11,7 +11,7 @@ World.SampleEndpoints created your Endpoint entity, assigned its driver stance (
 - Optionally a corpus file and a driver basis file
 - Web tools, unless this is a hindcast world
 
-You write one document bundle, submit it for repair, and finish. Repairers will work backward from your documents; their repair costs decide your endpoint's weight — it is earned, not asserted.
+You write one document bundle, report it with `BundleWritten`, and finish. The diversity gate decides which bundles move into repair. Repairers will work backward from your documents; their repair costs decide your endpoint's weight — it is earned, not asserted.
 
 ## Your Job
 
@@ -22,7 +22,7 @@ Then write a document bundle: 2-4 documents, every one dated AT the target date 
 - a news item,
 - at least one in-world primary document (a filing, a review, a changelog).
 
-Documents must contain specific dates, named actors, and numbers. Vague futures cannot be repaired. Save the whole bundle as ONE markdown file with `temper.write`.
+Documents must contain specific dates, named actors, and numbers. Vague futures cannot be repaired. Save the whole bundle as ONE markdown file with `temper.write` (see below) — your workspace already exists; never create Files, Directories, or Workspaces yourself.
 
 In hindcast worlds you have NO web access by design, and you never reference anything dated after the world's vantage.
 
@@ -30,18 +30,28 @@ In hindcast worlds you have NO web access by design, and you never reference any
 
 The API silently drops unknown fields. Use these exact names.
 
+## Writing Your Bundle
+
+`temper.write` is the ONLY way to create a FILE, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API through `temper.action`. Call it exactly like this:
+
+```python
+result = temper.write("/bundle.md", "...the full markdown bundle...")
+# result == {"file_id": "...", "path": "...", "workspace_id": "..."}
+bundle_file_id = result["file_id"]
+```
+
 ## Self-Reporting Completion
 
 ```python
-temper.action("Endpoints", "<endpoint_id>", "SubmitForRepair", {
-    "bundle_file_id": "<file-id-from-temper.write>",
+temper.action("Endpoints", "<endpoint_id>", "BundleWritten", {
+    "bundle_file_id": bundle_file_id,
     "summary": "<one line>",
     "author_agent_id": "<your_agent_id>"
 })
 temper.done("complete")
 ```
 
-This is critical — SubmitForRepair is what spawns the repairer. An unwritten or unreported bundle is a dead endpoint.
+This is critical — `BundleWritten` parks the endpoint for the diversity gate. An unwritten or unreported bundle is a dead endpoint.
 
 ## Principles
 
@@ -49,5 +59,5 @@ This is critical — SubmitForRepair is what spawns the repairer. An unwritten o
 - Hold your assigned stance — the spread is the point; don't drift back to consensus.
 - Never contradict a determined node.
 - Specifics or nothing: dates, named actors, numbers.
-- One markdown file, one SubmitForRepair, then temper.done.
+- One markdown file, one BundleWritten, then temper.done.
 - You will not repair your own endpoint — repairers are always distinct agents (Cedar enforces it).

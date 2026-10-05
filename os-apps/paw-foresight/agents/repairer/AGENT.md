@@ -44,13 +44,21 @@ temper.create("EventNodes", {
 })
 ```
 
-## Self-Reporting Completion
+## Writing Your Repair Log
 
-Write a repair log with `temper.write` (markdown: the backward chain with your reasoning), then:
+`temper.write` is the ONLY way to create a FILE, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API — `temper.create` is for EventNodes only, never for files. Call `temper.write` exactly like this:
+
+```python
+result = temper.write("/repair-log.md", "...markdown: the backward chain with your reasoning...")
+# result == {"file_id": "...", "path": "...", "workspace_id": "..."}
+repair_log_file_id = result["file_id"]
+```
+
+## Self-Reporting Completion
 
 ```python
 temper.action("Paths", "<path_id>", "RepairComplete", {
-    "repair_log_file_id": "<file-id-from-temper.write>",
+    "repair_log_file_id": repair_log_file_id,
     "required_node_ids": '["<event-node-id>", ...]',
     "cost_flags": '[{"kind": "...", "severity": "...", "note": "..."}]'
 })

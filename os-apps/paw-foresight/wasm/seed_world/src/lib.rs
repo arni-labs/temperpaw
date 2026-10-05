@@ -119,10 +119,17 @@ fn surveyor_prompt(
          CONSENSUS POLE (what most informed observers currently expect). These are the \
          dimensions the engine will sample diverse futures across, so make them orthogonal \
          and genuinely contested — not restatements of one another.\n\n\
-         Then write a one-page skeleton summary with temper.write (markdown), and finish by \
+         Then write a one-page skeleton summary (markdown) with the temper.write tool — this \
+         is the ONLY way to create a FILE, and your workspace already exists. Do NOT create \
+         Files, Directories, or Workspaces yourself, and do NOT invent a file-creation API: \
+         temper.create is for EventNodes only, never for files. Call temper.write exactly like \
+         this:\n\
+         result = temper.write(\"/skeleton.md\", \"<your markdown skeleton summary>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as graph_snapshot_file_id below, then finish by \
          self-reporting (uncertainty_axes is a JSON array of {{\"axis\": \"...\", \"consensus_pole\": \"...\"}}):\n\
          temper.action(\"Worlds\", \"{world_id}\", \"SeedComplete\", \
-         {{\"skeleton_node_count\": \"<n>\", \"graph_snapshot_file_id\": \"<file-id-from-temper.write>\", \
+         {{\"skeleton_node_count\": \"<n>\", \"graph_snapshot_file_id\": \"<result file_id>\", \
          \"uncertainty_axes\": \"[{{\\\"axis\\\": \\\"...\\\", \\\"consensus_pole\\\": \\\"...\\\"}}, ...]\"}})\n\
          Then call temper.done(\"complete\")."
     )
@@ -456,6 +463,36 @@ mod tests {
         assert!(
             !p.contains("temper.read("),
             "surveyor prompt must not ask the session to read the corpus"
+        );
+    }
+
+    #[test]
+    fn surveyor_prompt_gives_explicit_file_write_recipe() {
+        let p = surveyor_prompt(
+            "w-1",
+            "a-1",
+            "Test",
+            "ai coding tools",
+            "desc",
+            "2026-12-11",
+            "corpus",
+            false,
+        );
+        assert!(
+            p.contains("temper.write(\"/skeleton.md\""),
+            "surveyor prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "surveyor prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "surveyor prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone: the recipe captures result[\"file_id\"]"
         );
     }
 
