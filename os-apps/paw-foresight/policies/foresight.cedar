@@ -249,7 +249,8 @@ permit(
   action in [Action::"Score", Action::"ClassifyCanonical", Action::"ClassifyTail",
              Action::"Reject", Action::"Rescore", Action::"RequestChallenge",
              Action::"Prune", Action::"RevisionRequested", Action::"ResumeRepair",
-             Action::"ResumeCosting"],
+             Action::"ResumeCosting", Action::"AssignRepairer",
+             Action::"AssignAdversary", Action::"AppendChallengeFlag"],
   resource is Path
 ) when {
   principal.agent_type == "system"
