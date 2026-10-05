@@ -132,6 +132,10 @@ pub async fn middleware(
     let path = request.uri().path().to_string();
     let method = request.method().as_str().to_string();
 
+    if is_dashboard_root_redirect_path(&method, &path) {
+        return Redirect::temporary("/dashboard").into_response();
+    }
+
     if is_safe_setup_path_public_during_bootstrap(&state, &method, &path).await
         || is_public_path(request.method().as_str(), &path)
     {
@@ -241,6 +245,10 @@ fn has_bearer_auth(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .map(|value| value.starts_with("Bearer "))
         .unwrap_or(false)
+}
+
+fn is_dashboard_root_redirect_path(method: &str, path: &str) -> bool {
+    matches!((method, path), ("GET" | "HEAD", "/"))
 }
 
 fn is_public_path(method: &str, path: &str) -> bool {
@@ -666,6 +674,7 @@ enum AuthError {
 mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::HeaderMap;
+    use axum::http::header::LOCATION;
     use axum::http::{Request, StatusCode};
     use axum::middleware::from_fn_with_state;
     use axum::response::IntoResponse;
@@ -675,8 +684,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        AuthState, claims_from_headers, is_public_path, issue_session_cookie_value, middleware,
-        router,
+        AuthState, claims_from_headers, is_dashboard_root_redirect_path, is_public_path,
+        issue_session_cookie_value, middleware, router,
     };
 
     #[test]
@@ -685,6 +694,40 @@ mod tests {
             is_public_path("POST", "/triggers/webhook/patrol-datadog"),
             "external webhook providers cannot send Temper bearer auth"
         );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_root_redirects_to_dashboard_without_proxy_help() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = AuthState::for_tests(tempdir.path()).await;
+        let app = Router::new()
+            .merge(router(state.clone()))
+            .layer(from_fn_with_state(state.clone(), middleware));
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response
+                .headers()
+                .get(LOCATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("/dashboard")
+        );
+    }
+
+    #[test]
+    fn dashboard_root_redirect_only_matches_safe_root_requests() {
+        assert!(is_dashboard_root_redirect_path("GET", "/"));
+        assert!(is_dashboard_root_redirect_path("HEAD", "/"));
+        assert!(!is_dashboard_root_redirect_path("POST", "/"));
+        assert!(!is_dashboard_root_redirect_path("GET", "/healthz"));
+        assert!(!is_dashboard_root_redirect_path("GET", "/api/probe"));
     }
 
     #[tokio::test]
