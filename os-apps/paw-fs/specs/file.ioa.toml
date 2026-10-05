@@ -26,6 +26,18 @@ terminal = ["Archived"]
 name = "ws_path"
 properties = ["WorkspaceId", "Path"]
 
+# --- Declared keys (ADR-0153) ---
+# (WorkspaceId, Path) uniquely identifies a File. The kernel indexes this for
+# O(log n) present/absent reads, so Files(WorkspaceId=…,Path=…) / the equivalent
+# $filter resolve without a workspace scan (the 413, ARN-68). Property names use
+# the OData/CSDL convention; the kernel matches them case-tolerantly to the
+# snake_case fields the Create params store. REQUIRES the kernel with [[key]]
+# support (temper ADR-0153) deployed first.
+
+[[key]]
+name = "ws_path"
+properties = ["WorkspaceId", "Path"]
+
 # --- State Variables ---
 
 [[state]]
