@@ -59,7 +59,17 @@ fn collect_cargo_manifests(root: &Path, relative_dir: &Path, files: &mut Vec<Pat
 fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     let manifest = load_text("crates/temperpaw/Cargo.toml");
     let lockfile = load_text("Cargo.lock");
-    let expected_rev = "aead3d22c769382523430c7f769a1aea8486d360";
+    // The kernel pin moves with every bump (temper-pin-bump.yml), so the contract
+    // is one arni-labs rev across the server crates, resolved in Cargo.lock, and
+    // none of the known-bad revs below; it does not name the current rev.
+    let expected_rev = manifest
+        .lines()
+        .find(|line| {
+            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
+        })
+        .and_then(|line| line.split("rev = \"").nth(1))
+        .and_then(|rest| rest.get(..40))
+        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev");
     let pre_llmobs_opt_out_rev = "510a0d9bc9517f7819d66849446cdf6aff2d5295";
     let observe_wait_only_rev = "6ccc483af87abbf6d9b060d0e6a6def3adfe6718";
     let host_boundary_rev = "7b170cf71246e01c337e81062b54ea8c597b9293";
