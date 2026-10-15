@@ -21,13 +21,17 @@ jobs:
           set -euo pipefail
           old=40cf14fdf756c1956260fe1d29a5563863cade37
           new=c41e13702cb81a5693e8d9c69db09480733f70b4
-          count=$(grep -o "$old" Cargo.lock | wc -l)
+          count=$(grep -o "$old" Cargo.lock | wc -l | tr -d ' ')
+          echo "old rev occurrences: $count"
           if [ "$count" -eq 0 ]; then
             echo "lock already retargeted"
             exit 0
           fi
-          test "$count" -eq 18
+          # Each git source line repeats the rev (rev=SHA#SHA), so 18 packages are 36 hits.
+          test "$count" -eq 36
           sed -i "s/${old}/${new}/g" Cargo.lock
+          test "$(grep -o "$new" Cargo.lock | wc -l | tr -d ' ')" -eq 36
+          test "$(grep -o "$old" Cargo.lock | wc -l | tr -d ' ')" -eq 0
           rm -f .github/workflows/refresh-temper-pin-lock.yml
           git config user.name "Rita Agafonova"
           git config user.email "36133358+rita-aga@users.noreply.github.com"
