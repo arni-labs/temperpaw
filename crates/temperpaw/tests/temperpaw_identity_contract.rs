@@ -467,8 +467,12 @@ fn railway_deploy_dockerfile_uses_image_tag_variable() {
         "railway.toml must upload Dockerfile.deploy as the production deployment source"
     );
     assert!(
-        railway_config.contains("healthcheckPath = \"/healthz\""),
-        "Railway cutover must use process liveness; /readyz remains the stronger post-cutover readiness proof"
+        railway_config.contains("healthcheckPath = \"/readyz\""),
+        "Railway cutover must wait for core readiness (ADR-0066); /healthz answers before boot finishes"
+    );
+    assert!(
+        railway_config.contains("overlapSeconds = 15"),
+        "the old copy must keep serving in-flight requests after cutover; TemperPaw has no SIGTERM drain"
     );
 
     let deploy_rs = fs::read_to_string(repo_root().join("crates/temperpaw/src/deploy.rs"))

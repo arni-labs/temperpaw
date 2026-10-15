@@ -143,10 +143,7 @@ jobs:
           EXPECTED_SHA: ${{ steps.r.outputs.expected_sha }}
           POLL_ATTEMPTS: "60"
           POLL_SECONDS: "10"
-          # interim (ARN-432): /readyz couples the optional Discord integration
-          # into readiness and is chronically degraded on a Discord 401, which
-          # failed verification for a healthy image AND its healthy rollback
-          # target on the first live run. Verify liveness+identity until readyz
-          # reflects core readiness only.
-          READY_PATH: /healthz
+          # /readyz is core readiness only; Discord state is in its body and
+          # never fails it (ADR-0066, closes the ARN-432 interim).
+          READY_PATH: /readyz
         run: bash /tmp/stack/deploy/railway-deploy-verify-rollback.sh
