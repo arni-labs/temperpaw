@@ -15,7 +15,7 @@ ADR-0053 moved the Railway health check from `/readyz` to `/healthz` because `/r
 - `/readyz` is core readiness: 503 until the startup gate opens, then 200. Discord state is still reported in its body (`discord.connected`, `discord.connection_state`, `discord.last_error`) but never fails readiness.
 - The production `railway.toml` health check uses `/readyz`, so traffic moves only to a copy that has finished booting.
 - `overlapSeconds = 15` keeps the old copy up for in-flight requests after cutover. TemperPaw has no SIGTERM handler, so `drainingSeconds` would not drain anything.
-- The release deploy job verifies on `/readyz` plus the `/paw/version` identity check.
+- The release deploy job keeps verifying on `/healthz` plus the `/paw/version` identity check, because its rollback targets may predate this change.
 
 ## Consequences
 
@@ -23,4 +23,6 @@ ADR-0053 moved the Railway health check from `/readyz` to `/healthz` because `/r
 - Both copies run against the same Postgres for the whole boot plus 15 seconds instead of about 18 seconds. Event appends stay safe (expected-sequence check plus the unique `(tenant, entity_type, entity_id, sequence_nr)` index); per-process actor caches and background loops are not instance-aware, as before, for a somewhat longer window.
 - A Discord outage no longer shows as a non-200 `/readyz`; read `discord.connected` in the body to see it.
 - The `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` service variable, where set, must agree with `railway.toml`.
+- An image built before this change answers `/readyz` 503 while Discord is degraded, so under this `railway.toml` it can never pass Railway's health check. Upload this `railway.toml` together with an image that has this change, and roll back to an older image with the older `railway.toml` (`/healthz`).
+- When Discord is healthy, both copies hold a Discord gateway session from the new copy's transport start until 15 seconds after cutover. Neither copy dedupes inbound messages by id, so a message in that window can be answered twice.
 - The in-app setup deploy (`crates/temperpaw/src/deploy.rs`) and paw-patrol's TemperDeploy still use `/healthz`; they are unchanged here.

@@ -721,21 +721,22 @@ async fn dispatch_openai_codex_auth_action(
     ))
 }
 
-/// `/readyz` body once startup is ready. Readiness is core readiness only (the
+/// `/readyz` once startup is ready. Readiness is core readiness only (the
 /// startup gate answers 503 until boot finishes); Discord is optional, so its
-/// state is reported here but never fails readiness (ADR-0066).
-fn readyz_body(
+/// state is reported in the body but never fails readiness (ADR-0066).
+fn readyz_response(
     configured: bool,
     runtime: &TransportStatus,
     desired_state: Option<&str>,
     connection_state: Option<&str>,
-) -> serde_json::Value {
+) -> (StatusCode, serde_json::Value) {
     let report = transport_status_report(configured, runtime, desired_state, connection_state);
-    serde_json::json!({
+    let body = serde_json::json!({
         "status": "ready",
         "healthz": "/healthz",
         "discord": report,
-    })
+    });
+    (StatusCode::OK, body)
 }
 
 fn discord_start_error_is_retryable(error: &str) -> bool {
@@ -3099,7 +3100,7 @@ pub(crate) async fn get_readyz(State(state): State<SetupApiState>) -> impl IntoR
     let connection_state = discord_connection
         .as_ref()
         .map(|snapshot| snapshot.status.as_str());
-    let mut body = readyz_body(
+    let (status, mut body) = readyz_response(
         has_discord,
         &runtime.discord,
         desired_state,
@@ -3117,7 +3118,7 @@ pub(crate) async fn get_readyz(State(state): State<SetupApiState>) -> impl IntoR
                 .unwrap_or(serde_json::Value::Null);
     }
 
-    (StatusCode::OK, Json(body))
+    (status, Json(body))
 }
 
 async fn proxy_discord_interaction(
@@ -3556,7 +3557,7 @@ mod tests {
         InstallFromGenesisRequest, allowed_secret_keys, datadog_enhanced_app_railway_vars,
         datadog_runtime_agent_railway_vars, discord_connect_params_for_secret_update,
         discord_start_error_is_retryable, genesis_install_request_from_setup, is_discord_ping,
-        persist_discord_public_key, personalized_soul_flag_value, readyz_body, secrets_schema,
+        persist_discord_public_key, personalized_soul_flag_value, readyz_response, secrets_schema,
         transport_status_report, validate_setup_secret_key, verify_discord_signature,
     };
     use crate::transport_manager::TransportStatus;
@@ -3723,13 +3724,14 @@ mod tests {
 
     #[test]
     fn readyz_reports_degraded_discord_without_failing_readiness() {
-        let body = readyz_body(
+        let (status, body) = readyz_response(
             true,
             &TransportStatus::Disconnected,
             Some("connected"),
             Some("Retrying"),
         );
 
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ready");
         assert_eq!(body["healthz"], "/healthz");
         assert_eq!(body["discord"]["configured"], true);
@@ -3737,8 +3739,9 @@ mod tests {
         assert_eq!(body["discord"]["desired_state"], "connected");
         assert_eq!(body["discord"]["connection_state"], "Retrying");
 
-        let body = readyz_body(false, &TransportStatus::Disconnected, None, None);
+        let (status, body) = readyz_response(false, &TransportStatus::Disconnected, None, None);
 
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ready");
         assert_eq!(body["discord"]["configured"], false);
     }

@@ -143,7 +143,9 @@ jobs:
           EXPECTED_SHA: ${{ steps.r.outputs.expected_sha }}
           POLL_ATTEMPTS: "60"
           POLL_SECONDS: "10"
-          # /readyz is core readiness only; Discord state is in its body and
-          # never fails it (ADR-0066, closes the ARN-432 interim).
-          READY_PATH: /readyz
+          # /healthz + the /paw/version identity check. /readyz is core readiness
+          # since ADR-0066, but a rollback target built before it still answers
+          # 503 there on a degraded Discord (ARN-432), so keep /healthz until
+          # every rollback candidate has the new /readyz.
+          READY_PATH: /healthz
         run: bash /tmp/stack/deploy/railway-deploy-verify-rollback.sh

@@ -76,7 +76,7 @@ This command:
    when configured
 8. Deploys the pre-built Docker image from GHCR
 9. Assigns a public domain and polls `/healthz` until the new deployment is live,
-   then verifies `/readyz` for application/transport readiness
+   then verifies `/readyz` for core readiness (Discord state is in its body)
 10. Prints the dashboard URL
 
 Existing Railway deployments can enable the Datadog Runtime Agent path without
