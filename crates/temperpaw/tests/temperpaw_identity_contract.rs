@@ -199,8 +199,18 @@ fn is_text_candidate(path: &Path) -> bool {
     })
 }
 
+// Effort records describe what happened at the time, including the Railway
+// `openpaw` service they operated on; they are history, not active surfaces.
+const HISTORICAL_RECORD_DIRS: [&str; 1] = ["docs/efforts/"];
+
 fn is_allowlisted_legacy_reference(path: &Path, line: &str) -> bool {
     let path = path.to_string_lossy();
+    if HISTORICAL_RECORD_DIRS
+        .iter()
+        .any(|dir| path.starts_with(dir))
+    {
+        return true;
+    }
     LEGACY_IDENTITY_ALLOWLIST
         .iter()
         .any(|(allowed_path, allowed_line, _reason)| {
