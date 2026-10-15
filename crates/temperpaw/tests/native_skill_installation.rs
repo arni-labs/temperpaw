@@ -31,13 +31,15 @@ fn gitignore_excludes_local_worktree_and_extraction_noise() {
     }
 }
 
+// Since 311e80496 (Stack guidance sync) an ADR records durable architectural
+// decisions when useful and is not a completion gate.
 #[test]
-fn agents_guide_requires_adrs_for_material_architecture_changes() {
+fn agents_guide_says_where_adrs_live() {
     let guide = read(repo_root().join("AGENTS.md"));
 
     for needle in [
         "Architecture Decision Records",
-        "material architecture",
+        "Record durable architectural decisions",
         "os-apps/<app>/adrs/",
         "docs/adrs/",
     ] {

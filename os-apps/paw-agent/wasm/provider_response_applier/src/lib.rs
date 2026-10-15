@@ -1214,9 +1214,9 @@ mod tests {
             .split("[[state]]")
             .find(|block| block.contains("name = \"extra_json\""))
             .expect("session_entry.ioa.toml should declare extra_json");
+        let ceiling = format!("overflow_inline_max_bytes = {MAX_ENTRY_EXTRA_BYTES}");
         assert!(
-            extra_json_block
-                .contains(&format!("overflow_inline_max_bytes = \"{MAX_ENTRY_EXTRA_BYTES}\"")),
+            extra_json_block.lines().any(|line| line.trim() == ceiling),
             "MAX_ENTRY_EXTRA_BYTES must track the extra_json overflow ceiling: {extra_json_block}"
         );
     }
