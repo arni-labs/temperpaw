@@ -1,0 +1,9 @@
+[package]
+name = "dsf-experiment-run"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+dsf-experiment-common = { path = "../dsf_experiment_common" }

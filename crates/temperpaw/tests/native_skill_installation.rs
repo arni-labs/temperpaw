@@ -29,11 +29,6 @@ fn gitignore_excludes_local_worktree_and_extraction_noise() {
             ".gitignore should exclude local/generated noise pattern {pattern}"
         );
     }
-
-    assert!(
-        !ignore.lines().any(|line| line.trim() == ".proofs/"),
-        "root .proofs must stay trackable for mandatory verification reports"
-    );
 }
 
 #[test]

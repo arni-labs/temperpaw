@@ -52,6 +52,22 @@
         <ReturnType Type="TemperPaw.Media.MediaGenerationRequest"/>
       </Action>
 
+      <Action Name="GenerateWithOpenRouter" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Media.MediaGenerationRequest"/>
+        <Parameter Name="prompt" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="media_type" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="operation" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="size" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="quality" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="output_format" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="background" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="workspace_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="output_path" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.Media.MediaGenerationRequest"/>
+      </Action>
+
       <Action Name="RecordAuthReady" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Media.MediaGenerationRequest"/>
         <Parameter Name="provider_auth_status" Type="Edm.String" Nullable="true"/>

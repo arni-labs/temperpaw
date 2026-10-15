@@ -8,6 +8,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::Mutex;
 
+    include!("dsf_model_patrol_tests.rs");
     include!("datadog_patrol_tests.rs");
     include!("github_patrol_tests.rs");
     include!("evaluation_tests.rs");

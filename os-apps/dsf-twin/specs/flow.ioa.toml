@@ -1,0 +1,113 @@
+# ARN-467. Executable IOA contract; simulator tests run these declarations unchanged.
+[automaton]
+name = "DsfFlow"
+states = ["Draft","Active","Retired"]
+initial = "Draft"
+strict_action_params = true
+# Durable records may wait indefinitely; work in progress has explicit timeouts.
+allow_indefinite_states = ["Draft","Active"]
+terminal = ["Retired"]
+
+[[state]]
+name = "application_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "name"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_revision"
+type = "string"
+initial = ""
+
+[[state]]
+name = "entry_points"
+type = "string"
+initial = ""
+
+[[state]]
+name = "resource_ids"
+type = "string"
+initial = ""
+
+[[state]]
+name = "outcome_definitions"
+type = "string"
+initial = ""
+
+[[state]]
+name = "provenance_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "revision_sequence"
+type = "counter"
+initial = 0
+
+[[action]]
+name = "Register"
+kind = "input"
+from = ["Draft"]
+to = "Active"
+params = [{ name = "application_id", type = "string" }, { name = "name", type = "string" }, { name = "source_revision", type = "string" }, { name = "entry_points", type = "string" }, { name = "resource_ids", type = "string" }, { name = "outcome_definitions", type = "string" }, { name = "provenance_ref", type = "string" }]
+effect = []
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "application_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "name"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_revision"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "resource_ids"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "provenance_ref"
+
+[[action]]
+name = "Revise"
+kind = "input"
+from = ["Active"]
+to = "Active"
+params = [{ name = "source_revision", type = "string" }, { name = "entry_points", type = "string" }, { name = "resource_ids", type = "string" }, { name = "outcome_definitions", type = "string" }, { name = "provenance_ref", type = "string" }, { name = "expected_sequence", type = "counter" }]
+effect = ["revision_sequence += 1"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "revision_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_revision"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "resource_ids"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "provenance_ref"
+
+[[action]]
+name = "Retire"
+kind = "input"
+from = ["Active"]
+to = "Retired"
+params = [{ name = "provenance_ref", type = "string" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "provenance_ref"

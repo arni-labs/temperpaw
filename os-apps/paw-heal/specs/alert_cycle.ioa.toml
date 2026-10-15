@@ -10,6 +10,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Triaging", "Fixed", "Merging", "Deploying", "Verifying"]
+terminal = ["Resolved", "Tuned", "Failed"]
 
 [[state]]
 name = "monitor_id"
@@ -88,7 +89,6 @@ from = ["Created"]
 to = "Triaging"
 params = ["monitor_id", "alert_payload", "report_channel_entity_id", "report_thread_id", "agent_model", "agent_provider"]
 hint = "Open a triage cycle and optionally attach the SRE agent responsible for diagnosis."
-effect = [{ type = "trigger", name = "spawn_sre" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -113,7 +113,6 @@ from = ["Triaging"]
 to = "Fixed"
 params = ["diagnosis", "pr_url", "developer_agent_id"]
 hint = "Mark the alert as fixed and record the remediation PR."
-effect = [{ type = "trigger", name = "begin_cicd" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -135,7 +134,6 @@ from = ["Fixed"]
 to = "Merging"
 params = ["pr_url"]
 hint = "Begin the merge phase after a fix PR is ready."
-effect = [{ type = "trigger", name = "check_merge_ready" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -159,7 +157,6 @@ from = ["Merging"]
 to = "Deploying"
 params = ["merge_sha"]
 hint = "Record the merge SHA and transition into deployment tracking."
-effect = [{ type = "trigger", name = "check_deployment" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -183,7 +180,6 @@ from = ["Deploying"]
 to = "Verifying"
 params = ["deployment_url"]
 hint = "Record the deployment target that should be verified after merge."
-effect = [{ type = "trigger", name = "check_alert_resolution" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -209,7 +205,6 @@ from = ["Fixed", "Deploying", "Verifying"]
 to = "Resolved"
 params = ["diagnosis"]
 hint = "Mark the alert resolved after post-deploy verification succeeds."
-effect = [{ type = "trigger", name = "report_outcome" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -230,7 +225,12 @@ from = ["Fixed", "Merging", "Deploying", "Verifying"]
 to = "Failed"
 params = ["diagnosis"]
 hint = "Mark the alert failed after deployment when the signal still persists."
-effect = [{ type = "trigger", name = "report_outcome" }]
+
+[[action.triggers]]
+name = "report_outcome"
+kind = "wasm"
+module = "heal_reporter"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "TuneComplete"
@@ -239,7 +239,12 @@ from = ["Triaging"]
 to = "Tuned"
 params = ["diagnosis", "tuning_notes"]
 hint = "Mark the cycle as tuned when the monitor was adjusted instead of code being changed."
-effect = [{ type = "trigger", name = "report_outcome" }]
+
+[[action.triggers]]
+name = "report_outcome"
+kind = "wasm"
+module = "heal_reporter"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "Escalate"
@@ -248,7 +253,12 @@ from = ["Triaging"]
 to = "Failed"
 params = ["diagnosis"]
 hint = "Escalate when the loop cannot safely remediate the issue."
-effect = [{ type = "trigger", name = "report_outcome" }]
+
+[[action.triggers]]
+name = "report_outcome"
+kind = "wasm"
+module = "heal_reporter"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "CheckMergeReady"
@@ -257,7 +267,13 @@ from = ["Merging"]
 to = "Merging"
 params = []
 hint = "Poll GitHub PR merge readiness. Self-loops until checks pass or max_checks exceeded."
-effect = [{ type = "trigger", name = "check_merge_ready" }]
+
+[[action.triggers]]
+name = "check_merge_ready"
+kind = "wasm"
+module = "cicd_merger"
+on_failure = "AlertPersists"
+config = { github_token = "{secret:github_token}", temper_api_url = "{secret:temper_api_url}", max_checks = "40" }
 
 [[action]]
 name = "CheckDeployment"
@@ -266,7 +282,13 @@ from = ["Deploying"]
 to = "Deploying"
 params = []
 hint = "Poll GitHub deployments API for success."
-effect = [{ type = "trigger", name = "check_deployment" }]
+
+[[action.triggers]]
+name = "check_deployment"
+kind = "wasm"
+module = "deployment_tracker"
+on_failure = "AlertPersists"
+config = { github_token = "{secret:github_token}", temper_api_url = "{secret:temper_api_url}", max_checks = "40" }
 
 [[action]]
 name = "CheckAlertResolution"
@@ -275,19 +297,10 @@ from = ["Verifying"]
 to = "Verifying"
 params = []
 hint = "Poll monitoring API for alert resolution."
-effect = [{ type = "trigger", name = "check_alert_resolution" }]
 
-[[invariant]]
-name = "ResolvedIsFinal"
-when = ["Resolved"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "TunedIsFinal"
-when = ["Tuned"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
+[[action.triggers]]
+name = "check_alert_resolution"
+kind = "wasm"
+module = "alert_verifier"
+on_failure = "AlertPersists"
+config = { dd_api_key = "{secret:dd_api_key}", dd_app_key = "{secret:dd_app_key}", dd_site = "{secret:dd_site}", temper_api_url = "{secret:temper_api_url}", max_checks = "5" }

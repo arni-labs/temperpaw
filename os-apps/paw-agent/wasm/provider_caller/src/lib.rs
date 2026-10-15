@@ -12,7 +12,8 @@
 
 use openai_chat_wire::{
     ChatCompletionStreamAccumulator, ChatStreamDelta, ChatStreamParseFailure,
-    build_chat_completion_body, convert_messages_to_chat, parse_headers_json,
+    build_chat_completion_body, convert_messages_to_chat, event_token_signals,
+    merge_token_signals, parse_headers_json, synthetic_tool_call_id,
 };
 #[cfg(test)]
 use openai_codex_wire::base64_url_no_pad;
@@ -69,6 +70,8 @@ struct LlmResponse {
     cache_creation_input_tokens: i64,
     request_bytes: usize,
     response_bytes: usize,
+    /// Token-level RL signals the serving stack returned, when it returned any.
+    token_signals: Option<Value>,
 }
 
 fn normalize_provider(provider: &str) -> String {
@@ -409,6 +412,8 @@ struct ParsedProviderStream {
     response_bytes: usize,
     semantic_deltas: Vec<LlmStreamDelta>,
     completed: bool,
+    /// Token-level RL signals the serving stack streamed, when it streamed any.
+    token_signals: Option<Value>,
 }
 
 impl ParsedProviderStream {
@@ -422,6 +427,7 @@ impl ParsedProviderStream {
             cache_creation_input_tokens: self.cache_creation_input_tokens,
             request_bytes,
             response_bytes: self.response_bytes,
+            token_signals: self.token_signals,
         }
     }
 }
@@ -555,6 +561,7 @@ struct OpenAiStreamAccumulator {
     streamed_text: String,
     saw_completed: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
+    token_signals: Option<Value>,
 }
 
 impl OpenAiStreamAccumulator {
@@ -618,6 +625,12 @@ impl OpenAiStreamAccumulator {
             "response.completed" => {
                 self.saw_completed = true;
                 if let Some(resp) = event.get("response") {
+                    // One event contributes each signal once — the response is
+                    // the content level, `response.usage` the accounting one.
+                    // See `event_token_signals`.
+                    if let Some(source) = event_token_signals(resp.get("usage"), Some(resp)) {
+                        merge_token_signals(&mut self.token_signals, &source);
+                    }
                     if let Some(usage) = resp.get("usage") {
                         self.usage = usage.clone();
                     }
@@ -685,6 +698,7 @@ impl OpenAiStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            token_signals: self.token_signals,
         })
     }
 }
@@ -1001,6 +1015,8 @@ impl AnthropicStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            // The Anthropic Messages stream carries no token ids or logprobs.
+            token_signals: None,
         })
     }
 }
@@ -1016,6 +1032,18 @@ fn parse_anthropic_stream_events(
     }
     acc.finalize(response_bytes)
 }
+
+// The OpenRouter-specific path below is NOT the live one. `call_provider`
+// dispatches "openrouter" to `call_openai_compatible_chat`, which uses the
+// shared `openai_chat_wire` conversions and accumulator. Everything from here
+// to `convert_tools_to_openrouter` is unreachable — the compiler says so on
+// every build ("never used" / "never constructed"), and those warnings are left
+// standing deliberately rather than silenced with `#[allow(dead_code)]`.
+//
+// It is kept, not deleted, because whether this copy has a future is
+// nerdsane/temperpaw#459's call, not this branch's. It is still maintained to
+// the same invariants — a reader who mistakes it for the live path must not
+// find a stale rule in it.
 
 #[derive(Default)]
 struct OpenRouterToolCallAccum {
@@ -1033,6 +1061,8 @@ struct OpenRouterStreamAccumulator {
     output_tokens: i64,
     saw_done: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
+    token_signals: Option<Value>,
+    response_id: String,
 }
 
 impl OpenRouterStreamAccumulator {
@@ -1050,6 +1080,13 @@ impl OpenRouterStreamAccumulator {
         })?;
         let mut deltas = Vec::new();
 
+        if self.response_id.is_empty()
+            && let Some(id) = event.get("id").and_then(Value::as_str)
+            && !id.is_empty()
+        {
+            self.response_id = id.to_string();
+        }
+
         if let Some(usage) = event.get("usage") {
             self.input_tokens = usage
                 .get("prompt_tokens")
@@ -1061,6 +1098,17 @@ impl OpenRouterStreamAccumulator {
                 .and_then(Value::as_i64)
                 .or_else(|| usage.get("output_tokens").and_then(Value::as_i64))
                 .unwrap_or(self.output_tokens);
+        }
+
+        // One event contributes each signal once — see `event_token_signals`.
+        if let Some(source) = event_token_signals(
+            event.get("usage"),
+            event
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first()),
+        ) {
+            merge_token_signals(&mut self.token_signals, &source);
         }
 
         if let Some(choice) = event
@@ -1145,7 +1193,11 @@ impl OpenRouterStreamAccumulator {
             };
             content.push(json!({
                 "type": "tool_use",
-                "id": if tool_call.id.is_empty() { format!("or_tool_{}", idx + 1) } else { tool_call.id.clone() },
+                "id": if tool_call.id.is_empty() {
+                    synthetic_tool_call_id(&self.response_id, "or_tool", idx + 1)
+                } else {
+                    tool_call.id.clone()
+                },
                 "name": if tool_call.name.is_empty() { "unknown_tool".to_string() } else { tool_call.name.clone() },
                 "input": input,
             }));
@@ -1165,6 +1217,7 @@ impl OpenRouterStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            token_signals: self.token_signals,
         })
     }
 }
@@ -2438,9 +2491,12 @@ fn call_openai_compatible_chat(
         cache_creation_input_tokens: 0,
         request_bytes: body_str.len(),
         response_bytes: parsed.response_bytes,
+        token_signals: parsed.token_signals,
     })
 }
 
+/// Unreachable: `call_provider` sends "openrouter" to
+/// `call_openai_compatible_chat`. See the note above `OpenRouterToolCallAccum`.
 fn call_openrouter(
     ctx: &Context,
     temper_api_url: &str,
@@ -2967,6 +3023,21 @@ fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
 ///
 /// Uses the Responses API format (not Chat Completions): instructions, input, stream=true.
 /// The WASM http_call buffers the full SSE stream — we parse the response.completed event.
+fn reasoning_effort_from_options(provider_options_json: &str) -> &'static str {
+    let parsed: Option<Value> = serde_json::from_str(provider_options_json).ok();
+    match parsed
+        .as_ref()
+        .and_then(|v| v.get("reasoning_effort"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+    {
+        "minimal" => "minimal",
+        "low" => "low",
+        "high" => "high",
+        _ => "medium",
+    }
+}
+
 fn call_openai(
     ctx: &Context,
     temper_api_url: &str,
@@ -2980,6 +3051,7 @@ fn call_openai(
     tools: &[Value],
     temperature: f64,
     provider: &str,
+    provider_options_json: &str,
 ) -> Result<LlmResponse, String> {
     // Convert Anthropic-format messages to Responses API input format
     let pre_convert_types: Vec<String> = messages
@@ -3046,7 +3118,9 @@ fn call_openai(
         "stream": true,
         "store": false,
         "reasoning": {
-            "effort": "medium",
+            // Session-configurable via provider_options_json
+            // {"reasoning_effort": ...}; "medium" preserves prior behavior.
+            "effort": reasoning_effort_from_options(provider_options_json),
             "summary": "auto",
         },
     });
@@ -3470,6 +3544,7 @@ fn build_mock_step_response(
             cache_creation_input_tokens: 0,
             request_bytes: 0,
             response_bytes: serialized_content.len(),
+            token_signals: None,
         });
     }
 
@@ -3498,6 +3573,7 @@ fn mock_text_response(messages: &[Value], text: String) -> LlmResponse {
         cache_creation_input_tokens: 0,
         request_bytes: 0,
         response_bytes: text.len(),
+        token_signals: None,
     }
 }
 
@@ -3574,9 +3650,12 @@ fn extract_memory_keys(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Unreachable, and kept in step with the live `convert_messages_to_chat`
+/// anyway: the fallback tool-call id is scoped per message, because a reader
+/// who mistakes this for the live path must not find the unscoped rule here.
 fn convert_messages_to_openrouter(messages: &[Value]) -> Vec<Value> {
     let mut out = Vec::<Value>::new();
-    for msg in messages {
+    for (message_index, msg) in messages.iter().enumerate() {
         let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
         let content = msg.get("content").cloned().unwrap_or(json!(""));
 
@@ -3603,7 +3682,19 @@ fn convert_messages_to_openrouter(messages: &[Value]) -> Vec<Value> {
                                     .get("id")
                                     .and_then(Value::as_str)
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("tool_{}", idx + 1));
+                                    .unwrap_or_else(|| {
+                                        // Position within the message is not
+                                        // unique across a conversation; scope
+                                        // it so two id-less assistant turns
+                                        // cannot send the provider the same
+                                        // call id, which would collapse two
+                                        // decisions into one (ADR-0035 §14).
+                                        synthetic_tool_call_id(
+                                            &format!("msg{message_index}"),
+                                            "tool",
+                                            idx + 1,
+                                        )
+                                    });
                                 let name = block
                                     .get("name")
                                     .and_then(Value::as_str)
@@ -3954,6 +4045,7 @@ pub fn run_provider_caller() -> Result<(), String> {
                 &prepared.tools,
                 temperature,
                 &provider,
+                &provider_options_json,
             ),
             other => Err(format!("unsupported LLM provider: {other}")),
         },
@@ -4018,6 +4110,7 @@ pub fn run_provider_caller() -> Result<(), String> {
         cache_creation_input_tokens: response.cache_creation_input_tokens,
         request_bytes: response.request_bytes,
         response_bytes: response.response_bytes,
+        token_signals: response.token_signals,
     };
     let artifact_json = serde_json::to_string(&artifact)
         .map_err(|e| format!("provider response artifact serialize: {e}"))?;
@@ -4235,7 +4328,113 @@ fn check_phase_budget(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reasoning_effort_defaults_to_medium_and_accepts_valid_levels() {
+        use super::reasoning_effort_from_options as effort;
+        assert_eq!(effort(""), "medium");
+        assert_eq!(effort("not json"), "medium");
+        assert_eq!(effort("{}"), "medium");
+        assert_eq!(effort(r#"{"reasoning_effort":"high"}"#), "high");
+        assert_eq!(effort(r#"{"reasoning_effort":"low"}"#), "low");
+        assert_eq!(effort(r#"{"reasoning_effort":"minimal"}"#), "minimal");
+        assert_eq!(effort(r#"{"reasoning_effort":"xhigh"}"#), "medium");
+    }
+
     use super::*;
+
+    /// The dead OpenRouter conversion is kept in step with the live one. This
+    /// exact line regressed once already — a rebase restored a copy predating
+    /// the fix — so the invariant is pinned here rather than trusted to the
+    /// code being unreachable today. Position within a message is not unique
+    /// across a conversation: two id-less assistant turns would otherwise send
+    /// the provider the same call id, and the emitter would collapse two
+    /// decisions into one (ADR-0035 section 14).
+    #[test]
+    fn openrouter_conversion_scopes_missing_tool_call_ids_per_message() {
+        let messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","name":"a","input":{}}]}),
+            json!({"role":"assistant","content":[{"type":"tool_use","name":"b","input":{}}]}),
+        ];
+        let converted = convert_messages_to_openrouter(&messages);
+        let ids: Vec<&str> = converted
+            .iter()
+            .filter_map(|message| message.get("tool_calls"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|call| call["id"].as_str())
+            .collect();
+
+        assert_eq!(ids.len(), 2);
+        assert_ne!(
+            ids[0], ids[1],
+            "two id-less assistant turns must not share a synthetic call id"
+        );
+    }
+
+    /// A server that carries the same signals at both levels of one event must
+    /// not have them stored twice. Completion-side signals accumulate across
+    /// events, and with a single signal present there is no second array to
+    /// disagree on length — so the doubling would reach an RL consumer as real
+    /// token ids. Same class as the chat accumulator's; these two are the other
+    /// two wire shapes.
+    #[test]
+    fn openrouter_event_contributes_each_token_signal_once() {
+        let mut accumulator = OpenRouterStreamAccumulator::default();
+        accumulator
+            .ingest_data(
+                &json!({
+                    "usage": {"completion_tokens": 2, "completion_token_ids": [7, 8]},
+                    "choices": [{"completion_token_ids": [7, 8], "delta": {"content": "hi"}}],
+                })
+                .to_string(),
+            )
+            .expect("event parses");
+
+        let signals = accumulator
+            .token_signals
+            .clone()
+            .expect("token signals recorded");
+        assert_eq!(
+            signals["completion_token_ids"],
+            json!([7, 8]),
+            "the repeated payload must be taken once, not concatenated"
+        );
+    }
+
+    #[test]
+    fn openai_response_completed_contributes_each_token_signal_once() {
+        let mut accumulator = OpenAiStreamAccumulator::default();
+        accumulator
+            .ingest_data(
+                &json!({
+                    "type": "response.completed",
+                    "response": {
+                        "completion_token_ids": [4, 5, 6],
+                        "usage": {
+                            "input_tokens": 3,
+                            "output_tokens": 3,
+                            "completion_token_ids": [4, 5, 6],
+                        },
+                    },
+                })
+                .to_string(),
+            )
+            .expect("event parses");
+
+        let signals = accumulator
+            .token_signals
+            .clone()
+            .expect("token signals recorded");
+        assert_eq!(
+            signals["completion_token_ids"],
+            json!([4, 5, 6]),
+            "response and response.usage are one event, not two measurements"
+        );
+        assert_eq!(
+            accumulator.usage["output_tokens"], 3,
+            "usage accounting is still captured"
+        );
+    }
 
     #[test]
     fn provider_progress_wrapper_emits_start_and_end_on_success() {

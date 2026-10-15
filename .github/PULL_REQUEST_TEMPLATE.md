@@ -1,10 +1,7 @@
-## Summary
+## Change
 
-- What changed
-- Why it changed
+What problem does this solve, and what now happens?
 
 ## Verification
 
-- [ ] `cargo test -p temperpaw --quiet`
-- [ ] `cd dashboard && npm run build`
-- [ ] Proof added to `.proofs/` if the change touches an end-to-end workflow
+Relevant commands or user flows tested, results, and material limits. Include screenshots or links when useful.

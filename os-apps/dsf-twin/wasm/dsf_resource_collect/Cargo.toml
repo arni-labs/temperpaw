@@ -1,0 +1,19 @@
+[package]
+name = "dsf-resource-collect"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[dependencies]
+dsf-resource-common = { path = "../dsf_resource_common" }
+dsf-railway-actions = { path = "../dsf_railway_actions" }
+dsf-vercel-actions = { path = "../dsf_vercel_actions" }
+dsf-supabase-actions = { path = "../dsf_supabase_actions" }
+dsf-r2-actions = { path = "../dsf_r2_actions" }
+dsf-datadog-actions = { path = "../dsf_datadog_actions" }
+dsf-media-actions = { path = "../dsf_media_actions" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }

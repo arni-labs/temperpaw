@@ -1,0 +1,180 @@
+[automaton]
+# Intent - human or manager-agent intent submitted into Patrol as work
+# (WorkRequest shape, renamed to the SDLC vocabulary; ARN-441). Triage (worth
+# doing?) is a different lifecycle than execution (done right?), so Intent stays
+# the intake. Accept creates the Effort. Additive: WorkRequest stays until
+# the phase-3 flip.
+name = "Intent"
+states = ["Draft", "Submitted", "Triaged", "Accepted", "Rejected", "Linked"]
+initial = "Draft"
+
+allow_indefinite_states = ["Draft", "Accepted", "Rejected", "Linked"]
+
+[[state]]
+name = "source"
+type = "string"
+initial = ""
+
+[[state]]
+name = "request_text"
+type = "string"
+initial = ""
+
+[[state]]
+name = "requester_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "signal_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "factory_case_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "pm_issue_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "triage_summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+# Seed fields for the Effort born at Accept (mapped by the entity trigger below).
+[[state]]
+name = "task_summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "task_detail"
+type = "string"
+initial = ""
+
+[[state]]
+name = "risk_lane"
+type = "string"
+initial = "L0"
+
+[[state]]
+name = "repo"
+type = "string"
+initial = ""
+
+[[state]]
+name = "branch"
+type = "string"
+initial = ""
+
+# Optional intent document link, copied to the Effort at birth.
+[[state]]
+name = "intent_ref"
+type = "string"
+initial = ""
+
+
+[[action]]
+name = "Submit"
+kind = "input"
+from = ["Draft"]
+to = "Submitted"
+params = ["source", "request_text", "requester_id"]
+hint = "Submit human or manager-agent intent into Patrol as work. (Intake routing generalizes from patrol_request_router in a later step; the Effort is born at Accept.)"
+
+[[action]]
+name = "AttachSignal"
+kind = "input"
+from = ["Submitted", "Triaged"]
+params = ["signal_id"]
+hint = "Attach an observed signal to this intent. Self-loop (no `to`) - a signal on a Triaged intent must not regress it to Submitted; it stays in its current state."
+
+[[action]]
+name = "Triage"
+kind = "input"
+from = ["Submitted"]
+to = "Triaged"
+params = ["triage_summary", "task_summary", "task_detail", "risk_lane", "repo", "branch", "intent_ref"]
+hint = "Record Patrol triage, the execution seed (task, risk, repo/branch), and an optional intent document link."
+
+[[action]]
+name = "AttachIntentFile"
+kind = "input"
+from = ["Submitted", "Triaged"]
+params = ["intent_ref"]
+hint = "Optionally link an intent document; existence is not a workflow gate."
+
+
+
+[[action]]
+name = "Accept"
+kind = "input"
+from = ["Triaged"]
+to = "Accepted"
+params = ["factory_case_id"]
+hint = "Optional intake: create an Effort from this request. Direct Effort creation needs no intake sequence."
+
+[[action.triggers]]
+name = "intent_accepted_creates_effort"
+kind = "entity"
+principal = "patrol-intake-service"
+target_entity = "Effort"
+target_action = "Seed"
+guard = "status == 'Accepted'"
+
+[action.triggers.args]
+intent_id = "Id"
+intent_ref = "intent_ref"
+factory_case_id = "factory_case_id"
+task_summary = "task_summary"
+task_detail = "task_detail"
+risk_lane = "risk_lane"
+repo = "repo"
+branch = "branch"
+
+[action.triggers.resolve_target]
+kind = "create"
+
+[[action]]
+name = "LinkPmIssue"
+kind = "input"
+from = ["Accepted", "Linked"]
+to = "Linked"
+params = ["pm_issue_id"]
+hint = "Link the durable paw-pm Issue created or reused by Patrol (Linear mirror)."
+
+[[action]]
+name = "Reject"
+kind = "input"
+from = ["Triaged", "Submitted"]
+to = "Rejected"
+params = ["triage_summary"]
+hint = "Reject an intent that should not become work."
+
+[[action]]
+name = "Reopen"
+kind = "input"
+from = ["Rejected"]
+to = "Triaged"
+hint = "Return a Rejected request to optional triage."
+
+[[state_timeout]]
+state = "Submitted"
+after_seconds = 86400
+on_timeout = "Reject"
+args = { triage_summary = "'Intent was not triaged within 24h.'" }
+
+[[state_timeout]]
+state = "Triaged"
+after_seconds = 86400
+on_timeout = "Reject"
+args = { triage_summary = "'Intent was not accepted or rejected within 24h.'" }

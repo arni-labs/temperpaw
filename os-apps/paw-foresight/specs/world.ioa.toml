@@ -28,6 +28,7 @@ initial = "Created"
 # Seeding self-heals: a surveyor that completes or stalls without SeedComplete
 # re-enters seed_world instead of wedging the world.
 allow_indefinite_states = ["Created", "Active", "Updating"]
+terminal = ["Archived", "Failed"]
 
 [[state_timeout]]
 state = "Seeding"
@@ -211,7 +212,6 @@ from = ["Created"]
 to = "Seeding"
 params = []
 hint = "Begin skeleton construction. Spawns surveyor and bookmaker sessions."
-effect = [{ type = "trigger", name = "seed_world" }]
 
 [[action.triggers]]
 name = "seed_world"
@@ -238,7 +238,6 @@ from = ["Seeding"]
 to = "Seeding"
 params = []
 hint = "Self-heal: re-spawn the surveyor/bookmaker batch when Seeding did not receive SeedComplete. System principals only."
-effect = [{ type = "trigger", name = "seed_world" }]
 
 [[action.triggers]]
 name = "seed_world"
@@ -256,7 +255,6 @@ kind = "input"
 from = ["Active"]
 params = []
 hint = "Start a corridor pass: spawn endpoint-writer sessions under assigned driver configurations."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -279,7 +277,6 @@ kind = "input"
 from = ["Active"]
 params = ["gate_rounds"]
 hint = "Run the diversity gate over the written worlds (ADR-006). System principals only."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -311,7 +308,6 @@ from = ["Active"]
 to = "Active"
 params = []
 hint = "Self-heal: re-run world aggregate when claims are settled but canonical_path_id is unset. Fires on the Active state_timeout."
-effect = [{ type = "trigger", name = "aggregate_costs_world_cascade" }]
 
 [[action.triggers]]
 name = "aggregate_costs_world_cascade"
@@ -328,7 +324,6 @@ kind = "input"
 from = ["Active"]
 params = ["canonical_path_id"]
 hint = "aggregate_costs classified all paths for this pass. Registers implied near-term forecasts."
-effect = [{ type = "trigger", name = "register_forecasts" }]
 
 [[action.triggers]]
 name = "register_forecasts"
@@ -346,7 +341,6 @@ kind = "input"
 from = ["Active"]
 params = ["last_ingest_date"]
 hint = "Pull evidence feeds, snapshot them to paw-fs, update EventNode probabilities, resolve due nodes, grade forecasts. The caller supplies the as-of date (last_ingest_date): WASM has no clock — the date is data."
-effect = [{ type = "trigger", name = "evidence_ingest" }]
 
 [[action.triggers]]
 name = "evidence_ingest"
@@ -364,7 +358,6 @@ kind = "input"
 from = ["Active"]
 params = []
 hint = "Spawn renderer/dweller sessions to draft artifacts from canonical and tail paths."
-effect = [{ type = "trigger", name = "render_artifacts" }]
 
 [[action.triggers]]
 name = "render_artifacts"
@@ -382,7 +375,6 @@ kind = "input"
 from = ["Active"]
 params = []
 hint = "Spawn the casting session: 2-3 personas grounded in the settled claims. Dwellers traverse the canonical routes, file contradictions, and write first-person stories through the gate."
-effect = [{ type = "trigger", name = "animate_dwellers" }]
 
 [[action.triggers]]
 name = "animate_dwellers"
@@ -400,7 +392,6 @@ kind = "input"
 from = ["Active"]
 params = ["personas_json"]
 hint = "Casting session self-reports the proposed personas. Re-enters animate_dwellers to create Dweller entities and start the chunked traversal fan-out."
-effect = [{ type = "trigger", name = "animate_dwellers" }]
 
 [[action.triggers]]
 name = "animate_dwellers"
@@ -418,7 +409,6 @@ kind = "input"
 from = ["Active"]
 params = ["dweller_ids", "check_count"]
 hint = "Bounded self-loop: spawn the next chunk of dweller sessions under admission caps (ADR-0005). dweller_ids is set on the first tick (from DwellersCast) and persists across re-ticks; Cedar permits this action but not a raw World PATCH, so the roster rides as a param."
-effect = [{ type = "trigger", name = "animate_dwellers" }]
 
 [[action.triggers]]
 name = "animate_dwellers"
@@ -436,7 +426,6 @@ kind = "input"
 from = ["Active"]
 params = ["last_adjudication_date"]
 hint = "Judged resolution for overdue authored nodes (ADR-004 commitment 2): spawn adjudicator sessions with snapshotted evidence; the module validates verdicts and owns Resolve. The caller supplies the as-of date — WASM has no clock."
-effect = [{ type = "trigger", name = "adjudicate_nodes" }]
 
 [[action.triggers]]
 name = "adjudicate_nodes"
@@ -479,15 +468,3 @@ from = ["Created", "Seeding", "Active", "Updating"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

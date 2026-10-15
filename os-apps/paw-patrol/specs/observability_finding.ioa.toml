@@ -83,7 +83,6 @@ name = "Accept"
 kind = "input"
 from = ["Open"]
 to = "Accepted"
-effect = [{ type = "trigger", name = "observability_finding_accepted" }]
 hint = "Accept this observability finding as actionable work."
 
 [[action.triggers]]

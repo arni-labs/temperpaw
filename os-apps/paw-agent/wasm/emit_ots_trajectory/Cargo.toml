@@ -9,6 +9,26 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-temper-wasm-sdk = { git = "https://github.com/nerdsane/temper.git", rev = "c584a52b59924e66502576646f50131b0d763a2a" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }
 wasm-helpers = { path = "../wasm-helpers" }
 serde_json = "1"
+
+# Host-only. The emitted JSON is round-tripped through the kernel's real OTS
+# structs, so a drift in a field the kernel models fails here instead of
+# silently dropping data at the /api/ots/trajectories boundary. This rev must
+# stay equal to the temper-wasm-sdk rev above — a round trip against a kernel
+# the guest is not built for proves nothing, and a contract test asserts it.
+#
+# What the round trip cannot prove: serde ignores unknown fields, so an
+# extension the kernel does not model passes it untouched. Those fields are
+# listed in `ots_build::KERNEL_UNMODELED_FIELDS` and asserted separately by
+# `kernel_round_trip_drops_exactly_the_unmodeled_extensions`, which fails the
+# day the kernel starts modeling one of them. Never built for wasm32.
+#
+# This rev (a747f7d4, the merge of nerdsane/temper#416) is the one that added
+# the JCS contract fields to `temper-ots`, so they ride natively and the
+# carriers that stood in for them are gone. Rolling the pin back below it would
+# fail `kernel_round_trip_keeps_the_jcs_contract_fields` — see ADR-0035
+# section 17.
+[dev-dependencies]
+temper-ots = { git = "https://github.com/arni-labs/temper.git", rev = "aead3d22c769382523430c7f769a1aea8486d360" }

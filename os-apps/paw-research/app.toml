@@ -2,7 +2,7 @@ name = "paw-research"
 description = "Governed web search for agent research"
 version = "0.1.0"
 startup_install = "core"
-dependencies = ["paw-agent"]
+dependencies = ["temperpaw/paw-agent@c832c1cd0a8bd492436ca2fb93ae86f870eb8209"]
 
 # These declarations are REQUIRED — the installer only uploads WASM
 # artifacts that are listed here. Without them, even if the compiled

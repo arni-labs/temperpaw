@@ -54,7 +54,7 @@ initial = ""
 [[state]]
 name = "check_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_checks"
@@ -68,14 +68,13 @@ from = ["Created"]
 to = "Watching"
 params = ["ParentEntitySet", "ParentEntityId", "ParentActionNamespace", "ChildSessionId", "OnCompletedAction", "OnFailureAction", "MaxChecks"]
 hint = "Begin monitoring a child Session for a parent workflow entity."
-effect = [{ type = "schedule", action = "CheckChild", delay_seconds = 2 }]
+effect = ["schedule('CheckChild', 2)"]
 
 [[action]]
 name = "CheckChild"
 kind = "input"
 from = ["Watching"]
 hint = "Check the child Session and notify the parent if terminal."
-effect = [{ type = "trigger", name = "check_child_session" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -97,10 +96,7 @@ kind = "input"
 from = ["Watching"]
 params = ["LastChildStatus"]
 hint = "Child Session is still running. Re-check shortly."
-effect = [
-  { type = "increment", var = "check_count" },
-  { type = "schedule", action = "CheckChild", delay_seconds = 30 },
-]
+effect = ["check_count += 1", "schedule('CheckChild', 30)"]
 
 [[action]]
 name = "ParentNotified"
@@ -122,20 +118,15 @@ hint = "Monitoring failed before the parent could be notified."
 state = "Created"
 after_seconds = 60
 on_timeout = "NotifyFailed"
-params = { ErrorMessage = "SessionLink Configure never arrived within 60s" }
+args = { ErrorMessage = "'SessionLink Configure never arrived within 60s'" }
 
 [[state_timeout]]
 state = "Watching"
 after_seconds = 2400
 on_timeout = "NotifyFailed"
-params = { ErrorMessage = "SessionLink child monitoring exceeded 2400s" }
+args = { ErrorMessage = "'SessionLink child monitoring exceeded 2400s'" }
 
 [[field_invariant]]
 name = "WatchingRequiresParent"
-when = { field = "Status", equals = "Watching" }
-require = { all_of = [
-  { not = { field = "ParentEntitySet", empty = true } },
-  { not = { field = "ParentEntityId", empty = true } },
-  { not = { field = "ChildSessionId", empty = true } },
-] }
 message = "SessionLink.Watching requires parent and child identifiers"
+assert = "Status == 'Watching' => !empty(ParentEntitySet) && !empty(ParentEntityId) && !empty(ChildSessionId)"

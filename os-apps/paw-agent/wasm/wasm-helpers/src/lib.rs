@@ -48,6 +48,7 @@ pub struct CreatedSessionEntry {
     pub entry_id: String,
 }
 
+#[derive(Clone, Copy)]
 struct SessionEntryCreateSpec<'a> {
     session_id: &'a str,
     entry_id: &'a str,
@@ -113,16 +114,31 @@ fn read_temperfs_value_with_retry(
     headers: &[(String, String)],
     label: &str,
 ) -> Result<String, String> {
+    read_temperfs_value_or_absent(ctx, url, headers, label).map(Option::unwrap_or_default)
+}
+
+/// Same read, with a missing file reported as `None` instead of an empty body.
+///
+/// A writer starting a new tree treats both the same way, which is why the
+/// wrapper above collapses them. A reader deciding whether a record is complete
+/// cannot: an absent file is missing history, an empty one is a session that has
+/// not written history yet.
+fn read_temperfs_value_or_absent(
+    ctx: &Context,
+    url: &str,
+    headers: &[(String, String)],
+    label: &str,
+) -> Result<Option<String>, String> {
     let mut last_status = 0;
     let mut last_body = String::new();
 
     for attempt in 0..TEMPERFS_READ_ATTEMPTS {
         let resp = ctx.http_call("GET", url, headers, "")?;
         if resp.status == 200 {
-            return Ok(resp.body);
+            return Ok(Some(resp.body));
         }
         if resp.status == 404 {
-            return Ok(String::new());
+            return Ok(None);
         }
 
         last_status = resp.status;
@@ -146,7 +162,7 @@ fn read_temperfs_value_with_retry(
     Err(format!(
         "{label} (HTTP {}): {}",
         last_status,
-        &last_body[..last_body.len().min(200)]
+        error_excerpt(&last_body, 200)
     ))
 }
 
@@ -193,7 +209,7 @@ pub fn write_temperfs_value_with_retry(
     Err(format!(
         "{label} (HTTP {}): {}",
         last_status,
-        &last_body[..last_body.len().min(200)]
+        error_excerpt(&last_body, 200)
     ))
 }
 
@@ -214,7 +230,62 @@ pub fn resolve_temper_api_url(ctx: &Context, fields: &Value) -> String {
         .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
 }
 
+/// Why a session transcript read produced no entries — or that it produced some.
+///
+/// A transcript has several ways of being empty and they are not the same fact.
+/// A consumer that stores the result as a record of what an agent did has to be
+/// able to tell "nothing has been written yet" from "what was written is gone".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptPresence {
+    /// The read returned at least one transcript line.
+    Present,
+    /// The transcript is SessionEntry rows and none are materialized yet — a
+    /// first-turn session that has not written one.
+    PendingFirstTurn,
+    /// The transcript is SessionEntry rows, materialization is on, and the
+    /// query returned nothing.
+    NoEntries,
+    /// The legacy TemperFS file the session points at does not exist.
+    MissingFile,
+    /// The legacy TemperFS file exists and holds nothing.
+    EmptyFile,
+    /// The session declares no transcript reference at all.
+    Undeclared,
+}
+
+impl TranscriptPresence {
+    /// True only when the read produced transcript content.
+    pub fn is_present(self) -> bool {
+        matches!(self, TranscriptPresence::Present)
+    }
+
+    /// Stable wire name, used in logs and in the emitted trajectory.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TranscriptPresence::Present => "present",
+            TranscriptPresence::PendingFirstTurn => "pending_first_turn",
+            TranscriptPresence::NoEntries => "no_entries",
+            TranscriptPresence::MissingFile => "missing_file",
+            TranscriptPresence::EmptyFile => "empty_file",
+            TranscriptPresence::Undeclared => "undeclared",
+        }
+    }
+}
+
+/// A session transcript plus whether it is actually there.
+#[derive(Debug, Clone)]
+pub struct TranscriptRead {
+    /// Transcript JSONL, empty for every non-`Present` presence.
+    pub jsonl: String,
+    /// Whether the transcript was found, and if not, why not.
+    pub presence: TranscriptPresence,
+}
+
 /// Read session JSONL from TemperFS by file ID.
+///
+/// Every "no transcript" case collapses to an empty string, which is what a
+/// writer resuming a tree wants. Readers that have to distinguish absence from
+/// emptiness use [`read_session_transcript`].
 pub fn read_session_from_temperfs(
     ctx: &Context,
     temper_api_url: &str,
@@ -222,6 +293,18 @@ pub fn read_session_from_temperfs(
     fields: &Value,
     file_id: &str,
 ) -> Result<String, String> {
+    read_session_transcript(ctx, temper_api_url, tenant, fields, file_id)
+        .map(|read| read.jsonl)
+}
+
+/// Read session JSONL and report whether the transcript exists.
+pub fn read_session_transcript(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    fields: &Value,
+    file_id: &str,
+) -> Result<TranscriptRead, String> {
     if let Some(session_id) = session_id_from_entries_ref(file_id) {
         if !session_entries_materialized(fields) {
             ctx.log(
@@ -230,14 +313,40 @@ pub fn read_session_from_temperfs(
                     "read_session_from_temperfs: virtual first-turn SessionEntries ref for {session_id}; materialization is false"
                 ),
             );
-            return Ok(String::new());
+            return Ok(TranscriptRead {
+                jsonl: String::new(),
+                presence: TranscriptPresence::PendingFirstTurn,
+            });
         }
-        return read_session_from_entries(ctx, temper_api_url, tenant, fields, session_id);
+        let jsonl = read_session_from_entries(ctx, temper_api_url, tenant, fields, session_id)?;
+        return Ok(TranscriptRead {
+            presence: transcript_presence(&jsonl, TranscriptPresence::NoEntries),
+            jsonl,
+        });
     }
 
     let url = format!("{temper_api_url}/tdata/Files('{file_id}')/$value");
     let headers = runtime_headers(ctx, tenant, fields, None, None);
-    read_temperfs_value_with_retry(ctx, &url, &headers, "TemperFS session read failed")
+    match read_temperfs_value_or_absent(ctx, &url, &headers, "TemperFS session read failed")? {
+        Some(jsonl) => Ok(TranscriptRead {
+            presence: transcript_presence(&jsonl, TranscriptPresence::EmptyFile),
+            jsonl,
+        }),
+        None => Ok(TranscriptRead {
+            jsonl: String::new(),
+            presence: TranscriptPresence::MissingFile,
+        }),
+    }
+}
+
+/// A transcript of nothing but whitespace carries no entries, so it counts as
+/// the caller's "empty" case rather than as content.
+fn transcript_presence(jsonl: &str, when_empty: TranscriptPresence) -> TranscriptPresence {
+    if jsonl.lines().any(|line| !line.trim().is_empty()) {
+        TranscriptPresence::Present
+    } else {
+        when_empty
+    }
 }
 
 /// Write session JSONL to TemperFS by file ID.
@@ -282,6 +391,11 @@ pub fn create_session_entry(
     extra_json: Option<&Value>,
     tokens: usize,
 ) -> Result<CreatedSessionEntry, String> {
+    // Every entry carries its own wall-clock stamp. The entity event log is a
+    // hot tail (older events vanish at snapshot boundaries), so it cannot be
+    // trusted to date turns in a long session; the entry can.
+    let extra_json = stamp_recorded_at(extra_json, Context::get_time_millis());
+    let extra_json = Some(&extra_json);
     let spec = SessionEntryCreateSpec {
         session_id,
         entry_id,
@@ -309,7 +423,7 @@ pub fn create_session_entry(
         return Err(format!(
             "SessionEntry creation failed (HTTP {}): {}",
             resp.status,
-            &resp.body[..resp.body.len().min(300)]
+            error_excerpt(&resp.body, 300)
         ));
     }
     let created = parse_created_session_entry_ack(&resp.body, session_id, entry_id)?;
@@ -397,6 +511,7 @@ pub fn materialize_initial_session_entries_with_assistant(
     user_message: &str,
     assistant_content: &Value,
     assistant_tokens: usize,
+    assistant_extra_json: Option<&Value>,
 ) -> Result<CreatedSessionEntry, String> {
     let user_entry_id = format!("u-{session_id}-0");
     let (assistant_entry_id, assistant_sequence) = next_session_entry_id("a", &user_entry_id);
@@ -425,7 +540,7 @@ pub fn materialize_initial_session_entries_with_assistant(
             content: Some(assistant_content),
             content_file_id: None,
             content_file_version_id: None,
-            extra_json: None,
+            extra_json: assistant_extra_json,
             tokens: assistant_tokens,
         },
     ];
@@ -473,10 +588,21 @@ fn create_session_entry_batch(
         Some("application/json"),
     );
     let create_url = format!("{temper_api_url}/tdata/SessionEntries");
+    // Same wall-clock stamp as the single-entry path — see create_session_entry.
+    let now_ms = Context::get_time_millis();
+    let stamped: Vec<Value> = specs
+        .iter()
+        .map(|spec| stamp_recorded_at(spec.extra_json, now_ms))
+        .collect();
     let create_requests = specs
         .iter()
-        .map(|spec| {
-            let body = session_entry_create_body(spec)?;
+        .zip(stamped.iter())
+        .map(|(spec, extra_json)| {
+            let spec = SessionEntryCreateSpec {
+                extra_json: Some(extra_json),
+                ..*spec
+            };
+            let body = session_entry_create_body(&spec)?;
             Ok(HttpRequest {
                 method: "POST".to_string(),
                 url: create_url.clone(),
@@ -501,7 +627,7 @@ fn create_session_entry_batch(
                 "{label} {} creation failed (HTTP {}): {}",
                 spec.entry_id,
                 resp.status,
-                &resp.body[..resp.body.len().min(300)]
+                error_excerpt(&resp.body, 300)
             ));
         }
         created.push(parse_created_session_entry_ack(
@@ -617,6 +743,224 @@ fn verify_session_entries(
     ))
 }
 
+/// Add `ts_ms` to a SessionEntry's extra JSON without disturbing what the
+/// caller already put there. An explicit `ts_ms` from the caller wins.
+fn stamp_recorded_at(extra_json: Option<&Value>, now_ms: i64) -> Value {
+    let mut extra = match extra_json {
+        Some(Value::Object(map)) => Value::Object(map.clone()),
+        Some(other) if !other.is_null() => json!({ "extra": other.clone() }),
+        _ => json!({}),
+    };
+    if let Some(object) = extra.as_object_mut()
+        && !object.contains_key("ts_ms")
+    {
+        object.insert("ts_ms".to_string(), json!(now_ms));
+    }
+    extra
+}
+
+/// Ceiling on a SessionEntry's stored `extra_json`.
+///
+/// The same 131072 twice over: it is what `session_entry.ioa.toml` declares as
+/// `overflow_inline_max_bytes` on the `extra_json` state variable, and it is
+/// also the kernel's own `DEFAULT_FIELD_INLINE_MAX` when no per-field override
+/// applies to a write path. The bound therefore holds whichever of the two the
+/// kernel ends up measuring against.
+pub const MAX_ENTRY_EXTRA_BYTES: usize = 131_072;
+
+/// Per-turn facts the OTS emitter reads back off an entry. They are small, and
+/// losing them costs a turn its date, its model and its token counts, so they
+/// are the last thing dropped rather than the first.
+const ENTRY_EXTRA_ESSENTIALS: &[&str] = &[
+    "ts_ms",
+    "provider",
+    "model",
+    "stop_reason",
+    "input_tokens",
+    "output_tokens",
+];
+
+/// The markers a token-signal refusal leaves behind. Bounded to one per signal,
+/// and the emitter reads them to tell "the serving stack sent none" from "they
+/// were sent and refused" — so the hard floor keeps them.
+const TOKEN_SIGNAL_DROP_MARKERS: &[&str] = &[
+    "prompt_token_ids_dropped_bytes",
+    "completion_token_ids_dropped_bytes",
+    "response_mask_dropped_bytes",
+    "logprobs_dropped_bytes",
+];
+
+/// Size of `value` as the kernel measures the stored field.
+///
+/// String-typed state variables hold JSON as text, so what the overflow ceiling
+/// sees is this JSON encoded *again* as a JSON string: every quote and
+/// backslash gains an escape byte, plus the two enclosing quotes. (`serde_json`
+/// output carries no raw control characters, so those are not a case.)
+pub fn stored_json_len(value: &Value) -> usize {
+    let Ok(json) = serde_json::to_string(value) else {
+        return usize::MAX;
+    };
+    json.len()
+        + json
+            .bytes()
+            .filter(|byte| matches!(byte, b'"' | b'\\'))
+            .count()
+        + 2
+}
+
+/// A char-safe prefix of a response body, for putting inside an error message.
+///
+/// Slicing by byte offset traps the guest whenever a multibyte character
+/// straddles the cut — and it is the failure-reporting paths that do the
+/// slicing, so the trap replaces the report: the module dies before it can say
+/// what went wrong, and the entity keeps whatever status it already had. The
+/// same class already cost `monty_repl` its span document (ADR-0035 §15).
+pub fn error_excerpt(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// Serialized size of `value` before the field encoding — what a dropped-member
+/// marker reports, so the number means the same thing everywhere.
+fn json_len(value: &Value) -> usize {
+    serde_json::to_string(value)
+        .map(|json| json.len())
+        .unwrap_or(usize::MAX)
+}
+
+/// What one `"key":value,` member contributes to the stored field.
+fn member_cost(key: &str, value: &Value) -> usize {
+    stored_json_len(value) + key.len() + 4
+}
+
+/// Drop whatever does not fit under the entry's `extra_json` ceiling.
+///
+/// Past the ceiling the kernel replaces or externalizes the *whole* field, so
+/// one oversized addition takes the per-turn facts with it. Writers that build
+/// their own extras bound them by policy — which signal to sacrifice first —
+/// but this is the invariant at the boundary every writer passes through,
+/// including the JSONL sync path that re-materializes extras written before any
+/// of those policies existed. Anything dropped leaves its size behind.
+fn bound_entry_extra(extra: Value) -> Value {
+    if stored_json_len(&extra) <= MAX_ENTRY_EXTRA_BYTES {
+        return extra;
+    }
+    if !extra.is_object() {
+        // Nothing to sacrifice member by member; record the size it had.
+        return json!({ "_extra_json_dropped_bytes": json_len(&extra) });
+    }
+
+    let mut extra = extra;
+    if let Some(fields) = extra.as_object_mut() {
+        // Every member is measured once and the largest go first. Re-measuring
+        // the whole object per drop would be quadratic, and this runs inside a
+        // WASM guest on an object a corrupted transcript line can make wide.
+        let mut droppable: Vec<(String, usize)> = fields
+            .iter()
+            .filter(|(key, _)| {
+                !ENTRY_EXTRA_ESSENTIALS.contains(&key.as_str()) && !key.ends_with("_dropped_bytes")
+            })
+            .map(|(key, value)| (key.clone(), member_cost(key, value)))
+            .collect();
+        droppable.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+
+        let mut total = stored_json_len(&Value::Object(fields.clone()));
+        for (key, cost) in droppable {
+            if total <= MAX_ENTRY_EXTRA_BYTES {
+                break;
+            }
+            let size = fields.remove(&key).map(|value| json_len(&value)).unwrap_or(0);
+            let marker = format!("{key}_dropped_bytes");
+            total = total.saturating_sub(cost) + member_cost(&marker, &json!(size));
+            fields.insert(marker, json!(size));
+        }
+
+        // A per-turn fact can be oversized on its own — a provider is free to
+        // return a huge `stop_reason`, and the JSONL sync path copies whatever
+        // a transcript line put under that key — and nothing above would have
+        // touched it, because the drop loop skips the essentials.
+        bound_essential_values(fields);
+    }
+
+    // Hard floor. An extras object with thousands of small members leaves a
+    // marker behind for each one, and the markers alone can hold the value over
+    // the ceiling. The per-turn facts are worth more than the drop record, so
+    // they are what survives, with a single count in place of the markers.
+    if stored_json_len(&extra) > MAX_ENTRY_EXTRA_BYTES
+        && let Some(fields) = extra.as_object_mut()
+    {
+        let before = fields.len();
+        // The token-signal drop markers survive alongside the facts. They are
+        // the emitter's only evidence that signals existed and were refused,
+        // and there are at most four of them, so they cannot be what holds the
+        // value over — unlike the arbitrary `<key>_dropped_bytes` markers this
+        // floor exists to shed.
+        fields.retain(|key, _| {
+            ENTRY_EXTRA_ESSENTIALS.contains(&key.as_str())
+                || TOKEN_SIGNAL_DROP_MARKERS.contains(&key.as_str())
+        });
+        let removed = before - fields.len();
+        bound_essential_values(fields);
+        fields.insert("_extra_json_dropped_members".to_string(), json!(removed));
+    }
+
+    // The invariant is unconditional: returning a value over the ceiling costs
+    // the entire field, which is what this function exists to prevent. Nothing
+    // above should be able to reach here, so if anything does, the size is the
+    // one fact worth keeping.
+    if stored_json_len(&extra) > MAX_ENTRY_EXTRA_BYTES {
+        extra = json!({ "_extra_json_dropped_bytes": json_len(&extra) });
+    }
+
+    extra
+}
+
+/// Cut every member down to a size that cannot itself breach the entry ceiling,
+/// recording each cut. Reached when nothing droppable is left, so it must handle
+/// the per-turn facts themselves: they are small by construction only when the
+/// writer is well behaved, and one of the writers copies a transcript line's
+/// keys verbatim.
+fn bound_essential_values(fields: &mut serde_json::Map<String, Value>) {
+    /// Generous for a provider name, a model id or a stop reason, and small
+    /// enough that the whole essential set fits many times over.
+    const MAX_ESSENTIAL_STRING_CHARS: usize = 512;
+    /// Anything not a short string or a scalar is not the fact this key names.
+    const MAX_ESSENTIAL_VALUE_BYTES: usize = 4_096;
+
+    let oversized: Vec<String> = fields
+        .iter()
+        .filter(|(key, value)| {
+            !key.ends_with("_truncated_chars")
+                && !key.ends_with("_dropped_bytes")
+                && (value
+                    .as_str()
+                    .is_some_and(|text| text.chars().count() > MAX_ESSENTIAL_STRING_CHARS)
+                    || json_len(value) > MAX_ESSENTIAL_VALUE_BYTES)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for key in oversized {
+        let Some(value) = fields.get(&key) else {
+            continue;
+        };
+        match value.as_str() {
+            Some(text) => {
+                let original = text.chars().count();
+                let cut: String = text.chars().take(MAX_ESSENTIAL_STRING_CHARS).collect();
+                fields.insert(key.clone(), json!(cut));
+                fields.insert(format!("{key}_truncated_chars"), json!(original));
+            }
+            // An array or object under a per-turn fact's key is corrupt data,
+            // not the fact. Its size is the only part worth keeping.
+            None => {
+                let size = json_len(value);
+                fields.remove(&key);
+                fields.insert(format!("{key}_dropped_bytes"), json!(size));
+            }
+        }
+    }
+}
+
 fn session_entry_create_body(spec: &SessionEntryCreateSpec<'_>) -> Result<Value, String> {
     let content_json = spec
         .content
@@ -626,7 +970,7 @@ fn session_entry_create_body(spec: &SessionEntryCreateSpec<'_>) -> Result<Value,
         .unwrap_or_default();
     let extra_json = spec
         .extra_json
-        .map(serde_json::to_string)
+        .map(|extra| serde_json::to_string(&bound_entry_extra(extra.clone())))
         .transpose()
         .map_err(|err| format!("serialize SessionEntry extra_json: {err}"))?
         .unwrap_or_else(|| "{}".to_string());
@@ -780,6 +1124,13 @@ fn session_entry_verify_response_visible(body: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Append one SessionEntry under `parent_entry_id`.
+///
+/// `extra_json` carries per-turn facts the OTS emitter needs later (provider,
+/// model, stop reason, usage, token-level RL signals). It is merged into the
+/// entry's ExtraJson alongside the wall-clock stamp; pass `None` when the
+/// caller has nothing to add.
+#[allow(clippy::too_many_arguments)]
 pub fn append_session_entry_inline(
     ctx: &Context,
     temper_api_url: &str,
@@ -791,6 +1142,7 @@ pub fn append_session_entry_inline(
     role: &str,
     content: &Value,
     tokens: usize,
+    extra_json: Option<&Value>,
 ) -> Result<CreatedSessionEntry, String> {
     let session_id = session_id_from_entries_ref(session_ref)
         .ok_or("append_session_entry_inline requires session-entries:<session_id> ref")?;
@@ -812,7 +1164,7 @@ pub fn append_session_entry_inline(
         Some(content),
         None,
         None,
-        None,
+        extra_json,
         tokens,
     )
 }
@@ -957,7 +1309,7 @@ fn list_session_entries(
             return Err(format!(
                 "SessionEntry list failed (HTTP {}): {}",
                 resp.status,
-                &resp.body[..resp.body.len().min(300)]
+                error_excerpt(&resp.body, 300)
             ));
         }
         let parsed: Value = serde_json::from_str(&resp.body)
@@ -1140,7 +1492,7 @@ pub fn read_text_files_batch(
     Err(format!(
         "TemperFS batch read failed (HTTP {}): {}",
         last_status,
-        &last_body[..last_body.len().min(200)]
+        error_excerpt(&last_body, 200)
     ))
 }
 
@@ -1195,7 +1547,7 @@ pub fn read_text_file_versions_batch(
     Err(format!(
         "TemperFS batch version read failed (HTTP {}): {}",
         last_status,
-        &last_body[..last_body.len().min(200)]
+        error_excerpt(&last_body, 200)
     ))
 }
 
@@ -1348,7 +1700,7 @@ pub fn create_content_file_ref(
         return Err(format!(
             "content file creation failed (HTTP {}): {}",
             file_resp.status,
-            &file_resp.body[..file_resp.body.len().min(300)]
+            error_excerpt(&file_resp.body, 300)
         ));
     }
 
@@ -1534,7 +1886,7 @@ fn read_content_file_head(
         return Err(format!(
             "content file head read failed (HTTP {}): {}",
             resp.status,
-            &resp.body[..resp.body.len().min(200)]
+            error_excerpt(&resp.body, 200)
         ));
     }
     serde_json::from_str(&resp.body).map_err(|e| format!("parse content file head response: {e}"))
@@ -1587,7 +1939,7 @@ pub mod bounded_reads {
     use serde_json::{Value, json};
     use temper_wasm_sdk::prelude::*;
 
-    use super::entity_field_str;
+    use super::{entity_field_str, error_excerpt};
 
     pub const POINT_LOOKUP_TOP: usize = 20;
 
@@ -1679,7 +2031,7 @@ pub mod bounded_reads {
             return Err(format!(
                 "{label}: GET {path} failed (HTTP {}): {}",
                 resp.status,
-                &resp.body[..resp.body.len().min(300)]
+                error_excerpt(&resp.body, 300)
             ));
         }
         if resp.body.is_empty() {
@@ -1916,6 +2268,184 @@ pub fn parse_iso8601_to_epoch_secs(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Past the `extra_json` ceiling the kernel replaces or externalizes the
+    /// whole field, so one oversized member costs the turn its date, model and
+    /// token counts as well. Writers bound their own extras by policy; this is
+    /// the invariant every writer passes through, including the JSONL sync path
+    /// that re-materializes extras written before any of those policies existed.
+    #[test]
+    fn entry_extra_is_bounded_at_the_write_boundary() {
+        let oversized: Vec<Value> = (0..MAX_ENTRY_EXTRA_BYTES).map(|i| json!(i % 10)).collect();
+        let spec = SessionEntryCreateSpec {
+            session_id: "ss-1",
+            entry_id: "a-1",
+            parent_entry_id: Some("u-1"),
+            sequence: 2,
+            entry_type: "message",
+            role: Some("assistant"),
+            content: None,
+            content_file_id: None,
+            content_file_version_id: None,
+            extra_json: Some(&json!({
+                "ts_ms": 1_767_225_600_000_i64,
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "input_tokens": 120,
+                "output_tokens": 34,
+                "logprobs": oversized,
+            })),
+            tokens: 34,
+        };
+
+        let body = session_entry_create_body(&spec).expect("body builds");
+        let stored = body["ExtraJson"].as_str().expect("ExtraJson is a string");
+        assert!(
+            stored_json_len(&Value::String(stored.to_string())) <= MAX_ENTRY_EXTRA_BYTES,
+            "the stored field must fit the ceiling the kernel measures, got {} bytes",
+            stored.len()
+        );
+
+        let extra: Value = serde_json::from_str(stored).expect("stored extra parses");
+        assert_eq!(
+            extra["ts_ms"], 1_767_225_600_000_i64,
+            "the per-turn facts are the last thing sacrificed"
+        );
+        assert_eq!(extra["provider"], "anthropic");
+        assert_eq!(extra["output_tokens"], 34);
+        assert!(extra.get("logprobs").is_none());
+        assert!(
+            extra["logprobs_dropped_bytes"].as_u64().unwrap_or(0) > 0,
+            "a dropped member must leave its size behind: {extra}"
+        );
+    }
+
+    /// The bound has to hold even when nothing is droppable. A provider is free
+    /// to return a huge `stop_reason`, and an extras object can carry thousands
+    /// of small members whose drop markers alone exceed the ceiling. Returning
+    /// an oversized value costs the entire field, which is the outcome the
+    /// bound exists to prevent, so both cases end under the ceiling.
+    #[test]
+    fn entry_extra_bound_holds_when_nothing_is_droppable() {
+        let huge_reason = "x".repeat(MAX_ENTRY_EXTRA_BYTES + 1024);
+        let bounded = bound_entry_extra(json!({
+            "ts_ms": 1_767_225_600_000_i64,
+            "provider": "anthropic",
+            "stop_reason": huge_reason,
+            "output_tokens": 34,
+        }));
+        assert!(
+            stored_json_len(&bounded) <= MAX_ENTRY_EXTRA_BYTES,
+            "an oversized essential must be shortened, not passed through"
+        );
+        assert_eq!(bounded["ts_ms"], 1_767_225_600_000_i64);
+        assert_eq!(bounded["output_tokens"], 34);
+        assert!(bounded["stop_reason_truncated_chars"].as_u64().unwrap() > 0);
+
+        // Not every oversized essential is a string: the JSONL sync path copies
+        // a transcript line's keys verbatim, so a corrupted line can put an
+        // array under one. Truncation does not apply, and the drop loop skips
+        // essentials, so this used to sail past the bound entirely.
+        let bounded = bound_entry_extra(json!({
+            "ts_ms": 1_767_225_600_000_i64,
+            "stop_reason": vec![7_u64; MAX_ENTRY_EXTRA_BYTES],
+        }));
+        assert!(
+            stored_json_len(&bounded) <= MAX_ENTRY_EXTRA_BYTES,
+            "an oversized non-string essential must be bounded too, got {} bytes",
+            stored_json_len(&bounded)
+        );
+        assert_eq!(bounded["ts_ms"], 1_767_225_600_000_i64);
+        assert!(bounded["stop_reason_dropped_bytes"].as_u64().unwrap() > 0);
+
+        let mut crowded = serde_json::Map::new();
+        crowded.insert("ts_ms".to_string(), json!(1_767_225_600_000_i64));
+        crowded.insert("model".to_string(), json!("claude-sonnet-4-6"));
+        for index in 0..20_000 {
+            crowded.insert(format!("k{index}"), json!("payload"));
+        }
+        let bounded = bound_entry_extra(Value::Object(crowded));
+        assert!(
+            stored_json_len(&bounded) <= MAX_ENTRY_EXTRA_BYTES,
+            "a marker per dropped member cannot be allowed to hold the value over"
+        );
+        assert_eq!(bounded["ts_ms"], 1_767_225_600_000_i64);
+        assert_eq!(bounded["model"], "claude-sonnet-4-6");
+        assert!(
+            bounded["_extra_json_dropped_members"].as_u64().unwrap() > 0,
+            "the count stands in for the markers it replaced: {bounded}"
+        );
+    }
+
+    /// The hard floor sheds drop markers, but the token-signal ones are the
+    /// emitter's only evidence that signals existed and were refused — losing
+    /// them turns a refused signal back into "the serving stack sent none".
+    /// There are at most four, so they cannot be what holds the value over.
+    #[test]
+    fn entry_extra_bound_keeps_the_token_signal_drop_markers() {
+        let mut crowded = serde_json::Map::new();
+        crowded.insert("ts_ms".to_string(), json!(1_767_225_600_000_i64));
+        crowded.insert("logprobs_dropped_bytes".to_string(), json!(40_000));
+        crowded.insert("completion_token_ids_dropped_bytes".to_string(), json!(35_000));
+        for index in 0..20_000 {
+            crowded.insert(format!("k{index}"), json!("payload"));
+        }
+
+        let bounded = bound_entry_extra(Value::Object(crowded));
+        assert!(stored_json_len(&bounded) <= MAX_ENTRY_EXTRA_BYTES);
+        assert_eq!(bounded["ts_ms"], 1_767_225_600_000_i64);
+        assert_eq!(
+            bounded["logprobs_dropped_bytes"], 40_000,
+            "a refused signal must stay visible: {bounded}"
+        );
+        assert_eq!(bounded["completion_token_ids_dropped_bytes"], 35_000);
+        assert!(bounded["_extra_json_dropped_members"].as_u64().unwrap() > 0);
+    }
+
+    /// A reader that stores what it read as a record of what an agent did has
+    /// to be able to tell an empty transcript from a missing one. Collapsing
+    /// both to `Ok("")` is right for a writer resuming a tree and wrong here.
+    #[test]
+    fn transcript_presence_separates_content_from_absence() {
+        assert_eq!(
+            transcript_presence("{\"id\":\"u-1\"}\n", TranscriptPresence::EmptyFile),
+            TranscriptPresence::Present
+        );
+        assert_eq!(
+            transcript_presence("", TranscriptPresence::EmptyFile),
+            TranscriptPresence::EmptyFile
+        );
+        assert_eq!(
+            transcript_presence("", TranscriptPresence::NoEntries),
+            TranscriptPresence::NoEntries
+        );
+        assert_eq!(
+            transcript_presence("  \n\n \n", TranscriptPresence::NoEntries),
+            TranscriptPresence::NoEntries,
+            "a transcript of nothing but whitespace carries no entries"
+        );
+    }
+
+    /// The reasons travel into the stored trajectory, so they are a wire
+    /// contract and cannot be renamed casually.
+    #[test]
+    fn transcript_presence_names_are_stable() {
+        for (presence, name) in [
+            (TranscriptPresence::Present, "present"),
+            (TranscriptPresence::PendingFirstTurn, "pending_first_turn"),
+            (TranscriptPresence::NoEntries, "no_entries"),
+            (TranscriptPresence::MissingFile, "missing_file"),
+            (TranscriptPresence::EmptyFile, "empty_file"),
+            (TranscriptPresence::Undeclared, "undeclared"),
+        ] {
+            assert_eq!(presence.as_str(), name);
+            assert_eq!(
+                presence.is_present(),
+                presence == TranscriptPresence::Present,
+                "only Present may report as present"
+            );
+        }
+    }
 
     #[test]
     fn bounded_read_helper_builds_point_lookup_urls() {
@@ -2267,6 +2797,32 @@ mod tests {
         assert_eq!(lines[1000]["id"], "a-1000");
         assert_eq!(lines[1005]["id"], "u-1005");
         assert_eq!(lines[1005]["parentId"], "a-1004");
+    }
+
+    #[test]
+    fn stamp_recorded_at_adds_wall_clock_to_every_entry() {
+        let stamped = stamp_recorded_at(None, 1_767_225_600_000);
+        assert_eq!(stamped["ts_ms"], 1_767_225_600_000_i64);
+
+        let existing = json!({ "version": 1 });
+        let stamped = stamp_recorded_at(Some(&existing), 42);
+        assert_eq!(stamped["version"], 1, "caller extras must survive");
+        assert_eq!(stamped["ts_ms"], 42);
+    }
+
+    #[test]
+    fn stamp_recorded_at_preserves_an_explicit_timestamp() {
+        let existing = json!({ "ts_ms": 7 });
+        let stamped = stamp_recorded_at(Some(&existing), 99);
+        assert_eq!(stamped["ts_ms"], 7, "an explicit stamp is authoritative");
+    }
+
+    #[test]
+    fn stamp_recorded_at_wraps_non_object_extras() {
+        let existing = json!("legacy");
+        let stamped = stamp_recorded_at(Some(&existing), 5);
+        assert_eq!(stamped["extra"], "legacy");
+        assert_eq!(stamped["ts_ms"], 5);
     }
 
     #[test]

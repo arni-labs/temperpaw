@@ -15,6 +15,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created"]
+terminal = ["Submitted"]
 
 [[state]]
 name = "round_id"
@@ -76,10 +77,3 @@ from = ["Created"]
 to = "Submitted"
 params = ["ranking_json", "reasoning"]
 hint = "Judge submits their ranking."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "SubmittedIsFinal"
-when = ["Submitted"]
-assert = "no_further_transitions"

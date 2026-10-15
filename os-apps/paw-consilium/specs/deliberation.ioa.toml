@@ -19,6 +19,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Convened", "Generating", "Synthesizing"]
+terminal = ["Complete", "Failed"]
 
 # What the deliberation is about
 [[state]]
@@ -88,7 +89,6 @@ from = ["Created"]
 to = "Convened"
 params = []
 hint = "Begin deliberation — triggers perspective fan-out."
-effect = [{ type = "trigger", name = "spawn_perspectives" }]
 
 # --- Convened (perspectives being spawned) ---
 
@@ -130,7 +130,6 @@ kind = "input"
 from = ["Generating"]
 params = ["perspectives_complete"]
 hint = "A perspective finished. Triggers fan-in check."
-effect = [{ type = "trigger", name = "check_and_synthesize" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -177,17 +176,5 @@ from = ["Synthesizing"]
 to = "Failed"
 params = ["error_message"]
 hint = "Synthesis failed."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
 
 # --- Integrations ---

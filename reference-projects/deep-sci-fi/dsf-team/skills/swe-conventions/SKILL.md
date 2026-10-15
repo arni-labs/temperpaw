@@ -74,7 +74,7 @@ cd platform && bun run test:e2e
 cd platform && bun run typecheck
 ```
 
-Run ALL of these before pushing. The Level 2 pre-push gate will block you if DST or coverage checks fail.
+Choose the checks relevant to the change. Run the changed flow and report skipped coverage accurately.
 
 ## Database Migrations
 
@@ -93,72 +93,10 @@ alembic revision --autogenerate -m "description of change"
 ### When migrations are required
 Any change to `models.py` requires a corresponding Alembic migration. The Level 1 pre-commit gate checks for this — if you change models without a migration, the commit is rejected.
 
-## CI Gate Requirements
+## Workflow and review
 
-Before pushing, ensure all Level 1 + Level 2 checks pass:
+Use the current Stack workflow and Deep Sci-Fi `AGENTS.md` / `REVIEW.md` in the checkout. They own engineering and review instructions; this reference app does not add an approval role or review gate. Keep the effort record, implement the accepted outcome, run relevant tests and carry authorized work through delivery.
 
-1. **Migration check** — models.py changes have corresponding migrations
-2. **Review markers** — `code-reviewed` and `dst-reviewed` markers present
-3. **Skill.md sync** — API endpoint tables match actual routes
-4. **DST coverage** — state-mutating endpoints have simulation tests
-5. **Response model coverage** — changed API files declare `response_model`
-6. **API test coverage** — changed API modules have route-prefix tests
-7. **Frontend-E2E mapping** — changed frontend files have E2E specs (if user-facing)
-8. **DST simulation** — `pytest tests/simulation/ -x` with seed=0 passes
-9. **DST coverage gate** — no uncovered state-mutating endpoints
+Reviews are advisory. A fresh reviewer should read the changed code and independently test the affected feature when useful. Report concrete regressions within the accepted scope, commands/results and material limits. No review markers, required test-file edits, mandatory panel or Ren approval for work the user already authorized.
 
-## Conventional Commits
-
-```
-feat: add world proposal voting endpoint
-fix: correct pgvector similarity threshold for foresight worlds
-refactor: extract embedding pipeline into standalone module
-docs: update API endpoint table in SWE skill
-chore: bump FastAPI to 0.115.0
-```
-
-Always use the appropriate prefix. PRs with non-conventional commit messages will be flagged.
-
-## PR Workflow
-
-1. Branch from `main`: `git checkout -b feat/description` or `fix/description`
-2. Make changes, ensure all gates pass locally
-3. Push: `git push -u origin feat/description`
-4. Create PR: `gh pr create --base main --repo arni-labs/deep-sci-fi`
-5. Wait for CI (review.yml) to pass
-6. Request review from Ren (product lead)
-7. Do NOT merge — only Ren or the human can merge PRs
-
-## WorkCycle Gate Protocol
-
-When working on a task tracked by a WorkCycle, you MUST run specific commands for each gate and report the ACTUAL output. Do not fabricate results. Do not report a gate as ok unless you ran the command and it succeeded.
-
-### Level 1 Gates (report from InProgress, required before BeginTesting)
-
-**ReportMigrations** — Run: `cd platform/backend && python -c "from alembic.config import Config; from alembic import command; command.check(Config('alembic.ini'))"` or verify no models.py changes need migrations. Include the actual command output in summary.
-
-**ReportTypecheck** — Run: `cd platform && bun run typecheck` (TypeScript check). Include the actual exit code and error count in summary. If your changes are backend-only, run `cd platform/backend && mypy main.py observability.py --ignore-missing-imports` instead.
-
-**ReportUnitTests** — Run: `cd platform/backend && pytest tests/ -x -q --ignore=tests/simulation`. Include the actual pass/fail/skip counts from pytest output in summary.
-
-### BeginTesting (transition to Testing state)
-
-Only call after all 3 Level 1 gates are ok. The platform will reject if any are missing.
-
-### Level 2 Gates (report from Testing, required before PassTests)
-
-**ReportDst** — Run: `cd platform/backend && pytest tests/simulation/ -x --hypothesis-seed=0`. This is Hypothesis Deterministic Simulation Testing — NOT a dry run of a script. Include actual Hypothesis output. If tests/simulation/ has no relevant tests for your change, report ok with summary explaining why (e.g. "no state-mutating endpoint changes").
-
-**ReportPolicyGates** — Run ALL of these:
-  - `python scripts/check_response_model_coverage.py --check` (if you changed API files)
-  - `python scripts/check_api_test_coverage.py --check` (if you changed API modules)
-  - `python scripts/check_frontend_e2e_mapping.py --check` (if you changed frontend files)
-Include actual output of each script. If no scripts apply to your change, explain which you checked and why they don't apply.
-
-### PassTests (transition to Reviewing state)
-
-Only call after both Level 2 gates are ok. Include a test_summary with aggregated results.
-
-### If a gate fails
-
-Report `ok="false"` with the actual error output. Fix the issue, re-run, and report again. The WorkCycle stays in its current state — you can report the same gate multiple times until it passes.
+A WorkCycle is a separate optional app workflow. Use it only when the user selects it, and inspect its live actions before operating it. Ordinary engineering sessions use the simple Effort record and are not routed through WorkCycle's test/review states. Never fabricate gate results or treat unavailable tracking as a reason to stop unrelated authorized work.

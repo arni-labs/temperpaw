@@ -1,0 +1,3 @@
+Just a normal PR comment with no record marker at all.
+
+LGTM, merging.

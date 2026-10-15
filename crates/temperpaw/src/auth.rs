@@ -19,7 +19,8 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
-use temper_platform::bearer_auth::PreAuthenticatedRequest;
+use temper_authz::{AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext};
+use temper_runtime::tenant::TenantId;
 #[cfg(test)]
 use temper_store_turso::TursoEventStore;
 
@@ -139,7 +140,17 @@ pub async fn middleware(
 
     if let Some(claims) = claims_from_headers(&state, request.headers()) {
         inject_auth_headers(&mut request, &claims, state.tenant());
-        request.extensions_mut().insert(PreAuthenticatedRequest);
+        let principal = Principal {
+            id: claims.email.clone(),
+            kind: PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            attributes: Default::default(),
+        };
+        request
+            .extensions_mut()
+            .insert(authenticated_context(state.tenant(), principal));
         return next.run(request).await;
     }
 
@@ -149,13 +160,33 @@ pub async fn middleware(
     }
 
     // Internal WASM agent calls carry principal headers but no Bearer token
-    // or session cookie. Mark as pre-authenticated so Temper's bearer_auth_check
-    // passes through.
-    if request.headers().contains_key("x-temper-principal-kind")
-        && request.headers().contains_key("x-temper-principal-id")
-    {
+    // or session cookie. Build the authenticated context from those headers so
+    // the kernel guard admits the request (the kernel strips the headers
+    // themselves at its edge). Per ADR-0157 this loopback path should move to
+    // minted credentials (follow-up).
+    if let (Some(id), Some(kind)) = (
+        header_value(request.headers(), "x-temper-principal-id"),
+        header_value(request.headers(), "x-temper-principal-kind"),
+    ) {
+        let kind = match kind.as_str() {
+            "admin" => PrincipalKind::Admin,
+            "agent" => PrincipalKind::Agent,
+            // "system" is never accepted from headers; anything else stays
+            // Customer, matching the retired kernel header parser.
+            _ => PrincipalKind::Customer,
+        };
+        let principal = Principal {
+            id,
+            kind,
+            role: None,
+            acting_for: None,
+            agent_type: header_value(request.headers(), "x-temper-agent-type"),
+            attributes: Default::default(),
+        };
         ensure_tenant_header(request.headers_mut(), state.tenant());
-        request.extensions_mut().insert(PreAuthenticatedRequest);
+        request
+            .extensions_mut()
+            .insert(authenticated_context(state.tenant(), principal));
         return next.run(request).await;
     }
 
@@ -187,6 +218,21 @@ async fn is_safe_setup_path_public_during_bootstrap(
             false
         }
     }
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Bind a locally-authenticated principal to the tenant as the typed authority
+/// the kernel guard requires (ADR-0157); headers never carry identity inward.
+fn authenticated_context(tenant: &str, principal: Principal) -> AuthenticatedRequestContext {
+    let mut security_context = SecurityContext::anonymous();
+    security_context.principal = principal;
+    AuthenticatedRequestContext::new(TenantId::new(tenant), security_context)
 }
 
 fn has_bearer_auth(headers: &HeaderMap) -> bool {

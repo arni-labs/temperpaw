@@ -1,0 +1,798 @@
+# ARN-467. Native Exec owns commands; WASMs only prepare or read its durable result.
+[automaton]
+name = "DsfExperiment"
+states = ["Draft", "Configured", "Ready", "Compared", "Selecting", "Selected", "SelectionUnknown", "Cleaned", "Failed", "ValidationPreparing", "Validating", "ValidationUnknown", "RunPreparing", "Running", "RunUnknown", "CleanupPreparing", "Cleaning", "CleanupUnknown"]
+initial = "Draft"
+strict_action_params = true
+allow_indefinite_states = ["Draft", "Configured", "Ready", "Compared", "Selected", "SelectionUnknown", "Failed", "ValidationUnknown", "RunUnknown", "CleanupUnknown"]
+terminal = ["Cleaned"]
+
+[[state]]
+name = "effort_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "branch"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_revision"
+type = "string"
+initial = ""
+
+[[state]]
+name = "computer_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "database_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "media_bucket"
+type = "string"
+initial = ""
+
+[[state]]
+name = "media_namespace"
+type = "string"
+initial = ""
+
+[[state]]
+name = "permitted_external_calls"
+type = "string"
+initial = ""
+
+[[state]]
+name = "manifest_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "manifest_sha256"
+type = "string"
+initial = ""
+
+[[state]]
+name = "production_database_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "production_media_bucket"
+type = "string"
+initial = ""
+
+[[state]]
+name = "isolation_evidence_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "result_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "test_evidence_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "selection_ask_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "delivery_effort_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "selection_evidence_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "cleanup_evidence_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[state]]
+name = "exec_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "command"
+type = "string"
+initial = ""
+
+[[state]]
+name = "phase_deadline_ms"
+type = "string"
+initial = ""
+
+[[state]]
+name = "isolated"
+type = "bool"
+initial = false
+
+[[state]]
+name = "operation_sequence"
+type = "counter"
+initial = 0
+
+[[state]]
+name = "selection_sequence"
+type = "counter"
+initial = 0
+
+[[action]]
+name = "Configure"
+kind = "input"
+from = ["Draft"]
+to = "Configured"
+params = [{ name = "effort_id", type = "string" }, { name = "branch", type = "string" }, { name = "source_revision", type = "string" }, { name = "computer_id", type = "string" }, { name = "database_id", type = "string" }, { name = "media_bucket", type = "string" }, { name = "media_namespace", type = "string" }, { name = "permitted_external_calls", type = "string" }, { name = "manifest_ref", type = "string" }, { name = "manifest_sha256", type = "string" }]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "effort_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "branch"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_revision"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "computer_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "database_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "media_bucket"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "media_namespace"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "permitted_external_calls"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "manifest_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "manifest_sha256"
+
+[[action]]
+name = "Validate"
+kind = "input"
+from = ["Configured"]
+to = "ValidationPreparing"
+effect = ["operation_sequence += 1"]
+
+[[action.triggers]]
+name = "dsf_experiment_validate"
+kind = "wasm"
+module = "dsf_experiment_validate"
+
+[action.triggers.config]
+
+[[action]]
+name = "ResumeValidation"
+kind = "input"
+from = ["ValidationUnknown"]
+to = "ValidationPreparing"
+
+[[action.triggers]]
+name = "dsf_experiment_validate"
+kind = "wasm"
+module = "dsf_experiment_validate"
+
+[action.triggers.config]
+
+[[action]]
+name = "ValidationPrepared"
+kind = "input"
+from = ["ValidationPreparing"]
+to = "Validating"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action.triggers]]
+name = "start_validate_exec"
+kind = "entity"
+principal = "dsf-factory-runtime"
+target_entity = "Exec"
+target_action = "Run"
+
+[action.triggers.resolve_target]
+id_field = "exec_id"
+kind = "create_if_missing"
+
+[action.triggers.args]
+computer_id = "computer_id"
+command = "command"
+
+[[action]]
+name = "ValidationReconciled"
+kind = "input"
+from = ["ValidationPreparing"]
+to = "Validating"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action]]
+name = "PollValidation"
+kind = "input"
+from = ["Validating"]
+to = "Validating"
+
+[[action.triggers]]
+name = "dsf_experiment_validate"
+kind = "wasm"
+module = "dsf_experiment_validate"
+
+[action.triggers.config]
+
+[[action]]
+name = "IsolationSucceeded"
+kind = "input"
+from = ["Validating"]
+to = "Ready"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "production_database_id", type = "string" }, { name = "production_media_bucket", type = "string" }, { name = "isolation_evidence_ref", type = "string" }]
+effect = ["isolated = true"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "production_database_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "production_media_bucket"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "isolation_evidence_ref"
+
+[[action.constraints]]
+kind = "param_not_equals_field"
+param = "production_database_id"
+field = "database_id"
+
+[[action.constraints]]
+kind = "param_not_equals_field"
+param = "production_media_bucket"
+field = "media_bucket"
+
+[[action]]
+name = "ValidationFailed"
+kind = "input"
+from = ["ValidationPreparing", "Validating"]
+to = "Failed"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "ValidationUncertain"
+kind = "input"
+from = ["ValidationPreparing", "Validating"]
+to = "ValidationUnknown"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "ValidationPreparationTimedOut"
+kind = "input"
+from = ["ValidationPreparing"]
+to = "ValidationUnknown"
+
+[[action]]
+name = "ValidationTimedOut"
+kind = "input"
+from = ["Validating"]
+to = "ValidationUnknown"
+
+[[state_timeout]]
+state = "ValidationPreparing"
+after_seconds = 120
+on_timeout = "ValidationPreparationTimedOut"
+
+[[state_timeout]]
+state = "Validating"
+after_seconds = 10
+on_timeout = "PollValidation"
+reset_on = ["PollValidation"]
+
+[[action]]
+name = "Run"
+kind = "input"
+from = ["Ready"]
+to = "RunPreparing"
+guard = "isolated"
+effect = ["operation_sequence += 1"]
+
+[[action.triggers]]
+name = "dsf_experiment_run"
+kind = "wasm"
+module = "dsf_experiment_run"
+
+[action.triggers.config]
+
+[[action]]
+name = "ResumeRun"
+kind = "input"
+from = ["RunUnknown"]
+to = "RunPreparing"
+
+[[action.triggers]]
+name = "dsf_experiment_run"
+kind = "wasm"
+module = "dsf_experiment_run"
+
+[action.triggers.config]
+
+[[action]]
+name = "RunPrepared"
+kind = "input"
+from = ["RunPreparing"]
+to = "Running"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action.triggers]]
+name = "start_run_exec"
+kind = "entity"
+principal = "dsf-factory-runtime"
+target_entity = "Exec"
+target_action = "Run"
+
+[action.triggers.resolve_target]
+id_field = "exec_id"
+kind = "create_if_missing"
+
+[action.triggers.args]
+computer_id = "computer_id"
+command = "command"
+
+[[action]]
+name = "RunReconciled"
+kind = "input"
+from = ["RunPreparing"]
+to = "Running"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action]]
+name = "PollRun"
+kind = "input"
+from = ["Running"]
+to = "Running"
+
+[[action.triggers]]
+name = "dsf_experiment_run"
+kind = "wasm"
+module = "dsf_experiment_run"
+
+[action.triggers.config]
+
+[[action]]
+name = "RunSucceeded"
+kind = "input"
+from = ["Running"]
+to = "Compared"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "result_ref", type = "string" }, { name = "test_evidence_ref", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "result_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "test_evidence_ref"
+
+[[action]]
+name = "RunFailed"
+kind = "input"
+from = ["RunPreparing", "Running"]
+to = "Failed"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "RunUncertain"
+kind = "input"
+from = ["RunPreparing", "Running"]
+to = "RunUnknown"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "RunPreparationTimedOut"
+kind = "input"
+from = ["RunPreparing"]
+to = "RunUnknown"
+
+[[action]]
+name = "RunTimedOut"
+kind = "input"
+from = ["Running"]
+to = "RunUnknown"
+
+[[state_timeout]]
+state = "RunPreparing"
+after_seconds = 120
+on_timeout = "RunPreparationTimedOut"
+
+[[state_timeout]]
+state = "Running"
+after_seconds = 10
+on_timeout = "PollRun"
+reset_on = ["PollRun"]
+
+[[action]]
+name = "Cleanup"
+kind = "input"
+from = ["Configured", "Ready", "Compared", "Selected", "Failed"]
+to = "CleanupPreparing"
+effect = ["operation_sequence += 1"]
+
+[[action.triggers]]
+name = "dsf_experiment_cleanup"
+kind = "wasm"
+module = "dsf_experiment_cleanup"
+
+[action.triggers.config]
+
+[[action]]
+name = "ResumeCleanup"
+kind = "input"
+from = ["CleanupUnknown"]
+to = "CleanupPreparing"
+
+[[action.triggers]]
+name = "dsf_experiment_cleanup"
+kind = "wasm"
+module = "dsf_experiment_cleanup"
+
+[action.triggers.config]
+
+[[action]]
+name = "CleanupPrepared"
+kind = "input"
+from = ["CleanupPreparing"]
+to = "Cleaning"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action.triggers]]
+name = "start_cleanup_exec"
+kind = "entity"
+principal = "dsf-factory-runtime"
+target_entity = "Exec"
+target_action = "Run"
+
+[action.triggers.resolve_target]
+id_field = "exec_id"
+kind = "create_if_missing"
+
+[action.triggers.args]
+computer_id = "computer_id"
+command = "command"
+
+[[action]]
+name = "CleanupReconciled"
+kind = "input"
+from = ["CleanupPreparing"]
+to = "Cleaning"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "exec_id", type = "string" }, { name = "command", type = "string" }, { name = "phase_deadline_ms", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "exec_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "command"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "phase_deadline_ms"
+
+[[action]]
+name = "PollCleanup"
+kind = "input"
+from = ["Cleaning"]
+to = "Cleaning"
+
+[[action.triggers]]
+name = "dsf_experiment_cleanup"
+kind = "wasm"
+module = "dsf_experiment_cleanup"
+
+[action.triggers.config]
+
+[[action]]
+name = "CleanupSucceeded"
+kind = "input"
+from = ["Cleaning"]
+to = "Cleaned"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "cleanup_evidence_ref", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "cleanup_evidence_ref"
+
+[[action]]
+name = "CleanupFailed"
+kind = "input"
+from = ["CleanupPreparing", "Cleaning"]
+to = "Failed"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "CleanupUncertain"
+kind = "input"
+from = ["CleanupPreparing", "Cleaning"]
+to = "CleanupUnknown"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "operation_sequence"
+
+[[action]]
+name = "CleanupPreparationTimedOut"
+kind = "input"
+from = ["CleanupPreparing"]
+to = "CleanupUnknown"
+
+[[action]]
+name = "CleanupTimedOut"
+kind = "input"
+from = ["Cleaning"]
+to = "CleanupUnknown"
+
+[[state_timeout]]
+state = "CleanupPreparing"
+after_seconds = 120
+on_timeout = "CleanupPreparationTimedOut"
+
+[[state_timeout]]
+state = "Cleaning"
+after_seconds = 10
+on_timeout = "PollCleanup"
+reset_on = ["PollCleanup"]
+
+[[action]]
+name = "Select"
+kind = "input"
+from = ["Compared"]
+to = "Selecting"
+params = [{ name = "selection_ask_id", type = "string" }, { name = "delivery_effort_id", type = "string" }]
+effect = ["selection_sequence += 1"]
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "selection_ask_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "delivery_effort_id"
+
+[[action.triggers]]
+name = "dsf_experiment_select"
+kind = "wasm"
+module = "dsf_experiment_select"
+
+[action.triggers.config]
+
+[[action]]
+name = "ResumeSelection"
+kind = "input"
+from = ["SelectionUnknown"]
+to = "Selecting"
+
+[[action.triggers]]
+name = "dsf_experiment_select"
+kind = "wasm"
+module = "dsf_experiment_select"
+
+[action.triggers.config]
+
+[[action]]
+name = "SelectionSucceeded"
+kind = "input"
+from = ["Selecting"]
+to = "Selected"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "selection_evidence_ref", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "selection_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "selection_evidence_ref"
+
+[[action]]
+name = "SelectionFailed"
+kind = "input"
+from = ["Selecting"]
+to = "Compared"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "selection_sequence"
+
+[[action]]
+name = "SelectionUncertain"
+kind = "input"
+from = ["Selecting"]
+to = "SelectionUnknown"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "selection_sequence"
+
+[[action]]
+name = "SelectionTimedOut"
+kind = "input"
+from = ["Selecting"]
+to = "SelectionUnknown"
+
+[[state_timeout]]
+state = "Selecting"
+after_seconds = 120
+on_timeout = "SelectionTimedOut"
+
+[[invariant]]
+name = "RunningExperimentIsIsolated"
+assert = "status in ['Ready', 'RunPreparing', 'Running', 'RunUnknown', 'Compared', 'Selecting', 'Selected', 'SelectionUnknown'] => isolated"

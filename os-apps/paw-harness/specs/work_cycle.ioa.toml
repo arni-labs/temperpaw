@@ -10,6 +10,7 @@ initial = "Planning"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Planning", "Planned", "InProgress", "Testing", "Reviewing"]
+terminal = ["Complete", "Failed"]
 
 [[state]]
 name = "project_harness_id"
@@ -54,44 +55,44 @@ initial = ""
 [[state]]
 name = "has_plan"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "tests_passed"
 type = "bool"
-initial = "false"
+initial = false
 
 # --- Gate fields (bool for is_true guards) ---
 
 [[state]]
 name = "migrations_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "typecheck_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "unit_tests_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "dst_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "policy_gates_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "e2e_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "review_notes"
@@ -116,7 +117,7 @@ kind = "input"
 from = ["Planning"]
 to = "Planned"
 params = ["plan_summary", "planner_id"]
-effect = "set has_plan true"
+effect = ["has_plan = true"]
 hint = "Draft the plan before implementation can begin."
 
 [[action]]
@@ -124,49 +125,49 @@ name = "StartWork"
 kind = "input"
 from = ["Planned"]
 to = "InProgress"
-guard = "is_true has_plan"
+guard = "has_plan"
 hint = "Start implementation only after a plan exists."
 
 [[action]]
 name = "ReportMigrations"
 kind = "input"
 from = ["InProgress"]
-effect = "set migrations_ok true"
+effect = ["migrations_ok = true"]
 hint = "Self-loop: record that migrations passed."
 
 [[action]]
 name = "ReportTypecheck"
 kind = "input"
 from = ["InProgress"]
-effect = "set typecheck_ok true"
+effect = ["typecheck_ok = true"]
 hint = "Self-loop: record that typechecking passed."
 
 [[action]]
 name = "ReportUnitTests"
 kind = "input"
 from = ["InProgress"]
-effect = "set unit_tests_ok true"
+effect = ["unit_tests_ok = true"]
 hint = "Self-loop: record that unit tests passed."
 
 [[action]]
 name = "ReportDst"
 kind = "input"
 from = ["InProgress", "Testing"]
-effect = "set dst_ok true"
+effect = ["dst_ok = true"]
 hint = "Record that DST checks passed. Allowed in InProgress or Testing."
 
 [[action]]
 name = "ReportPolicyGates"
 kind = "input"
 from = ["InProgress", "Testing"]
-effect = "set policy_gates_ok true"
+effect = ["policy_gates_ok = true"]
 hint = "Record that policy gates passed. Allowed in InProgress or Testing."
 
 [[action]]
 name = "ReportE2e"
 kind = "input"
 from = ["InProgress", "Testing"]
-effect = "set e2e_ok true"
+effect = ["e2e_ok = true"]
 hint = "Record that end-to-end tests passed. Allowed in InProgress or Testing."
 
 [[action]]
@@ -181,11 +182,7 @@ name = "BeginTesting"
 kind = "input"
 from = ["InProgress"]
 to = "Testing"
-guard = [
-  { type = "is_true", var = "migrations_ok" },
-  { type = "is_true", var = "typecheck_ok" },
-  { type = "is_true", var = "unit_tests_ok" }
-]
+guard = "migrations_ok && typecheck_ok && unit_tests_ok"
 hint = "Move implementation into test execution. Requires migrations, typecheck, and unit tests to pass."
 
 [[action]]
@@ -194,11 +191,8 @@ kind = "input"
 from = ["Testing"]
 to = "Reviewing"
 params = ["test_summary"]
-effect = "set tests_passed true"
-guard = [
-  { type = "is_true", var = "dst_ok" },
-  { type = "is_true", var = "policy_gates_ok" }
-]
+effect = ["tests_passed = true"]
+guard = "dst_ok && policy_gates_ok"
 hint = "Only passing work should enter review. Requires DST and policy gates to pass."
 
 [[action]]
@@ -206,7 +200,7 @@ name = "Approve"
 kind = "input"
 from = ["Reviewing"]
 to = "Complete"
-guard = "is_true tests_passed"
+guard = "tests_passed"
 params = ["approver_id", "pr_url"]
 hint = "Approve the reviewed change after tests have passed."
 
@@ -216,7 +210,7 @@ kind = "input"
 from = ["Reviewing"]
 to = "InProgress"
 params = ["review_notes"]
-effect = "set tests_passed false"
+effect = ["tests_passed = false"]
 hint = "Send work back for changes. Resets tests_passed; other gate booleans are re-verified by gate_verifier on the next BeginTesting attempt."
 
 [[action]]
@@ -229,23 +223,11 @@ hint = "Record a failed work cycle with the reason for failure."
 
 [[invariant]]
 name = "PlannedWorkHasPlan"
-when = ["Planned", "InProgress", "Testing", "Reviewing", "Complete"]
-assert = "has_plan"
+assert = "status in ['Planned', 'InProgress', 'Testing', 'Reviewing', 'Complete'] => has_plan"
 
 [[invariant]]
 name = "ReviewedWorkPassedTests"
-when = ["Reviewing", "Complete"]
-assert = "tests_passed"
-
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
+assert = "status in ['Reviewing', 'Complete'] => tests_passed"
 
 # --- Integrations ---
 # Gate verification and reviewer spawning are PROJECT-SPECIFIC, not platform.

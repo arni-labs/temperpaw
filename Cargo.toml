@@ -6,6 +6,7 @@ members = [
     "crates/paw-transport",
     "crates/paw-codex-worker",
 ]
+exclude = ["os-apps"]
 
 [workspace.package]
 version = "0.1.0"

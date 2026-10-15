@@ -47,7 +47,7 @@ fn session_link_is_a_reusable_temperpaw_child_session_monitor() {
         "SessionLink should default to the 40 minute bounded monitor budget at a 30s poll interval"
     );
     assert!(
-        spec.contains("{ type = \"schedule\", action = \"CheckChild\", delay_seconds = 30 }"),
+        spec.contains("\"schedule('CheckChild', 30)\""),
         "SessionLink pending child checks should avoid 10s write-amplifying polling"
     );
 

@@ -57,7 +57,6 @@ kind = "input"
 from = ["Idle", "DeviceCodeReady", "Ready", "Disconnected", "Failed"]
 to = "Starting"
 hint = "Request an OpenAI Codex device code."
-effect = [{ type = "trigger", name = "openai_codex_auth_start" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_start"
@@ -84,7 +83,6 @@ kind = "input"
 from = ["DeviceCodeReady"]
 to = "Polling"
 hint = "Poll OpenAI for device authorization once."
-effect = [{ type = "trigger", name = "openai_codex_auth_poll" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_poll"
@@ -111,7 +109,6 @@ kind = "input"
 from = ["Idle", "Ready", "Failed"]
 to = "Refreshing"
 hint = "Refresh the OpenAI Codex access token from the stored refresh token."
-effect = [{ type = "trigger", name = "openai_codex_auth_refresh" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_refresh"
@@ -130,7 +127,6 @@ kind = "input"
 from = ["Idle", "Ready", "Failed"]
 to = "Refreshing"
 hint = "Ensure the stored OpenAI Codex access token is fresh, refreshing it only when it is missing or near expiry."
-effect = [{ type = "trigger", name = "openai_codex_auth_ensure" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_ensure"
@@ -149,7 +145,6 @@ kind = "input"
 from = ["Idle", "Ready", "Failed"]
 to = "Refreshing"
 hint = "Force-refresh the stored OpenAI Codex access token after a provider reports token_expired."
-effect = [{ type = "trigger", name = "openai_codex_auth_force_refresh" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_force_refresh"
@@ -168,7 +163,6 @@ kind = "input"
 from = ["Idle", "DeviceCodeReady", "Ready", "Failed", "Disconnected"]
 to = "Disconnected"
 hint = "Clear OpenAI Codex OAuth secrets."
-effect = [{ type = "trigger", name = "openai_codex_auth_disconnect" }]
 
 [[action.triggers]]
 name = "openai_codex_auth_disconnect"
@@ -193,16 +187,16 @@ hint = "OpenAI Codex OAuth failed."
 state = "Starting"
 after_seconds = 60
 on_timeout = "Fail"
-params = { last_error = "OpenAI Codex device-code start exceeded 60s", error_message = "OpenAI Codex device-code start exceeded 60s" }
+args = { last_error = "'OpenAI Codex device-code start exceeded 60s'", error_message = "'OpenAI Codex device-code start exceeded 60s'" }
 
 [[state_timeout]]
 state = "Polling"
 after_seconds = 60
 on_timeout = "Fail"
-params = { last_error = "OpenAI Codex device-code poll exceeded 60s", error_message = "OpenAI Codex device-code poll exceeded 60s" }
+args = { last_error = "'OpenAI Codex device-code poll exceeded 60s'", error_message = "'OpenAI Codex device-code poll exceeded 60s'" }
 
 [[state_timeout]]
 state = "Refreshing"
 after_seconds = 60
 on_timeout = "Fail"
-params = { last_error = "OpenAI Codex token refresh exceeded 60s", error_message = "OpenAI Codex token refresh exceeded 60s" }
+args = { last_error = "'OpenAI Codex token refresh exceeded 60s'", error_message = "'OpenAI Codex token refresh exceeded 60s'" }

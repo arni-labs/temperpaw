@@ -1,0 +1,13 @@
+[package]
+name = "dsf-r2-actions"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+dsf-resource-common = { path = "../dsf_resource_common" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# CORS origins must be parsed as origins, without credentials or paths.
+url = "2"

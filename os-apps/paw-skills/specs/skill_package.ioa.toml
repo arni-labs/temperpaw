@@ -6,6 +6,7 @@ states = ["Discovered", "Available", "Archived"]
 initial = "Discovered"
 
 allow_indefinite_states = ["Discovered", "Available"]
+terminal = ["Archived"]
 
 [[state]]
 name = "package_name"
@@ -86,8 +87,3 @@ kind = "input"
 from = ["Available"]
 to = "Archived"
 hint = "Archive this package provenance record."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

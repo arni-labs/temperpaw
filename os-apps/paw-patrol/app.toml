@@ -2,7 +2,7 @@ name = "paw-patrol"
 description = "Patrol-controlled maintenance: signals, risk, local Codex worker runs, review, proofs, and recurring sweeps"
 version = "0.1.0"
 startup_install = "core"
-dependencies = ["paw-agent", "paw-ingest", "paw-pm"]
+dependencies = ["paw-agent", "paw-ingest", "paw-pm", "paw-compute"]
 
 [[wasm_modules]]
 name = "patrol_request_router"
@@ -78,6 +78,48 @@ import_class = "temper-host"
 
 [[wasm_modules]]
 name = "patrol_run_lifecycle"
+target = "wasm32-unknown-unknown"
+criticality = "app-required"
+startup_loading = "lazy"
+provenance = "bundled-artifact"
+import_class = "temper-host"
+
+[[wasm_modules]]
+name = "release_run_lifecycle"
+target = "wasm32-unknown-unknown"
+criticality = "app-required"
+startup_loading = "lazy"
+provenance = "bundled-artifact"
+import_class = "temper-host"
+
+# TemperPaw IMAGE_TAG swap / poll / rollback. One concern per trigger.
+[[wasm_modules]]
+name = "temper_deploy_lifecycle"
+target = "wasm32-unknown-unknown"
+criticality = "app-required"
+startup_loading = "lazy"
+provenance = "bundled-artifact"
+import_class = "temper-host"
+
+# LatencyDiag-class HTTP probe. One GET, record latency_ms / row_count / passed.
+[[wasm_modules]]
+name = "contract_probe"
+target = "wasm32-unknown-unknown"
+criticality = "app-required"
+startup_loading = "lazy"
+provenance = "bundled-artifact"
+import_class = "temper-host"
+
+[[wasm_modules]]
+name = "chain_file_ready"
+target = "wasm32-unknown-unknown"
+criticality = "app-required"
+startup_loading = "lazy"
+provenance = "bundled-artifact"
+import_class = "temper-host"
+
+[[wasm_modules]]
+name = "record_ingest"
 target = "wasm32-unknown-unknown"
 criticality = "app-required"
 startup_loading = "lazy"

@@ -539,6 +539,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
@@ -560,6 +561,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
@@ -581,6 +583,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>

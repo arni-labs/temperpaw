@@ -1,12 +1,17 @@
 [automaton]
 name = "ProofPacket"
-states = ["Drafting", "Ready", "Rejected"]
+states = ["Drafting", "Ready", "Rejected", "Recorded", "Superseded"]
 initial = "Drafting"
 
-allow_indefinite_states = ["Ready", "Rejected"]
+allow_indefinite_states = ["Ready", "Rejected", "Recorded", "Superseded"]
 
 [[state]]
 name = "work_cycle_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "effort_id"
 type = "string"
 initial = ""
 
@@ -60,12 +65,88 @@ name = "residual_risks"
 type = "string"
 initial = ""
 
+# --- Stage 3 S0 record fields (ARN-430): the decoded proof.json record ---
+# As with ReviewRun, proof.json shape validation (a 40-char commit sha, a
+# non-empty changed_surface, no feature with verdict=="fail") is enforced at
+# the ingest boundary in record_ingest (parse_ok), not as transition guards -
+# guards cannot inspect per-element array verdicts or read the action's params.
+# record_present is the durable guarantee the invariant asserts.
+[[state]]
+name = "commit"
+type = "string"
+initial = ""
+
+[[state]]
+name = "changed_surface"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "blast_radius"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "features"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "tests"
+type = "string"
+initial = "{}"
+
+[[state]]
+name = "independent_verifier"
+type = "string"
+initial = "{}"
+
+[[state]]
+name = "record_present"
+type = "bool"
+initial = false
+
+[[state]]
+name = "artifact_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "artifact_file_ready"
+type = "bool"
+initial = false
+
+[[action]]
+name = "AttachProofFile"
+kind = "input"
+from = ["Drafting", "Ready", "Recorded"]
+params = ["artifact_ref"]
+effect = ["artifact_file_ready = true"]
+hint = "Name the Temper File (HTML or JSON via $value) that is this proof artifact. Vercel/GitHub are not the record."
+
+[[action.triggers]]
+name = "proof_checks_artifact_file"
+kind = "wasm"
+module = "chain_file_ready"
+on_failure = "RetractProofFile"
+
+[action.triggers.config]
+file_id_field = "artifact_ref"
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "RetractProofFile"
+kind = "input"
+from = ["Drafting", "Ready", "Recorded"]
+effect = ["artifact_file_ready = false"]
+hint = "Callback: the named proof File was missing or not Ready."
+
 [[action]]
 name = "AttachDraft"
 kind = "input"
 from = ["Drafting"]
 to = "Drafting"
-params = ["work_cycle_id", "worker_run_id", "review_run_id", "evaluation_run_id", "summary_markdown", "proof_json", "visual_summary_url", "state_diagram_mermaid", "changed_files_map", "reviewer_verdict", "residual_risks"]
+params = ["work_cycle_id", "effort_id", "worker_run_id", "review_run_id", "evaluation_run_id", "summary_markdown", "proof_json", "visual_summary_url", "state_diagram_mermaid", "changed_files_map", "reviewer_verdict", "residual_risks"]
 hint = "Attach or update the structured and visual proof draft."
 
 [[action]]
@@ -84,8 +165,56 @@ to = "Rejected"
 params = ["residual_risks"]
 hint = "Reject proof that is incomplete or misleading."
 
+# --- Stage 3 S0 record lifecycle (ARN-430) ---
+# Ingest fires record_ingest on a raw GitHub comment body. The module parses the
+# proof record and returns a callback: on a valid proof record (the stack proof
+# rules hold) it asks the kernel to dispatch IngestProof with the decoded fields;
+# on a comment with no/invalid proof record it returns the inert "callback"
+# action, which the kernel does not dispatch (the packet stays in Drafting). The
+# module never writes - the state machine does, through IngestProof.
+[[action]]
+name = "Ingest"
+kind = "input"
+from = ["Drafting"]
+to = "Drafting"
+params = ["comment_body"]
+hint = "Parse a GitHub comment body for this packet's proof record; record_ingest returns IngestProof + fields when the record is valid."
+
+[[action.triggers]]
+name = "proof_record_ingest"
+kind = "wasm"
+module = "record_ingest"
+
+# IngestProof fires once per packet: the S0 shadow creates a FRESH packet for
+# each record, so a packet ingests from Drafting and never re-ingests. Only
+# dispatched when the module validated the record against the proof rules, so a
+# Recorded packet always carries a real, passing proof. A corrected proof is a
+# NEW packet; the old one is retired with SupersedeProof - last-created wins.
+[[action]]
+name = "IngestProof"
+kind = "input"
+from = ["Drafting"]
+to = "Recorded"
+params = ["commit", "changed_surface", "blast_radius", "features", "tests", "independent_verifier"]
+effect = ["record_present = true"]
+hint = "Write the decoded proof.json record (commit, changed surface, blast radius, features, tests, independent verifier) and mark it Recorded."
+
+# Superseded is terminal: it retires THIS packet once a newer packet has recorded
+# the proof for a later head; the superseding proof lives on its own packet, this
+# one is kept for history (no outgoing transitions from Superseded).
+[[action]]
+name = "SupersedeProof"
+kind = "input"
+from = ["Recorded"]
+to = "Superseded"
+hint = "Supersede this packet when a newer proof for a later head has been recorded on its own packet."
+
+[[invariant]]
+name = "ProofRecorded"
+assert = "status in ['Recorded', 'Superseded'] => record_present"
+
 [[state_timeout]]
 state = "Drafting"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { residual_risks = "ProofPacket was not marked ready within 24h." }
+args = { residual_risks = "'ProofPacket was not marked ready within 24h.'" }

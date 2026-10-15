@@ -1,0 +1,22 @@
+{
+  "attributes": {
+    "service": "deep-sci-fi-backend",
+    "env": "staging",
+    "status": "ok",
+    "trace_id": "2c848fe28d7f7b0524d4937f8d66f74a",
+    "custom": {
+      "http": {
+        "url": "http://deep-sci-fi-staging.up.railway.app/api/health",
+        "status_code": "200"
+      },
+      "git": {
+        "commit": {
+          "sha": "7597673d083654bad15596116d2b4893b085e0c0"
+        }
+      },
+      "dsf": {
+        "request_id": "dsf-fd4862bc62da72b986b4d8bee2d4c05cd75d567a091236b8885e83fb674acf17"
+      }
+    }
+  }
+}

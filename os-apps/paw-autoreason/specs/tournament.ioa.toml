@@ -16,6 +16,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "InRound", "Judging", "Tallying"]
+terminal = ["Converged", "MaxRounds", "Failed"]
 
 # paw-fs File GUID of the original artifact
 [[state]]
@@ -121,7 +122,6 @@ from = ["Created"]
 to = "InRound"
 params = []
 hint = "Start the tournament — creates first version and round."
-effect = [{ type = "trigger", name = "initialize_tournament" }]
 
 # --- InRound (referee agent orchestrating one round) ---
 
@@ -170,7 +170,6 @@ from = ["Judging"]
 to = "Tallying"
 params = []
 hint = "All judges have submitted. Trigger vote tally."
-effect = [{ type = "trigger", name = "tally_votes" }]
 
 # --- Tallying (deterministic Borda count) ---
 
@@ -194,7 +193,6 @@ from = ["Tallying"]
 to = "InRound"
 params = ["current_version_a_id", "consecutive_incumbent_wins"]
 hint = "Winner determined, starting next round."
-effect = [{ type = "increment", field = "round_count" }, { type = "trigger", name = "run_round" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -235,22 +233,5 @@ from = ["Created", "InRound", "Judging", "Tallying"]
 to = "Failed"
 params = ["error_message"]
 hint = "Tournament failed."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ConvergedIsFinal"
-when = ["Converged"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "MaxRoundsIsFinal"
-when = ["MaxRounds"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
 
 # --- Integrations ---

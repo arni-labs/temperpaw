@@ -56,7 +56,6 @@ kind = "input"
 from = ["Draft"]
 to = "Submitted"
 params = ["source", "request_text", "requester_id"]
-effect = [{ type = "trigger", name = "route_work_request" }]
 hint = "Submit human or manager-agent intent into Patrol as work."
 
 [[action.triggers]]
@@ -122,10 +121,10 @@ hint = "Reject a request when the intake router cannot safely create the Patrol 
 state = "Submitted"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { triage_summary = "WorkRequest was not triaged within 24h." }
+args = { triage_summary = "'WorkRequest was not triaged within 24h.'" }
 
 [[state_timeout]]
 state = "Triaged"
 after_seconds = 86400
 on_timeout = "Reject"
-params = { triage_summary = "WorkRequest was not accepted or rejected within 24h." }
+args = { triage_summary = "'WorkRequest was not accepted or rejected within 24h.'" }

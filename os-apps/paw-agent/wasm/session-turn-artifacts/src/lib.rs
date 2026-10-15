@@ -39,6 +39,44 @@ pub struct ProviderResponseArtifact {
     pub cache_creation_input_tokens: i64,
     pub request_bytes: usize,
     pub response_bytes: usize,
+    /// Token-level RL signals the serving stack returned with this completion
+    /// (`prompt_token_ids`, `completion_token_ids`, `response_mask`,
+    /// `logprobs`). Absent for providers that do not expose them — the agent
+    /// never makes an extra round trip to obtain them. See ADR-0035 section 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_signals: Option<Value>,
+}
+
+/// Field names of the token-level RL signals carried between the provider
+/// response and the OTS turn. The kernel's `OTSTurn` uses the same names.
+pub const TOKEN_SIGNAL_FIELDS: &[&str] = &[
+    "prompt_token_ids",
+    "completion_token_ids",
+    "response_mask",
+    "logprobs",
+];
+
+/// Pick the token-level RL signals out of a raw provider payload.
+///
+/// Returns `None` when the payload carries none of them, which is the normal
+/// case for the Anthropic-shaped providers this stack talks to today.
+pub fn extract_token_signals(raw: &Value) -> Option<Value> {
+    let mut signals = serde_json::Map::new();
+    for field in TOKEN_SIGNAL_FIELDS {
+        let value = raw
+            .get(*field)
+            .or_else(|| raw.get("usage").and_then(|usage| usage.get(*field)))
+            .or_else(|| raw.get("choices").and_then(|choices| {
+                choices
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|choice| choice.get(*field))
+            }));
+        if let Some(value) = value.filter(|value| value.is_array()) {
+            signals.insert((*field).to_string(), value.clone());
+        }
+    }
+    (!signals.is_empty()).then(|| Value::Object(signals))
 }
 
 pub fn parse_prepared_context_artifact(raw: &str) -> Result<PreparedContextArtifact, String> {
@@ -759,6 +797,7 @@ mod tests {
             cache_creation_input_tokens: 0,
             request_bytes: 256,
             response_bytes: 512,
+            token_signals: None,
         };
 
         let params =
@@ -898,6 +937,7 @@ mod tests {
             cache_creation_input_tokens: 0,
             request_bytes: 256,
             response_bytes: 512,
+            token_signals: None,
         };
 
         let params = build_provider_response_applier_base_params(&prepared, &artifact);

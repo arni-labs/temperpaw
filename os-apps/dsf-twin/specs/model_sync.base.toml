@@ -1,0 +1,507 @@
+# ARN-467. Executable IOA contract; simulator tests run these declarations unchanged.
+[automaton]
+name = "DsfModelSync"
+states = ["Draft","Idle","Collecting","Ready","Failed","Paused"]
+initial = "Draft"
+strict_action_params = true
+# Durable records may wait indefinitely; work in progress has explicit timeouts.
+allow_indefinite_states = ["Draft","Failed","Paused"]
+
+[[state]]
+name = "scheduled_refresh"
+type = "bool"
+initial = false
+
+[[state]]
+name = "source_kind"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "resource_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_config_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "computer_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_cursor"
+type = "string"
+initial = ""
+
+[[state]]
+name = "last_success_at"
+type = "string"
+initial = ""
+
+[[state]]
+name = "next_due_at"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[state]]
+name = "sync_sequence"
+type = "counter"
+initial = 0
+
+[[state]]
+name = "failure_count"
+type = "counter"
+initial = 0
+
+[[state]]
+name = "observation_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_event_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "query"
+type = "string"
+initial = ""
+
+[[state]]
+name = "window_start"
+type = "string"
+initial = ""
+
+[[state]]
+name = "window_end"
+type = "string"
+initial = ""
+
+[[state]]
+name = "sample_kind"
+type = "string"
+initial = ""
+
+[[state]]
+name = "outcome"
+type = "string"
+initial = ""
+
+[[state]]
+name = "summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "evidence_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observed_configuration"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observed_revision"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observed_at_ms"
+type = "counter"
+initial = 0
+
+[[action]]
+name = "Configure"
+kind = "input"
+from = ["Draft"]
+to = "Idle"
+params = [{ name = "source_kind", type = "string" }, { name = "source_id", type = "string" }, { name = "resource_id", type = "string" }, { name = "source_config_ref", type = "string" }, { name = "computer_id", type = "string" }]
+effect = []
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_kind"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_config_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "resource_id"
+
+[[action]]
+name = "Refresh"
+kind = "input"
+from = ["Idle","Ready","Failed"]
+to = "Collecting"
+guard = "failure_count < 3"
+effect = ["scheduled_refresh = false", "sync_sequence += 1"]
+
+[[action.triggers]]
+name = "dsf_model_collect"
+kind = "wasm"
+module = "dsf_model_collect"
+
+[action.triggers.config]
+timeout_secs = "120"
+
+[[action]]
+name = "RefreshIfDue"
+kind = "internal"
+from = ["Idle","Ready"]
+to = "Collecting"
+guard = "failure_count < 3"
+effect = ["scheduled_refresh = true", "sync_sequence += 1"]
+
+[[action.triggers]]
+name = "dsf_model_collect"
+kind = "wasm"
+module = "dsf_model_collect"
+
+[action.triggers.config]
+timeout_secs = "120"
+
+[[action]]
+name = "CollectionDeferred"
+kind = "input"
+from = ["Collecting"]
+to = "Ready"
+params = [{ name = "expected_sequence", type = "counter" }]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action]]
+name = "CollectionFailed"
+kind = "input"
+from = ["Collecting"]
+to = "Failed"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "error_message", type = "string" }]
+effect = ["failure_count += 1"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action]]
+name = "CollectionTimedOut"
+kind = "internal"
+from = ["Collecting"]
+to = "Failed"
+effect = ["failure_count += 1"]
+
+[[action]]
+name = "Pause"
+kind = "input"
+from = ["Idle","Ready","Failed"]
+to = "Paused"
+
+[[action]]
+name = "Resume"
+kind = "input"
+from = ["Paused"]
+to = "Idle"
+effect = ["failure_count -= 1", "failure_count -= 1", "failure_count -= 1"]
+
+[[action]]
+name = "CollectionSucceeded"
+kind = "input"
+from = ["Collecting"]
+to = "Ready"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }, { name = "observed_configuration", type = "string" }, { name = "observed_revision", type = "string" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_event_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_start"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_end"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "evidence_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "last_success_at"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "next_due_at"
+
+[[action.triggers]]
+name = "record_resource_measured"
+kind = "entity"
+target_entity = "DsfObservation"
+target_action = "RecordMeasured"
+
+[action.triggers.args]
+subject_id = "resource_id"
+source = "source_id"
+source_event_id = "source_event_id"
+query = "query"
+window_start = "window_start"
+window_end = "window_end"
+sample_kind = "sample_kind"
+outcome = "outcome"
+summary = "summary"
+evidence_ref = "evidence_ref"
+observed_at_ms = "observed_at_ms"
+observed_configuration = "observed_configuration"
+observed_revision = "observed_revision"
+
+[action.triggers.resolve_target]
+id_field = "observation_id"
+kind = "create_if_missing"
+
+[[action]]
+name = "CollectionAbsent"
+kind = "input"
+from = ["Collecting"]
+to = "Ready"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_event_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_start"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_end"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "evidence_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "last_success_at"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "next_due_at"
+
+[[action.triggers]]
+name = "record_resource_absent"
+kind = "entity"
+target_entity = "DsfObservation"
+target_action = "RecordAbsent"
+
+[action.triggers.args]
+subject_id = "resource_id"
+source = "source_id"
+source_event_id = "source_event_id"
+query = "query"
+window_start = "window_start"
+window_end = "window_end"
+sample_kind = "sample_kind"
+outcome = "outcome"
+summary = "summary"
+evidence_ref = "evidence_ref"
+observed_at_ms = "observed_at_ms"
+
+[action.triggers.resolve_target]
+id_field = "observation_id"
+kind = "create_if_missing"
+
+[[action]]
+name = "CollectionInaccessible"
+kind = "input"
+from = ["Collecting"]
+to = "Failed"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "error_message", type = "string" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count += 1"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_event_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_start"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_end"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "evidence_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "error_message"
+
+[[action.triggers]]
+name = "record_resource_inaccessible"
+kind = "entity"
+target_entity = "DsfObservation"
+target_action = "RecordInaccessible"
+
+[action.triggers.args]
+subject_id = "resource_id"
+source = "source_id"
+source_event_id = "source_event_id"
+query = "query"
+window_start = "window_start"
+window_end = "window_end"
+sample_kind = "sample_kind"
+outcome = "outcome"
+summary = "summary"
+evidence_ref = "evidence_ref"
+observed_at_ms = "observed_at_ms"
+
+[action.triggers.resolve_target]
+id_field = "observation_id"
+kind = "create_if_missing"
+
+[[action]]
+name = "CollectionStale"
+kind = "input"
+from = ["Collecting"]
+to = "Ready"
+params = [{ name = "expected_sequence", type = "counter" }, { name = "observation_id", type = "string" }, { name = "source_event_id", type = "string" }, { name = "query", type = "string" }, { name = "window_start", type = "string" }, { name = "window_end", type = "string" }, { name = "sample_kind", type = "string" }, { name = "outcome", type = "string" }, { name = "summary", type = "string" }, { name = "evidence_ref", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "source_cursor", type = "string" }, { name = "last_success_at", type = "string" }, { name = "next_due_at", type = "string" }]
+effect = ["observed_at_ms = params.observed_at_ms", "failure_count -= 1", "failure_count -= 1", "failure_count -= 1", "schedule_at('Refresh', next_due_at)"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "sync_sequence"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_event_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_start"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "window_end"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "evidence_ref"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "last_success_at"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "next_due_at"
+
+[[action.triggers]]
+name = "record_resource_stale"
+kind = "entity"
+target_entity = "DsfObservation"
+target_action = "RecordStale"
+
+[action.triggers.args]
+subject_id = "resource_id"
+source = "source_id"
+source_event_id = "source_event_id"
+query = "query"
+window_start = "window_start"
+window_end = "window_end"
+sample_kind = "sample_kind"
+outcome = "outcome"
+summary = "summary"
+evidence_ref = "evidence_ref"
+observed_at_ms = "observed_at_ms"
+
+[action.triggers.resolve_target]
+id_field = "observation_id"
+kind = "create_if_missing"
+
+[[state_timeout]]
+state = "Collecting"
+after_seconds = 300
+on_timeout = "CollectionTimedOut"
+
+[[state_timeout]]
+state = "Failed"
+after_seconds = 900
+on_timeout = "Refresh"
+
+[[invariant]]
+name = "BoundedCollectionFailures"
+assert = "failure_count <= 3"
+
+[[state_timeout]]
+state = "Idle"
+after_seconds = 60
+on_timeout = "RefreshIfDue"
+
+[[state_timeout]]
+state = "Ready"
+after_seconds = 60
+on_timeout = "RefreshIfDue"

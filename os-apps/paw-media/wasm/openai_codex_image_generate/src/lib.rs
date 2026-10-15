@@ -187,7 +187,10 @@ fn validate_request(fields: &Value) -> Result<(), String> {
 fn normalize_provider(provider: &str) -> String {
     match provider.trim().to_ascii_lowercase().as_str() {
         "" => DEFAULT_PROVIDER.to_string(),
-        "codex" | "openai-codex" => DEFAULT_PROVIDER.to_string(),
+        // "openai" is the guess models make first; both observed hero-image
+        // failures (Mullion, Madori 2026-07) burned an attempt on it. There
+        // is exactly one v1 provider, so alias every obvious spelling.
+        "openai" | "codex" | "openai-codex" | "openai codex" => DEFAULT_PROVIDER.to_string(),
         other => other.to_string(),
     }
 }

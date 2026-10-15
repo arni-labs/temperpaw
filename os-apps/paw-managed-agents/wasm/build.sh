@@ -1,34 +1,15 @@
 #!/usr/bin/env bash
+# Build and package the required WASM modules for paw-managed-agents.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../wasm-build-env.sh"
-FAILED_MODULES=""
-
-copy_artifact() {
-    local module="$1"
-    local target="wasm32-unknown-unknown"
-    local source_file="$SCRIPT_DIR/$module/target/$target/release/${module/-/_}.wasm"
-    if [ ! -f "$source_file" ]; then
-        source_file="$SCRIPT_DIR/$module/target/$target/release/$(echo "$module" | tr '_' '-').wasm"
-    fi
-    if [ -f "$source_file" ]; then
-        cp "$source_file" "$SCRIPT_DIR/$module/$module.wasm"
-    fi
-}
 
 for module in session_orchestrator event_emitter session_terminator managed_agent_updater; do
-    echo "Building $module..."
-    if (cd "$SCRIPT_DIR/$module" && cargo build --target wasm32-unknown-unknown --release 2>&1); then
-        copy_artifact "$module"
-        echo "  -> $module built successfully"
-    else
-        echo "  -> $module FAILED"
-        FAILED_MODULES="$FAILED_MODULES $module"
-    fi
+    echo "Building $module (wasm32-unknown-unknown)..."
+    src="$(temperpaw_build_wasm "$SCRIPT_DIR/$module" wasm32-unknown-unknown)"
+    cp "$src" "$SCRIPT_DIR/$module/$module.wasm"
+    echo "  -> packaged $SCRIPT_DIR/$module/$module.wasm"
 done
 
-if [ -n "$FAILED_MODULES" ]; then
-    echo ""
-    echo "WARNING: These modules failed to build:$FAILED_MODULES"
-fi
+echo "All paw-managed-agents WASM modules built and packaged."

@@ -1,0 +1,281 @@
+# ReleaseRun — governed release of one completed WorkCycle, through the computer.
+#
+# Closes the gap where a PR was merged through the computer but nobody
+# watched the rollout and rollback was manual. Every step is a side effect
+# run by `release_run_lifecycle` on the named Computer's sandbox:
+#
+#   Request   -> preflight the PR (base==main), merge it, record merge_sha
+#   Watching  -> kernel state_timeout fires Check every 30s; one probe of
+#                health_url per Check until the served git_sha == merge_sha
+#   Unhealthy -> git revert the merge commit and push, so the same
+#                push-triggered deploy path rolls production back
+#
+# The WASM never dispatches actions on other entities and never loops: it
+# performs one side effect per trigger and reports through the named
+# callback action (set_success_result / on_failure). Orchestration lives
+# here in the automaton and in the kernel timer.
+#
+# Lifecycle: Requested → Merging → Watching → Healthy
+#                                           ↘ Unhealthy → RolledBack
+#                       any active state → Failed
+#
+# Liveness: every non-terminal state has a bounded state_timeout so a lost
+# callback cannot hang the run forever (ADR-0050). NOTE: the pinned kernel's
+# timers are in-memory (lost on a process restart) — durable timeout delivery
+# is a separate platform follow-up (see ARN-396); the timeouts here bound the
+# lost-callback case, and Watching's Check re-arms on itself so a dropped
+# CheckPending still advances.
+
+[automaton]
+name = "ReleaseRun"
+states = ["Requested", "Merging", "Watching", "Healthy", "Unhealthy", "RolledBack", "Failed"]
+initial = "Requested"
+terminal = ["Healthy", "RolledBack", "Failed"]
+
+# -- State variables ----------------------------------------------------------
+
+[[state]]
+name = "work_cycle_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "repo"
+type = "string"
+initial = ""
+
+[[state]]
+name = "pr_number"
+type = "string"
+initial = ""
+
+[[state]]
+name = "computer_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "health_url"
+type = "string"
+initial = ""
+
+# Upper bound on health probes (one per Check, 30s apart) before the
+# rollout is declared Unhealthy. "60" = 30 minutes — enough for a Railway
+# cold Docker build + release, which can queue several minutes before the
+# new commit even starts serving. Override per release via ConfigureRelease.
+# The WASM rejects a non-numeric value, 0, or anything over 240 (2h).
+[[state]]
+name = "max_checks"
+type = "string"
+initial = "60"
+
+# Base branch the release targets. Only "main" is releasable (the WASM
+# refuses any other base at merge time), so the rollback always reverts on
+# a known branch.
+[[state]]
+name = "base_branch"
+type = "string"
+initial = "main"
+
+[[state]]
+name = "merge_sha"
+type = "string"
+initial = ""
+
+# The PR head commit the release is bound to. If expected_head_sha is set
+# (from a reviewed commit), the merge refuses unless the PR's current head
+# matches it; the merge PUT also pins this sha so a push after proof cannot be
+# merged (commit-binding, ARN-394 re-review). head_sha records what was merged.
+[[state]]
+name = "expected_head_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "head_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observed_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "check_count"
+type = "counter"
+initial = 0
+
+# Consecutive probes where the NEW commit is serving but degraded. Reset to 0
+# by any healthy/old-commit probe; the WASM rolls back only after 3 in a row,
+# so a single warmup window does not revert a healthy release.
+[[state]]
+name = "degraded_streak"
+type = "counter"
+initial = 0
+
+[[state]]
+name = "revert_sha"
+type = "string"
+initial = ""
+
+[[state]]
+name = "reason"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+# -- Merge -------------------------------------------------------------------
+
+[[action]]
+name = "Request"
+kind = "input"
+from = ["Requested"]
+to = "Merging"
+params = ["work_cycle_id", "repo", "pr_number", "computer_id", "health_url", "max_checks", "expected_head_sha"]
+hint = "Preflight (base==main) and merge the PR on the computer, then start watching. Fired declaratively by WorkCycle.Complete as the patrol-release-service principal."
+
+[[action.triggers]]
+name = "release_merge"
+kind = "wasm"
+module = "release_run_lifecycle"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+github_token = "{secret:github_token}"
+github_app_id = "{secret:github_app_id}"
+github_app_private_key = "{secret:github_app_private_key}"
+
+# Safety cap: if the merge side effect never reports back (lost callback),
+# fail visibly instead of sitting in Merging forever.
+[[state_timeout]]
+state = "Merging"
+after_seconds = 600
+on_timeout = "Fail"
+args = { error_message = "'ReleaseRun stayed Merging for 10m (merge callback lost).'" }
+
+# Requested is entered and immediately Request'd by the WorkCycle trigger; cap
+# it so a failure to dispatch Request cannot hang the run.
+[[state_timeout]]
+state = "Requested"
+after_seconds = 600
+on_timeout = "Fail"
+args = { error_message = "'ReleaseRun stayed Requested for 10m (Request never dispatched).'" }
+
+[[action]]
+name = "MergeSucceeded"
+kind = "input"
+from = ["Merging"]
+to = "Watching"
+params = ["merge_sha", "base_branch", "head_sha"]
+hint = "Callback from release_run_lifecycle — the PR merged; merge_sha is the commit the rollout must serve, base_branch is where a rollback would push, head_sha is the PR head that was merged (audit)."
+
+# -- Watch -------------------------------------------------------------------
+
+# The kernel fires Check 30s after entering Watching and re-arms 30s after
+# every Check / CheckPending — an event-driven poll with no loop in code.
+# `Check` is in reset_on so a dropped CheckPending callback still re-arms the
+# timer (the next Check was scheduled when this Check fired).
+[[state_timeout]]
+state = "Watching"
+after_seconds = 30
+on_timeout = "Check"
+reset_on = ["Check", "CheckPending"]
+
+[[action]]
+name = "Check"
+kind = "input"
+from = ["Watching"]
+to = "Watching"
+effect = ["check_count += 1"]
+hint = "One probe of health_url on the computer. Reports CheckHealthy, CheckPending, or CheckUnhealthy."
+
+[[action.triggers]]
+name = "release_check"
+kind = "wasm"
+module = "release_run_lifecycle"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+github_token = "{secret:github_token}"
+github_app_id = "{secret:github_app_id}"
+github_app_private_key = "{secret:github_app_private_key}"
+
+[[action]]
+name = "CheckPending"
+kind = "input"
+from = ["Watching"]
+to = "Watching"
+params = ["observed_sha", "degraded_streak"]
+effect = ["degraded_streak = params.degraded_streak"]
+hint = "Callback — the service is up but still serving a different commit, or the new commit is briefly degraded; carry the degraded streak and wait for the next Check."
+
+[[action]]
+name = "CheckHealthy"
+kind = "input"
+from = ["Watching"]
+to = "Healthy"
+params = ["observed_sha"]
+hint = "Callback — health is OK and the served git_sha equals merge_sha. Terminal success."
+
+[[action]]
+name = "CheckUnhealthy"
+kind = "input"
+from = ["Watching"]
+to = "Unhealthy"
+params = ["reason", "observed_sha"]
+hint = "Callback — the new commit served degraded for 3 consecutive checks, or max_checks elapsed without it becoming healthy. Starts the rollback."
+
+# -- Rollback ----------------------------------------------------------------
+
+[[action.triggers]]
+name = "release_rollback"
+kind = "wasm"
+module = "release_run_lifecycle"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+github_token = "{secret:github_token}"
+github_app_id = "{secret:github_app_id}"
+github_app_private_key = "{secret:github_app_private_key}"
+
+# Safety cap: if the revert side effect never reports back, fail visibly.
+[[state_timeout]]
+state = "Unhealthy"
+after_seconds = 600
+on_timeout = "Fail"
+args = { error_message = "'ReleaseRun stayed Unhealthy for 10m (rollback callback lost).'" }
+
+[[action]]
+name = "RollbackPushed"
+kind = "input"
+from = ["Unhealthy"]
+to = "RolledBack"
+params = ["revert_sha"]
+hint = "Callback — the merge commit was reverted and pushed through the computer; the push-triggered deploy restores the previous build."
+
+# -- Failure -----------------------------------------------------------------
+
+# NOTE (ARN-397): CheckUnhealthy / RollbackPushed / Fail should also surface to
+# the human channel (Discord). paw-patrol has no declarative outbound-message
+# primitive today (paw-channels exposes Channel/Session/Route, not a
+# send-message entity), so that notification is tracked as a follow-up rather
+# than wired to an invented endpoint here.
+
+[[action]]
+name = "Fail"
+kind = "input"
+from = ["Requested", "Merging", "Watching", "Unhealthy"]
+to = "Failed"
+params = ["error_message"]
+hint = "A step could not run (computer unavailable, PR not on main, merge rejected, revert conflict) or a callback was lost. Visible terminal failure."

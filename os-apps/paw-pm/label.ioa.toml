@@ -12,13 +12,14 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active"]
+terminal = ["Archived"]
 
 # --- State Variables ---
 
 [[state]]
 name = "usage_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- Actions ---
 
@@ -33,7 +34,7 @@ hint = "Initialize label with name, color, and optional description."
 name = "IncrementUsage"
 kind = "input"
 from = ["Active"]
-effect = "increment usage_count"
+effect = ["usage_count += 1"]
 hint = "Increment usage count when label is attached to an issue."
 
 [[action]]
@@ -42,10 +43,3 @@ kind = "input"
 from = ["Active"]
 to = "Archived"
 hint = "Archive the label. Terminal state."
-
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

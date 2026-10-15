@@ -9,26 +9,27 @@ name = "ArtifactBatch"
 states = ["Submitted", "Applying", "Completed", "Failed"]
 initial = "Submitted"
 allow_indefinite_states = ["Submitted", "Applying"]
+terminal = ["Completed", "Failed"]
 
 [[state]]
 name = "file_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "applied_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "failed_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "total_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "workspace_id"
@@ -51,9 +52,7 @@ kind = "input"
 from = ["Submitted"]
 to = "Submitted"
 params = ["workspace_id", "files_manifest", "submitted_by", "file_count"]
-effect = [
-  { type = "set_counter_from_param", var = "file_count", param = "file_count" },
-]
+effect = ["file_count = params.file_count"]
 hint = "Submit a JSON file manifest for batch application."
 
 [[action]]
@@ -61,7 +60,6 @@ name = "Apply"
 kind = "input"
 from = ["Submitted"]
 to = "Applying"
-effect = [{ type = "trigger", name = "artifact_batch_apply" }]
 hint = "Apply the submitted manifest using direct Directory/File/FileVersion operations."
 
 [[action.triggers]]
@@ -79,10 +77,7 @@ kind = "input"
 from = ["Applying"]
 to = "Applying"
 params = ["path", "file_id", "size_bytes"]
-effect = [
-  { type = "increment", var = "applied_count" },
-  { type = "increment", var = "total_bytes", amount = "size_bytes" },
-]
+effect = ["applied_count += 1", "total_bytes += params.size_bytes"]
 hint = "Record one file applied by the batch integration."
 
 [[action]]
@@ -91,7 +86,7 @@ kind = "input"
 from = ["Applying"]
 to = "Applying"
 params = ["path", "error"]
-effect = [{ type = "increment", var = "failed_count" }]
+effect = ["failed_count += 1"]
 hint = "Record one failed file application."
 
 [[action]]
@@ -111,16 +106,5 @@ params = ["error"]
 hint = "Mark the batch failed with a diagnostic error."
 
 [[invariant]]
-name = "CompletedIsFinal"
-when = ["Completed"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
-
-[[invariant]]
 name = "AppliedCountNonNegative"
-when = ["Submitted", "Applying", "Completed", "Failed"]
-assert = "applied_count >= 0"
+assert = "status in ['Submitted', 'Applying', 'Completed', 'Failed'] => applied_count >= 0"

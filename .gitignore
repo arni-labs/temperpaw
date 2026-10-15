@@ -23,3 +23,4 @@ tmp_*.log
 
 # Standalone OS-app WASM crates generate local locks during per-module builds.
 os-apps/*/wasm/**/Cargo.lock
+.scratch/

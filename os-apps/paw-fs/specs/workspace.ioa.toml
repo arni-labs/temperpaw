@@ -17,24 +17,25 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active", "Frozen"]
+terminal = ["Archived"]
 
 # --- State Variables ---
 
 [[state]]
 name = "quota_limit"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "used_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 # Legacy/non-authoritative. Do not use for agent-path admission or correctness.
 
 [[state]]
 name = "file_count"
 type = "counter"
-initial = "0"
+initial = 0
 # Legacy/non-authoritative. Do not use for agent-path admission or correctness.
 
 [[state]]
@@ -70,7 +71,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["name", "quota_limit"]
-effect = [{ type = "set_counter_from_param", var = "quota_limit", param = "quota_limit" }]
+effect = ["quota_limit = params.quota_limit"]
 hint = "Create a new workspace with a name and storage quota."
 
 [[action]]
@@ -79,7 +80,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["quota_limit"]
-effect = [{ type = "set_counter_from_param", var = "quota_limit", param = "quota_limit" }]
+effect = ["quota_limit = params.quota_limit"]
 hint = "Update the workspace storage quota limit."
 
 [[action]]
@@ -87,7 +88,7 @@ name = "IncrementUsage"
 kind = "input"
 from = ["Active"]
 to = "Active"
-effect = [{ type = "increment", var = "used_bytes", amount = "size_bytes" }]
+effect = ["used_bytes += params.size_bytes"]
 params = ["size_bytes"]
 hint = "Record additional storage usage. Rejected if it would exceed quota."
 
@@ -96,7 +97,7 @@ name = "DecrementUsage"
 kind = "input"
 from = ["Active"]
 to = "Active"
-effect = [{ type = "decrement", var = "used_bytes", amount = "size_bytes" }]
+effect = ["used_bytes -= params.size_bytes"]
 params = ["size_bytes"]
 hint = "Release storage usage when files are removed or shrink."
 
@@ -105,7 +106,7 @@ name = "IncrementFileCount"
 kind = "input"
 from = ["Active"]
 to = "Active"
-effect = "increment file_count"
+effect = ["file_count += 1"]
 hint = "Increment the workspace file count when a new file is created."
 
 [[action]]
@@ -113,7 +114,7 @@ name = "DecrementFileCount"
 kind = "input"
 from = ["Active"]
 to = "Active"
-effect = "decrement file_count"
+effect = ["file_count -= 1"]
 hint = "Decrement the workspace file count when a file is archived."
 
 [[action]]
@@ -150,7 +151,6 @@ from = ["Active"]
 to = "Active"
 params = ["path"]
 hint = "Create directory hierarchy at path (mkdir -p)."
-effect = [{ type = "trigger", name = "fs_mkdir" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -181,7 +181,6 @@ from = ["Active"]
 to = "Active"
 params = ["path", "mime_type"]
 hint = "Create file entity at path (creat). Parent dir must exist."
-effect = [{ type = "trigger", name = "fs_create_file" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -212,7 +211,6 @@ from = ["Active"]
 to = "Active"
 params = ["path"]
 hint = "Resolve path to file entity (stat)."
-effect = [{ type = "trigger", name = "fs_resolve_path" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -243,7 +241,6 @@ from = ["Active"]
 to = "Active"
 params = ["path"]
 hint = "List directory contents (readdir)."
-effect = [{ type = "trigger", name = "fs_list_dir" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -274,7 +271,6 @@ from = ["Active"]
 to = "Active"
 params = ["path"]
 hint = "Archive file at path (unlink)."
-effect = [{ type = "trigger", name = "fs_delete_file" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -305,7 +301,6 @@ from = ["Active"]
 to = "Active"
 params = ["path", "new_path"]
 hint = "Rename/move file (FUSE: rename). Moves file from path to new_path, creating intermediate directories as needed."
-effect = [{ type = "trigger", name = "fs_rename" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -344,21 +339,12 @@ name = "WorkspaceArchivedEvent"
 kind = "output"
 hint = "Emitted when workspace transitions to Archived."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "UsageBelowQuota"
-when = ["Active"]
-assert = "used_bytes <= quota_limit"
+assert = "status in ['Active'] => used_bytes <= quota_limit"
 
 [[invariant]]
 name = "FileCountNonNegative"
-when = ["Active", "Frozen", "Archived"]
-assert = "file_count >= 0"
+assert = "status in ['Active', 'Frozen', 'Archived'] => file_count >= 0"
 
 # --- Filesystem Integrations (WASM) ---

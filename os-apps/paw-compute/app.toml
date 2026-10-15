@@ -1,4 +1,44 @@
 name = "paw-compute"
-description = "Compute provisioning for agent sandboxes via Fly.io"
+description = "Compute provisioning for agent sandboxes via Tensorlake"
 version = "0.1.0"
 dependencies = []
+
+[[wasm_modules]]
+name = "computer_exec"
+criticality = "app-required"
+startup_loading = "lazy"
+[[wasm_modules]]
+name = "computer_exec_start"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "computer_exec_poll"
+criticality = "app-required"
+startup_loading = "lazy"
+
+
+[[wasm_modules]]
+name = "computer_copy_start"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "computer_copy_poll"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "computer_terminate"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "computer_sleep"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "computer_wake"
+criticality = "app-required"
+startup_loading = "lazy"

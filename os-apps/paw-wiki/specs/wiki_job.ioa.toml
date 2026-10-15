@@ -19,6 +19,7 @@ initial = "Queued"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Queued", "Ready", "Running"]
+terminal = ["Completed", "Failed"]
 
 # Job classification (consuming app decides values)
 [[state]]
@@ -127,7 +128,6 @@ kind = "input"
 from = ["Queued"]
 to = "Ready"
 hint = "Validate and prepare job for execution. Triggers message builder WASM."
-effect = [{ type = "trigger", name = "build_session_message" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -177,7 +177,6 @@ from = ["Running"]
 to = "Completed"
 params = ["output"]
 hint = "Mark job as successfully completed with output summary."
-effect = [{ type = "trigger", name = "finalize_spawned_session" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -199,18 +198,11 @@ from = ["Ready", "Running"]
 to = "Failed"
 params = ["error_message"]
 hint = "Mark job as failed with error details."
-effect = [{ type = "trigger", name = "finalize_spawned_session" }]
 
-# --- Invariants ---
-
-[[invariant]]
-name = "CompletedIsFinal"
-when = ["Completed"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
+[[action.triggers]]
+name = "finalize_spawned_session"
+kind = "wasm"
+module = "finalize_spawned_session"
+config = { temper_api_url = "{secret:temper_api_url}", odata_namespace = "WikiCore" }
 
 # --- Integrations ---

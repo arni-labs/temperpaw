@@ -1,2 +1,2 @@
 ARG IMAGE_TAG=latest
-FROM ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}
+FROM ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}

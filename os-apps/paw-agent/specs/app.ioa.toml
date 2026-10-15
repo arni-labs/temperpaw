@@ -14,6 +14,7 @@ initial = "Installed"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Installed"]
+terminal = ["Archived"]
 
 [[state]]
 name = "name"
@@ -50,8 +51,3 @@ kind = "input"
 from = ["Installed"]
 to = "Archived"
 hint = "Archive this app."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

@@ -158,8 +158,6 @@ fn repo_root() -> PathBuf {
 fn is_historical_or_proof(path: &Path) -> bool {
     let path = path.to_string_lossy();
     path.starts_with("docs/adrs/")
-        || path.starts_with("docs/proofs/")
-        || path.starts_with(".proofs/")
         || path.contains("/adrs/")
         || path.ends_with("crates/temperpaw/tests/temperpaw_identity_contract.rs")
         || path.ends_with("docs/temperpaw-identity-and-observability-success-contract.md")
@@ -326,7 +324,6 @@ fn dockerignore_excludes_local_runtime_state_from_production_images() {
         "dashboard/node_modules",
         "**/node_modules",
         ".env",
-        ".proofs",
         ".wrangler",
     ] {
         assert!(
@@ -454,11 +451,11 @@ fn railway_deploy_dockerfile_uses_image_tag_variable() {
         "Dockerfile.deploy must declare IMAGE_TAG so Railway deployments can select the exact verified GHCR image"
     );
     assert!(
-        deploy_dockerfile.contains("FROM ghcr.io/nerdsane/temperpaw:${IMAGE_TAG}"),
-        "Dockerfile.deploy must pull ghcr.io/nerdsane/temperpaw using IMAGE_TAG instead of a hard-coded tag"
+        deploy_dockerfile.contains("FROM ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"),
+        "Dockerfile.deploy must pull ghcr.io/arni-labs/temperpaw using IMAGE_TAG instead of a hard-coded tag"
     );
     assert!(
-        !deploy_dockerfile.contains("ghcr.io/nerdsane/temperpaw:edge"),
+        !deploy_dockerfile.contains("ghcr.io/arni-labs/temperpaw:edge"),
         "Dockerfile.deploy must not hard-code edge because production proofs require a pinned image tag"
     );
     assert!(
@@ -534,16 +531,22 @@ fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
         "TEMPERPAW_BASE_URL",
         "VariableUpsertInput",
         "skipDeploys: true",
-        "deploymentRedeploy",
-        "TEMPER_API_KEY",
-        "/paw/version",
+        // The deploy sets the service's image and asserts the running one.
+        // deploymentRedeploy replays the previous image and is exactly the
+        // mechanism that left production on a stale tag for two days.
+        "serviceInstanceUpdate",
+        "source: { image: $image }",
+        "serviceInstanceDeployV2",
+        "latestDeployment { id status }",
+        "\"${status}\" = \"SUCCESS\"",
+        // expected_sha is proven by the tag naming that build; the version
+        // endpoint is not consulted while it returns 503 (ARN-508).
+        "does not match expected_sha",
+        "expected_sha cannot be verified for",
         "expected_sha",
-        "BUILD_SHA",
-        "BUILD_VERSION",
-        "DD_VERSION",
-        "OTEL_RESOURCE_ATTRIBUTES",
-        "dd_llmobs_enabled=false",
-        "sha-${EXPECTED_SHA:0:8}",
+        // Build identity is the image's: BUILD_SHA/BUILD_VERSION are baked and
+        // the entrypoint derives DD_VERSION and the OTEL attributes. The
+        // workflow writes none of them (asserted below).
         "run_artifact_batch_e2e",
         "scripts/production_artifact_batch_e2e.sh",
         "PACKAGED_WASM_PATH",
@@ -555,8 +558,23 @@ fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
     }
 
     assert!(
-        workflow.contains("edge|latest|sha-[0-9a-f]*"),
-        "Railway redeploy workflow must restrict deployable tags"
+        workflow.contains("^(edge|latest|sha-[0-9a-f]{7,40})$"),
+        "Railway redeploy workflow must restrict deployable tags to an exact shape"
+    );
+    for shadowing in [
+        "upsert_var BUILD_SHA",
+        "upsert_var BUILD_VERSION",
+        "upsert_var DD_VERSION",
+        "upsert_var OTEL_RESOURCE_ATTRIBUTES",
+    ] {
+        assert!(
+            !workflow.contains(shadowing),
+            "Railway redeploy workflow must not write build identity ({shadowing}): the image bakes it and the entrypoint derives the rest; a variable would shadow a per-build value"
+        );
+    }
+    assert!(
+        !workflow.contains("deploymentRedeploy"),
+        "Railway redeploy workflow must not redeploy the previous deployment: that replays its image and ignores the requested tag"
     );
 }
 

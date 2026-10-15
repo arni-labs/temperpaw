@@ -40,45 +40,30 @@ initial = ""
 
 [[field_invariant]]
 name = "KindMustBeKnown"
-when = { not = { field = "Kind", absent = true } }
-require = { any_of = [
-  { field = "Kind", equals = "agent_toolset_20260401" },
-  { field = "Kind", equals = "mcp_toolset" },
-  { field = "Kind", equals = "custom" },
-] }
 message = "AgentTool.Kind must be agent_toolset_20260401, mcp_toolset, or custom"
+assert = "Kind != null => Kind in ['agent_toolset_20260401', 'mcp_toolset', 'custom']"
 
 [[field_invariant]]
 name = "CustomToolRequiresName"
-when = { field = "Kind", equals = "custom" }
-require = { not = { field = "Name", empty = true } }
 message = "custom AgentTool rows must define Name"
+assert = "Kind == 'custom' => !empty(Name)"
 
 [[field_invariant]]
 name = "CustomToolRequiresDescription"
-when = { field = "Kind", equals = "custom" }
-require = { not = { field = "Description", empty = true } }
 message = "custom AgentTool rows must define Description"
+assert = "Kind == 'custom' => !empty(Description)"
 
 [[field_invariant]]
 name = "CustomToolRequiresInputSchema"
-when = { field = "Kind", equals = "custom" }
-require = { not = { field = "InputSchema", empty = true } }
 message = "custom AgentTool rows must define InputSchema"
+assert = "Kind == 'custom' => !empty(InputSchema)"
 
 [[field_invariant]]
 name = "McpToolsetRequiresServerName"
-when = { field = "Kind", equals = "mcp_toolset" }
-require = { not = { field = "McpServerName", empty = true } }
 message = "mcp_toolset AgentTool rows must define McpServerName"
+assert = "Kind == 'mcp_toolset' => !empty(McpServerName)"
 
 [[field_invariant]]
 name = "AgentToolsetForbidsKindSpecificFields"
-when = { field = "Kind", equals = "agent_toolset_20260401" }
-require = { all_of = [
-  { field = "Name", absent = true },
-  { field = "Description", absent = true },
-  { field = "InputSchema", absent = true },
-  { field = "McpServerName", absent = true },
-] }
 message = "agent_toolset_20260401 rows must not set custom or MCP-only fields"
+assert = "Kind == 'agent_toolset_20260401' => Name == null && Description == null && InputSchema == null && McpServerName == null"

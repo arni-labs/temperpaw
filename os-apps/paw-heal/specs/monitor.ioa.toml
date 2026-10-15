@@ -10,6 +10,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Active", "Paused"]
+terminal = ["Archived"]
 
 [[state]]
 name = "dd_query"
@@ -34,7 +35,7 @@ initial = ""
 [[state]]
 name = "alert_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Configure"
@@ -55,7 +56,7 @@ name = "AlertFired"
 kind = "input"
 from = ["Active"]
 params = ["last_alert_payload"]
-effect = "increment alert_count"
+effect = ["alert_count += 1"]
 hint = "Record an alert payload while keeping the monitor active."
 
 [[action]]
@@ -79,8 +80,3 @@ kind = "input"
 from = ["Created", "Active", "Paused"]
 to = "Archived"
 hint = "Archive the monitor when it is no longer needed."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

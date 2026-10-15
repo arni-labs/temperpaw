@@ -1,12 +1,19 @@
 [automaton]
+# Optional autonomous WorkCycle review record. Ordinary Efforts use plain
+# evidence and do not require a ReviewRun or a reviewer quorum.
 name = "ReviewRun"
-states = ["Requested", "Claimed", "Reviewing", "ChangesRequested", "Approved", "Escalated", "Failed"]
+states = ["Requested", "Claimed", "Reviewing", "ChangesRequested", "Approved", "Escalated", "Failed", "Recorded", "Superseded"]
 initial = "Requested"
 
-allow_indefinite_states = ["ChangesRequested", "Approved", "Escalated", "Failed"]
+allow_indefinite_states = ["ChangesRequested", "Approved", "Escalated", "Failed", "Recorded", "Superseded"]
 
 [[state]]
 name = "work_cycle_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "effort_id"
 type = "string"
 initial = ""
 
@@ -40,13 +47,121 @@ name = "proof_packet_id"
 type = "string"
 initial = ""
 
+# --- Stage 3 S0 record fields (ARN-430): the decoded review record ---
+# The record's shape validation (a 40-char commit sha, a non-empty reviewer
+# set, well-formed findings) is enforced at the ingest boundary in the
+# record_ingest module (parse_ok), NOT as transition guards: the guard grammar
+# has no string-length/regex predicate, and guards evaluate against pre-state
+# without the incoming action's params, so a guard cannot inspect the record
+# being written. record_present (set by IngestRecord) is the durable guarantee
+# the invariant asserts. See docs/efforts/ARN-430/decisions.md.
+[[state]]
+name = "commit"
+type = "string"
+initial = ""
+
+[[state]]
+name = "reviewers_ran"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "findings"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "risk"
+type = "string"
+initial = ""
+
+[[state]]
+name = "rubrics"
+type = "string"
+initial = "{}"
+
+[[state]]
+name = "fix_it_failed"
+type = "bool"
+initial = false
+
+[[state]]
+name = "risk_flags"
+type = "string"
+initial = "[]"
+
+[[state]]
+name = "open_act_on_count"
+type = "string"
+initial = "0"
+
+[[state]]
+name = "record_present"
+type = "bool"
+initial = false
+
+[[state]]
+name = "artifact_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "artifact_file_ready"
+type = "bool"
+initial = false
+
+[[action]]
+name = "AttachReviewFile"
+kind = "input"
+from = ["Requested", "Claimed", "Reviewing", "Approved", "Recorded"]
+params = ["artifact_ref"]
+effect = ["artifact_file_ready = true"]
+hint = "Name the Temper File (HTML or JSON) that is this agent's review artifact. GitHub comments are not the record."
+
+[[action.triggers]]
+name = "review_checks_artifact_file"
+kind = "wasm"
+module = "chain_file_ready"
+on_failure = "RetractReviewFile"
+
+[action.triggers.config]
+file_id_field = "artifact_ref"
+temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "RetractReviewFile"
+kind = "input"
+from = ["Requested", "Claimed", "Reviewing", "Approved", "Recorded"]
+effect = ["artifact_file_ready = false"]
+hint = "Callback: the named review File was missing or not Ready."
+
+# Panel path: write this agent's verdict onto the row. Does not fan into
+# WorkCycle (review_gate_lifecycle stays on Approve for the old loop).
+[[action]]
+name = "RecordPanel"
+kind = "input"
+from = ["Requested", "Claimed", "Reviewing"]
+to = "Recorded"
+params = ["effort_id", "reviewer_id", "review_summary", "verdict", "findings", "rubrics", "risk_flags", "commit", "reviewers_ran", "risk"]
+effect = ["record_present = true"]
+hint = "Write this review record (commit, reviewers, findings, risk) when fix-it passed. Use RecordPanelFixItFailed when it did not."
+
+[[action]]
+name = "RecordPanelFixItFailed"
+kind = "input"
+from = ["Requested", "Claimed", "Reviewing"]
+to = "Recorded"
+params = ["effort_id", "reviewer_id", "review_summary", "verdict", "findings", "rubrics", "risk_flags", "commit", "reviewers_ran", "risk"]
+effect = ["record_present = true", "fix_it_failed = true"]
+hint = "Write this review record when fix-it failed. Findings do not advance or block an Effort."
+
 [[action]]
 name = "Request"
 kind = "input"
 from = ["Requested"]
 to = "Requested"
-params = ["work_cycle_id", "worker_run_id", "proof_packet_id"]
-hint = "Request independent review for a completed WorkerRun."
+params = ["work_cycle_id", "effort_id", "worker_run_id", "proof_packet_id"]
+hint = "Request independent review for a completed WorkerRun, or bind this run to an Effort."
 
 [[action]]
 name = "Claim"
@@ -61,7 +176,7 @@ name = "StartReview"
 kind = "input"
 from = ["Claimed"]
 to = "Reviewing"
-hint = "Start review of diff, proof, tests, and live verification requirements."
+hint = "Read the changed code and independently exercise the changed feature; report demonstrated defects within scope."
 
 [[action]]
 name = "RequestChanges"
@@ -69,7 +184,6 @@ kind = "input"
 from = ["Reviewing"]
 to = "ChangesRequested"
 params = ["review_summary", "live_e2e_summary", "verdict"]
-effect = [{ type = "trigger", name = "review_run_changes_requested" }]
 hint = "Request implementation changes."
 
 [[action.triggers]]
@@ -86,7 +200,6 @@ kind = "input"
 from = ["Reviewing"]
 to = "Approved"
 params = ["review_summary", "live_e2e_summary", "verdict"]
-effect = [{ type = "trigger", name = "review_run_approved" }]
 hint = "Approve after meaningful review and required verification."
 
 [[action.triggers]]
@@ -103,7 +216,6 @@ kind = "input"
 from = ["Reviewing", "Claimed", "Requested"]
 to = "Escalated"
 params = ["review_summary", "verdict"]
-effect = [{ type = "trigger", name = "review_run_escalated" }]
 hint = "Escalate to human when review cannot safely decide."
 
 [[action.triggers]]
@@ -120,7 +232,6 @@ kind = "input"
 from = ["Requested", "Claimed", "Reviewing"]
 to = "Failed"
 params = ["review_summary"]
-effect = [{ type = "trigger", name = "review_run_failed" }]
 hint = "Review failed operationally."
 
 [[action.triggers]]
@@ -131,20 +242,72 @@ module = "review_gate_lifecycle"
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
 
+# --- Stage 3 S0 record lifecycle (ARN-430) ---
+# Ingest fires record_ingest on a raw GitHub comment body. The module parses
+# the review record and returns a callback: on a valid review record it asks
+# the kernel to dispatch IngestRecord with the decoded fields as params; on a
+# comment with no/invalid review record it returns the inert "callback" action,
+# which the kernel does not dispatch (the run stays in Requested). The module
+# never writes - the state machine does, through IngestRecord.
+[[action]]
+name = "Ingest"
+kind = "input"
+from = ["Requested"]
+to = "Requested"
+params = ["comment_body"]
+hint = "Parse a GitHub comment body for this run's review record; record_ingest returns IngestRecord + fields when the record is valid."
+
+[[action.triggers]]
+name = "review_record_ingest"
+kind = "wasm"
+module = "record_ingest"
+
+# IngestRecord writes the decoded review record (returned by record_ingest) onto
+# the run and moves it to Recorded. Only dispatched when the module parsed a
+# valid record (checked 40-char commit, non-empty reviewer set), so a Recorded
+# run always carries a real record. record_present marks the write for the
+# invariant.
+# IngestRecord fires once per run: the S0 shadow creates a FRESH run for each
+# record, so a run ingests from Requested and never re-ingests (Recorded is
+# terminal apart from Supersede). A corrected record is a NEW run; the old run
+# is retired with Supersede - last-created wins.
+[[action]]
+name = "IngestRecord"
+kind = "input"
+from = ["Requested"]
+to = "Recorded"
+params = ["commit", "reviewers_ran", "findings", "risk", "open_act_on_count"]
+effect = ["record_present = true"]
+hint = "Write the decoded review record (commit, reviewers, findings, risk, open act-on count) and mark it Recorded."
+
+# Superseded is terminal: it marks THIS run retired once a newer run has recorded
+# the record for a later head. The superseding record lives on its own run; this
+# one is kept for history (Superseded has no outgoing transitions).
+[[action]]
+name = "Supersede"
+kind = "input"
+from = ["Recorded"]
+to = "Superseded"
+hint = "Supersede this run when a newer review record for a later head has been recorded on its own run."
+
+[[invariant]]
+name = "RecordedHasRecord"
+assert = "status in ['Recorded', 'Superseded'] => record_present"
+
 [[state_timeout]]
 state = "Requested"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { review_summary = "ReviewRun was not claimed within 24h." }
+args = { review_summary = "'ReviewRun was not claimed within 24h.'" }
 
 [[state_timeout]]
 state = "Claimed"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { review_summary = "ReviewRun was claimed but not started within 24h." }
+args = { review_summary = "'ReviewRun was claimed but not started within 24h.'" }
 
 [[state_timeout]]
 state = "Reviewing"
 after_seconds = 86400
 on_timeout = "Escalate"
-params = { review_summary = "ReviewRun stayed Reviewing for 24h.", verdict = "escalate" }
+args = { review_summary = "'ReviewRun stayed Reviewing for 24h.'", verdict = "'escalate'" }

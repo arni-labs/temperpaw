@@ -8,6 +8,7 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active"]
+terminal = ["Archived"]
 
 [[state]]
 name = "name"
@@ -37,12 +38,12 @@ initial = "[]"
 [[state]]
 name = "allow_mcp_servers"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "allow_package_managers"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "metadata"
@@ -62,31 +63,17 @@ to = "Archived"
 params = ["ArchivedAt"]
 hint = "Archive this managed environment."
 
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"
-
 [[field_invariant]]
 name = "ConfigTypeMustBeCloud"
-when = { not = { field = "ConfigType", absent = true } }
-require = { field = "ConfigType", equals = "Cloud" }
 message = "ManagedEnvironment.ConfigType must currently be Cloud"
+assert = "ConfigType != null => ConfigType == 'Cloud'"
 
 [[field_invariant]]
 name = "NetworkingTypeMustBeKnown"
-when = { not = { field = "NetworkingType", absent = true } }
-require = { any_of = [
-  { field = "NetworkingType", equals = "Unrestricted" },
-  { field = "NetworkingType", equals = "Limited" },
-] }
 message = "ManagedEnvironment.NetworkingType must be Unrestricted or Limited"
+assert = "NetworkingType != null => NetworkingType in ['Unrestricted', 'Limited']"
 
 [[field_invariant]]
 name = "ArchivedRequiresArchivedAt"
-when = { field = "Status", equals = "Archived" }
-require = { any_of = [
-  { not = { field = "archived_at", empty = true } },
-  { not = { field = "ArchivedAt", empty = true } },
-] }
 message = "Archived managed environments must set ArchivedAt"
+assert = "Status == 'Archived' => !empty(archived_at) || !empty(ArchivedAt)"

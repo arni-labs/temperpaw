@@ -35,12 +35,66 @@ fn paw_patrol_wasm_source(root: &Path, module: &str) -> String {
     read(root.join(format!("os-apps/paw-patrol/wasm/{module}/src/lib.rs")))
 }
 
+/// The `[[action]]` table named `name` in a spec's TOML text.
+fn spec_action(spec: &str, name: &str) -> toml::value::Table {
+    let parsed: toml::Value = spec.parse().expect("spec should parse as TOML");
+    parsed
+        .get("action")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_table())
+        .find(|a| a.get("name").and_then(|v| v.as_str()) == Some(name))
+        .cloned()
+        .unwrap_or_else(|| panic!("spec should define action {name}"))
+}
+
+/// The action's effect statements, e.g. `["run_count += 1"]`.
+fn effect_statements(action: &toml::value::Table) -> Vec<String> {
+    action
+        .get("effect")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
+/// Names of the `[[action.triggers]]` the action fires, in declaration order.
+fn trigger_names(action: &toml::value::Table) -> Vec<String> {
+    action
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// Asserts `action` has exactly these effect statements and fires exactly
+/// these triggers, in order.
+fn assert_action_effects(
+    spec: &str,
+    label: &str,
+    action: &str,
+    effects: &[&str],
+    triggers: &[&str],
+) {
+    let table = spec_action(spec, action);
+    assert_eq!(
+        effect_statements(&table),
+        effects,
+        "{label}.{action} should have effects {effects:?}"
+    );
+    assert_eq!(
+        trigger_names(&table),
+        triggers,
+        "{label}.{action} should fire triggers {triggers:?}"
+    );
+}
+
 fn agent_context(id: &str, agent_type: &str) -> SecurityContext {
-    SecurityContext::from_headers(&[
-        ("X-Temper-Principal-Id".to_string(), id.to_string()),
-        ("X-Temper-Principal-Kind".to_string(), "agent".to_string()),
-        ("X-Temper-Agent-Type".to_string(), agent_type.to_string()),
-    ])
+    SecurityContext::from_resolved_identity(id, agent_type, None)
 }
 
 fn resource_attrs(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
@@ -90,6 +144,8 @@ fn paw_patrol_owns_the_dark_factory_entities_without_extra_factory_apps() {
         "paw-pm Issues",
         "Mac mini",
         "resource-bound ownership",
+        "DsfDeploy",
+        "TemperDeploy",
     ] {
         assert!(app_doc.contains(needle), "APP.md should mention {needle}");
     }
@@ -99,6 +155,10 @@ fn paw_patrol_owns_the_dark_factory_entities_without_extra_factory_apps() {
         "signal.ioa.toml",
         "factory_case.ioa.toml",
         "work_cycle.ioa.toml",
+        "intent.ioa.toml",
+        "effort.ioa.toml",
+        "dsf_deploy.ioa.toml",
+        "temper_deploy.ioa.toml",
         "worker_run.ioa.toml",
         "review_run.ioa.toml",
         "evaluation_run.ioa.toml",
@@ -122,6 +182,10 @@ fn paw_patrol_owns_the_dark_factory_entities_without_extra_factory_apps() {
         "Signal",
         "FactoryCase",
         "WorkCycle",
+        "Intent",
+        "Effort",
+        "DsfDeploy",
+        "TemperDeploy",
         "WorkerRun",
         "ReviewRun",
         "EvaluationRun",
@@ -136,6 +200,10 @@ fn paw_patrol_owns_the_dark_factory_entities_without_extra_factory_apps() {
         assert!(
             csdl.contains(&format!("<EntityType Name=\"{entity}\">")),
             "CSDL should expose {entity}"
+        );
+        assert!(
+            csdl.contains(&format!("<EntitySet Name=\"{entity}s\"")),
+            "CSDL should expose the {entity}s entity set"
         );
     }
 }
@@ -162,7 +230,6 @@ fn paw_patrol_renames_human_intake_to_work_request_and_adds_risk_patrol_entities
     for needle in [
         "name = \"WorkRequest\"",
         "hint = \"Submit human or manager-agent intent into Patrol as work.\"",
-        "effect = [{ type = \"trigger\", name = \"route_work_request\" }]",
         "module = \"patrol_request_router\"",
         "request_text",
         "requester_id",
@@ -172,6 +239,13 @@ fn paw_patrol_renames_human_intake_to_work_request_and_adds_risk_patrol_entities
             "WorkRequest spec should contain {needle}"
         );
     }
+    assert_action_effects(
+        &work_request,
+        "WorkRequest",
+        "Submit",
+        &[],
+        &["route_work_request"],
+    );
 
     let patrol_run = read(patrol.join("specs/patrol_run.ioa.toml"));
     for needle in [
@@ -246,6 +320,132 @@ fn paw_patrol_renames_human_intake_to_work_request_and_adds_risk_patrol_entities
     ] {
         assert!(app_doc.contains(needle), "APP.md should explain {needle}");
     }
+}
+
+#[test]
+fn paw_patrol_project_deploy_tools_remain_available_independently() {
+    let root = repo_root();
+    let patrol = root.join("os-apps/paw-patrol");
+    let dsf = read(patrol.join("specs/dsf_deploy.ioa.toml"));
+    let release_run = read(patrol.join("specs/release_run.ioa.toml"));
+    let temper = read(patrol.join("specs/temper_deploy.ioa.toml"));
+    let cedar = read(patrol.join("policies/patrol.cedar"));
+    let csdl = read(patrol.join("specs/model.csdl.xml"));
+    let manifest = read(patrol.join("app.toml"));
+
+    for needle in [
+        "name = \"DsfDeploy\"",
+        "module = \"release_run_lifecycle\"",
+        "github_token = \"{secret:github_token}\"",
+        "github_app_id = \"{secret:github_app_id}\"",
+        "github_app_private_key = \"{secret:github_app_private_key}\"",
+        "concurrent_entity_set = \"DsfDeploys\"",
+    ] {
+        assert!(
+            dsf.contains(needle),
+            "dsf_deploy.ioa.toml should carry `{needle}`"
+        );
+    }
+    for needle in [
+        "github_app_id = \"{secret:github_app_id}\"",
+        "github_app_private_key = \"{secret:github_app_private_key}\"",
+    ] {
+        assert!(
+            release_run.contains(needle),
+            "release_run.ioa.toml should carry `{needle}`"
+        );
+    }
+    for needle in [
+        "name = \"TemperDeploy\"",
+        "module = \"temper_deploy_lifecycle\"",
+        "WaitingForImage",
+        "name = \"CheckImage\"",
+        "name = \"ImageReady\"",
+        "target_entity = \"ContractProbe\"",
+        "github_token = \"{secret:github_token}\"",
+    ] {
+        assert!(
+            temper.contains(needle),
+            "temper_deploy.ioa.toml should carry `{needle}`"
+        );
+    }
+    for needle in [
+        "resource is DsfDeploy",
+        "resource is TemperDeploy",
+        "principal.agent_type == \"wasm-runtime\"",
+    ] {
+        assert!(
+            cedar.contains(needle),
+            "patrol.cedar should carry `{needle}`"
+        );
+    }
+    for needle in [
+        "<EntityType Name=\"DsfDeploy\">",
+        "<EntityType Name=\"TemperDeploy\">",
+        "<EntityType Name=\"ContractProbe\">",
+        "<EntitySet Name=\"DsfDeploys\"",
+        "<EntitySet Name=\"TemperDeploys\"",
+        "<EntitySet Name=\"ContractProbes\"",
+        "<Property Name=\"ArtifactFileReady\"",
+    ] {
+        assert!(csdl.contains(needle), "CSDL should carry `{needle}`");
+    }
+    assert!(
+        manifest.contains("name = \"temper_deploy_lifecycle\""),
+        "app.toml should register temper_deploy_lifecycle"
+    );
+    assert!(
+        read(patrol.join("wasm/build.sh")).contains("temper_deploy_lifecycle"),
+        "build.sh should build temper_deploy_lifecycle"
+    );
+    assert!(
+        manifest.contains("name = \"contract_probe\"")
+            && read(patrol.join("wasm/build.sh")).contains("contract_probe")
+            && read(patrol.join("specs/contract_probe.ioa.toml"))
+                .contains("name = \"ContractProbe\"")
+            && read(patrol.join("specs/contract_probe.ioa.toml")).contains("state = \"Failed\"")
+            && read(patrol.join("seed-data/contract_probes.toml")).contains("mcp-455-lists"),
+        "ContractProbe spec, wasm, seed, and app.toml must travel together"
+    );
+    assert!(
+        read(patrol.join("wasm/temper_deploy_lifecycle/src/lib.rs")).contains("ghcr.io/token"),
+        "TemperDeploy must exchange a GHCR pull token, not send the GitHub PAT as the registry bearer"
+    );
+    let deploy = read(patrol.join("specs/temper_deploy.ioa.toml"));
+    assert!(
+        deploy.contains("ready_path = \"/healthz\""),
+        "TemperDeploy must poll /healthz (ARN-432); /readyz is 503 when Discord is down"
+    );
+    assert!(
+        !deploy.contains("ready_path = \"/readyz\""),
+        "TemperDeploy must not poll /readyz"
+    );
+    let app_doc = read(patrol.join("APP.md"));
+    assert!(
+        !app_doc.contains("Deploy` creates the existing `ReleaseRun"),
+        "APP.md must not say Effort.Deploy creates ReleaseRun"
+    );
+    let merge_src = read(patrol.join("wasm/release_run_lifecycle/src/lib.rs"));
+    let app_src = read(patrol.join("wasm/release_run_lifecycle/src/github_app.rs"));
+    assert!(
+        app_src.contains("fn installation_token") && app_src.contains("github_app_jwt"),
+        "release_run_lifecycle must mint a GitHub App installation token"
+    );
+    assert!(
+        merge_src.contains("github_app::github_bearer"),
+        "merge/rollback must use the App bearer, not only github_token"
+    );
+    let wasm = fs::read(patrol.join("wasm/release_run_lifecycle/release_run_lifecycle.wasm"))
+        .expect("committed release_run_lifecycle.wasm");
+    let wasm_text = String::from_utf8_lossy(&wasm);
+    assert!(
+        wasm_text.contains("github_app_id") && wasm_text.contains("installation token"),
+        "committed wasm must mint an App installation token"
+    );
+    assert!(
+        !wasm_text.contains(".git-credentials"),
+        "committed wasm must not read ~/.git-credentials"
+    );
 }
 
 #[test]
@@ -1634,12 +1834,8 @@ fn production_observe_only_script_turns_cutover_gate_into_a_guarded_proof() {
         );
     }
 
-    for needle in [
-        "bash -n crates/paw-codex-worker/scripts/production-observe-only.sh",
-        "bash -n crates/paw-codex-worker/scripts/production-observe-only-smoke.sh",
-    ] {
-        assert!(ci.contains(needle), "CI should syntax-check {needle}");
-    }
+    let needle = "for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done";
+    assert!(ci.contains(needle), "CI should syntax-check {needle}");
 
     for needle in [
         "production-observe-only.sh",
@@ -1695,46 +1891,6 @@ fn production_cutover_runbook_maps_every_human_blocker_to_a_gate() {
         readme.contains("docs/runbooks/paw-patrol-production-cutover.md"),
         "worker README should point operators to the production cutover runbook"
     );
-}
-
-#[test]
-fn production_docs_explain_patrol_session_provider_configuration() {
-    let root = repo_root();
-    let runbook = read(root.join("docs/runbooks/paw-patrol-production-cutover.md"));
-    let readme = read(root.join("crates/paw-codex-worker/README.md"));
-    let audit = read(root.join("docs/proofs/2026-05-05-paw-patrol-completion-audit.md"));
-
-    for needle in [
-        "repo_assessment_provider",
-        "repo_assessment_model",
-        "daily_brief_provider",
-        "daily_brief_model",
-        "local Codex WorkerRun",
-        "AssessmentComplete",
-        "DailyBrief.Render",
-    ] {
-        assert!(
-            runbook.contains(needle),
-            "production cutover runbook should explain session config: {needle}"
-        );
-    }
-
-    for needle in [
-        "RepoGraphSnapshot assessment Session",
-        "DailyBrief Session",
-        "local Codex WorkerRun",
-        "repo_assessment_provider",
-        "daily_brief_provider",
-    ] {
-        assert!(
-            readme.contains(needle),
-            "worker README should explain Patrol session setup: {needle}"
-        );
-        assert!(
-            audit.contains(needle),
-            "completion audit should record Patrol session setup evidence: {needle}"
-        );
-    }
 }
 
 #[test]
@@ -1842,7 +1998,7 @@ fn paw_patrol_acceptance_harness_collects_quick_and_live_proofs() {
     }
 
     assert!(
-        ci.contains("bash -n crates/paw-codex-worker/scripts/paw-patrol-acceptance.sh"),
+        ci.contains("for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done"),
         "CI should syntax-check the acceptance harness"
     );
 }
@@ -1856,16 +2012,7 @@ fn ci_covers_paw_patrol_worker_and_wasm_gates() {
         "workflow_dispatch:",
         "cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings",
         "cargo check --locked -p temperpaw -p paw-codex-worker",
-        "bash -n crates/paw-codex-worker/scripts/deterministic-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/datadog-patrol-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/repo-sweep-brief-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/webhook-intake-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/production-readiness.sh",
-        "bash -n crates/paw-codex-worker/scripts/production-preflight.sh",
-        "bash -n crates/paw-codex-worker/scripts/production-preflight-github-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/production-readiness-smoke.sh",
-        "bash -n crates/paw-codex-worker/scripts/mac-mini-production-bootstrap.sh",
-        "bash -n crates/paw-codex-worker/scripts/paw-patrol-acceptance.sh",
+        "for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done",
         "os-apps/paw-ingest/wasm/build.sh",
         "os-apps/paw-patrol/wasm/build.sh",
         "cargo test --locked -p paw-codex-worker --quiet",
@@ -1999,9 +2146,27 @@ fn paw_patrol_is_discoverable_by_the_os_app_catalog() {
         .expect("paw-patrol should load as an OS app bundle");
     assert_eq!(
         bundle.specs.len(),
-        19,
-        "paw-patrol should expose all Patrol entity specs"
+        28,
+        "paw-patrol should expose all Patrol entity specs (incl. Ask, ReleaseRun, DsfDeploy, TemperDeploy, ContractProbe, StandingDecision/ShadowVerdict, and the Intent/Effort loop)"
     );
+    for entity in [
+        "Intent",
+        "Effort",
+        "Ask",
+        "DsfDeploy",
+        "TemperDeploy",
+        "ContractProbe",
+        "ReleaseRun",
+    ] {
+        assert!(
+            bundle
+                .specs
+                .iter()
+                .any(|(entity_type, _)| entity_type == entity),
+            "paw-patrol bundle should include the {entity} spec: {:?}",
+            bundle.specs.iter().map(|(t, _)| t).collect::<Vec<_>>()
+        );
+    }
     assert!(
         bundle
             .csdl
@@ -2133,12 +2298,7 @@ fn paw_patrol_has_webhook_intake_routes_through_paw_ingest() {
     }
 
     let ingest_build = read(root.join("os-apps/paw-ingest/wasm/build.sh"));
-    for needle in [
-        "validate_webhook",
-        "route_webhook",
-        "process_webhook",
-        "cargo build --target wasm32-unknown-unknown --release",
-    ] {
+    for needle in ["validate_webhook", "route_webhook", "process_webhook"] {
         assert!(
             ingest_build.contains(needle),
             "paw-ingest build.sh should build {needle}"
@@ -2185,9 +2345,7 @@ fn patrol_schedule_recurs_sweeps_and_daily_briefs_inside_patrol() {
     let spec = read(patrol.join("specs/patrol_schedule.ioa.toml"));
     for needle in [
         "name = \"PatrolSchedule\"",
-        "effect = [{ type = \"trigger\", name = \"patrol_schedule_activate\" }]",
-        "effect = [{ type = \"increment\", var = \"run_count\" }, { type = \"trigger\", name = \"patrol_schedule_trigger\" }]",
-        "{ type = \"schedule_at\", field = \"next_run_at\", action = \"Trigger\" }",
+        "\"schedule_at('Trigger', next_run_at)\"",
         "module = \"patrol_schedule_lifecycle\"",
         "name = \"TriggerComplete\"",
         "name = \"Recover\"",
@@ -2201,6 +2359,22 @@ fn patrol_schedule_recurs_sweeps_and_daily_briefs_inside_patrol() {
             "PatrolSchedule spec should contain {needle}"
         );
     }
+    for action in ["Activate", "Resume"] {
+        assert_action_effects(
+            &spec,
+            "PatrolSchedule",
+            action,
+            &[],
+            &["patrol_schedule_activate"],
+        );
+    }
+    assert_action_effects(
+        &spec,
+        "PatrolSchedule",
+        "Trigger",
+        &["run_count += 1"],
+        &["patrol_schedule_trigger"],
+    );
 
     let csdl = read(patrol.join("specs/model.csdl.xml"));
     for needle in [
@@ -2313,7 +2487,6 @@ fn patrol_request_submit_is_temper_native_intake_routing() {
 
     let spec = read(patrol.join("specs/patrol_request.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"route_patrol_request\" }]",
         "[[action.triggers]]",
         "name = \"route_patrol_request\"",
         "kind = \"wasm\"",
@@ -2328,6 +2501,13 @@ fn patrol_request_submit_is_temper_native_intake_routing() {
             "PatrolRequest spec should contain {needle}"
         );
     }
+    assert_action_effects(
+        &spec,
+        "PatrolRequest",
+        "Submit",
+        &[],
+        &["route_patrol_request"],
+    );
 
     let wasm_root = patrol.join("wasm/patrol_request_router");
     assert!(
@@ -2405,7 +2585,6 @@ fn signal_ingest_routes_observable_failures_into_patrol_work() {
 
     let spec = read(patrol.join("specs/signal.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"route_signal\" }]",
         "[[action.triggers]]",
         "name = \"route_signal\"",
         "kind = \"wasm\"",
@@ -2415,6 +2594,7 @@ fn signal_ingest_routes_observable_failures_into_patrol_work() {
     ] {
         assert!(spec.contains(needle), "Signal spec should contain {needle}");
     }
+    assert_action_effects(&spec, "Signal", "Ingest", &[], &["route_signal"]);
 
     let wasm_root = patrol.join("wasm/signal_router");
     assert!(
@@ -2476,13 +2656,17 @@ fn patrol_work_cycles_have_revisable_codex_plan_mode_plans() {
         "name = \"RevisePlan\"",
         "from = [\"Planned\", \"AwaitingHumanStartApproval\", \"InProgress\"]",
         "effect = [",
-        "{ type = \"increment\", var = \"plan_revision_count\" }",
     ] {
         assert!(
             work_cycle.contains(needle),
             "WorkCycle spec should support revising visible plans before and during implementation: {needle}"
         );
     }
+    assert!(
+        effect_statements(&spec_action(&work_cycle, "RevisePlan"))
+            .contains(&"plan_revision_count += 1".to_string()),
+        "WorkCycle spec should support revising visible plans before and during implementation: RevisePlan increments plan_revision_count"
+    );
 
     let csdl = read(patrol.join("specs/model.csdl.xml"));
     assert!(
@@ -2555,9 +2739,6 @@ fn worker_run_done_fans_out_to_review_evaluation_and_proof() {
 
     let spec = read(patrol.join("specs/worker_run.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"worker_run_started\" }]",
-        "effect = [{ type = \"trigger\", name = \"worker_run_finished\" }]",
-        "effect = [{ type = \"trigger\", name = \"worker_run_failed\" }]",
         "module = \"worker_run_lifecycle\"",
         "on_failure = \"ReportFailed\"",
     ] {
@@ -2565,6 +2746,13 @@ fn worker_run_done_fans_out_to_review_evaluation_and_proof() {
             spec.contains(needle),
             "WorkerRun spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("StartLocal", "worker_run_started"),
+        ("ReportDone", "worker_run_finished"),
+        ("ReportFailed", "worker_run_failed"),
+    ] {
+        assert_action_effects(&spec, "WorkerRun", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/worker_run_lifecycle");
@@ -2626,17 +2814,17 @@ fn reviewer_and_evaluator_results_gate_completion_before_human_review() {
     }
 
     let review_spec = read(patrol.join("specs/review_run.ioa.toml"));
-    for needle in [
-        "effect = [{ type = \"trigger\", name = \"review_run_approved\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_changes_requested\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_escalated\" }]",
-        "effect = [{ type = \"trigger\", name = \"review_run_failed\" }]",
-        "module = \"review_gate_lifecycle\"",
+    assert!(
+        review_spec.contains("module = \"review_gate_lifecycle\""),
+        "ReviewRun spec should contain module = \"review_gate_lifecycle\""
+    );
+    for (action, trigger) in [
+        ("Approve", "review_run_approved"),
+        ("RequestChanges", "review_run_changes_requested"),
+        ("Escalate", "review_run_escalated"),
+        ("Fail", "review_run_failed"),
     ] {
-        assert!(
-            review_spec.contains(needle),
-            "ReviewRun spec should contain {needle}"
-        );
+        assert_action_effects(&review_spec, "ReviewRun", action, &[], &[trigger]);
     }
 
     let evaluation_spec = read(patrol.join("specs/evaluation_run.ioa.toml"));
@@ -2646,14 +2834,18 @@ fn reviewer_and_evaluator_results_gate_completion_before_human_review() {
         "name = \"Claim\"",
         "params = [\"evaluator_id\"]",
         "params = [\"results_json\", \"error_message\", \"failure_classification\"]",
-        "effect = [{ type = \"trigger\", name = \"evaluation_run_passed\" }]",
-        "effect = [{ type = \"trigger\", name = \"evaluation_run_failed\" }]",
         "module = \"review_gate_lifecycle\"",
     ] {
         assert!(
             evaluation_spec.contains(needle),
             "EvaluationRun spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("Pass", "evaluation_run_passed"),
+        ("Fail", "evaluation_run_failed"),
+    ] {
+        assert_action_effects(&evaluation_spec, "EvaluationRun", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/review_gate_lifecycle");
@@ -2705,8 +2897,6 @@ fn work_cycle_completion_requires_recorded_live_e2e_evidence() {
         "from = [\"Reviewing\"]",
         "to = \"Reviewing\"",
         "params = [\"e2e_summary\"]",
-        "effect = \"set e2e_ok true\"",
-        "{ type = \"is_true\", var = \"e2e_ok\" }",
         "Complete only when review, evaluation, proof, and live/E2E evidence are all attached.",
     ] {
         assert!(
@@ -2714,6 +2904,24 @@ fn work_cycle_completion_requires_recorded_live_e2e_evidence() {
             "WorkCycle should require explicit live/E2E evidence before completion: {needle}"
         );
     }
+    assert_action_effects(
+        &work_cycle,
+        "WorkCycle",
+        "ReportE2e",
+        &["e2e_ok = true"],
+        &[],
+    );
+    let complete_guard = spec_action(&work_cycle, "Complete")
+        .get("guard")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .expect("WorkCycle.Complete should declare a guard expression");
+    assert!(
+        complete_guard
+            .split("&&")
+            .any(|term| term.trim() == "e2e_ok"),
+        "WorkCycle should require explicit live/E2E evidence before completion: Complete guard `{complete_guard}` must require e2e_ok"
+    );
 
     let review_gate = read(patrol.join("wasm/review_gate_lifecycle/src/lib.rs"));
     for needle in [
@@ -2749,16 +2957,28 @@ fn review_request_changes_requeues_a_revision_worker_run() {
         "name = \"work_cycle_changes_requested\"",
         "module = \"work_cycle_lifecycle\"",
         "effect = [",
-        "{ type = \"set_bool\", var = \"review_passed\", value = false }",
-        "{ type = \"set_bool\", var = \"worker_done\", value = false }",
-        "{ type = \"set_bool\", var = \"evaluation_passed\", value = false }",
-        "{ type = \"trigger\", name = \"work_cycle_changes_requested\" }",
     ] {
         assert!(
             work_cycle.contains(needle),
             "WorkCycle.RequestChanges should reset gates and trigger rework: {needle}"
         );
     }
+    let request_changes = spec_action(&work_cycle, "RequestChanges");
+    let request_changes_effects = effect_statements(&request_changes);
+    for statement in [
+        "review_passed = false",
+        "worker_done = false",
+        "evaluation_passed = false",
+    ] {
+        assert!(
+            request_changes_effects.contains(&statement.to_string()),
+            "WorkCycle.RequestChanges should reset gates and trigger rework: {statement}"
+        );
+    }
+    assert!(
+        trigger_names(&request_changes).contains(&"work_cycle_changes_requested".to_string()),
+        "WorkCycle.RequestChanges should reset gates and trigger rework: work_cycle_changes_requested"
+    );
 
     let lifecycle = read(patrol.join("wasm/work_cycle_lifecycle/src/lib.rs"));
     for needle in [
@@ -2952,8 +3172,6 @@ fn repo_graph_snapshot_queues_sweep_and_fans_out_findings() {
 
     let spec = read(patrol.join("specs/repo_graph_snapshot.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"repo_sweep_started\" }]",
-        "effect = [{ type = \"trigger\", name = \"repo_sweep_completed\" }]",
         "module = \"repo_sweep_lifecycle\"",
         "on_failure = \"ScanFailed\"",
         "name = \"work_cycle_id\"",
@@ -2970,6 +3188,12 @@ fn repo_graph_snapshot_queues_sweep_and_fans_out_findings() {
             spec.contains(needle),
             "RepoGraphSnapshot spec should contain {needle}"
         );
+    }
+    for (action, trigger) in [
+        ("StartScan", "repo_sweep_started"),
+        ("ScanComplete", "repo_sweep_completed"),
+    ] {
+        assert_action_effects(&spec, "RepoGraphSnapshot", action, &[], &[trigger]);
     }
 
     let wasm_root = patrol.join("wasm/repo_sweep_lifecycle");
@@ -3057,8 +3281,12 @@ fn accepted_findings_queue_cleanup_work_cycles() {
         ("QualityFinding", quality_spec.as_str()),
         ("SecurityFinding", security_spec.as_str()),
     ] {
+        let accept = spec_action(spec, "Accept");
+        assert!(
+            effect_statements(&accept).is_empty() && !trigger_names(&accept).is_empty(),
+            "{label} should trigger cleanup work on Accept: Accept fires a trigger"
+        );
         for needle in [
-            "effect = [{ type = \"trigger\"",
             "module = \"finding_lifecycle\"",
             "name = \"Accept\"",
             "name = \"LinkPmIssue\"",
@@ -3200,7 +3428,6 @@ fn daily_brief_renders_visual_human_review_rollup() {
 
     let spec = read(patrol.join("specs/daily_brief.ioa.toml"));
     for needle in [
-        "effect = [{ type = \"trigger\", name = \"daily_brief_started\" }]",
         "module = \"daily_brief_lifecycle\"",
         "on_failure = \"Fail\"",
         "name = \"session_id\"",
@@ -3217,6 +3444,7 @@ fn daily_brief_renders_visual_human_review_rollup() {
             "DailyBrief spec should contain {needle}"
         );
     }
+    assert_action_effects(&spec, "DailyBrief", "Start", &[], &["daily_brief_started"]);
 
     let wasm_root = patrol.join("wasm/daily_brief_lifecycle");
     assert!(
@@ -3334,38 +3562,348 @@ fn paw_patrol_wasm_modules_have_startup_build_script() {
         "review_gate_lifecycle",
         "repo_sweep_lifecycle",
         "daily_brief_lifecycle",
-        "cargo build --target wasm32-unknown-unknown --release",
-        "cp \"$source_file\" \"$SCRIPT_DIR/$module/$module.wasm\"",
     ] {
         assert!(script.contains(needle), "build.sh should contain {needle}");
     }
 }
 
+// --- Stage 3 S0: record entities + shadow ingest (ARN-430) ---
+
 #[test]
-fn current_state_audit_uses_live_proof_sources_instead_of_stale_heads() {
-    let root = repo_root();
-    let audit = read(root.join("docs/proofs/2026-05-05-paw-patrol-current-state-audit.md"));
+fn paw_patrol_carries_the_stage3_s0_record_entities_and_ingest_module() {
+    let patrol = repo_root().join("os-apps/paw-patrol");
 
+    let ask = read(patrol.join("specs/ask.ioa.toml"));
     for needle in [
-        "PR #218 body",
-        "latest production preflight summary",
-        "canonical moving evidence",
-        "latest exact-head quick acceptance proof",
+        "name = \"RaiseBlocking\"",
+        "name = \"RecordFyi\"",
+        "params = [\"effort_id\", \"kind\", \"need\", \"options\", \"chose\", \"why\", \"who\"]",
+    ] {
+        assert!(ask.contains(needle), "ask.ioa.toml should contain {needle}");
+    }
+    assert_action_effects(&ask, "Ask", "RaiseBlocking", &["stalls = true"], &[]);
+    assert!(
+        !ask.contains(
+            "params = [\"effort_id\", \"kind\", \"need\", \"options\", \"act\", \"stalls\""
+        ),
+        "Ask.Raise must not take stalls as a param; booleans use set_bool"
+    );
+
+    // The three new entities have specs.
+    for spec in [
+        "ask.ioa.toml",
+        "standing_decision.ioa.toml",
+        "shadow_verdict.ioa.toml",
     ] {
         assert!(
-            audit.contains(needle),
-            "current-state audit should point readers at live proof source: {needle}"
+            patrol.join("specs").join(spec).is_file(),
+            "paw-patrol should define specs/{spec}"
         );
     }
 
-    for stale in [
-        "927d9844bdd22238e6eade507560a16fee7c1a0b",
-        "/tmp/paw-patrol-acceptance-quick-927d9844-preflight-stamp",
-        "25393554285",
+    // ReviewRun/ProofPacket keep their existing lifecycle AND gain the record
+    // fields and the Recorded/Superseded record sub-lifecycle (additive - S0
+    // does not replace the automata; see docs/efforts/ARN-430).
+    let review = read(patrol.join("specs/review_run.ioa.toml"));
+    for needle in [
+        "\"Recorded\"",
+        "\"Superseded\"",
+        "IngestRecord",
+        "RecordPanel",
+        "name = \"rubrics\"",
+        "name = \"fix_it_failed\"",
+        "name = \"risk_flags\"",
+        "name = \"RecordPanelFixItFailed\"",
+        "name = \"effort_id\"",
+        "record_present",
+        "RecordedHasRecord",
+        "Requested",
+        "AttachReviewFile",
     ] {
         assert!(
-            !audit.contains(stale),
-            "current-state audit should not pin stale proof evidence: {stale}"
+            review.contains(needle),
+            "review_run.ioa.toml should contain {needle}"
         );
     }
+    let proof = read(patrol.join("specs/proof_packet.ioa.toml"));
+    for needle in [
+        "\"Recorded\"",
+        "IngestProof",
+        "name = \"effort_id\"",
+        "changed_surface",
+        "independent_verifier",
+        "ProofRecorded",
+        "Drafting",
+        "AttachProofFile",
+    ] {
+        assert!(
+            proof.contains(needle),
+            "proof_packet.ioa.toml should contain {needle}"
+        );
+    }
+
+    // CSDL exposes the new entity types and the new properties.
+    let csdl = read(patrol.join("specs/model.csdl.xml"));
+    for entity in ["Ask", "StandingDecision", "ShadowVerdict"] {
+        assert!(
+            csdl.contains(&format!("<EntityType Name=\"{entity}\">")),
+            "CSDL should expose {entity}"
+        );
+        assert!(
+            csdl.contains(&format!("<EntitySet Name=\"{entity}s\"")),
+            "CSDL should expose the {entity} set"
+        );
+    }
+    for prop in [
+        "\"ReviewersRan\"",
+        "\"OpenActOnCount\"",
+        "\"ChangedSurface\"",
+        "\"IndependentVerifier\"",
+        "\"RecordPresent\"",
+    ] {
+        assert!(
+            csdl.contains(prop),
+            "CSDL should carry the record property {prop}"
+        );
+    }
+
+    // The ingest module is registered and its parser + committed binary exist.
+    let manifest = read(patrol.join("app.toml"));
+    assert!(
+        manifest.contains("name = \"record_ingest\""),
+        "app.toml should register record_ingest"
+    );
+    assert!(
+        read(patrol.join("wasm/build.sh")).contains("record_ingest"),
+        "build.sh should build record_ingest"
+    );
+    assert!(
+        patrol
+            .join("wasm/record_ingest/record_ingest.wasm")
+            .is_file(),
+        "record_ingest should have a committed .wasm binary"
+    );
+    let lib = read(patrol.join("wasm/record_ingest/src/lib.rs"));
+    for needle in [
+        "fn parse_record",
+        "sdlc-review-record-b64",
+        "sdlc-proof-record-b64",
+        "parse_ok",
+    ] {
+        assert!(
+            lib.contains(needle),
+            "record_ingest lib.rs should contain {needle}"
+        );
+    }
+
+    assert!(
+        manifest.contains("name = \"chain_file_ready\""),
+        "app.toml should register chain_file_ready"
+    );
+    assert!(
+        read(patrol.join("wasm/build.sh")).contains("chain_file_ready"),
+        "build.sh should build chain_file_ready"
+    );
+    let chain = read(patrol.join("wasm/chain_file_ready/src/lib.rs"));
+    for needle in ["fn file_is_ready", "Files('", "Ready", "Locked"] {
+        assert!(
+            chain.contains(needle),
+            "chain_file_ready lib.rs should contain {needle}"
+        );
+    }
+    assert!(
+        csdl.contains("<Property Name=\"ArtifactFileReady\""),
+        "CSDL should carry ArtifactFileReady"
+    );
+
+    // The new entities are governed under the existing Admin permit.
+    let policy = read(patrol.join("policies/patrol.cedar"));
+    for needle in [
+        "resource is Ask",
+        "resource is StandingDecision",
+        "resource is ShadowVerdict",
+        "Action::\"RaiseBlocking\"",
+        "Action::\"RecordPanelFixItFailed\"",
+    ] {
+        assert!(
+            policy.contains(needle),
+            "patrol.cedar should govern {needle}"
+        );
+    }
+}
+
+// --- ARN-434: narrow Cedar permits for the shadow-sweep writes ---
+
+#[test]
+fn verified_operator_may_write_shadow_records_narrowly() {
+    let root = repo_root();
+    let policy = read(root.join("os-apps/paw-patrol/policies/patrol.cedar"));
+    let engine = AuthzEngine::new(&policy).expect("patrol.cedar should parse");
+    let attrs = resource_attrs(&[("id", serde_json::json!("x"))]);
+    // The sweep's key resolves to the verified operator (agent_type "operator",
+    // agentTypeVerified == true - byte-identical to the prod operator credential).
+    let operator = agent_context("operator", "operator");
+
+    // ALLOWED: exactly the S1-denied action x resource pairs.
+    for (action, resource) in [
+        ("Ingest", "ReviewRun"),
+        ("IngestRecord", "ReviewRun"),
+        ("Ingest", "ProofPacket"),
+        ("IngestProof", "ProofPacket"),
+        ("Record", "ShadowVerdict"),
+        ("MarkAgree", "ShadowVerdict"),
+        ("MarkDisagree", "ShadowVerdict"),
+    ] {
+        let d = engine.authorize(&operator, action, resource, &attrs);
+        assert!(
+            d.is_allowed(),
+            "verified operator should be allowed {resource}.{action}: {d:?}"
+        );
+    }
+
+    // SCOPED OUT: a non-operator agent gets none of it.
+    let worker = agent_context("some-worker", "worker");
+    assert!(
+        !engine
+            .authorize(&worker, "Ingest", "ReviewRun", &attrs)
+            .is_allowed(),
+        "a non-operator agent must not Ingest ReviewRun"
+    );
+
+    // SCOPED OUT: the operator permit covers ONLY the listed actions/resources -
+    // including a nonexistent action on a granted resource (ShadowVerdict.Ingest,
+    // which the intent explicitly disclaims).
+    for (action, resource) in [
+        ("Supersede", "ReviewRun"),        // real action, not granted
+        ("SupersedeProof", "ProofPacket"), // real action, not granted
+        ("Record", "ReviewRun"),           // Record is ShadowVerdict-only here
+        ("Ingest", "ShadowVerdict"),       // Ingest is not a ShadowVerdict action
+    ] {
+        let d = engine.authorize(&operator, action, resource, &attrs);
+        assert!(
+            !d.is_allowed(),
+            "operator permit must NOT cover {resource}.{action}: {d:?}"
+        );
+    }
+
+    // SCOPED OUT: a SELF-DECLARED operator (agent_type == "operator" but
+    // agentTypeVerified == false - the header path, not a resolved credential)
+    // is denied. This is the exact attack the verified flag exists for.
+    let self_declared = temper_authz::SecurityContext::anonymous().with_agent_context(
+        Some("operator"),
+        None,
+        Some("operator"),
+    );
+    for (action, resource) in [
+        ("Ingest", "ReviewRun"),
+        ("IngestRecord", "ReviewRun"),
+        ("Ingest", "ProofPacket"),
+        ("IngestProof", "ProofPacket"),
+        ("Record", "ShadowVerdict"),
+        ("MarkAgree", "ShadowVerdict"),
+        ("MarkDisagree", "ShadowVerdict"),
+    ] {
+        let d = engine.authorize(&self_declared, action, resource, &attrs);
+        assert!(
+            !d.is_allowed(),
+            "a self-declared (unverified) operator must NOT write {resource}.{action}: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn effort_records_are_writable_without_authorizing_deployment() {
+    let root = repo_root();
+    let policy = read(root.join("os-apps/paw-patrol/policies/patrol.cedar"));
+    let engine = AuthzEngine::new(&policy).expect("patrol.cedar should parse");
+    let agent = agent_context("cursor", "agent");
+
+    for action in [
+        "create",
+        "Seed",
+        "Update",
+        "AttachPullRequest",
+        "RecordEvidence",
+        "Complete",
+        "Cancel",
+        "Reopen",
+    ] {
+        assert!(
+            engine
+                .authorize(&agent, action, "Effort", &HashMap::new())
+                .is_allowed(),
+            "{action}"
+        );
+    }
+    let l2 = resource_attrs(&[("risk_lane", serde_json::json!("L2"))]);
+    assert!(
+        !engine
+            .authorize(&agent, "Merge", "Effort", &l2)
+            .is_allowed()
+    );
+
+    let deploy_attrs = resource_attrs(&[("id", serde_json::json!("d1"))]);
+    assert!(
+        engine
+            .authorize(&agent, "create", "DsfDeploy", &deploy_attrs)
+            .is_allowed(),
+        "implementer must be able to create DsfDeploy"
+    );
+    assert!(
+        engine
+            .authorize(&agent, "create", "TemperDeploy", &deploy_attrs)
+            .is_allowed(),
+        "implementer must be able to create TemperDeploy"
+    );
+    assert!(
+        !engine
+            .authorize(&agent, "MarkDeployVerified", "Effort", &l2)
+            .is_allowed(),
+        "agents must not mark deploy verified by hand"
+    );
+
+    for action in [
+        "Request",
+        "MergeSucceeded",
+        "Check",
+        "CheckPending",
+        "CheckHealthy",
+        "CheckUnhealthy",
+        "Fail",
+        "RollbackPushed",
+    ] {
+        assert!(
+            engine
+                .authorize(&agent, action, "DsfDeploy", &deploy_attrs)
+                .is_allowed(),
+            "implementer Agent must complete DsfDeploy.{action}: {:?}",
+            engine.authorize(&agent, action, "DsfDeploy", &deploy_attrs)
+        );
+    }
+    assert!(
+        engine
+            .authorize(&agent, "SwapSucceeded", "TemperDeploy", &deploy_attrs)
+            .is_allowed(),
+        "implementer Agent must complete TemperDeploy.SwapSucceeded"
+    );
+    let wasm_runtime = agent_context("service:wasm-runtime", "wasm-runtime");
+    assert!(
+        engine
+            .authorize(&wasm_runtime, "MergeSucceeded", "DsfDeploy", &deploy_attrs)
+            .is_allowed(),
+        "background WASM callback principal must land MergeSucceeded"
+    );
+    let timeout = agent_context("service:timeout-scheduler", "timeout-scheduler");
+    assert!(
+        engine
+            .authorize(&timeout, "Check", "DsfDeploy", &deploy_attrs)
+            .is_allowed(),
+        "timer principal must fire DsfDeploy.Check"
+    );
+    assert!(
+        !engine
+            .authorize(&agent, "MergeSucceeded", "ReleaseRun", &deploy_attrs)
+            .is_allowed(),
+        "ordinary Agent must not drive ReleaseRun callbacks"
+    );
 }

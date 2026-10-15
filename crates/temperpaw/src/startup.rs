@@ -32,7 +32,7 @@ use temper_platform::recovery::{
 use temper_platform::router::build_platform_router;
 use temper_runtime::scheduler::sim_now;
 use temper_runtime::tenant::TenantId;
-use temper_server::platform_store::{PlatformStore, SpecVerificationUpdate};
+use temper_server::platform_store::{InstalledAppRecord, PlatformStore, SpecVerificationUpdate};
 use temper_server::registry::{EntityLevelSummary, EntityVerificationResult, VerificationStatus};
 use temper_server::registry_bootstrap::restore_registry_from_platform_store;
 use tokio::task::JoinHandle;
@@ -161,41 +161,44 @@ fn installed_app_runtime_recovery_result(
     }
 }
 
-fn genesis_bootstrap_runtime_recovery_allows_skip(
-    outcome: &InstalledAppRuntimeRecoveryOutcome,
-) -> bool {
-    matches!(
-        outcome,
-        InstalledAppRuntimeRecoveryOutcome::Ready | InstalledAppRuntimeRecoveryOutcome::Healed
-    )
+/// What to do with a configured Genesis bootstrap app at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapAction {
+    /// Leave the already-installed version in place; do not touch it.
+    KeepInstalled,
+    /// (Re)install the env-pinned bootstrap ref.
+    InstallPinned,
 }
 
-async fn unchanged_genesis_bootstrap_app_runtime_ready(
-    state: &PlatformState,
-    platform_store: &dyn PlatformStore,
-    tenant: &str,
-    app_name: &str,
-    app_ref: &str,
-) -> bool {
-    let outcome =
-        recover_installed_app_runtime_state(state, platform_store, tenant, app_name).await;
-    if genesis_bootstrap_runtime_recovery_allows_skip(&outcome) {
-        tracing::info!(
-            app = %app_name,
-            app_ref = %app_ref,
-            outcome = ?outcome,
-            "Skipping unchanged Genesis bootstrap app"
-        );
-        return true;
-    }
+/// A record is a candidate to KEEP only if it is a completed Genesis install.
+fn is_keep_eligible_genesis_install(record: &InstalledAppRecord) -> bool {
+    record.source_kind == "genesis" && record.status == "installed"
+}
 
-    tracing::info!(
-        app = %app_name,
-        app_ref = %app_ref,
-        outcome = ?outcome,
-        "Reconciling unchanged Genesis bootstrap app because runtime recovery found drift"
-    );
-    false
+/// Decide whether to keep an already-installed Genesis bootstrap app or (re)install the
+/// env-pinned ref, from the DURABLE RECORD ALONE.
+///
+/// The env-pinned bootstrap ref (`TEMPERPAW_GENESIS_BOOTSTRAP_REFS`) is a **floor, not a
+/// ceiling**: it seeds a cold start but never overrides an installed Genesis version. If a
+/// Genesis `installed` record exists (any hash), KEEP it — so a redeploy can never revert a
+/// newer agent-published version to the pinned ref. The pin is (re)installed only when there is
+/// nothing installed to keep: no record, a non-Genesis record, or a record not in the
+/// `installed` status.
+///
+/// Deliberately record-only, NOT runtime-readiness-gated (see decision log D9). The keep decision
+/// runs at boot, while the runtime state it would probe — the process-global app catalog, Cedar
+/// policies, WASM registration — is still being restored concurrently, so ANY readiness probe is
+/// racy: a transient restore hiccup or another tenant's catalog activity looks like "not ready"
+/// and triggers a downgrade to the older pin — the exact bug this change exists to kill. The
+/// durable `InstalledAppRecord` is tenant-scoped and race-free, and it is the source of truth for
+/// "what is installed". Healing a genuinely-broken install is the recovery path's job (reconcile
+/// the INSTALLED version), not the bootstrap's — reverting to an older env pin is a downgrade
+/// masquerading as a heal.
+fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> BootstrapAction {
+    match installed {
+        Some(record) if is_keep_eligible_genesis_install(record) => BootstrapAction::KeepInstalled,
+        _ => BootstrapAction::InstallPinned,
+    }
 }
 
 #[cfg(test)]
@@ -467,45 +470,68 @@ async fn bootstrap_configured_genesis_apps(
         };
 
         match platform_store.get_installed_app(tenant, &app_name).await {
-            Ok(Some(record))
-                if record.source_kind == "genesis"
-                    && record.app_ref == app_ref
-                    && record.status == "installed" =>
-            {
-                if unchanged_genesis_bootstrap_app_runtime_ready(
-                    state,
-                    platform_store,
-                    tenant,
-                    &app_name,
-                    &app_ref,
-                )
-                .await
-                {
-                    continue;
+            Ok(record) => {
+                // Record-only keep decision (see decision log D9): keep any Genesis `installed`
+                // record regardless of hash; the env pin is a floor. No runtime-readiness probe —
+                // at boot the runtime state is still being restored, so probing it is racy and
+                // can wrongly downgrade a healthy newer install.
+                match classify_bootstrap_action(record.as_ref()) {
+                    BootstrapAction::KeepInstalled => {
+                        let installed_ref = record
+                            .as_ref()
+                            .map(|r| r.app_ref.as_str())
+                            .unwrap_or_default();
+                        if installed_ref != app_ref {
+                            // The env pin is a floor: an install at a different hash is kept and the
+                            // pin is NOT force-applied. Surface this so an operator who bumped the
+                            // pin expecting an upgrade can see why it did not take — explicit
+                            // install is the upgrade path.
+                            tracing::warn!(
+                                app = %app_name,
+                                pinned_ref = %app_ref,
+                                installed_ref = %installed_ref,
+                                "Keeping installed Genesis app at a different hash than the env pin; the pin bump did NOT upgrade it (env pin is a floor, not a ceiling — use an explicit install to change the running version)"
+                            );
+                        } else {
+                            tracing::info!(
+                                app = %app_name,
+                                pinned_ref = %app_ref,
+                                installed_ref = %installed_ref,
+                                "Keeping installed Genesis bootstrap app (matches env pin)"
+                            );
+                        }
+                        continue;
+                    }
+                    BootstrapAction::InstallPinned => match record.as_ref() {
+                        Some(record) => tracing::info!(
+                            app = %app_name,
+                            previous_ref = %record.app_ref,
+                            next_ref = %app_ref,
+                            source_kind = %record.source_kind,
+                            status = %record.status,
+                            "Installing pinned Genesis bootstrap ref (no keep-eligible Genesis install record)"
+                        ),
+                        None => tracing::info!(
+                            app = %app_name,
+                            app_ref = %app_ref,
+                            "Installing fresh Genesis bootstrap app"
+                        ),
+                    },
                 }
             }
-            Ok(Some(record)) => {
-                tracing::info!(
-                    app = %app_name,
-                    previous_ref = %record.app_ref,
-                    next_ref = %app_ref,
-                    "Reconciling changed Genesis bootstrap app"
-                );
-            }
-            Ok(None) => {
-                tracing::info!(
-                    app = %app_name,
-                    app_ref = %app_ref,
-                    "Installing fresh Genesis bootstrap app"
-                );
-            }
             Err(error) => {
+                // An indeterminate read must NOT trigger a (re)install: a transient store outage
+                // during redeploy would otherwise overwrite a healthy newer Genesis version with
+                // the stale env pin — the exact downgrade this change exists to prevent. Skip and
+                // let the next boot reconcile once the store is readable. A genuinely fresh install
+                // reads Ok(None), not Err, so this does not strand first installs.
                 tracing::warn!(
                     app = %app_name,
                     app_ref = %app_ref,
                     error = %error,
-                    "Could not read installed app metadata before Genesis bootstrap; installing"
+                    "Could not read installed app metadata before Genesis bootstrap; skipping to avoid downgrading a possibly-healthy install (will retry next boot)"
                 );
+                continue;
             }
         }
 
@@ -1093,7 +1119,90 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
                 tenant = %tenant,
                 "Skipping built-in default agent specs bootstrap; paw-agent OS app owns default agent specs"
             );
+            // paw-agent owns the agent lifecycle specs but NOT the platform
+            // IDENTITY specs (TrustedIssuer, PrincipalGeneration) that back
+            // kernel JWT verification (ARN-255). The skipped default bootstrap
+            // is the only place those load, so on this host they must be
+            // registered explicitly — otherwise `tdata/TrustedIssuer` returns
+            // EntitySetNotFound and `bootstrap_trusted_issuer_from_env` below is
+            // inert. The kernel's narrow `bootstrap_identity_specs` API registers
+            // exactly those two, cascade-free (so it does not reintroduce the OOM
+            // the skip exists to prevent) and merged (so paw-agent's specs are
+            // preserved). A failure here means JWT verification would be inert, so
+            // it fails readiness rather than booting silently broken.
+            temper_platform::bootstrap_identity_specs(&state, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to register platform identity specs for tenant '{tenant}': {e}"
+                    )
+                })?;
         }
+        // Bootstrap the operator credential so the deployment's TEMPER_API_KEY
+        // resolves to a real tenant AgentCredential on the credential-bound
+        // auth edge (ADR-0157). Without this the kernel edge has no credential
+        // to resolve and every authenticated request fails closed with 401.
+        if let Some(ref api_key) = config.temper_api_key {
+            // ARN-255 cold-boot ordering: on a virgin store paw-agent has not yet
+            // registered AgentType / AgentCredential, so the credential bootstrap
+            // would dispatch against missing tables and (previously) silently
+            // swallow the error — a 401 until the second boot. Register those two
+            // specs first (cascade-free, merged, idempotent) so the dispatch below
+            // resolves on the very first boot regardless of branch.
+            temper_platform::bootstrap_operator_credential_specs(&state, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to register AgentType/AgentCredential specs for tenant '{tenant}': {e}"
+                    )
+                })?;
+            // Propagate the credential bootstrap error instead of discarding it:
+            // a failure here means authenticated requests fail closed with 401,
+            // so fail readiness loudly rather than boot silently broken.
+            temper_platform::bootstrap_operator_credential(&state, api_key, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to bootstrap operator credential for tenant '{tenant}': {e}"
+                    )
+                })?;
+            tracing::info!(tenant = %tenant, "Bootstrapped operator credential for TEMPER_API_KEY");
+        } else {
+            tracing::warn!(
+                "No TEMPER_API_KEY resolved; operator credential not bootstrapped — \
+                 authenticated requests will fail closed on the credential-bound edge"
+            );
+        }
+
+        // ARN-255: activate kernel JWT verification for this deployment by
+        // registering the trusted issuer from the environment. This dispatches
+        // RegisterIssuer on the TrustedIssuer entity, which requires that spec
+        // to be registered — guaranteed above (default agent-specs bootstrap in
+        // the taken branch, or the explicit identity-spec registration in the
+        // skip branch). The kernel API classifies the TEMPER_TRUSTED_ISSUER_*
+        // env authoritatively: none set is a safe no-op; a partial config or a
+        // registration failure is an error we fail readiness on — never a
+        // "registering…" log followed by a silent no-op.
+        match temper_platform::bootstrap_trusted_issuer_from_env(&state, &tenant).await {
+            Ok(temper_platform::IssuerBootstrapOutcome::Registered) => {
+                tracing::info!(
+                    tenant = %tenant,
+                    "Registered trusted JWT issuer from TEMPER_TRUSTED_ISSUER_* environment (ARN-255)"
+                );
+            }
+            Ok(temper_platform::IssuerBootstrapOutcome::Skipped) => {
+                tracing::info!(
+                    tenant = %tenant,
+                    "No TEMPER_TRUSTED_ISSUER_* env set; kernel JWT verification inactive for this deployment"
+                );
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Trusted issuer bootstrap failed for tenant '{tenant}': {e}"
+                ));
+            }
+        }
+
         tracing::info!("Bootstrapped startup platform specs for temper-system and {tenant}");
     }
 
@@ -1809,29 +1918,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         );
     }
 
-    let genesis_bootstrap_timeout = genesis_bootstrap_timeout();
-    let genesis_bootstrap_installs = match tokio::time::timeout(
-        genesis_bootstrap_timeout,
-        bootstrap_configured_genesis_apps(&state, platform_store, &tenant),
-    )
-    .await
-    {
-        Ok(installs) => installs?,
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = genesis_bootstrap_timeout.as_millis(),
-                "Genesis bootstrap install/reconcile timed out; continuing startup without completing bootstrap"
-            );
-            0
-        }
-    };
-    if genesis_bootstrap_installs > 0 {
-        tracing::info!(
-            installed = genesis_bootstrap_installs,
-            "Installed configured Genesis bootstrap apps"
-        );
-    }
-
     // Phase 6a: Recover persisted WASM modules + Cedar policies BEFORE app install.
     //
     // OS app install (Phase 6b) runs an integrity check that verifies each
@@ -1868,6 +1954,36 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         );
         app_runtime_recovery
     };
+
+    // Genesis bootstrap install/reconcile — runs AFTER Phase 6a on purpose. The env-pinned ref is
+    // a floor, not a ceiling. The keep-or-reinstall decision is RECORD-ONLY (decision log D9):
+    // it reads the durable InstalledAppRecord and never probes runtime readiness — at boot the
+    // runtime is still being restored concurrently, so a probe can misread a healthy newer
+    // install and wrongly downgrade it to the env pin, the exact redeploy-downgrade this change
+    // exists to prevent. Bootstrap still belongs after Phase 6a because bootstrap IS an install
+    // and sits with the other install/reconcile phases, after persisted-state recovery.
+    let genesis_bootstrap_timeout = genesis_bootstrap_timeout();
+    let genesis_bootstrap_installs = match tokio::time::timeout(
+        genesis_bootstrap_timeout,
+        bootstrap_configured_genesis_apps(&state, platform_store, &tenant),
+    )
+    .await
+    {
+        Ok(installs) => installs?,
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = genesis_bootstrap_timeout.as_millis(),
+                "Genesis bootstrap install/reconcile timed out; continuing startup without completing bootstrap"
+            );
+            0
+        }
+    };
+    if genesis_bootstrap_installs > 0 {
+        tracing::info!(
+            installed = genesis_bootstrap_installs,
+            "Installed configured Genesis bootstrap apps"
+        );
+    }
 
     let startup_apps = startup_os_apps();
     tracing::info!(apps = ?startup_apps, "Startup OS app surface resolved from manifests");
@@ -3955,21 +4071,19 @@ mod tests {
 
     use anyhow::anyhow;
     use serde_json::Value;
-    use temper_platform::recovery::{
-        InstalledAppRuntimeRecoveryOutcome, InstalledAppsRuntimeRecoverySummary,
-    };
+    use temper_platform::recovery::InstalledAppsRuntimeRecoverySummary;
     use temper_runtime::tenant::TenantId;
     use temper_server::secrets::vault::SecretsVault;
 
     use super::{
-        DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
+        BootstrapAction, DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
         DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy,
         OS_APP_RECONCILE_DURATION_METRIC, OS_APP_RECONCILE_TOTAL_METRIC, RuntimeRecoveryStep,
         STARTUP_LIVE_RESTORE_ENTITIES_METRIC, STARTUP_PHASE_DURATION_METRIC,
         STARTUP_TIME_TO_READY_METRIC, StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
         WASM_MODULE_LOAD_FAILURES_METRIC, actor_passivation_check_interval_secs,
-        app_required_wasm_failure, bootstrap_soul, default_agent_specs_bootstrap_needed,
-        genesis_bootstrap_app_names, genesis_bootstrap_runtime_recovery_allows_skip,
+        app_required_wasm_failure, bootstrap_soul, classify_bootstrap_action,
+        default_agent_specs_bootstrap_needed, genesis_bootstrap_app_names,
         genesis_bootstrap_timeout, genesis_cache_restore_timeout,
         installed_app_runtime_recovery_result, load_or_create_temper_api_key,
         local_wasm_startup_policy, orphaned_session_recovery_limit,
@@ -4224,22 +4338,51 @@ mod tests {
     }
 
     #[test]
-    fn genesis_bootstrap_skip_requires_runtime_ready_or_healed() {
-        assert!(genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::Ready
-        ));
-        assert!(genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::Healed
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::NeedsReconcile
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::MissingBundle
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::StoreError
-        ));
+    fn classify_bootstrap_keeps_installed_genesis_regardless_of_hash() {
+        use temper_server::platform_store::InstalledAppRecord;
+        let genesis_installed = |app_ref: &str| InstalledAppRecord {
+            source_kind: "genesis".to_string(),
+            status: "installed".to_string(),
+            app_ref: app_ref.to_string(),
+            ..Default::default()
+        };
+
+        // A Genesis install at the pin's hash -> keep.
+        assert_eq!(
+            classify_bootstrap_action(Some(&genesis_installed("owner/app@pin"))),
+            BootstrapAction::KeepInstalled
+        );
+        // A Genesis install at a DIFFERENT hash (a newer agent-published version) -> keep.
+        // Regression guard: the env pin is a FLOOR, not a ceiling; a redeploy must never
+        // revert a newer install back to the pinned ref. Record-only: no runtime-readiness
+        // probe (it is racy at boot — see D9), so the durable record alone decides.
+        assert_eq!(
+            classify_bootstrap_action(Some(&genesis_installed("owner/app@newer"))),
+            BootstrapAction::KeepInstalled
+        );
+        // Absent -> install the pin (cold-start seed).
+        assert_eq!(
+            classify_bootstrap_action(None),
+            BootstrapAction::InstallPinned
+        );
+        // Non-genesis source (e.g. a baked/local install) -> reinstall from the pin.
+        assert_eq!(
+            classify_bootstrap_action(Some(&InstalledAppRecord {
+                source_kind: "local".to_string(),
+                status: "installed".to_string(),
+                ..Default::default()
+            })),
+            BootstrapAction::InstallPinned
+        );
+        // Genesis but not in the "installed" status (e.g. failed/pending) -> reinstall the pin.
+        assert_eq!(
+            classify_bootstrap_action(Some(&InstalledAppRecord {
+                source_kind: "genesis".to_string(),
+                status: "failed".to_string(),
+                ..Default::default()
+            })),
+            BootstrapAction::InstallPinned
+        );
     }
 
     #[test]

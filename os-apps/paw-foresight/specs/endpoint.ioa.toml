@@ -23,6 +23,7 @@ initial = "Sampled"
 # the decomposer/Claim session timeouts. Scored and Weighted persist for the
 # life of the world (re-weighed on update).
 allow_indefinite_states = ["Written", "UnderRepair", "Scored", "Weighted"]
+terminal = ["Discarded", "Failed"]
 
 # Self-heal (ADR-007): when every claim on this endpoint is terminal but the
 # endpoint is still UnderRepair (world aggregate missed or ScoreComplete failed),
@@ -132,7 +133,6 @@ from = ["Sampled"]
 to = "Written"
 params = ["bundle_file_id", "summary", "author_agent_id"]
 hint = "Writer self-reports the bundle. Parks in Written for the diversity gate (ADR-006); the gate, not the writer, starts repair."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -156,7 +156,6 @@ from = ["Written"]
 to = "UnderRepair"
 params = []
 hint = "Diversity gate released this endpoint into repair (ADR-006). Spawns decomposer then repairer sessions. System principals only."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -178,7 +177,6 @@ from = ["Written"]
 to = "Sampled"
 params = ["revision_brief"]
 hint = "Diversity gate re-steers a collapsed world (ADR-006): rewrite to diverge from the named sibling. System principals only."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -204,7 +202,6 @@ from = ["Sampled"]
 to = "Sampled"
 params = []
 hint = "Self-heal: re-spawn a dead/orphaned endpoint writer. Fires on the Sampled state_timeout. System principals only."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -227,7 +224,6 @@ from = ["UnderRepair"]
 to = "UnderRepair"
 params = []
 hint = "Self-heal: re-score an endpoint whose claims are all terminal but ScoreComplete never fired. Fires on the UnderRepair state_timeout."
-effect = [{ type = "trigger", name = "aggregate_costs_endpoint_scoring" }]
 
 [[action.triggers]]
 name = "aggregate_costs_endpoint_scoring"
@@ -244,7 +240,6 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["claims_json"]
 hint = "Decomposer self-reports 3-8 separable load-bearing claims. Re-enters decompose_endpoint to create Claim entities and start the chunked bridge fan-out."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -262,7 +257,6 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["check_count"]
 hint = "Bounded self-loop: dispatch SubmitForBridge for the next chunk of claims under session admission caps (ADR-0005: no Rust loops over sessions)."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -280,7 +274,6 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["claim_ids"]
 hint = "Callback after Claim entities are created from claims_json. Starts the chunked bridge fan-out."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -338,15 +331,3 @@ from = ["Sampled", "UnderRepair"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error during writing or repair."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "DiscardedIsFinal"
-when = ["Discarded"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

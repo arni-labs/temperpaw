@@ -1035,10 +1035,17 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     params["tool_spans_file_id"] = json!(id);
                 }
                 Ok(_) => {}
-                Err(e) => ctx.log(
-                    "warn",
-                    &format!("monty_repl: tool_spans append failed: {e}"),
-                ),
+                Err(e) => {
+                    // The tool calls happened; only the record of them is gone.
+                    // An empty tool_spans_file_id reads exactly like a session
+                    // that called no tools, so the loss is recorded on the
+                    // entity and the emitter degrades the trajectory for it.
+                    params["tool_spans_write_failed"] = json!("true");
+                    ctx.log(
+                        "warn",
+                        &format!("monty_repl: tool_spans append failed: {e}"),
+                    );
+                }
             }
         } else if !tool_span_events.is_empty() {
             ctx.log(
@@ -1229,11 +1236,24 @@ fn normal_repl_state_max_bytes(ctx: &Context) -> usize {
     }
 }
 
+/// Whether to persist this batch's tool spans to the session's span file.
+///
+/// Defaults to ON. The spans are the only record of tool-call wall-clock time,
+/// and the OTS emitter reads them to complete each decision — a missing config
+/// key silently emptying every stored trajectory (exactly what happened in
+/// production, ARN-109) is a worse failure than the write cost, which is
+/// bounded by `session::encode_tool_spans_jsonl`. Set the key to a false-y
+/// value to opt a deployment out.
 fn persist_tool_spans_file(ctx: &Context) -> bool {
     ctx.config
         .get("persist_tool_spans_file")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
 }
 
 fn attach_llmobs_tool_spans(params: &mut Value, tool_span_events: &[Value]) {

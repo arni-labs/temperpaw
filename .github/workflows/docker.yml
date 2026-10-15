@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - release
   release:
     types: [published]
   workflow_dispatch:
@@ -73,3 +74,79 @@ jobs:
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.version }}
             BUILD_SHA=${{ github.sha }}
+
+  # Deterministic production deploy. Fires only for the release branch, after the
+  # image is built and pushed. Deploys the built image, verifies the live service
+  # reports this commit, and auto-rolls-back to the last-good image on failure.
+  # Deploy/verify/rollback logic lives in arni-labs/stack (deploy/), cloned here.
+  deploy:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-temperpaw-production
+      cancel-in-progress: false
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID || vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID || vars.RAILWAY_SERVICE_ID }}
+      TEMPER_API_KEY: ${{ secrets.TEMPER_API_KEY }}
+      BASE_URL: ${{ secrets.TEMPERPAW_BASE_URL || vars.TEMPERPAW_BASE_URL }}
+      STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
+    steps:
+      - name: Validate secrets
+        run: |
+          set -euo pipefail
+          for v in RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL STACK_TOKEN TEMPER_API_KEY; do
+            if [ -z "${!v:-}" ]; then echo "missing required secret/var: $v" >&2; exit 65; fi
+          done
+
+      - name: Only the release head deploys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # an older commit's run finishing late must not clobber a newer deploy:
+          # deploy only if this run's sha is still the branch head
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/release" -q .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "release has moved to ${head:0:9}; skipping deploy of ${GITHUB_SHA:0:9}"
+            echo "SKIP_DEPLOY=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clone stack (deploy driver)
+        if: env.SKIP_DEPLOY != '1'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${STACK_TOKEN}@github.com/arni-labs/stack.git" /tmp/stack
+
+      - name: Resolve image tag and expected sha
+        if: env.SKIP_DEPLOY != '1'
+        id: r
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA}"
+          echo "expected_sha=${sha}" >> "$GITHUB_OUTPUT"
+          # must match docker/metadata-action `type=sha` above (7-char, sha- prefix)
+          echo "image_tag=sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy, verify, rollback on failure
+        if: env.SKIP_DEPLOY != '1'
+        env:
+          NEW_IMAGE_TAG: ${{ steps.r.outputs.image_tag }}
+          EXPECTED_SHA: ${{ steps.r.outputs.expected_sha }}
+          POLL_ATTEMPTS: "60"
+          POLL_SECONDS: "10"
+          # interim (ARN-432): /readyz couples the optional Discord integration
+          # into readiness and is chronically degraded on a Discord 401, which
+          # failed verification for a healthy image AND its healthy rollback
+          # target on the first live run. Verify liveness+identity until readyz
+          # reflects core readiness only.
+          READY_PATH: /healthz
+        run: bash /tmp/stack/deploy/railway-deploy-verify-rollback.sh

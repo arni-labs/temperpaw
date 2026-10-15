@@ -18,6 +18,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Executing"]
+terminal = ["Complete", "Failed"]
 
 # --- State Variables ---
 
@@ -40,14 +41,7 @@ initial = ""
 name = "results"
 type = "string"
 initial = ""
-# Web-fetch results can run up to ~400KB (100K chars in UTF-8 worst case).
-# Temper's field-overflow primitive (temper ADR-0040 / ADR-0045) routes
-# values above 128KB to the content-addressed blob store and consumers
-# resolve via ctx.read_field_string (ADR-0046). No TemperFS File detour.
-# `overflow_ttl_seconds` is declared for forward-compatibility with
-# temper ADR-0047b (spec-declared TTL wiring); it is inert until that
-# lands, after which WebQuery.result blobs expire after 1h.
-overflow_ttl_seconds = "3600"
+overflow_ttl_seconds = 3600
 
 [[state]]
 name = "truncated_bytes"
@@ -71,7 +65,6 @@ from = ["Created"]
 to = "Executing"
 params = ["query"]
 hint = "Begin a web search query via Exa API."
-effect = [{ type = "trigger", name = "execute_search" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -93,7 +86,6 @@ from = ["Created"]
 to = "Executing"
 params = ["url"]
 hint = "Begin fetching a URL and extracting text content."
-effect = [{ type = "trigger", name = "execute_fetch" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -123,17 +115,5 @@ from = ["Executing"]
 to = "Failed"
 params = ["error"]
 hint = "WASM module encountered an error."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
 
 # --- Integrations ---

@@ -10,6 +10,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Active"]
+terminal = ["Archived"]
 
 [[state]]
 name = "name"
@@ -52,8 +53,3 @@ kind = "input"
 from = ["Active"]
 to = "Archived"
 hint = "Archive this team."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

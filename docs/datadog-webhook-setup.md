@@ -104,6 +104,3 @@ TemperPaw currently reads these fields when present:
 
 Use these local proof drivers after the daemon is running:
 
-- `python3 scripts/prove_datadog_webhook.py`
-- `python3 scripts/prove_webhook_to_sre.py`
-- `python3 scripts/prove_autonomous_alert.py`

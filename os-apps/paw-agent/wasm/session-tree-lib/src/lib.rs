@@ -453,6 +453,18 @@ impl SessionTree {
         content: &Value,
         tokens: usize,
     ) -> (String, String) {
+        self.append_assistant_message_with_extra(parent_id, content, tokens, None)
+    }
+
+    /// Append an assistant message carrying per-turn extras (provider, model,
+    /// stop reason, usage, token-level RL signals) the OTS emitter reads later.
+    pub fn append_assistant_message_with_extra(
+        &mut self,
+        parent_id: &str,
+        content: &Value,
+        tokens: usize,
+        extra_fields: Option<&Value>,
+    ) -> (String, String) {
         let id = format!("a-{}", self.order.len());
         let line = self.append_entry(
             &id,
@@ -461,7 +473,7 @@ impl SessionTree {
             Some("assistant"),
             Some(content),
             tokens,
-            None,
+            extra_fields,
         );
         (id, line)
     }
@@ -473,6 +485,7 @@ impl SessionTree {
         content_file_id: &str,
         content_file_version_id: Option<&str>,
         tokens: usize,
+        extra_fields: Option<&Value>,
     ) -> (String, String) {
         let id = format!("a-{}", self.order.len());
         let line = self.append_entry_with_file(
@@ -483,7 +496,7 @@ impl SessionTree {
             content_file_id,
             content_file_version_id,
             tokens,
-            None,
+            extra_fields,
         );
         (id, line)
     }

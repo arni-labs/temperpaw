@@ -2,16 +2,21 @@
 
 Operational control plane for TemperPaw maintaining itself.
 
-All external requests and machine signals enter Patrol first. Patrol decides
-whether the input becomes real work, links or creates paw-pm Issues when useful,
-and runs the implementation loop through Temper-visible state transitions.
+Ordinary agent sessions create a lightweight Effort directly. The autonomous
+Patrol factory is a separate, optional workflow for scheduled or machine-routed
+work; its WorkCycle protocol is not a prerequisite for ordinary tasks.
 
 ## Entity Types
 
 ### WorkRequest
-WorkRequest means human or manager-agent intent: "do this work", "clean this
+WorkRequest means human or manager-agent intent for the optional factory: "do this work", "clean this
 up", or "investigate this thing." OpenClaw, Discord, or a human dashboard
 submits here instead of writing directly to paw-pm.
+
+### Intent
+Optional intake for requests that need triage. `Accept` creates an Effort,
+without checking for committed documents. Ordinary sessions create Efforts
+directly and do not walk the intake sequence.
 
 ### PatrolRequest
 Legacy name for request intake. New intake must use WorkRequest; PatrolRequest
@@ -47,16 +52,52 @@ the WorkCycle plan through `WorkCycle.RevisePlan`, increments
 `plan_revision_count`, and injects the approved plan into the mutating Codex
 run.
 
+### Effort
+A simple task record: **Open → Done or Cancelled**. Create one for a new task,
+reuse it when resuming, and keep the objective in `task_summary` and context in
+`task_detail`. `intent_ref` can link a useful document; it is optional.
+
+- `Update`: edit the objective and context; resumes legacy records as Open.
+- `AttachPullRequest(pull_request_urls)`: append one URL. Attach all related
+  PRs, including several PRs from the same repository.
+- `RecordEvidence(evidence)`: append a plain result or evidence link.
+- `Complete(result_summary)`: record the delivered result as Done.
+- `Cancel(result_summary)` and `Reopen`: stop or resume the same task.
+
+No review quorum, proof packet, GitHub file check, deployment, or lifecycle
+ceremony is required. Completion never merges code or deploys an application.
+Use the existing repository delivery route for authorized operations. Legacy
+states remain readable and can move directly to Open, Done, or Cancelled.
+
+### DsfDeploy
+Deep Sci-Fi deploy tool. Merge the PR on the named computer, watch
+`health_url` for the merge sha, git-revert if it never becomes healthy.
+Reuses `release_run_lifecycle`. Live `ReleaseRun` rows are not renamed.
+
+### TemperDeploy
+TemperPaw image deploy tool. `Request` waits until GHCR has `image_tag`,
+then upserts Railway `IMAGE_TAG`, redeploys, polls `/paw/version` until
+the live sha matches, and restores the previous tag on rollback. Railway
+project/service ids are pinned in the trigger config. `CheckHealthy`
+fires `ContractProbe.RunScan` on `probe_id` (default `mcp-455-lists`).
+
+### ContractProbe
+LatencyDiag-class HTTP probe. `RunScan` takes no parameters. Path,
+filter, and `max_ms` are set at create. The default seeded row
+`mcp-455-lists` is empty-equality `GET /tdata/DesignLanguages` with
+`max_ms` 800. Ready and Failed re-run every 6h.
+
 ### WorkerRun
 One execution attempt by a registered worker. The first worker type is the Mac
 mini local Codex worker. It claims queued work from Railway Temper over SSE,
 starts local Codex with ChatGPT auth, and self-reports results.
 
 ### ReviewRun
-Independent reviewer pass over the implementer's diff and proof. The reviewer
-must inspect the implementation, rerun relevant checks, and run live or E2E
-verification when the touched surface requires it. The reviewer returns one of
-three meaningful verdicts: approve, request changes, or escalate.
+A review record used by the optional autonomous WorkCycle factory. It is not
+required for an Effort. For ordinary tasks, apply the shared review guidance:
+read changed code, independently exercise a meaningful changed feature, and
+report demonstrated defects within the accepted scope. Plain findings and
+verification results can be recorded as Effort evidence or on the PR.
 
 ### EvaluationRun
 Automated gate execution and result capture for tests, proof requirements,
@@ -65,10 +106,8 @@ an evaluation fails while the WorkCycle is in review, Patrol treats it like
 requested rework and queues the implementer again with the failing evidence.
 
 ### ProofPacket
-Human-readable and machine-readable proof. The human view should include a
-visual one-page summary, state-transition diagram, changed-files map, test
-matrix, reviewer verdict, residual risks, PR links, entity links, and trace/log
-links.
+Structured evidence used by the optional autonomous WorkCycle factory. Ordinary
+Efforts use plain evidence and do not need a packet, schema, or hosted report.
 
 ### RiskRule
 Explicit rule that sets a minimum risk lane from concrete evidence. Agents may
@@ -167,7 +206,7 @@ Use the three intake shapes this way:
 | Signal | Observed evidence or error from Datadog, Discord, GitHub, a webhook, or another agent | Normalized/triaged Signal, then a FactoryCase and WorkCycle if actionable |
 | PatrolRun | Active investigation by an agent, such as Datadog or GitHub patrol | WorkerRun for the patrol agent, evidence, Signals, findings, cases, work, and ProofPackets |
 
-Do not submit new work directly to paw-pm. Paw-pm is durable project memory;
+For the optional factory: Do not submit new work directly to paw-pm. Paw-pm is durable project memory;
 Patrol owns intake, triage, risk, worker assignment, review, evaluation, and
 proof. Patrol creates or links paw-pm Issues only after it decides the input is
 real work.
@@ -198,6 +237,33 @@ Complete
 Use these OData action paths when an agent, OpenClaw, Discord bridge, script, or
 human operator submits work directly to Temper. The examples omit auth headers;
 callers still need a valid bearer token and principal headers that Cedar allows.
+
+### Ordinary task
+
+Create an empty record (or supply only `Id`), then set its context with `Update`.
+Strict entity creation rejects task fields; they belong to the declared action.
+
+```http
+POST /tdata/Efforts
+{}
+
+POST /tdata/Efforts('<id>')/TemperPaw.Patrol.Update
+{"task_summary": "Fix gallery loading", "task_detail": "Show loaded images after navigation", "repo": "arni-labs/foundry", "branch": "fix-gallery", "intent_ref": ""}
+
+POST /tdata/Efforts('<id>')/TemperPaw.Patrol.AttachPullRequest
+{"pull_request_urls": "https://github.com/arni-labs/foundry/pull/123"}
+
+POST /tdata/Efforts('<id>')/TemperPaw.Patrol.RecordEvidence
+{"evidence": "Opened the gallery, navigated away and back, and verified images loaded."}
+
+POST /tdata/Efforts('<id>')/TemperPaw.Patrol.Complete
+{"result_summary": "Gallery loading fixed and verified."}
+```
+
+### Optional autonomous factory
+
+The following WorkRequest protocol is for the resident Patrol worker. It is not
+the default for interactive Codex, Claude, or Foundry task sessions.
 
 ### Human or manager-agent task
 
@@ -362,6 +428,13 @@ server hosts Temper and triggers, but these modules own the workflow decisions:
   by creating repo sweeps and daily briefs from schedule transitions.
 - `daily_brief_lifecycle`: queues the local Codex DailyBrief WorkerRun from
   finished proof packets, findings, and open risks.
+- `release_run_lifecycle`: DsfDeploy / ReleaseRun merge, watch, and revert.
+  Merge uses the configured GitHub App. `github_token` is fallback
+  only. Do not put a PAT in the vault when the App is installed.
+- `chain_file_ready`: GET a Temper File and require Ready/Locked. Fired by
+  AttachReviewFile / AttachProofFile.
+- `temper_deploy_lifecycle`: one side effect per TemperDeploy trigger
+  (IMAGE_TAG swap, /paw/version poll, restore previous tag).
 
 ## Default Schedule
 

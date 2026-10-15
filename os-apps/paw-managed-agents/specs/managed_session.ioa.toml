@@ -62,17 +62,17 @@ initial = "[]"
 [[state]]
 name = "input_tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "output_tokens"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "last_consumed_user_sequence"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "last_emitted_result_hash"
@@ -87,7 +87,7 @@ initial = ""
 [[state]]
 name = "last_emitted_tree_index"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "error_message"
@@ -97,7 +97,7 @@ initial = ""
 [[state]]
 name = "inner_session_check_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_inner_session_checks"
@@ -120,7 +120,6 @@ kind = "input"
 from = ["Rescheduling"]
 to = "Running"
 hint = "Create or resume the bridged TemperPaw session and begin processing."
-effect = [{ type = "trigger", name = "orchestrate_start" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -141,7 +140,7 @@ kind = "input"
 from = ["Running"]
 params = ["InnerSessionId", "InnerAgentId", "LastConsumedUserSequence", "InnerSessionCheckCount"]
 hint = "Record the ids used for the bridged session."
-effect = [{ type = "schedule", action = "CheckInnerSession", delay_seconds = 2 }]
+effect = ["schedule('CheckInnerSession', 2)"]
 
 [[action]]
 name = "InnerSessionFailed"
@@ -150,7 +149,6 @@ from = ["Running"]
 to = "Terminated"
 params = ["ErrorMessage", "TerminationReason"]
 hint = "Record an inner-session failure and terminate the managed session."
-effect = [{ type = "trigger", name = "terminate_inner" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -171,7 +169,6 @@ from = ["Running"]
 to = "Idle"
 params = ["StopReason"]
 hint = "Mark the managed session idle and emit derived session events."
-effect = [{ type = "trigger", name = "emit_idle_event" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -191,7 +188,6 @@ kind = "input"
 from = ["Idle"]
 to = "Running"
 hint = "Resume an idle managed session with any pending user input."
-effect = [{ type = "trigger", name = "orchestrate_resume" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -211,17 +207,13 @@ name = "InnerSessionPending"
 kind = "input"
 from = ["Running"]
 hint = "The bridged TemperPaw session is still running. Re-check shortly."
-effect = [
-  { type = "increment", var = "inner_session_check_count" },
-  { type = "schedule", action = "CheckInnerSession", delay_seconds = 2 },
-]
+effect = ["inner_session_check_count += 1", "schedule('CheckInnerSession', 2)"]
 
 [[action]]
 name = "CheckInnerSession"
 kind = "input"
 from = ["Running"]
 hint = "Poll the bridged TemperPaw session state through a bounded self-loop."
-effect = [{ type = "trigger", name = "orchestrate_check" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -242,10 +234,7 @@ kind = "input"
 from = ["Running", "Idle"]
 params = ["InputTokens", "OutputTokens", "StopReason", "StopReasonEventIds", "LastEmittedResultHash", "LastEmittedInnerSessionId", "LastEmittedTreeIndex"]
 hint = "Update token counters and derived event metadata."
-effect = [
-  { type = "increment", var = "input_tokens" },
-  { type = "increment", var = "output_tokens" },
-]
+effect = ["input_tokens += 1", "output_tokens += 1"]
 
 [[action]]
 name = "TerminateSession"
@@ -254,7 +243,12 @@ from = ["Rescheduling", "Running", "Idle"]
 to = "Terminated"
 params = ["TerminationReason"]
 hint = "Terminate the bridged session."
-effect = [{ type = "trigger", name = "terminate_inner" }]
+
+[[action.triggers]]
+name = "terminate_inner"
+kind = "wasm"
+module = "session_terminator"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "Archive"
@@ -266,57 +260,25 @@ hint = "Soft-delete this managed session while retaining its status history."
 
 [[field_invariant]]
 name = "IdleRequiresStopReason"
-when = { field = "Status", equals = "Idle" }
-require = { any_of = [
-  { not = { field = "stop_reason", empty = true } },
-  { not = { field = "StopReason", empty = true } },
-] }
 message = "ManagedSession in Idle must set StopReason"
+assert = "Status == 'Idle' => !empty(stop_reason) || !empty(StopReason)"
 
 [[field_invariant]]
 name = "StopReasonMustBeKnown"
-when = { any_of = [
-  { not = { field = "stop_reason", absent = true } },
-  { not = { field = "StopReason", absent = true } },
-] }
-require = { any_of = [
-  { field = "stop_reason", equals = "user_input_required" },
-  { field = "stop_reason", equals = "tool_confirmation_required" },
-  { field = "stop_reason", equals = "custom_tool_required" },
-  { field = "StopReason", equals = "user_input_required" },
-  { field = "StopReason", equals = "tool_confirmation_required" },
-  { field = "StopReason", equals = "custom_tool_required" },
-] }
 message = "ManagedSession.StopReason must be one of the documented pause reasons"
+assert = "stop_reason != null || StopReason != null => stop_reason == 'user_input_required' || stop_reason == 'tool_confirmation_required' || stop_reason == 'custom_tool_required' || StopReason == 'user_input_required' || StopReason == 'tool_confirmation_required' || StopReason == 'custom_tool_required'"
 
 [[field_invariant]]
 name = "TerminationReasonMustBeKnown"
-when = { any_of = [
-  { not = { field = "termination_reason", absent = true } },
-  { not = { field = "TerminationReason", absent = true } },
-] }
-require = { any_of = [
-  { field = "termination_reason", equals = "cancelled" },
-  { field = "termination_reason", equals = "error" },
-  { field = "TerminationReason", equals = "cancelled" },
-  { field = "TerminationReason", equals = "error" },
-] }
 message = "ManagedSession.TerminationReason must be cancelled or error"
+assert = "termination_reason != null || TerminationReason != null => termination_reason == 'cancelled' || termination_reason == 'error' || TerminationReason == 'cancelled' || TerminationReason == 'error'"
 
 [[field_invariant]]
 name = "TerminatedRequiresTerminationReason"
-when = { field = "Status", equals = "Terminated" }
-require = { any_of = [
-  { not = { field = "termination_reason", empty = true } },
-  { not = { field = "TerminationReason", empty = true } },
-] }
 message = "ManagedSession in Terminated must set TerminationReason"
+assert = "Status == 'Terminated' => !empty(termination_reason) || !empty(TerminationReason)"
 
 [[field_invariant]]
 name = "ArchivedAtRequiresTerminatedStatus"
-when = { any_of = [
-  { not = { field = "archived_at", empty = true } },
-  { not = { field = "ArchivedAt", empty = true } },
-] }
-require = { field = "Status", equals = "Terminated" }
 message = "ManagedSession.ArchivedAt may only be set once the session is Terminated"
+assert = "!empty(archived_at) || !empty(ArchivedAt) => Status == 'Terminated'"

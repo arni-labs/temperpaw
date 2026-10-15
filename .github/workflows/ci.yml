@@ -6,8 +6,12 @@ on:
   push:
     branches:
       - main
+      - release
+  schedule:
+    - cron: "0 7 * * *"   # nightly full validation
 
 jobs:
+  # Fast lane: what a PR waits on. Target <5 min. (ARN-429)
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -15,6 +19,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: WASM artifact packaging regression
+        run: bash scripts/test-wasm-build-artifacts.sh
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings
+      - name: Cargo check
+        run: cargo check --locked -p temperpaw -p paw-codex-worker
+      - name: Worker script syntax
+        run: |
+          for f in crates/paw-codex-worker/scripts/*.sh; do bash -n "$f"; done
+      # Check RSA integrations against the deployment WASM target.
+      - name: WASM rsa crates compile on wasm32-unknown-unknown
+        run: |
+          bash scripts/check-wasm-rsa-getrandom.sh
+          cargo check --manifest-path os-apps/paw-patrol/wasm/release_run_lifecycle/Cargo.toml --target wasm32-unknown-unknown
+
+  # Heavy validation: every os-app WASM build, full tests, dashboard, executed
+  # smokes. Gates MERGES (push to main/release) and nightly - never PR
+  # iteration. (ARN-429)
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: 22
@@ -22,29 +56,8 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: Install dashboard dependencies
         run: cd dashboard && npm install
-      - name: Cargo fmt
-        run: cargo fmt --all -- --check
-      - name: Cargo clippy
-        run: cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings
-      - name: Cargo check
-        run: cargo check --locked -p temperpaw -p paw-codex-worker
-      - name: Worker smoke script syntax
+      - name: Smoke scripts (executed)
         run: |
-          bash -n crates/paw-codex-worker/scripts/deterministic-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/datadog-patrol-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/repo-sweep-brief-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/webhook-intake-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-readiness.sh
-          bash -n crates/paw-codex-worker/scripts/production-preflight.sh
-          bash -n crates/paw-codex-worker/scripts/production-git-ancestry-guard.sh
-          bash -n crates/paw-codex-worker/scripts/production-observe-only.sh
-          bash -n crates/paw-codex-worker/scripts/production-preflight-github-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-observe-only-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-readiness-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/mac-mini-production-bootstrap.sh
-          bash -n crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/paw-patrol-acceptance.sh
           crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
           crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
       - name: WASM build (os-apps)
@@ -53,6 +66,7 @@ jobs:
           for script in \
             os-apps/paw-agent/wasm/build.sh \
             os-apps/paw-channels/wasm/build.sh \
+            os-apps/paw-fs/wasm/artifact_batch_apply/build.sh \
             os-apps/paw-fs/wasm/blob_adapter/build.sh \
             os-apps/paw-fs/wasm/workspace_fs/build.sh \
             os-apps/paw-ingest/wasm/build.sh \
@@ -61,7 +75,9 @@ jobs:
             os-apps/paw-foresight/wasm/build.sh \
             os-apps/paw-skills/wasm/build.sh \
             os-apps/paw-research/wasm/build.sh \
-            os-apps/paw-patrol/wasm/build.sh; do
+            os-apps/paw-compute/wasm/build.sh \
+            os-apps/paw-patrol/wasm/build.sh \
+            os-apps/dsf-twin/wasm/build.sh; do
             echo "=== Running $script ==="
             (cd "$(dirname "$script")" && bash "$(basename "$script")")
           done
@@ -71,5 +87,17 @@ jobs:
           cargo test --locked -p temperpaw --quiet
           cargo test --locked -p paw-codex-worker --quiet
           cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet
+          # os-app WASM modules are their own workspaces, so `-p temperpaw` does
+          # not reach them. These five carry the OTS trajectory contract — the
+          # emitter that reads the record, the two writers that produce it, and
+          # the gate that fails when the temper pin gains the JCS fields. A gate
+          # nothing runs is not a gate (ADR-0035 section 17).
+          cargo test --manifest-path os-apps/paw-agent/wasm/emit_ots_trajectory/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-agent/wasm/provider_response_applier/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-agent/wasm/wasm-helpers/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_start/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_poll/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-agent/wasm/openai-chat-wire/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-agent/wasm/monty_repl/Cargo.toml --quiet
       - name: Dashboard build
         run: cd dashboard && npm run build
