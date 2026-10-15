@@ -471,8 +471,8 @@ fn railway_deploy_dockerfile_uses_image_tag_variable() {
         "Railway cutover must wait for core readiness (ADR-0066); /healthz answers before boot finishes"
     );
     assert!(
-        railway_config.contains("overlapSeconds = 15"),
-        "the old copy must keep serving in-flight requests after cutover; TemperPaw has no SIGTERM drain"
+        railway_config.contains("overlapSeconds = 0\n"),
+        "no overlap after cutover: two copies would both hold a Discord gateway session (ADR-0066)"
     );
 
     let deploy_rs = fs::read_to_string(repo_root().join("crates/temperpaw/src/deploy.rs"))

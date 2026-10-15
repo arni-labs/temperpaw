@@ -5,7 +5,7 @@ dockerfilePath = "Dockerfile.deploy"
 [deploy]
 healthcheckPath = "/readyz"
 healthcheckTimeout = 3600
-overlapSeconds = 15
+overlapSeconds = 0
 drainingSeconds = 0
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

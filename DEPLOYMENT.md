@@ -157,7 +157,7 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 ```
 
-Railway builds the Docker image from the repo's Dockerfile. The production `railway.toml` health check hits `/readyz`, so Railway moves traffic only after the new process has finished booting; `/healthz` answers as soon as the listener binds, while every other route still returns 503. `/readyz` is core readiness only: it reports Discord reconnect state in its body but never fails on it (ADR-0066). `overlapSeconds = 15` keeps the old copy up for in-flight requests after cutover, because TemperPaw exits on SIGTERM without draining. TemperPaw cold boots can take a long time while the server restores state and reconciles apps, so the health window is intentionally set to one hour.
+Railway builds the Docker image from the repo's Dockerfile. The production `railway.toml` health check hits `/readyz`, so Railway moves traffic only after the new process has finished booting; `/healthz` answers as soon as the listener binds, while every other route still returns 503. `/readyz` is core readiness only: it reports Discord reconnect state in its body but never fails on it (ADR-0066). `overlapSeconds = 0` stops the old copy at cutover: a request in flight on it is cut off, which is preferred to two copies both answering Discord. TemperPaw cold boots can take a long time while the server restores state and reconciles apps, so the health window is intentionally set to one hour.
 
 ### Railway service architecture
 
