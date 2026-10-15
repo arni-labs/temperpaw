@@ -13,32 +13,35 @@ jobs:
         with:
           token: ${{ secrets.STACK_TOKEN }}
           ref: cursor/temper-pin-blob-rss-5629
-          fetch-depth: 0
       - name: Retarget the temper pin and drop this workflow
-        env:
-          STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
         run: |
-          set -euo pipefail
-          OLD=c41e13702cb81a5693e8d9c69db09480733f70b4
-          NEW=d65719bf3fd23f8f932a5775527fcf702df325d5
-          SDK=aead3d22c769382523430c7f769a1aea8486d360
-          if ! grep -q "$OLD" crates/temperpaw/Cargo.toml; then
-            echo "pin already moved; nothing to commit"
-            exit 0
-          fi
-          git config user.name "Rita Agafonova"
-          git config user.email "36133358+rita-aga@users.noreply.github.com"
-          sed -i "s/${OLD}/${NEW}/g" crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml Cargo.lock
-          lock_new=$(grep -o "$NEW" Cargo.lock | wc -l)
-          lock_old=$(grep -o "$OLD" Cargo.lock | wc -l)
-          sdk=$(grep -o "$SDK" Cargo.lock | wc -l)
-          toml_new=$(grep -o "$NEW" crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml | wc -l)
-          echo "lock_new=$lock_new lock_old=$lock_old sdk=$sdk toml_new=$toml_new"
-          test "$lock_new" -eq 36
-          test "$lock_old" -eq 0
-          test "$sdk" -eq 2
-          test "$toml_new" -eq 11
+          set -eu
+          python3 - <<'PY'
+          from pathlib import Path
+          old = "c41e13702cb81a5693e8d9c69db09480733f70b4"
+          new = "d65719bf3fd23f8f932a5775527fcf702df325d5"
+          sdk = "aead3d22c769382523430c7f769a1aea8486d360"
+          paths = [
+              Path("crates/temperpaw/Cargo.toml"),
+              Path("crates/paw-codex-worker/Cargo.toml"),
+              Path("Cargo.lock"),
+          ]
+          for path in paths:
+              text = path.read_text()
+              print(f"before {path}: old={text.count(old)} new={text.count(new)}", flush=True)
+              path.write_text(text.replace(old, new))
+          lock = Path("Cargo.lock").read_text()
+          toml = "".join(p.read_text() for p in paths[:2])
+          print(
+              f"after lock_new={lock.count(new)} lock_old={lock.count(old)} sdk={lock.count(sdk)} toml_new={toml.count(new)}",
+              flush=True,
+          )
+          assert lock.count(new) == 36, lock.count(new)
+          assert lock.count(old) == 0
+          assert lock.count(sdk) == 2
+          assert toml.count(new) == 11
+          PY
           git rm -f .github/workflows/refresh-temper-pin-lock.yml
           git add crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml Cargo.lock
-          git commit -m "chore(deps): retarget temper pin to d65719bf3fd2"
+          git -c user.name='Rita Agafonova' -c user.email='36133358+rita-aga@users.noreply.github.com' commit -m "chore(deps): retarget temper pin to d65719bf3fd2"
           git push origin HEAD:cursor/temper-pin-blob-rss-5629
