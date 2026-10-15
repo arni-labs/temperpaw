@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Amended by ADR-0066: Railway health checks use `/readyz`, which no longer fails on Discord; Discord state is in its body.
 
 ## Context
 

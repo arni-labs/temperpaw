@@ -258,8 +258,8 @@ jobs:
           set -euo pipefail
           # Railway has confirmed the requested image is what deployed. This
           # proves the process behind it serves: exactly 200 from /healthz.
-          # /readyz is printed for the log; it folds optional integrations
-          # (Discord today) into its answer and does not gate a deploy.
+          # /readyz is printed for the log; it does not gate this workflow
+          # (images before ADR-0066 still fold Discord into its answer).
           for attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
             code="$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL%/}/healthz" || true)"
             [ "${code:-000}" = "200" ] && { echo "/healthz 200 after ${attempt} attempt(s)"; break; }

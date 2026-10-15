@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Superseded by ADR-0066 (cutover waits for core readiness).
 
 ## Context
 

@@ -414,7 +414,7 @@ fn paw_patrol_project_deploy_tools_remain_available_independently() {
     let deploy = read(patrol.join("specs/temper_deploy.ioa.toml"));
     assert!(
         deploy.contains("ready_path = \"/healthz\""),
-        "TemperDeploy must poll /healthz (ARN-432); /readyz is 503 when Discord is down"
+        "TemperDeploy must poll /healthz (ARN-432); images before ADR-0066 answer /readyz 503 when Discord is down"
     );
     assert!(
         !deploy.contains("ready_path = \"/readyz\""),
