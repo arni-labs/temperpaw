@@ -324,6 +324,18 @@ impl StartupReadiness {
     }
 }
 
+/// Makes the kernel's HttpEndpoint rows routable (an app's own inbound routes, such as Katagami's `/katagami/*`), as
+/// temper-cli's `serve` does: the reconciler rebuilds a tenant's route table on every HttpEndpoint transition, and
+/// each tenant's table is built once from the rows already stored. Without both the tables stay empty and every such
+/// route answers 404 "no route matches". The reconciler starts first, so a row that changes while the tables are
+/// built is still seen.
+async fn start_http_endpoint_routes(state: &PlatformState) {
+    temper_server::http_endpoint::spawn_reconciler(state.server.clone());
+    for tenant in registry_tenant_ids(state) {
+        temper_server::http_endpoint::rebuild_tenant_table(&state.server, &tenant).await;
+    }
+}
+
 fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
     let registry = state.registry.read().unwrap(); // ci-ok: infallible lock
     registry.tenant_ids().into_iter().cloned().collect()
@@ -2342,6 +2354,9 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         }
         println!();
     }
+    let phase_started = Instant::now();
+    start_http_endpoint_routes(&state).await;
+    record_startup_phase_duration("http_endpoint_routes", phase_started.elapsed());
     startup_readiness.mark_ready();
     record_startup_time_to_ready(startup_started.elapsed(), &tenant);
     tracing::info!("Temper Paw listening on port {actual_port}");
@@ -4097,8 +4112,9 @@ mod tests {
         paw_soul_content_is_personalized, repair_default_agent_tools_enabled,
         resolve_startup_secret, runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
-        startup_discord_connect_result, startup_discord_summary_label, startup_os_apps,
-        startup_surface_runtime_indexes_required_before_reconcile, wait_for_runtime_server,
+        start_http_endpoint_routes, startup_discord_connect_result, startup_discord_summary_label,
+        startup_os_apps, startup_surface_runtime_indexes_required_before_reconcile,
+        wait_for_runtime_server,
     };
     use crate::transport_manager::TransportStatus;
 
@@ -4159,6 +4175,74 @@ mod tests {
         unsafe {
             std::env::remove_var("TEMPERPAW_ORPHANED_SESSION_RECOVERY");
         }
+    }
+
+    /// One HttpEndpoint row, created the way an app's installer registers its route (an OData create is this action).
+    async fn create_http_endpoint(
+        state: &temper_platform::PlatformState,
+        tenant: &TenantId,
+        id: &str,
+        path: &str,
+    ) {
+        state
+            .server
+            .dispatch_tenant_action(
+                tenant,
+                "HttpEndpoint",
+                id,
+                "Create",
+                serde_json::json!({
+                    "PathPrefix": path,
+                    "Methods": "POST",
+                    "IntegrationModule": "hooks",
+                    "RequiresAuth": true,
+                    "TimeoutSecs": 30,
+                }),
+                &temper_server::request_context::AgentContext::system(),
+            )
+            .await
+            .expect("the HttpEndpoint row is created");
+    }
+
+    async fn routed(state: &temper_platform::PlatformState, tenant: &TenantId, path: &str) -> bool {
+        match state.server.http_endpoint_tables.get(tenant).await {
+            Some(table) => table.match_request("POST", path).await.is_some(),
+            None => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn http_endpoint_rows_are_routable_after_startup_and_after_every_change() {
+        let state = temper_platform::PlatformState::new(None);
+        temper_platform::bootstrap_system_tenant(&state, &std::collections::BTreeMap::new());
+        let tenant = TenantId::new(temper_platform::bootstrap::SYSTEM_TENANT);
+        // A row stored before this process started serving: nothing routes it until startup builds the table.
+        create_http_endpoint(&state, &tenant, "he-before", "/app/before").await;
+        assert!(
+            !routed(&state, &tenant, "/app/before").await,
+            "the kernel builds no route table by itself"
+        );
+
+        start_http_endpoint_routes(&state).await;
+        assert!(
+            routed(&state, &tenant, "/app/before").await,
+            "a stored row routes once startup is done"
+        );
+
+        // A row registered later (an app's install): the reconciler rebuilds the table from its transition.
+        create_http_endpoint(&state, &tenant, "he-after", "/app/after").await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !routed(&state, &tenant, "/app/after").await {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a row registered after startup routes within 10 s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            routed(&state, &tenant, "/app/before").await,
+            "and the earlier row still routes"
+        );
     }
 
     #[test]
