@@ -9,7 +9,7 @@ use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{MatchedPath, State};
 use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
@@ -217,12 +217,19 @@ pub async fn middleware(
     StatusCode::UNAUTHORIZED.into_response()
 }
 
-/// Whether the request matches an Active HttpEndpoint with `RequiresAuth =
-/// false`, by the kernel's own table and matcher (method, then whole-segment
-/// path prefix, longest wins). The tenant is resolved as for any other request
-/// (the caller's `X-Tenant-Id`, else this deployment's tenant) and pinned on
-/// the request, so the kernel edge checks the same tenant's route again.
+/// Whether the request is bound for the kernel's HttpEndpoint fallback and
+/// matches an Active route with `RequiresAuth = false` there, by the kernel's
+/// own table and matcher (method, then whole-segment path prefix, longest
+/// wins). The tenant is resolved as for any other request (the caller's
+/// `X-Tenant-Id`, else this deployment's tenant) and pinned on the request, so
+/// the kernel edge checks the same tenant's route again.
 async fn admit_public_http_endpoint(state: &AuthState, request: &mut Request<Body>) -> bool {
+    // A request a declared route serves never reaches the fallback. TemperPaw's
+    // own routes sit outside the kernel's bearer edge, so this middleware is
+    // their only gate and an HttpEndpoint row must never open them.
+    if request.extensions().get::<MatchedPath>().is_some() {
+        return false;
+    }
     let tenant = header_value(request.headers(), "x-tenant-id")
         .map(|tenant| tenant.trim().to_string())
         .filter(|tenant| !tenant.is_empty())
@@ -743,13 +750,14 @@ mod tests {
     fn endpoint_route(
         id: &str,
         path_prefix: &str,
+        methods: &str,
         requires_auth: bool,
     ) -> temper_server::http_endpoint::HttpEndpointRoute {
         temper_server::http_endpoint::route_from_entity_fields(
             id,
             &json!({
                 "PathPrefix": path_prefix,
-                "Methods": "POST",
+                "Methods": methods,
                 "IntegrationModule": "hooks",
                 "RequiresAuth": requires_auth,
                 "TimeoutSecs": 30,
@@ -758,15 +766,49 @@ mod tests {
         .expect("endpoint row projects")
     }
 
+    /// Public and private rows in the deployment's tenant, plus public rows
+    /// over TemperPaw's own `/paw` routes in it and in another tenant.
     async fn install_routes(tables: &HttpEndpointTables) {
         tables
             .table_for(&TenantId::new("default"))
             .await
             .replace(vec![
-                endpoint_route("he-hook", "/app/hooks/provider", false),
-                endpoint_route("he-private", "/app/private", true),
+                endpoint_route("he-hook", "/app/hooks/provider", "POST", false),
+                endpoint_route("he-private", "/app/private", "POST", true),
+                endpoint_route("he-paw", "/paw", "GET,POST", false),
             ])
             .await;
+        tables
+            .table_for(&TenantId::new("other"))
+            .await
+            .replace(vec![endpoint_route(
+                "he-paw-other",
+                "/paw",
+                "GET,POST",
+                false,
+            )])
+            .await;
+    }
+
+    /// Stands for TemperPaw's own routes, merged beside the kernel's router
+    /// and outside its bearer edge, as `startup.rs` does.
+    fn temperpaw_routes() -> Router {
+        Router::new().route(
+            "/paw/setup/secrets/{key}",
+            get(|| async { "temperpaw handler" }).post(|| async { "temperpaw handler" }),
+        )
+    }
+
+    async fn authority_probe(
+        context: Option<Extension<AuthenticatedRequestContext>>,
+        headers: HeaderMap,
+    ) -> String {
+        format!(
+            "context={} kind={:?} tenant={:?}",
+            context.is_some(),
+            headers.get("x-temper-principal-kind"),
+            headers.get("x-tenant-id"),
+        )
     }
 
     fn anonymous(method: &str, uri: &str) -> Request<Body> {
@@ -777,14 +819,33 @@ mod tests {
             .unwrap()
     }
 
+    fn anonymous_in(tenant: &str, method: &str, uri: &str) -> Request<Body> {
+        let mut request = anonymous(method, uri);
+        request
+            .headers_mut()
+            .insert("x-tenant-id", tenant.parse().unwrap());
+        request
+    }
+
     /// The edge as deployed: this middleware outside the kernel's platform
-    /// router, both reading the same HttpEndpoint tables.
+    /// router and TemperPaw's own routes, reading the kernel's tables.
     async fn edge_with_kernel(root: &std::path::Path) -> Router {
         let platform = temper_platform::PlatformState::new(None);
         install_routes(&platform.server.http_endpoint_tables).await;
         let mut state = AuthState::for_tests(root).await;
         state.http_endpoints = platform.server.http_endpoint_tables.clone();
         temper_platform::router::build_platform_router(platform)
+            .merge(temperpaw_routes())
+            .layer(from_fn_with_state(state, middleware))
+    }
+
+    /// The same edge with a probe in place of the kernel, so anything this
+    /// middleware lets through answers 200 instead of a kernel refusal.
+    async fn edge_with_probe(root: &std::path::Path) -> Router {
+        let state = AuthState::for_tests(root).await;
+        install_routes(&state.http_endpoints).await;
+        temperpaw_routes()
+            .fallback(authority_probe)
             .layer(from_fn_with_state(state, middleware))
     }
 
@@ -810,16 +871,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_public_http_endpoint_gets_no_authority_from_temperpaw() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_probe(tempdir.path()).await;
+
+        let response = app
+            .oneshot(anonymous("POST", "/app/hooks/provider"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            "context=false kind=None tenant=Some(\"default\")"
+        );
+    }
+
+    #[tokio::test]
     async fn anonymous_requests_elsewhere_still_need_a_credential() {
         let tempdir = tempfile::tempdir().unwrap();
-        let app = edge_with_kernel(tempdir.path()).await;
+        let app = edge_with_probe(tempdir.path()).await;
 
-        let other_tenant = Request::builder()
-            .method("POST")
-            .uri("/app/hooks/provider")
-            .header("x-tenant-id", "other")
-            .body(Body::empty())
-            .unwrap();
+        let secret = "/paw/setup/secrets/temper_api_key";
         let cases = [
             (
                 "GET on the public route",
@@ -832,49 +905,37 @@ mod tests {
             ),
             ("a parent path", anonymous("POST", "/app/hooks")),
             ("an unrouted path", anonymous("POST", "/somewhere/else")),
-            ("a tenant without the route", other_tenant),
+            (
+                "a tenant without the route",
+                anonymous_in("other", "POST", "/app/hooks/provider"),
+            ),
+            (
+                "a TemperPaw route under a public row",
+                anonymous("GET", secret),
+            ),
+            (
+                "a TemperPaw route under another tenant's public row",
+                anonymous_in("other", "GET", secret),
+            ),
         ];
         for (case, request) in cases {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
-            assert!(
-                response.headers().get("www-authenticate").is_none(),
-                "{case}: TemperPaw itself refuses it rather than passing it to the kernel"
-            );
         }
     }
 
     #[tokio::test]
-    async fn a_public_http_endpoint_gets_no_authority_from_temperpaw() {
-        async fn authority_probe(
-            context: Option<Extension<AuthenticatedRequestContext>>,
-            headers: HeaderMap,
-        ) -> String {
-            format!(
-                "context={} kind={:?} tenant={:?}",
-                context.is_some(),
-                headers.get("x-temper-principal-kind"),
-                headers.get("x-tenant-id"),
-            )
-        }
-
+    async fn temperpaw_routes_stay_closed_beside_the_kernel() {
         let tempdir = tempfile::tempdir().unwrap();
-        let state = AuthState::for_tests(tempdir.path()).await;
-        install_routes(&state.http_endpoints).await;
-        let app = Router::new()
-            .fallback(authority_probe)
-            .layer(from_fn_with_state(state, middleware));
+        let app = edge_with_kernel(tempdir.path()).await;
 
-        let response = app
-            .oneshot(anonymous("POST", "/app/hooks/provider"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&body),
-            "context=false kind=None tenant=Some(\"default\")"
-        );
+        for request in [
+            anonymous("GET", "/paw/setup/secrets/temper_api_key"),
+            anonymous_in("other", "GET", "/paw/setup/secrets/temper_api_key"),
+        ] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[tokio::test]
