@@ -27,6 +27,7 @@ use temper_store_turso::TursoEventStore;
 use crate::storage::PawStorage;
 
 type SecretsVault = temper_server::secrets::vault::SecretsVault;
+type HttpEndpointTables = temper_server::http_endpoint::HttpEndpointTables;
 
 const ACCOUNTS_SECRET_KEY: &str = "auth_accounts";
 const SESSION_COOKIE: &str = "paw_session";
@@ -40,6 +41,9 @@ pub struct AuthState {
     tenant: Arc<String>,
     cookie_secure: bool,
     register_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The kernel's own HttpEndpoint route tables, read to admit routes a
+    /// tenant declared public (`RequiresAuth = false`).
+    http_endpoints: Arc<HttpEndpointTables>,
 }
 
 impl AuthState {
@@ -49,6 +53,7 @@ impl AuthState {
         jwt_secret: Vec<u8>,
         tenant: String,
         cookie_secure: bool,
+        http_endpoints: Arc<HttpEndpointTables>,
     ) -> Self {
         Self {
             storage: storage.into(),
@@ -57,6 +62,7 @@ impl AuthState {
             tenant: Arc::new(tenant),
             cookie_secure,
             register_lock: Arc::new(tokio::sync::Mutex::new(())),
+            http_endpoints,
         }
     }
 
@@ -71,7 +77,14 @@ impl AuthState {
             .await
             .unwrap();
         let vault = Arc::new(SecretsVault::new(&[7; 32]));
-        Self::new(store, vault, vec![3; 32], "default".to_string(), false)
+        Self::new(
+            store,
+            vault,
+            vec![3; 32],
+            "default".to_string(),
+            false,
+            Arc::new(HttpEndpointTables::new()),
+        )
     }
 }
 
@@ -194,7 +207,43 @@ pub async fn middleware(
         return Redirect::temporary("/dashboard/login").into_response();
     }
 
+    // A caller with no credential, such as a signed webhook sender, may reach
+    // an HttpEndpoint its tenant declared public. Nothing is attached here:
+    // the kernel edge matches the same route and serves it as anonymous.
+    if admit_public_http_endpoint(&state, &mut request).await {
+        return next.run(request).await;
+    }
+
     StatusCode::UNAUTHORIZED.into_response()
+}
+
+/// Whether the request matches an Active HttpEndpoint with `RequiresAuth =
+/// false`, by the kernel's own table and matcher (method, then whole-segment
+/// path prefix, longest wins). The tenant is resolved as for any other request
+/// (the caller's `X-Tenant-Id`, else this deployment's tenant) and pinned on
+/// the request, so the kernel edge checks the same tenant's route again.
+async fn admit_public_http_endpoint(state: &AuthState, request: &mut Request<Body>) -> bool {
+    let tenant = header_value(request.headers(), "x-tenant-id")
+        .map(|tenant| tenant.trim().to_string())
+        .filter(|tenant| !tenant.is_empty())
+        .unwrap_or_else(|| state.tenant().to_string());
+    let Ok(tenant_header) = HeaderValue::from_str(&tenant) else {
+        return false;
+    };
+    let Ok(tenant) = TenantId::try_new(tenant) else {
+        return false;
+    };
+    let Some(table) = state.http_endpoints.get(&tenant).await else {
+        return false;
+    };
+    let is_public = table
+        .match_request(request.method().as_str(), request.uri().path())
+        .await
+        .is_some_and(|matched| !matched.route.requires_auth);
+    if is_public {
+        request.headers_mut().insert("x-tenant-id", tenant_header);
+    }
+    is_public
 }
 
 async fn is_safe_setup_path_public_during_bootstrap(
@@ -665,6 +714,7 @@ enum AuthError {
 #[cfg(test)]
 mod tests {
     use axum::body::{Body, to_bytes};
+    use axum::extract::Extension;
     use axum::http::HeaderMap;
     use axum::http::{Request, StatusCode};
     use axum::middleware::from_fn_with_state;
@@ -672,11 +722,13 @@ mod tests {
     use axum::routing::get;
     use axum::{Json, Router};
     use serde_json::json;
+    use temper_authz::AuthenticatedRequestContext;
+    use temper_runtime::tenant::TenantId;
     use tower::ServiceExt;
 
     use super::{
-        AuthState, claims_from_headers, is_public_path, issue_session_cookie_value, middleware,
-        router,
+        AuthState, HttpEndpointTables, claims_from_headers, is_public_path,
+        issue_session_cookie_value, middleware, router,
     };
 
     #[test]
@@ -684,6 +736,144 @@ mod tests {
         assert!(
             is_public_path("POST", "/triggers/webhook/patrol-datadog"),
             "external webhook providers cannot send Temper bearer auth"
+        );
+    }
+
+    /// One HttpEndpoint row projected the way the kernel's reconciler does it.
+    fn endpoint_route(
+        id: &str,
+        path_prefix: &str,
+        requires_auth: bool,
+    ) -> temper_server::http_endpoint::HttpEndpointRoute {
+        temper_server::http_endpoint::route_from_entity_fields(
+            id,
+            &json!({
+                "PathPrefix": path_prefix,
+                "Methods": "POST",
+                "IntegrationModule": "hooks",
+                "RequiresAuth": requires_auth,
+                "TimeoutSecs": 30,
+            }),
+        )
+        .expect("endpoint row projects")
+    }
+
+    async fn install_routes(tables: &HttpEndpointTables) {
+        tables
+            .table_for(&TenantId::new("default"))
+            .await
+            .replace(vec![
+                endpoint_route("he-hook", "/app/hooks/provider", false),
+                endpoint_route("he-private", "/app/private", true),
+            ])
+            .await;
+    }
+
+    fn anonymous(method: &str, uri: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// The edge as deployed: this middleware outside the kernel's platform
+    /// router, both reading the same HttpEndpoint tables.
+    async fn edge_with_kernel(root: &std::path::Path) -> Router {
+        let platform = temper_platform::PlatformState::new(None);
+        install_routes(&platform.server.http_endpoint_tables).await;
+        let mut state = AuthState::for_tests(root).await;
+        state.http_endpoints = platform.server.http_endpoint_tables.clone();
+        temper_platform::router::build_platform_router(platform)
+            .layer(from_fn_with_state(state, middleware))
+    }
+
+    #[tokio::test]
+    async fn anonymous_post_to_a_public_http_endpoint_reaches_the_kernel_dispatcher() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_kernel(tempdir.path()).await;
+
+        let response = app
+            .oneshot(anonymous("POST", "/app/hooks/provider"))
+            .await
+            .unwrap();
+
+        // The kernel matched the route as anonymous and went on to dispatch
+        // its WASM module, which this test never installed.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("WASM integration 'hooks' not installed"),
+            "unexpected body: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[tokio::test]
+    async fn anonymous_requests_elsewhere_still_need_a_credential() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_kernel(tempdir.path()).await;
+
+        let other_tenant = Request::builder()
+            .method("POST")
+            .uri("/app/hooks/provider")
+            .header("x-tenant-id", "other")
+            .body(Body::empty())
+            .unwrap();
+        let cases = [
+            (
+                "GET on the public route",
+                anonymous("GET", "/app/hooks/provider"),
+            ),
+            ("a RequiresAuth route", anonymous("POST", "/app/private")),
+            (
+                "a longer segment",
+                anonymous("POST", "/app/hooks/provider-x"),
+            ),
+            ("a parent path", anonymous("POST", "/app/hooks")),
+            ("an unrouted path", anonymous("POST", "/somewhere/else")),
+            ("a tenant without the route", other_tenant),
+        ];
+        for (case, request) in cases {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+            assert!(
+                response.headers().get("www-authenticate").is_none(),
+                "{case}: TemperPaw itself refuses it rather than passing it to the kernel"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_public_http_endpoint_gets_no_authority_from_temperpaw() {
+        async fn authority_probe(
+            context: Option<Extension<AuthenticatedRequestContext>>,
+            headers: HeaderMap,
+        ) -> String {
+            format!(
+                "context={} kind={:?} tenant={:?}",
+                context.is_some(),
+                headers.get("x-temper-principal-kind"),
+                headers.get("x-tenant-id"),
+            )
+        }
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = AuthState::for_tests(tempdir.path()).await;
+        install_routes(&state.http_endpoints).await;
+        let app = Router::new()
+            .fallback(authority_probe)
+            .layer(from_fn_with_state(state, middleware));
+
+        let response = app
+            .oneshot(anonymous("POST", "/app/hooks/provider"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            "context=false kind=None tenant=Some(\"default\")"
         );
     }
 

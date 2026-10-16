@@ -1846,6 +1846,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         vault_key_bytes.to_vec(),
         tenant.clone(),
         cookie_secure,
+        state.server.http_endpoint_tables.clone(),
     );
 
     let router = build_platform_router(state.clone());
