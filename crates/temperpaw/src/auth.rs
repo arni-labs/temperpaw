@@ -137,6 +137,13 @@ pub fn router(state: AuthState) -> Router {
         .with_state(state)
 }
 
+/// Put [`middleware`] in front of every route and the fallback. It must be
+/// attached with `Router::layer`, as here: only then does it see axum's
+/// `MatchedPath`, which keeps HttpEndpoint rows away from TemperPaw's routes.
+pub fn layer(router: Router, state: AuthState) -> Router {
+    router.layer(axum::middleware::from_fn_with_state(state, middleware))
+}
+
 pub async fn middleware(
     State(state): State<AuthState>,
     mut request: Request<Body>,
@@ -226,7 +233,10 @@ pub async fn middleware(
 async fn admit_public_http_endpoint(state: &AuthState, request: &mut Request<Body>) -> bool {
     // A request a declared route serves never reaches the fallback. TemperPaw's
     // own routes sit outside the kernel's bearer edge, so this middleware is
-    // their only gate and an HttpEndpoint row must never open them.
+    // their only gate and an HttpEndpoint row must never open them. Axum sets
+    // `MatchedPath` for every declared route, even on a method mismatch, but
+    // not under a `nest_service` mount: `/dashboard`, the only mount, is
+    // redirected above, and any new mount needs the same treatment.
     if request.extensions().get::<MatchedPath>().is_some() {
         return false;
     }
@@ -735,7 +745,7 @@ mod tests {
 
     use super::{
         AuthState, HttpEndpointTables, claims_from_headers, is_public_path,
-        issue_session_cookie_value, middleware, router,
+        issue_session_cookie_value, layer, middleware, router,
     };
 
     #[test]
@@ -767,7 +777,8 @@ mod tests {
     }
 
     /// Public and private rows in the deployment's tenant, plus public rows
-    /// over TemperPaw's own `/paw` routes in it and in another tenant.
+    /// over TemperPaw's own `/paw` and `/dashboard` paths in it and over
+    /// `/paw` in another tenant.
     async fn install_routes(tables: &HttpEndpointTables) {
         tables
             .table_for(&TenantId::new("default"))
@@ -776,6 +787,7 @@ mod tests {
                 endpoint_route("he-hook", "/app/hooks/provider", "POST", false),
                 endpoint_route("he-private", "/app/private", "POST", true),
                 endpoint_route("he-paw", "/paw", "GET,POST", false),
+                endpoint_route("he-dashboard", "/dashboard", "GET", false),
             ])
             .await;
         tables
@@ -834,9 +846,10 @@ mod tests {
         install_routes(&platform.server.http_endpoint_tables).await;
         let mut state = AuthState::for_tests(root).await;
         state.http_endpoints = platform.server.http_endpoint_tables.clone();
-        temper_platform::router::build_platform_router(platform)
-            .merge(temperpaw_routes())
-            .layer(from_fn_with_state(state, middleware))
+        layer(
+            temper_platform::router::build_platform_router(platform).merge(temperpaw_routes()),
+            state,
+        )
     }
 
     /// The same edge with a probe in place of the kernel, so anything this
@@ -844,9 +857,7 @@ mod tests {
     async fn edge_with_probe(root: &std::path::Path) -> Router {
         let state = AuthState::for_tests(root).await;
         install_routes(&state.http_endpoints).await;
-        temperpaw_routes()
-            .fallback(authority_probe)
-            .layer(from_fn_with_state(state, middleware))
+        layer(temperpaw_routes().fallback(authority_probe), state)
     }
 
     #[tokio::test]
@@ -922,6 +933,14 @@ mod tests {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
         }
+
+        // The dashboard is a nested service, which axum gives no MatchedPath:
+        // its login redirect has to keep coming before endpoint admission.
+        let response = app
+            .oneshot(anonymous("GET", "/dashboard/settings"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
     }
 
     #[tokio::test]
