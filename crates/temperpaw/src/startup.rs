@@ -604,7 +604,15 @@ fn spawn_runtime_server(
     listener: tokio::net::TcpListener,
     router: axum::Router,
 ) -> JoinHandle<std::io::Result<()>> {
-    tokio::spawn(async move { axum::serve(listener, router).await })
+    // The peer address lets the auth edge tell this process's own loopback
+    // calls from everyone else's.
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    })
 }
 
 async fn startup_gate_middleware(
@@ -1847,6 +1855,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         tenant.clone(),
         cookie_secure,
         state.server.http_endpoint_tables.clone(),
+        state.server.clone(),
     );
 
     let router = build_platform_router(state.clone());
@@ -5447,6 +5456,48 @@ mod tests {
         )
         .await
         .expect("runtime server should be reachable before transport boot");
+
+        server_handle.abort();
+    }
+
+    /// The auth edge reads the peer address the real server records: a
+    /// TemperPaw client's loopback call with principal headers alone passes,
+    /// the same request without them does not.
+    #[tokio::test]
+    async fn the_served_edge_sees_loopback_peers() {
+        use axum::{Router, routing::get};
+        use std::time::Duration;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = crate::auth::AuthState::for_tests(tempdir.path()).await;
+        let app = crate::auth::layer(
+            Router::new()
+                .route("/readyz", get(|| async { "ok" }))
+                .route("/paw/setup/secrets/{key}", get(|| async { "secret" })),
+            state,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = spawn_runtime_server(listener, app);
+        wait_for_runtime_server(
+            format!("http://{addr}/readyz").as_str(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/paw/setup/secrets/x");
+        let with_headers = client
+            .get(&url)
+            .header("x-temper-principal-id", "temperpaw-transport")
+            .header("x-temper-principal-kind", "admin")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(with_headers.status(), reqwest::StatusCode::OK);
+        let without = client.get(&url).send().await.unwrap();
+        assert_eq!(without.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         server_handle.abort();
     }
