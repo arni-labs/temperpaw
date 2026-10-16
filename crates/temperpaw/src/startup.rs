@@ -1846,6 +1846,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         vault_key_bytes.to_vec(),
         tenant.clone(),
         cookie_secure,
+        state.server.http_endpoint_tables.clone(),
     );
 
     let router = build_platform_router(state.clone());
@@ -1880,10 +1881,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     } else {
         router
     };
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        auth_state,
-        crate::auth::middleware,
-    ));
+    let router = crate::auth::layer(router, auth_state);
     let router =
         runtime_router_with_startup_gates(router, startup_readiness.clone(), Some(setup_state));
 
