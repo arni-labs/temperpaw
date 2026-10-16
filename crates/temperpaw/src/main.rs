@@ -3,6 +3,12 @@
 //! Boots an embedded Temper platform, installs Paw OS apps,
 //! seeds agent souls, and starts the Discord transport.
 
+/// jemalloc, as Temper's own binary uses, with the purge settings in
+/// [`allocator`]: glibc's malloc kept each read burst's high-water resident.
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+mod allocator;
 mod auth;
 mod config;
 mod discord_app;

@@ -26,6 +26,9 @@ temper-spec = { git = "https://github.com/arni-labs/temper.git", rev = "ca2588a1
 # Paw transport (local)
 paw-transport = { path = "../paw-transport" }
 
+# Allocator: returns freed pages after bursts (see src/allocator.rs)
+tikv-jemallocator = "0.6"
+
 # Async runtime
 tokio = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres"] }
