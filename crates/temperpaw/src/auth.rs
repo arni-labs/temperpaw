@@ -336,19 +336,31 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(|token| token.trim().to_string())
 }
 
-/// Whether the connection comes from this machine. Requests through Railway's
-/// edge, or from any other host, never do. A request with no peer address
-/// (a router driven in a test) is treated as remote.
+/// Whether the request was made on this machine. Requests through Railway's
+/// edge, or from any other host, never are. Nor is one a local proxy relayed
+/// (the ngrok tunnel TransportManager starts when no public URL is set): a
+/// proxy names the original client in a forwarding header, which this
+/// process's own clients never send. A request with no peer address (a router
+/// driven in a test) is treated as remote.
 fn peer_is_loopback(request: &Request<Body>) -> bool {
-    request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|ConnectInfo(peer)| match peer.ip() {
-            IpAddr::V4(ip) => ip.is_loopback(),
-            IpAddr::V6(ip) => {
-                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
-            }
-        })
+    let relayed = [
+        "x-forwarded-for",
+        "forwarded",
+        "x-real-ip",
+        "x-forwarded-host",
+    ]
+    .iter()
+    .any(|name| request.headers().contains_key(*name));
+    !relayed
+        && request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .is_some_and(|ConnectInfo(peer)| match peer.ip() {
+                IpAddr::V4(ip) => ip.is_loopback(),
+                IpAddr::V6(ip) => {
+                    ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+                }
+            })
 }
 
 /// Remove caller-supplied `x-temper-*` authority headers, as the kernel's own
@@ -1237,6 +1249,29 @@ mod tests {
         let request = with_header(request, "authorization", "Bearer temper-internal-v1.0000");
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        // The kernel's WASM host drops principal headers from its internal
+        // calls and sends only its capability.
+        let request = with_header(
+            local(anonymous("GET", SECRET)),
+            "authorization",
+            "Bearer temper-internal-v1.0000",
+        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "capability alone");
+
+        // A request a local proxy relayed (a tunnel) is not a local call.
+        let relayed = with_header(
+            claiming_admin(local(anonymous("GET", SECRET))),
+            "x-forwarded-for",
+            "203.0.113.9",
+        );
+        let response = app.clone().oneshot(relayed).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "relayed by a tunnel"
+        );
 
         // TemperPaw's own clients: principal headers alone.
         let response = app
