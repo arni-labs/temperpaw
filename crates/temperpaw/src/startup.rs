@@ -2262,6 +2262,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
     // Spawn background loops
     state.server.spawn_runtime_metrics_loop();
+    crate::allocator::spawn_allocator_metrics_loop();
     spawn_actor_passivation_loop(&state);
 
     // Resolve LLM config from vault/dashboard before env. Runtime must not
