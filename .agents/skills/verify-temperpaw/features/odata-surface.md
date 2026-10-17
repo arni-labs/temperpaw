@@ -15,6 +15,6 @@ Bearer `$TEMPER_API_KEY` + `X-Tenant-Id: default`. Read a set, dispatch an actio
 The state machine moved: the entity's state field after the action matches the spec's transition. A denial proves governance: an unauthorized dispatch returns 403 (and per stack rules, the denial surfaces - silent 403 handling is a finding).
 
 ## Gotchas
-The service document (`GET /tdata/`) returns 401 even with a valid key - probe a concrete entity set (`/tdata/SkillPackages`) instead. Set names come from the spec entity names pluralized.
+Credential smoke test is `GET /tdata/$hints` (401 unauthenticated, 200 with a valid key). A wrong bearer key returns 401 on governed sets - verified live. Set names are spec entity names pluralized. Action namespace is per-app and comes from that app's CSDL (`TemperPaw.<Action>`, `Paw.Channel.<Action>`, `TemperPaw.Patrol.<Action>`); the OData parser also accepts the bare `Temper.<Action>` short form, so both work.
 
-A 200 on dispatch is not a transition - always read back. Cross-entity guard arrays 409 on stringified JSON (pass real arrays). Fields over 32KB truncate - use file refs.
+A 200 on dispatch is not a transition - always read back. Cross-entity guard arrays 409 on stringified JSON (pass real arrays). Field inline ceiling is 128KB; larger values overflow to blob refs transparently (no truncation, no file-ref workaround - retired in ADR-0033). Operator key cannot create every entity: SkillPackages create is Cedar-denied for the operator principal, so drive Register/Archive against a seeded package, not a freshly created one.
