@@ -28,6 +28,7 @@ paw-transport = { path = "../paw-transport" }
 
 # Allocator: returns freed pages after bursts (see src/allocator.rs)
 tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 # Async runtime
 tokio = { workspace = true }

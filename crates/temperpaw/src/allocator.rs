@@ -25,3 +25,90 @@ pub static JEMALLOC_CONF: JemallocConf =
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static JEMALLOC_CONF: JemallocConf =
     JemallocConf(c"dirty_decay_ms:1000,muzzy_decay_ms:0".as_ptr());
+
+/// jemalloc's own byte counts, recorded once a minute beside the process's
+/// resident memory. `allocated` counts live allocations and `active` the pages
+/// holding them; `resident` includes jemalloc's bookkeeping, and `retained`
+/// counts address space kept mapped, not resident memory. When resident memory
+/// rises, `allocated` rising with it means the program holds more.
+pub fn spawn_allocator_metrics_loop() {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    type Read = fn() -> tikv_jemalloc_ctl::Result<usize>;
+    let meter = opentelemetry::global::meter("temperpaw.allocator");
+    let counts: [(&str, &str, Read); 5] = [
+        (
+            "jemalloc_allocated_bytes",
+            "Bytes the program holds.",
+            stats::allocated::read,
+        ),
+        (
+            "jemalloc_active_bytes",
+            "Bytes in pages holding the program's allocations.",
+            stats::active::read,
+        ),
+        (
+            "jemalloc_resident_bytes",
+            "Bytes jemalloc keeps resident, its metadata included.",
+            stats::resident::read,
+        ),
+        (
+            "jemalloc_retained_bytes",
+            "Address space jemalloc keeps mapped, not resident.",
+            stats::retained::read,
+        ),
+        (
+            "jemalloc_metadata_bytes",
+            "Bytes of jemalloc's own bookkeeping.",
+            stats::metadata::read,
+        ),
+    ];
+    let counts = counts.map(|(name, description, read)| {
+        let gauge = meter
+            .u64_gauge(name)
+            .with_unit("By")
+            .with_description(description)
+            .build();
+        (name, gauge, read)
+    });
+    tokio::spawn(async move {
+        // determinism-ok: background task for process health metrics
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            ticker.tick().await;
+            // The counts are a snapshot that only moves when the epoch does.
+            if let Err(error) = epoch::advance() {
+                tracing::warn!(%error, "jemalloc counts not refreshed");
+                continue;
+            }
+            for (name, gauge, read) in &counts {
+                match read() {
+                    Ok(bytes) => gauge.record(bytes as u64, &[]),
+                    Err(error) => tracing::warn!(gauge = name, %error, "jemalloc count not read"),
+                }
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use tikv_jemalloc_ctl::{epoch, stats, thread};
+
+    #[test]
+    fn jemalloc_counts_what_the_program_holds() {
+        // This thread's own totals, so tests running alongside cannot move them.
+        let allocated = thread::allocatedp::read().expect("jemalloc keeps stats");
+        let deallocated = thread::deallocatedp::read().expect("jemalloc keeps stats");
+        let (allocated_before, deallocated_before) = (allocated.get(), deallocated.get());
+        let held = vec![1_u8; 64 * 1024 * 1024];
+        assert!(allocated.get() - allocated_before >= held.len() as u64);
+        let len = held.len() as u64;
+        drop(held);
+        assert!(deallocated.get() - deallocated_before >= len);
+
+        // And the process-wide counts the gauges read are there.
+        epoch::advance().expect("epoch advances");
+        assert!(stats::allocated::read().expect("jemalloc keeps stats") > 0);
+    }
+}
