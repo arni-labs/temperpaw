@@ -1,6 +1,7 @@
 //! The server binary's jemalloc options take effect and leave the allocator
 //! fully started: no jemalloc warning, more than one arena, the decay settings
-//! in force, and background purging threads where they are supported (Linux).
+//! in force, and background purging threads and no transparent huge pages
+//! where they are supported (Linux).
 
 use std::process::Command;
 
@@ -35,6 +36,7 @@ fn jemalloc_starts_with_the_purge_options() {
     // elsewhere the option is not even reported.
     if cfg!(target_os = "linux") {
         assert_eq!(opt["background_thread"], true, "options: {opt}");
+        assert_eq!(opt["thp"], "never", "options: {opt}");
     } else {
         assert_ne!(opt["background_thread"], true, "options: {opt}");
     }

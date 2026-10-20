@@ -6,6 +6,12 @@
 //! purging; jemalloc supports those threads only there (on macOS asking for
 //! one leaves the allocator half-initialized). `_RJEM_MALLOC_CONF` in the
 //! environment is read after this and still overrides it.
+//!
+//! Also on Linux, jemalloc's memory is kept out of transparent huge pages.
+//! Railway's hosts run THP "always" with khugepaged's max_ptes_none at 511, so
+//! khugepaged fills a 2 MB range jemalloc has mostly purged back into one huge
+//! page: resident memory grows while the program holds nothing more, and
+//! jemalloc's own counts never see it.
 
 /// A pointer to jemalloc's options string, laid out as the `const char *` it reads.
 #[repr(transparent)]
@@ -18,7 +24,7 @@ unsafe impl Sync for JemallocConf {}
 #[cfg(target_os = "linux")]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static JEMALLOC_CONF: JemallocConf =
-    JemallocConf(c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0".as_ptr());
+    JemallocConf(c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0,thp:never".as_ptr());
 
 /// Read by jemalloc at startup under its prefixed name.
 #[cfg(not(target_os = "linux"))]
