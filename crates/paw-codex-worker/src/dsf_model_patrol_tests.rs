@@ -231,7 +231,7 @@ async fn dsf_child_receives_only_factory_credential_and_forced_subscription_argu
         "investigate",
     )
     .unwrap();
-    let output = run_codex_exec_command_with_args(&config, &root, args, "fixture child")
+    let output = run_codex_exec_command_with_args(&config, &root, args, "fixture child", &[])
         .await
         .unwrap();
     assert!(output.status.success());

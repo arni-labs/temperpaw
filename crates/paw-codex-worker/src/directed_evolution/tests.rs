@@ -33,6 +33,44 @@ mod directed_evolution_tests {
     }
 
     #[test]
+    fn directed_evolution_work_item_parses_worker_run_id() {
+        let value = json!({
+            "entity_id": "wi-7",
+            "status": "Running",
+            "fields": {
+                "Role": "simulated_user",
+                "WorkerRunId": "run-9"
+            }
+        });
+
+        let work_item =
+            directed_evolution_work_item_from_odata_value(value).expect("WorkItem should parse");
+
+        assert_eq!(work_item.status, "Running");
+        assert_eq!(work_item.worker_run_id, "run-9");
+    }
+
+    #[test]
+    fn running_recovery_filter_scopes_to_this_worker_and_escapes_quotes() {
+        assert_eq!(
+            directed_evolution_running_recovery_filter("mac-mini-codex-prod"),
+            "Status eq 'Running' and ClaimedBy eq 'mac-mini-codex-prod'"
+        );
+        assert_eq!(
+            directed_evolution_running_recovery_filter("o'brien"),
+            "Status eq 'Running' and ClaimedBy eq 'o''brien'"
+        );
+    }
+
+    #[test]
+    fn restart_recovery_failure_reason_names_worker_restart() {
+        let reason = directed_evolution_restart_failure_reason("mac-mini-codex-prod");
+
+        assert!(reason.contains("mac-mini-codex-prod"));
+        assert!(reason.contains("restart"));
+    }
+
+    #[test]
     fn directed_evolution_prompt_uses_literal_prompt_ref() {
         let work_item = DirectedEvolutionWorkItemState {
             id: "wi-1".to_string(),
@@ -44,6 +82,7 @@ mod directed_evolution_tests {
             context_ref: "ctx-1".to_string(),
             output_schema_ref: "schema-1".to_string(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let prompt = directed_evolution_prompt(&work_item);
@@ -66,6 +105,7 @@ mod directed_evolution_tests {
             context_ref: "signal:sig-1".to_string(),
             output_schema_ref: "schema-1".to_string(),
             correlation_json: "{\"source\":\"datadog\"}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let prompt = directed_evolution_prompt(&work_item);
@@ -90,6 +130,7 @@ mod directed_evolution_tests {
             context_ref: "stage-result:sr-1".to_string(),
             output_schema_ref: "schema-1".to_string(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let prompt = directed_evolution_prompt(&work_item);
@@ -121,6 +162,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let reason = stale_directed_evolution_stage_work_reason(
@@ -145,6 +187,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let reason = stale_directed_evolution_stage_work_reason(
@@ -169,6 +212,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let reason = stale_directed_evolution_stage_work_reason(
@@ -208,6 +252,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         assert!(stale_stage_work_targets_stage_result(&work_item));
@@ -230,6 +275,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let output = directed_evolution_state_verifier_output(
@@ -263,6 +309,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let output = directed_evolution_state_verifier_output(
@@ -295,6 +342,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
         };
 
         let output = directed_evolution_state_verifier_output(
@@ -333,6 +381,148 @@ mod directed_evolution_tests {
             "deterministic-worker"
         );
         assert!(!directed_evolution_mechanical_evaluator_role("simulated_user"));
+    }
+
+    #[test]
+    fn directed_evolution_worker_run_start_body_uses_worker_contract() {
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-observer".to_string(),
+            status: "Queued".to_string(),
+            role: "observer".to_string(),
+            target_entity_type: "Organism".to_string(),
+            target_entity_id: "organism-agent-answers".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: "{\"batch_id\":\"batch-1\"}".to_string(),
+            worker_run_id: String::new(),
+        };
+
+        let body = directed_evolution_start_worker_run_body(
+            &work_item,
+            "genesis-local-sim-worker",
+            "wr-observer",
+            "parent-session-1",
+        );
+
+        assert_eq!(PAW_ORCHESTRATION_NAMESPACE, "Temper.PawOrchestration");
+        assert_eq!(
+            DIRECTED_EVOLUTION_WORKER_PROVIDER_ID,
+            "local_codex"
+        );
+        assert_eq!(body["Role"], "observer");
+        assert_eq!(body["WorkItemId"], "wi-observer");
+        assert_eq!(body["WorkerId"], "genesis-local-sim-worker");
+        assert_eq!(body["ProviderId"], "local_codex");
+        assert_eq!(body["AgentKind"], "codex");
+        assert_eq!(body["Model"], "codex-cli");
+        assert_eq!(body["SessionId"], "wr-observer");
+        assert_eq!(body["ParentSessionId"], "parent-session-1");
+        assert_eq!(body["CorrelationJson"], "{\"batch_id\":\"batch-1\"}");
+    }
+
+    #[test]
+    fn directed_evolution_work_item_start_body_uses_worker_run_id() {
+        let body = directed_evolution_start_work_item_body("wr-1");
+
+        assert_eq!(body, json!({ "WorkerRunId": "wr-1" }));
+        assert!(body.get("BrainRunId").is_none());
+    }
+
+    #[test]
+    fn directed_evolution_evidence_correlation_links_worker_run() {
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-observer".to_string(),
+            status: "Running".to_string(),
+            role: "observer".to_string(),
+            target_entity_type: "Organism".to_string(),
+            target_entity_id: "organism-agent-answers".to_string(),
+            prompt_ref: String::new(),
+            context_ref: "organism:agent-answers".to_string(),
+            output_schema_ref: "schema:observer".to_string(),
+            correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
+        };
+        let output = json!({
+            "summary": "Inventory found enough runtime state and telemetry to suggest one pressure."
+        });
+
+        let correlation =
+            directed_evolution_evidence_correlation(&work_item, "wr-observer", output.clone());
+        let link = directed_evolution_evidence_link_body("wr-observer");
+
+        assert_eq!(correlation["worker_run_id"], "wr-observer");
+        assert!(correlation.get("brain_run_id").is_none());
+        assert_eq!(correlation["output"], output);
+        assert_eq!(link, json!({
+            "TargetEntityType": "WorkerRun",
+            "TargetEntityId": "wr-observer",
+        }));
+    }
+
+    #[test]
+    fn directed_evolution_success_receipt_routes_worker_output() {
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-observer".to_string(),
+            status: "Running".to_string(),
+            role: "observer".to_string(),
+            target_entity_type: "Organism".to_string(),
+            target_entity_id: "organism-agent-answers".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: "{\"phase\":\"seed-observation\"}".to_string(),
+            worker_run_id: String::new(),
+        };
+
+        let body = directed_evolution_success_receipt_body(
+            &work_item,
+            "wr-observer",
+            "{\"actionable\":true}",
+            "evidence-1",
+            "Observer found one direction.",
+        );
+
+        assert_eq!(body["WorkItemId"], "wi-observer");
+        assert_eq!(body["Role"], "observer");
+        assert_eq!(body["TargetEntityType"], "Organism");
+        assert_eq!(body["TargetEntityId"], "organism-agent-answers");
+        assert_eq!(body["WorkerRunId"], "wr-observer");
+        assert_eq!(body["ResultJson"], "{\"actionable\":true}");
+        assert_eq!(body["EvidenceArtifactId"], "evidence-1");
+        assert_eq!(body["Summary"], "Observer found one direction.");
+        assert_eq!(body["CorrelationJson"], "{\"phase\":\"seed-observation\"}");
+    }
+
+    #[test]
+    fn directed_evolution_failure_receipt_routes_worker_failure() {
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-observer".to_string(),
+            status: "Running".to_string(),
+            role: "observer".to_string(),
+            target_entity_type: "Organism".to_string(),
+            target_entity_id: "organism-agent-answers".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: "{\"phase\":\"seed-observation\"}".to_string(),
+            worker_run_id: String::new(),
+        };
+
+        let body = directed_evolution_failure_receipt_body(
+            &work_item,
+            "wr-observer",
+            "observer failed",
+            "evidence-failure",
+        );
+
+        assert_eq!(body["WorkItemId"], "wi-observer");
+        assert_eq!(body["Role"], "observer");
+        assert_eq!(body["WorkerRunId"], "wr-observer");
+        assert_eq!(body["FailureReason"], "observer failed");
+        assert_eq!(body["EvidenceArtifactId"], "evidence-failure");
+        assert_eq!(body["CorrelationJson"], "{\"phase\":\"seed-observation\"}");
+        assert!(body.get("ResultJson").is_none());
     }
 
     #[test]
@@ -385,6 +575,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
 
         let tenant = directed_evolution_variant_tenant("de-variant", &work_item);
@@ -428,6 +619,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
         let mut payload = json!({
             "summary": "Adds answer evidence confidence.",
@@ -523,6 +715,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
 
         let uri = directed_evolution_evidence_uri(
@@ -547,6 +740,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
 
         let uri = directed_evolution_evidence_uri(
@@ -590,6 +784,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
 
         let summary = directed_evolution_summary(
@@ -623,6 +818,7 @@ mod directed_evolution_tests {
             context_ref: String::new(),
             output_schema_ref: String::new(),
             correlation_json: String::new(),
+            worker_run_id: String::new(),
         };
 
         let context = directed_evolution_datadog_context(&work_item);
@@ -755,6 +951,249 @@ mod directed_evolution_tests {
         assert_eq!(plan.scoring_rules[0].statement, "Prefer highest goal score.");
         assert_eq!(plan.simulated_user_plan.personas.len(), 3);
         assert!(!plan.evaluator_ref.trim().is_empty());
+    }
+
+    #[test]
+    fn role_target_mismatch_fails_simulated_user_without_trial_target() {
+        let reason = directed_evolution_role_target_mismatch("simulated_user", "StageResult")
+            .expect("simulated_user requires a Trial target");
+
+        assert!(reason.contains("simulated_user"));
+        assert!(reason.contains("Trial"));
+        assert!(reason.contains("StageResult"));
+    }
+
+    #[test]
+    fn role_target_mismatch_fails_evaluator_roles_without_stage_result_target() {
+        for role in [
+            "reviewer",
+            "viability_evaluator",
+            "state_verifier",
+            "telemetry_evaluator",
+            "wasm_evaluator",
+        ] {
+            let reason = directed_evolution_role_target_mismatch(role, "Trial")
+                .unwrap_or_else(|| panic!("{role} requires a StageResult target"));
+            assert!(reason.contains(role));
+            assert!(reason.contains("StageResult"));
+        }
+    }
+
+    #[test]
+    fn role_target_mismatch_allows_expected_and_unconstrained_targets() {
+        assert!(directed_evolution_role_target_mismatch("simulated_user", "Trial").is_none());
+        assert!(directed_evolution_role_target_mismatch("reviewer", "StageResult").is_none());
+        assert!(directed_evolution_role_target_mismatch("observer", "Organism").is_none());
+        assert!(
+            directed_evolution_role_target_mismatch("variant_generator", "Generation").is_none()
+        );
+    }
+
+    #[test]
+    fn runtime_credential_preflight_fails_when_no_named_env_var_is_set() {
+        let join = directed_evolution_join_fields(
+            r#"{
+                "runtime_base_url": "https://temper.example",
+                "runtime_auth_env_vars": ["DE_RUNTIME_KEY_A", "DE_RUNTIME_KEY_B"]
+            }"#,
+        );
+
+        let reason =
+            directed_evolution_runtime_credential_failure("simulated_user", &join, |_| None)
+                .expect("missing runtime credentials should fail preflight");
+
+        assert_eq!(
+            reason,
+            "runtime credential missing: none of [DE_RUNTIME_KEY_A, DE_RUNTIME_KEY_B, TEMPERPAW_RUNTIME_API_KEY, TEMPER_API_KEY] is set"
+        );
+    }
+
+    #[test]
+    fn runtime_credential_preflight_passes_when_any_named_env_var_is_set() {
+        let join = directed_evolution_join_fields(
+            r#"{
+                "runtime_base_url": "https://temper.example",
+                "runtime_auth_env_vars": ["DE_RUNTIME_KEY_A"]
+            }"#,
+        );
+
+        let configured = directed_evolution_runtime_credential_failure(
+            "telemetry_evaluator",
+            &join,
+            |name| (name == "DE_RUNTIME_KEY_A").then(|| "secret".to_string()),
+        );
+        let fallback = directed_evolution_runtime_credential_failure(
+            "reviewer",
+            &directed_evolution_join_fields(r#"{"runtime_base_url":"https://temper.example"}"#),
+            |name| (name == "TEMPER_API_KEY").then(|| "secret".to_string()),
+        );
+
+        assert!(configured.is_none());
+        assert!(fallback.is_none());
+    }
+
+    #[test]
+    fn runtime_credential_preflight_ignores_blank_env_values() {
+        let join = directed_evolution_join_fields(
+            r#"{"runtime_base_url":"https://temper.example"}"#,
+        );
+
+        let reason = directed_evolution_runtime_credential_failure("simulated_user", &join, |_| {
+            Some("   ".to_string())
+        })
+        .expect("blank runtime credentials should fail preflight");
+
+        assert!(reason.starts_with("runtime credential missing: none of ["));
+    }
+
+    #[test]
+    fn runtime_credential_preflight_skips_non_runtime_roles_and_items() {
+        let runtime_join = directed_evolution_join_fields(
+            r#"{"runtime_base_url":"https://temper.example"}"#,
+        );
+        let no_runtime_join = directed_evolution_join_fields(r#"{"episode_id":"ep-1"}"#);
+
+        assert!(
+            directed_evolution_runtime_credential_failure("observer", &runtime_join, |_| None)
+                .is_none(),
+            "observer resolves runtime auth best-effort in its source inventory"
+        );
+        assert!(
+            directed_evolution_runtime_credential_failure(
+                "variant_generator",
+                &runtime_join,
+                |_| None
+            )
+            .is_none()
+        );
+        assert!(
+            directed_evolution_runtime_credential_failure(
+                "simulated_user",
+                &no_runtime_join,
+                |_| None
+            )
+            .is_none(),
+            "work items without runtime_base_url have no runtime to authenticate against"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_role_dispatch_fails_fast_on_role_target_mismatch() {
+        let config = Config {
+            temper_url: "http://127.0.0.1:9".to_string(),
+            tenant: "default".to_string(),
+            worker_id: "mac-mini-codex-1".to_string(),
+            worker_token: None,
+            workspace_root: PathBuf::from("/tmp/worktrees"),
+            repo_root: PathBuf::from("/tmp/temperpaw"),
+            codex_bin: "codex".to_string(),
+            max_concurrent_runs: 1,
+            enable_execution: false,
+            poll_on_start: true,
+            codex_exec_smoke: false,
+            codex_exec_timeout: Duration::from_secs(30),
+        };
+        let client = reqwest::Client::new();
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-mismatch".to_string(),
+            status: "Running".to_string(),
+            role: "simulated_user".to_string(),
+            target_entity_type: "StageResult".to_string(),
+            target_entity_id: "sr-1".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: "{}".to_string(),
+            worker_run_id: String::new(),
+        };
+
+        let error = run_directed_evolution_codex_role(&client, &config, &work_item, "wr-1")
+            .await
+            .expect_err("role/target mismatch must fail dispatch up-front");
+
+        assert!(error.to_string().contains("Trial"));
+        assert!(error.to_string().contains("StageResult"));
+    }
+
+    #[tokio::test]
+    async fn codex_role_dispatch_fails_fast_on_missing_runtime_credentials() {
+        let previous_runtime_key = env::var_os("TEMPERPAW_RUNTIME_API_KEY");
+        let previous_api_key = env::var_os("TEMPER_API_KEY");
+        unsafe {
+            env::remove_var("TEMPERPAW_RUNTIME_API_KEY");
+            env::remove_var("TEMPER_API_KEY");
+        }
+        let config = Config {
+            temper_url: "http://127.0.0.1:9".to_string(),
+            tenant: "default".to_string(),
+            worker_id: "mac-mini-codex-1".to_string(),
+            worker_token: None,
+            workspace_root: PathBuf::from("/tmp/worktrees"),
+            repo_root: PathBuf::from("/tmp/temperpaw"),
+            codex_bin: "codex".to_string(),
+            max_concurrent_runs: 1,
+            enable_execution: true,
+            poll_on_start: true,
+            codex_exec_smoke: false,
+            codex_exec_timeout: Duration::from_secs(30),
+        };
+        let client = reqwest::Client::new();
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-preflight".to_string(),
+            status: "Running".to_string(),
+            role: "simulated_user".to_string(),
+            target_entity_type: "Trial".to_string(),
+            target_entity_id: "trial-1".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: r#"{
+                "runtime_base_url": "https://temper.example",
+                "runtime_auth_env_vars": ["PAW_TEST_DE_RUNTIME_KEY_UNSET"]
+            }"#
+            .to_string(),
+            worker_run_id: String::new(),
+        };
+
+        let result = run_directed_evolution_codex_role(&client, &config, &work_item, "wr-1").await;
+
+        unsafe {
+            if let Some(value) = previous_runtime_key {
+                env::set_var("TEMPERPAW_RUNTIME_API_KEY", value);
+            }
+            if let Some(value) = previous_api_key {
+                env::set_var("TEMPER_API_KEY", value);
+            }
+        }
+        let error = result.expect_err("missing runtime credentials must fail dispatch up-front");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime credential missing: none of [PAW_TEST_DE_RUNTIME_KEY_UNSET, TEMPERPAW_RUNTIME_API_KEY, TEMPER_API_KEY] is set"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn join_fields_resolve_runtime_auth_preflight_inputs() {
+        let join = directed_evolution_join_fields(
+            r#"{
+                "runtime_base_url": "https://temper.example/",
+                "runtime_auth_env_vars": ["DE_RUNTIME_KEY_A", " ", "DE_RUNTIME_KEY_B"]
+            }"#,
+        );
+
+        assert_eq!(join.runtime_base_url, "https://temper.example/");
+        assert_eq!(
+            join.runtime_auth_env_vars,
+            vec!["DE_RUNTIME_KEY_A".to_string(), "DE_RUNTIME_KEY_B".to_string()]
+        );
+        assert!(
+            join.entries()
+                .iter()
+                .all(|(key, _)| *key != "runtime_base_url" && *key != "runtime_auth_env_vars"),
+            "preflight inputs are not de.* join fields"
+        );
     }
 
     #[test]

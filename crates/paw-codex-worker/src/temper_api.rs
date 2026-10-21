@@ -314,11 +314,28 @@ async fn post_entity_action_with_namespace(
     action: &str,
     body: Value,
 ) -> Result<()> {
+    post_entity_action_with_namespace_observed(
+        client, config, entity_set, entity_id, namespace, action, body, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn post_entity_action_with_namespace_observed(
+    client: &reqwest::Client,
+    config: &Config,
+    entity_set: &str,
+    entity_id: &str,
+    namespace: &str,
+    action: &str,
+    body: Value,
+    observe_metadata: Option<&str>,
+) -> Result<()> {
     let response = client
         .post(config.entity_action_url_with_namespace(
             entity_set, entity_id, namespace, action,
         ))
-        .headers(headers(config)?)
+        .headers(headers_with_observe_metadata(config, observe_metadata)?)
         .header(CONTENT_TYPE, "application/json")
         .json(&body)
         .send()
@@ -332,15 +349,16 @@ async fn post_entity_action_with_namespace(
     Ok(())
 }
 
-async fn create_entity(
+async fn create_entity_with_observe_metadata(
     client: &reqwest::Client,
     config: &Config,
     entity_set: &str,
     body: Value,
+    observe_metadata: Option<&str>,
 ) -> Result<String> {
     let response = client
         .post(format!("{}/tdata/{}", config.temper_url, entity_set))
-        .headers(headers(config)?)
+        .headers(headers_with_observe_metadata(config, observe_metadata)?)
         .header(CONTENT_TYPE, "application/json")
         .json(&body)
         .send()
@@ -562,6 +580,12 @@ fn directed_evolution_work_item_from_odata_value(
             &fields,
             &["correlation_json", "CorrelationJson"],
             &["correlation_json", "CorrelationJson"],
+        ),
+        worker_run_id: first_string(
+            &value,
+            &fields,
+            &["worker_run_id", "WorkerRunId"],
+            &["worker_run_id", "WorkerRunId"],
         ),
     })
 }

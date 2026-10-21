@@ -1,30 +1,30 @@
-async fn record_directed_evolution_brain_evidence(
+#[allow(clippy::too_many_arguments)]
+async fn record_directed_evolution_worker_evidence(
     client: &reqwest::Client,
     config: &Config,
     work_item: &DirectedEvolutionWorkItemState,
-    brain_run_id: &str,
+    worker_run_id: &str,
     artifact_kind: &str,
     output_json: &str,
     summary: &str,
+    observe_metadata: Option<&str>,
 ) -> Result<String> {
     let output_value = serde_json::from_str::<Value>(output_json).unwrap_or_else(|_| {
         json!({
             "raw": output_json,
         })
     });
-    let evidence_id = create_entity(client, config, "EvidenceArtifacts", json!({})).await?;
+    let evidence_id = create_entity_with_observe_metadata(
+        client,
+        config,
+        "EvidenceArtifacts",
+        json!({}),
+        observe_metadata,
+    )
+    .await?;
     let uri = directed_evolution_evidence_uri(work_item, &output_value);
-    let correlation = json!({
-        "work_item_id": work_item.id,
-        "brain_run_id": brain_run_id,
-        "role": work_item.role,
-        "target_entity_type": work_item.target_entity_type,
-        "target_entity_id": work_item.target_entity_id,
-        "context_ref": work_item.context_ref,
-        "output_schema_ref": work_item.output_schema_ref,
-        "datadog": directed_evolution_datadog_context(work_item),
-        "output": output_value,
-    });
+    let correlation =
+        directed_evolution_evidence_correlation(work_item, worker_run_id, output_value.clone());
     let evidence_summary = directed_evolution_first_evidence_scope_summary(&output_value);
     post_directed_evolution_action(
         client,
@@ -45,6 +45,7 @@ async fn record_directed_evolution_brain_evidence(
             "ZeroResultMeaning": evidence_summary.zero_result_meaning,
             "EvidenceProvenance": directed_evolution_evidence_provenance(&work_item.role, &output_value),
         }),
+        observe_metadata,
     )
     .await?;
     post_directed_evolution_action(
@@ -53,13 +54,36 @@ async fn record_directed_evolution_brain_evidence(
         "EvidenceArtifacts",
         &evidence_id,
         "LinkEvidenceArtifact",
-        json!({
-            "TargetEntityType": "BrainRun",
-            "TargetEntityId": brain_run_id,
-        }),
+        directed_evolution_evidence_link_body(worker_run_id),
+        observe_metadata,
     )
     .await?;
     Ok(evidence_id)
+}
+
+fn directed_evolution_evidence_correlation(
+    work_item: &DirectedEvolutionWorkItemState,
+    worker_run_id: &str,
+    output_value: Value,
+) -> Value {
+    json!({
+        "work_item_id": work_item.id,
+        "worker_run_id": worker_run_id,
+        "role": work_item.role,
+        "target_entity_type": work_item.target_entity_type,
+        "target_entity_id": work_item.target_entity_id,
+        "context_ref": work_item.context_ref,
+        "output_schema_ref": work_item.output_schema_ref,
+        "datadog": directed_evolution_datadog_context(work_item),
+        "output": output_value,
+    })
+}
+
+fn directed_evolution_evidence_link_body(worker_run_id: &str) -> Value {
+    json!({
+        "TargetEntityType": "WorkerRun",
+        "TargetEntityId": worker_run_id,
+    })
 }
 
 #[derive(Default)]
@@ -215,7 +239,7 @@ fn directed_evolution_datadog_context(work_item: &DirectedEvolutionWorkItemState
     let env_name = env::var("DD_ENV").unwrap_or_else(|_| "local".to_string());
     let site = env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string());
     let query = format!("service:{service} env:{env_name} @work_item_id:{}", work_item.id);
-    json!({
+    let mut context = json!({
         "service": service,
         "env": env_name,
         "work_item_id": work_item.id,
@@ -228,7 +252,14 @@ fn directed_evolution_datadog_context(work_item: &DirectedEvolutionWorkItemState
             "https://app.{site}/logs?query={}",
             encode_url_component(&query)
         ),
-    })
+    });
+    let join = directed_evolution_join_fields(&work_item.correlation_json);
+    if let Some(object) = context.as_object_mut() {
+        for (key, value) in join.entries() {
+            object.insert(key.to_string(), json!(value));
+        }
+    }
+    context
 }
 
 fn config_tenant_label() -> String {

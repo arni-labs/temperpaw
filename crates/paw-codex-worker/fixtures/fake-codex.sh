@@ -70,6 +70,10 @@ case "$prompt" in
   "PAW_CODEX_DOCTOR_EXEC_SMOKE:"*)
     echo "PAW_CODEX_DOCTOR_EXEC_OK"
     ;;
+  "PAW_FAKE_CODEX_PRINT_OBSERVE_ENV:"*)
+    printf 'TEMPER_OBSERVE_METADATA=%s\n' "${TEMPER_OBSERVE_METADATA:-}"
+    printf 'DD_TAGS=%s\n' "${DD_TAGS:-}"
+    ;;
   "You are the independent reviewer"* | "You are the independent repo-health Patrol scan reviewer"*)
     echo "SUMMARY: Fake reviewer approved the agent-led worker E2E output."
     echo "LIVE_E2E: Confirmed the fake implementer marker exists in the assigned worktree."

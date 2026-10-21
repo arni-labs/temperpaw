@@ -46,6 +46,7 @@ async fn run_codex_plan_mode(
         workdir,
         codex_plan_args(workdir, &prompt),
         "run local codex plan mode",
+        &[],
     )
     .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
