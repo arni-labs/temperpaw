@@ -38,6 +38,9 @@ concurrency:
 
 env:
   WORKFLOW_FILE: ci.yml  # the post-merge workflow this watches
+  # Whether that workflow's concurrency group cancels in-progress runs. If it
+  # does, a re-run could cancel a newer run, so the re-run is skipped then.
+  CANCELS_IN_PROGRESS: "false"
 
 jobs:
   revert-on-red:
@@ -78,10 +81,18 @@ jobs:
             note "Run $run_url is not a failed push run of $WORKFLOW_FILE on $BASE; nothing to do."
             exit 1
           fi
-          runs=$(gh api "repos/$repo/actions/workflows/$WORKFLOW_FILE/runs?branch=$BASE&event=push&per_page=100" \
-            --jq '[.workflow_runs[] | {n: .run_number, status, conclusion, sha: .head_sha, url: .html_url}] | sort_by(-.n)')
-          later_green=$(jq -r --argjson n "$number" 'map(select(.n > $n and .conclusion == "success"))[0].url // empty' <<<"$runs")
-          newer_running=$(jq -r --argjson n "$number" 'map(select(.n > $n and .status != "completed"))[0].url // empty' <<<"$runs")
+          # Every run on BASE (push, schedule, dispatch share it); pushes alone for the culprit.
+          all=$(gh api "repos/$repo/actions/workflows/$WORKFLOW_FILE/runs?branch=$BASE&per_page=100" \
+            --jq '[.workflow_runs[] | select(.event != "pull_request")
+                   | {n: .run_number, event, status, conclusion, sha: .head_sha, url: .html_url}] | sort_by(-.n)')
+          runs=$(jq -c 'map(select(.event == "push"))' <<<"$all")
+          later_green=$(jq -r --argjson n "$number" 'map(select(.n > $n and .conclusion == "success"))[0].url // empty' <<<"$all")
+          newer_running=$(jq -r --argjson n "$number" 'map(select(.n > $n and .status != "completed"))[0].url // empty' <<<"$all")
+          # The failure is confirmed only when the attempt before this one failed too.
+          previous_attempt=none
+          if (( attempt > 1 )); then
+            previous_attempt=$(gh api "repos/$repo/actions/runs/$RUN_ID/attempts/$((attempt - 1))" --jq .conclusion)
+          fi
           # Earlier runs that finished green or red, newest first; cancelled runs tested nothing.
           earlier=$(jq -c --argjson n "$number" 'map(select(.n < $n and (.conclusion == "success" or .conclusion == "failure")))' <<<"$runs")
           green=$(jq -c 'map(select(.conclusion == "success"))[0] // {n: 0}' <<<"$earlier")
@@ -101,8 +112,11 @@ jobs:
           parents=$(gh api "repos/$repo/commits/$sha" --jq '.parents | length')
 
           landing() { if [[ -n $1 ]]; then echo "#$1"; else echo "${2:0:12}"; fi; }  # pull request, else commit
-          alarm() {  # culprit sha, its pull request (may be empty), title, text: once per culprit
-            local culprit=$1 target=$2 title=$3 text=$4 marker="<!-- revert-on-red red $1 -->"
+          alarm() {  # kind, culprit sha, its pull request (may be empty), title, text: once per kind and culprit
+            local kind=$1 culprit=$2 target=$3 title=$4 text=$5
+            local marker="<!-- revert-on-red $kind $culprit -->" seen="<!-- revert-on-red ($kind) $culprit -->"
+            # A red-since alarm adds nothing once the revert alarm for the same commit is up.
+            [[ $kind == red-since ]] && seen="<!-- revert-on-red (red-since|revert) $culprit -->"
             if [[ $dry == true ]]; then
               note "Dry run: would comment on ${target:+#}${target:-no pull request} and send the Datadog event \"$title\":"
               note "$text"
@@ -114,8 +128,8 @@ jobs:
               return
             fi
             if [[ -n $target ]]; then
-              if gh api "repos/$repo/issues/$target/comments" --paginate --jq '.[].body' | grep -F "$marker" >/dev/null; then
-                note "The alarm for \`${culprit:0:12}\` was already raised on #$target."
+              if gh api "repos/$repo/issues/$target/comments" --paginate --jq '.[].body' | grep -E "$seen" >/dev/null; then
+                note "This alarm for \`${culprit:0:12}\` was already raised on #$target."
                 return
               fi
               gh api "repos/$repo/issues/$target/comments" -f body="$text"$'\n\n'"$marker" >/dev/null
@@ -139,29 +153,29 @@ jobs:
           decision=alarm
           if [[ -n $later_green ]]; then
             decision=stop; note "A later run on $BASE is green ($later_green), so there is nothing to revert."
-          elif (( attempt < 2 )); then
+          elif [[ $previous_attempt != failure ]]; then
             decision=stop
-            if [[ -n $newer_running ]]; then
+            if [[ $CANCELS_IN_PROGRESS == true && -n $newer_running ]]; then
               note "First failure, but a newer run on $BASE is in progress ($newer_running). A re-run now could cancel it through its concurrency group, so its result decides."
             else
               note "First failure: re-running the failed jobs once. If they fail again, this raises the alarm."
               [[ $dry == true ]] || gh api -X POST "repos/$repo/actions/runs/$RUN_ID/rerun-failed-jobs" >/dev/null
             fi
           elif [[ $pr_head == revert-on-red/* || $pr_title == 'Revert "'* ]] || grep -q '^This reverts commit ' <<<"$message"; then
-            decision=stop; note "This commit is a revert, and reverts are never reverted."
-            alarm "$sha" "$pr" "$repo $BASE is still red after a revert" \
+            decision=final; note "This commit is a revert, and reverts are never reverted."
+            alarm still-red "$sha" "$pr" "$repo $BASE is still red after a revert" \
               "${author:+@$author }**$name is still red on \`$BASE\` after this revert landed**: $run_url failed, and so did a re-run of its failed jobs. A revert is not reverted automatically; this needs a person."
           elif [[ -n $streak ]]; then
-            decision=stop
+            decision=final
             first_sha=$(jq -r .sha <<<"$streak"); first_url=$(jq -r .url <<<"$streak")
             first=$(pull_of "$first_sha"); first_pr=$(jq -r '.number // empty' <<<"$first")
             first_author=$(jq -r '.author // empty' <<<"$first")
             note "$BASE was already red before this commit, since $first_url, so reverting this commit would not turn it green."
-            alarm "$first_sha" "$first_pr" "$repo $BASE has been red since $(landing "$first_pr" "$first_sha")" \
-              "${first_author:+@$first_author }**$name has been red on \`$BASE\` since this landed**: $first_url failed, and the latest run, $run_url, failed again after a re-run. That first failure was never re-run, so it may have been a flake. Re-run its failed jobs: if they fail again, revert-on-red raises the alarm with the revert to open."
+            alarm red-since "$first_sha" "$first_pr" "$repo $BASE has been red since $(landing "$first_pr" "$first_sha")" \
+              "${first_author:+@$first_author }**$name has been red on \`$BASE\` since this landed**: $first_url failed, and the latest run, $run_url, failed again after a re-run. That first failure was never re-run, so it may have been a flake. Re-run its failed jobs: if they fail again, revert-on-red raises the alarm with the revert to open. If they pass, re-run the failed jobs of $run_url instead, and the alarm goes to the commit that broke it."
           fi
 
-          if [[ $decision == stop && $dry != true ]]; then exit 0; fi
+          if [[ $decision == final || ( $decision == stop && $dry != true ) ]]; then exit 0; fi
           [[ $decision == alarm ]] || note "Dry run: below is the alarm a confirmed failure would raise."
 
           # Try the revert on the current BASE, so the alarm can say whether it applies.
@@ -201,4 +215,4 @@ jobs:
           \`\`\`
 
           The revert lands through the usual checks. If a fix is quicker, land that instead."
-          alarm "$sha" "$pr" "$title" "$text"
+          alarm revert "$sha" "$pr" "$title" "$text"
