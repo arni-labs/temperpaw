@@ -87,13 +87,13 @@ fn start_device_login(ctx: &Context) -> Result<(), String> {
 
     set_success_result(
         "DeviceCodeReady",
-        &json!({
+        &with_cleared_error(json!({
             "verification_url": format!("{auth_base_url}/codex/device"),
             "user_code": user_code,
             "device_auth_id": device_auth_id,
             "poll_interval_ms": poll_interval_ms.to_string(),
             "expires_at_ms": expires_at_ms.to_string(),
-        }),
+        })),
     );
     Ok(())
 }
@@ -177,10 +177,10 @@ fn ensure_tokens_fresh(ctx: &Context, force_refresh: bool) -> Result<(), String>
             .unwrap_or_default();
         set_success_result(
             "LoginComplete",
-            &json!({
+            &with_cleared_error(json!({
                 "expires_at_ms": expires_at_ms,
                 "account_id": account_id.unwrap_or_default(),
-            }),
+            })),
         );
         return Ok(());
     }
@@ -274,10 +274,10 @@ fn store_tokens_and_complete(ctx: &Context, tokens: CodexTokens) -> Result<(), S
 
     set_success_result(
         "LoginComplete",
-        &json!({
+        &with_cleared_error(json!({
             "expires_at_ms": expires_at_ms,
             "account_id": account_id,
-        }),
+        })),
     );
     Ok(())
 }
@@ -294,6 +294,20 @@ fn disconnect(ctx: &Context) -> Result<(), String> {
     }
     set_success_result("", &json!({ "status": "disconnected" }));
     Ok(())
+}
+
+/// Merge blanked `error`/`error_message` into a success/in-progress result so a
+/// prior failure's message does not linger on the entity after auth recovers.
+/// `provider_auth_gate` keys off `status`, but the stale error fields misled
+/// operators diagnosing Codex auth (2026-06-16: a clean re-login still showed
+/// the old `refresh_token_reused` text). Applied to every healthy or
+/// in-progress `set_success_result` payload below.
+fn with_cleared_error(mut fields: Value) -> Value {
+    if let Some(obj) = fields.as_object_mut() {
+        obj.insert("error".to_string(), Value::String(String::new()));
+        obj.insert("error_message".to_string(), Value::String(String::new()));
+    }
+    fields
 }
 
 fn auth_base_url(ctx: &Context) -> String {
@@ -452,5 +466,17 @@ mod tests {
             extract_chatgpt_account_id_from_jwt(&token).as_deref(),
             Some("acct_test")
         );
+    }
+
+    #[test]
+    fn with_cleared_error_blanks_error_fields_and_preserves_rest() {
+        let out = with_cleared_error(json!({
+            "account_id": "acct_test",
+            "expires_at_ms": "123",
+        }));
+        assert_eq!(out["error"], json!(""));
+        assert_eq!(out["error_message"], json!(""));
+        assert_eq!(out["account_id"], json!("acct_test"));
+        assert_eq!(out["expires_at_ms"], json!("123"));
     }
 }
