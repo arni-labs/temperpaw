@@ -33,6 +33,17 @@ properties = ["Name", "WorkspaceId", "ParentId"]
 name = "ws_path"
 properties = ["WorkspaceId", "Path"]
 
+# --- Declared keys (ADR-0153) ---
+# (Name, WorkspaceId, ParentId) uniquely identifies a non-root directory; the
+# kernel indexes it for O(log n) present/absent reads (subdirectory lookups, ARN-68).
+# The root dir (ParentId null) has no key row — a null component is unindexable —
+# and the root lookup uses the lossless caller path. REQUIRES the kernel with
+# [[key]] support deployed first.
+
+[[key]]
+name = "name_parent"
+properties = ["Name", "WorkspaceId", "ParentId"]
+
 # --- State Variables ---
 
 [[state]]

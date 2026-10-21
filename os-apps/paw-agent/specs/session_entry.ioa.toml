@@ -12,6 +12,16 @@ states = ["Recorded"]
 initial = "Recorded"
 allow_indefinite_states = ["Recorded"]
 
+# --- Declared keys (ADR-0153) ---
+# (SessionId, EntryId) uniquely identifies a SessionEntry. The kernel indexes it
+# for O(log n) present/absent reads, so the create read-back verify + parent-chain
+# walks resolve without a scan (the 413, ARN-68). REQUIRES the kernel with [[key]]
+# support deployed first.
+
+[[key]]
+name = "session_entry"
+properties = ["SessionId", "EntryId"]
+
 [[state]]
 name = "session_id"
 type = "string"
