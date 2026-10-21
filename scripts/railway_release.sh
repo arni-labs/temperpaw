@@ -46,10 +46,11 @@ mkdir -p "$STATE_DIR"
 gql() { # $1: the request body; prints the response, fails on an error
   local response
   response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
-    --data "$1" "$GQL")" || { echo "Railway API did not answer" >&2; return 1; }
+    --data "$1" "$GQL")" || { echo "Railway API did not answer" | tee -a "$STATE_DIR/errors.txt" >&2; return 1; }
   if jq -e '.errors' >/dev/null <<<"$response"; then
     # Which call failed: the first field the request names (deployments, variableUpsert, ...), never its variables.
-    echo "Railway API, $(jq -r '.query | capture("{ *(?<f>[A-Za-z]+)").f // "request"' <<<"$1"): $(jq -r '.errors[0].message // "error"' <<<"$response")" >&2
+    echo "Railway API, $(jq -r '.query | capture("{ *(?<f>[A-Za-z]+)").f // "request"' <<<"$1"): $(jq -r '.errors[0].message // "error"' <<<"$response")" |
+      tee -a "$STATE_DIR/errors.txt" >&2
     return 1
   fi
   printf '%s' "$response"

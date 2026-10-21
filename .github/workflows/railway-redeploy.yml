@@ -249,7 +249,7 @@ jobs:
           read_json() { [ -f "${STATE_DIR:-/nonexistent}/$1.json" ] && jq -c . "${STATE_DIR}/$1.json" || echo null; }
           record="$(jq -n --arg result "$result" --arg environment "${{ inputs.environment }}" --arg image_tag "${IMAGE_TAG}" \
             --arg commit "${EXPECTED_SHA:-}" --arg run_url "${RUN_URL}" \
-            --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || true)" \
+            --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || cat "${STATE_DIR:-/nonexistent}/errors.txt" 2>/dev/null || true)" \
             --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
             --argjson checked "$(read_json checked)" --argjson rolled_back "$(read_json rolled-back)" \
             '{result: $result, environment: $environment, ref: $image_tag, previous_ref: ($before.image_tag // null), image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
