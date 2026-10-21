@@ -1,5 +1,5 @@
 name: Railway Redeploy
-run-name: "Railway Redeploy ${{ inputs.environment }} ${{ inputs.image_tag }} ${{ inputs.release }} ${{ inputs.step }} ${{ inputs.token }}"
+run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_id, inputs.step, inputs.step_token) || format('Railway Redeploy {0} {1}', inputs.environment, inputs.image_tag) }}
 
 # Deploys one CI-built image (ghcr.io/arni-labs/temperpaw:sha-*) to the main Temper in one Railway environment, checks
 # it against what ran just before, and goes back to that image on any miss (scripts/railway_release.sh). The checks:
@@ -24,22 +24,35 @@ run-name: "Railway Redeploy ${{ inputs.environment }} ${{ inputs.image_tag }} ${
 # Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
 # rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
 # every check. The release captain copies it onto the Factory's Release; this workflow writes nothing there. When the
-# Factory starts a run it passes release, step and token; the job output "outcome" (also the annotation "outcome") is
-# then ok, or failed with the first miss, with those three echoed.
+# Factory starts a run it passes the six inputs of every Factory step (release_id, step, step_token, pr, commit, ref):
+# the run is named "factory <release_id> <step> <step_token>", ref names the image when image_tag is empty, go_live and
+# roll_back run on production, and the conclusion is the outcome (the job output and annotation "outcome" add the reason).
 
 on:
   workflow_dispatch:
     inputs:
-      release:
-        description: "The Factory's Release id, when the Factory starts this run"
+      release_id:
+        description: "The Factory release, when the Factory starts this run"
         required: false
         default: ""
       step:
-        description: "The Factory step that starts this run"
+        description: "The Factory step: stage deploys to staging, check_staging checks staging, go_live deploys to production, roll_back deploys ref (the image to go back to) to production"
         required: false
         default: ""
-      token:
-        description: "The Factory's token for this step, echoed in the outcome so it can match the run"
+      step_token:
+        description: "The release's token for this attempt at the step"
+        required: false
+        default: ""
+      pr:
+        description: "The pull request's address"
+        required: false
+        default: ""
+      commit:
+        description: "The commit the release ships"
+        required: false
+        default: ""
+      ref:
+        description: "What the release ships: the image tag (sha-*), used when image_tag is empty"
         required: false
         default: ""
       environment:
@@ -48,8 +61,9 @@ on:
         options: [staging, production]
         default: staging
       image_tag:
-        description: "Published GHCR tag to deploy: sha-<7..40 hex>"
-        required: true
+        description: "Published GHCR tag to deploy: sha-<7..40 hex> (or give it as ref)"
+        required: false
+        default: ""
       mode:
         description: "deploy, or check only (deploys nothing)"
         type: choice
@@ -88,7 +102,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-temperpaw-${{ inputs.environment }}
+  group: deploy-temperpaw-${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
   cancel-in-progress: false
 
 jobs:
@@ -98,10 +112,11 @@ jobs:
       result: ${{ steps.record.outputs.result }}
       record: ${{ steps.record.outputs.record }}
       outcome: ${{ steps.record.outputs.outcome }}
-    environment: ${{ inputs.environment }}
+    environment: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
     timeout-minutes: 90
     env:
-      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_TAG: ${{ inputs.image_tag || inputs.ref }}
+      DEPLOY_ENV: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
       EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
       RUN_ARTIFACT_BATCH_E2E: ${{ inputs.run_artifact_batch_e2e }}
       BASE_URL: ${{ vars.TEMPERPAW_BASE_URL }}
@@ -157,14 +172,14 @@ jobs:
             echo "rollback_tag must be sha-<7..40 hex>" >&2
             exit 64
           fi
-          if [ "${{ inputs.drill }}" = true ] && [ "${{ inputs.environment }}" != staging ]; then
+          if [ "${{ inputs.drill }}" = true ] && [ "${DEPLOY_ENV}" != staging ]; then
             echo "a drill runs on staging only" >&2
             exit 64
           fi
 
           for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL TEMPER_API_KEY; do
             if [ -z "${!v}" ]; then
-              echo "${v} is required (environment ${{ inputs.environment }})" >&2
+              echo "${v} is required (environment ${DEPLOY_ENV})" >&2
               exit 65
             fi
           done
@@ -181,7 +196,7 @@ jobs:
               ''|*[!0-9]*) echo "${v} must be an integer" >&2; exit 64 ;;
             esac
           done
-          echo "${{ inputs.mode }} ${IMAGE_TAG} (${full}) on ${{ inputs.environment }} at ${BASE_URL}"
+          echo "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }} ${IMAGE_TAG} (${full}) on ${DEPLOY_ENV} at ${BASE_URL}"
 
       - uses: actions/checkout@v6.0.2
 
@@ -190,7 +205,7 @@ jobs:
 
       - name: Deploy the image
         id: deploy
-        if: inputs.mode == 'deploy'
+        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy'
         run: bash scripts/railway_release.sh deploy "${IMAGE_TAG}"
 
       - name: Check what runs against what ran before
@@ -200,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           # A check-only run checks the deployment that runs now against itself.
-          [ "${{ inputs.mode }}" = deploy ] || jq '{deployment_id, image_tag}' "${STATE_DIR}/before.json" > "${STATE_DIR}/new.json"
+          [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = deploy ] || jq '{deployment_id, image_tag}' "${STATE_DIR}/before.json" > "${STATE_DIR}/new.json"
           bash scripts/railway_release.sh check
 
       - name: Build packaged ArtifactBatch WASM for hash proof
@@ -222,7 +237,7 @@ jobs:
 
       - name: Go back to the image that ran before
         id: rollback
-        if: always() && inputs.mode == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.e2e.outcome == 'failure')
+        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.e2e.outcome == 'failure')
         run: bash scripts/railway_release.sh rollback
 
       - name: The release record
@@ -234,20 +249,20 @@ jobs:
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          FACTORY_RELEASE: ${{ inputs.release }}
+          FACTORY_RELEASE: ${{ inputs.release_id }}
           FACTORY_STEP: ${{ inputs.step }}
-          FACTORY_TOKEN: ${{ inputs.token }}
+          FACTORY_TOKEN: ${{ inputs.step_token }}
         run: |
           set -uo pipefail
           # What the release captain copies onto the Factory's Release (this run writes nothing there).
-          if [ "${{ inputs.mode }}" = check ]; then
+          if [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = check ]; then
             result=$([ "${CHECK_OUTCOME}" = success ] && echo checked || echo check-failed)
           elif [ "${ROLLBACK_OUTCOME}" = success ]; then result=rolled_back
           elif [ "${ROLLBACK_OUTCOME}" = failure ]; then result=rollback_failed
           elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
           else result=failed; fi
           read_json() { [ -f "${STATE_DIR:-/nonexistent}/$1.json" ] && jq -c . "${STATE_DIR}/$1.json" || echo null; }
-          record="$(jq -n --arg result "$result" --arg environment "${{ inputs.environment }}" --arg image_tag "${IMAGE_TAG}" \
+          record="$(jq -n --arg result "$result" --arg environment "${DEPLOY_ENV}" --arg image_tag "${IMAGE_TAG}" \
             --arg commit "${EXPECTED_SHA:-}" --arg run_url "${RUN_URL}" \
             --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || cat "${STATE_DIR:-/nonexistent}/errors.txt" 2>/dev/null || true)" \
             --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
@@ -267,7 +282,7 @@ jobs:
           echo "::notice title=outcome::${outcome}"
           echo "record=$(jq -c . <<<"${record}")" >> "${GITHUB_OUTPUT}"
           {
-            echo "### ${result}: ${IMAGE_TAG} on ${{ inputs.environment }}"
+            echo "### ${result}: ${IMAGE_TAG} on ${DEPLOY_ENV}"
             echo "Previous image: $(jq -r '.previous_image_tag // "unknown"' <<<"${record}"). Run: ${RUN_URL}"
             jq -r '.misses[] | "- miss: \(.)"' <<<"${record}"
             echo '```json'

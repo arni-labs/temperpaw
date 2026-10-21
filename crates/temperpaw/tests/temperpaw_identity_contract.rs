@@ -540,7 +540,7 @@ fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
     for required in [
         "workflow_dispatch",
         // One workflow for both environments; each GitHub environment names its own service and key.
-        "environment: ${{ inputs.environment }}",
+        "|| inputs.environment }}",
         "options: [staging, production]",
         "RAILWAY_TOKEN",
         "RAILWAY_PROJECT_ID",
