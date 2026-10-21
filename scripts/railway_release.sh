@@ -273,6 +273,21 @@ known_migration() { # $1 full TemperPaw commit
 # The environment's Postgres, through a TCP proxy this run opens when there is none, as psql variables.
 db_open() {
   local proxies vars
+  vars="$(gql "$(jq -n --arg p "$RAILWAY_PROJECT_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" --arg s "$POSTGRES_SERVICE_ID" \
+    '{query: "query($p: String!, $e: String!, $s: String) { variables(projectId: $p, environmentId: $e, serviceId: $s) }", variables: {p: $p, e: $e, s: $s}}')")"
+  PGUSER="$(jq -r '.data.variables.PGUSER' <<<"$vars")"
+  PGPASSWORD="$(jq -r '.data.variables.PGPASSWORD' <<<"$vars")"
+  PGDATABASE="$(jq -r '.data.variables.PGDATABASE' <<<"$vars")"
+  [ -z "${GITHUB_ACTIONS:-}" ] || echo "::add-mask::${PGPASSWORD}"
+  export PGUSER PGPASSWORD PGDATABASE PGCONNECT_TIMEOUT=20
+  # A Postgres with a public address already (DATABASE_PUBLIC_URL) is reached there; otherwise through a proxy this run
+  # opens and db_close removes.
+  if [ -n "$(jq -r '.data.variables.DATABASE_PUBLIC_URL // empty' <<<"$vars")" ]; then
+    PGHOST="$(jq -r '.data.variables.DATABASE_PUBLIC_URL | capture("@(?<h>[^:/]+):(?<p>[0-9]+)/").h' <<<"$vars")"
+    PGPORT="$(jq -r '.data.variables.DATABASE_PUBLIC_URL | capture("@(?<h>[^:/]+):(?<p>[0-9]+)/").p' <<<"$vars")"
+    export PGHOST PGPORT
+    return 0
+  fi
   proxies="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
     '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id domain proxyPort } }", variables: {s: $s, e: $e}}')")"
   if [ "$(jq '.data.tcpProxies | length' <<<"$proxies")" = 0 ]; then
@@ -287,15 +302,9 @@ db_open() {
       sleep 5
     done
   fi
-  vars="$(gql "$(jq -n --arg p "$RAILWAY_PROJECT_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" --arg s "$POSTGRES_SERVICE_ID" \
-    '{query: "query($p: String!, $e: String!, $s: String) { variables(projectId: $p, environmentId: $e, serviceId: $s) }", variables: {p: $p, e: $e, s: $s}}')")"
   PGHOST="$(jq -r '.data.tcpProxies[0].domain' <<<"$proxies")"
   PGPORT="$(jq -r '.data.tcpProxies[0].proxyPort' <<<"$proxies")"
-  PGUSER="$(jq -r '.data.variables.PGUSER' <<<"$vars")"
-  PGPASSWORD="$(jq -r '.data.variables.PGPASSWORD' <<<"$vars")"
-  PGDATABASE="$(jq -r '.data.variables.PGDATABASE' <<<"$vars")"
-  [ -z "${GITHUB_ACTIONS:-}" ] || echo "::add-mask::${PGPASSWORD}"
-  export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGCONNECT_TIMEOUT=20
+  export PGHOST PGPORT
 }
 
 db_close() { # removes only a proxy this run opened
