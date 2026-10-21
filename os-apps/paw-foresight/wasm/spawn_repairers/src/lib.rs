@@ -232,10 +232,16 @@ fn repairer_prompt(
          - \"deformation\": you amended the claim to make it bridgeable\n\
          Severity: \"low\" | \"medium\" | \"high\". You flag costs; you NEVER compute scores — \
          costing is deterministic and runs elsewhere.\n\n\
-         Write a repair log with temper.write (markdown: the backward chain with your \
-         reasoning), then self-report:\n\
+         Write your repair log (markdown: the backward chain with your reasoning) with the \
+         temper.write tool — this is the ONLY way to create a FILE, and your workspace already \
+         exists. Do NOT create Files, Directories, or Workspaces yourself, and do NOT invent a \
+         file-creation API: temper.create is for EventNodes only, never for files. Call \
+         temper.write exactly like this:\n\
+         result = temper.write(\"/repair-log.md\", \"<your markdown repair log>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as repair_log_file_id below, then self-report:\n\
          temper.action(\"Paths\", \"{path_id}\", \"RepairComplete\", {{\"repair_log_file_id\": \
-         \"<file-id-from-temper.write>\", \"required_node_ids\": \"[\\\"<event-node-id>\\\", \
+         \"<result file_id>\", \"required_node_ids\": \"[\\\"<event-node-id>\\\", \
          ...]\", \"cost_flags\": \"[{{\\\"kind\\\": \\\"...\\\", \\\"severity\\\": \\\"...\\\", \
          \\\"note\\\": \\\"...\\\"}}]\"}})\n\
          Then call temper.done(\"complete\")."
@@ -773,6 +779,27 @@ mod tests {
         ] {
             assert!(p.contains(needle), "repairer prompt missing: {needle}");
         }
+    }
+
+    #[test]
+    fn repairer_prompt_gives_explicit_file_write_recipe() {
+        let p = prompt(false);
+        assert!(
+            p.contains("temper.write(\"/repair-log.md\""),
+            "repairer prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "repairer prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "repairer prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone: the recipe captures result[\"file_id\"]"
+        );
     }
 
     #[test]
