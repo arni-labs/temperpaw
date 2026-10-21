@@ -1,0 +1,5 @@
+# Storage migrations an older kernel can run beside: each only adds what the older kernel never reads. Going back past
+# one deletes its _sqlx_migrations row, and the next forward deploy applies it again (scripts/railway_release.sh).
+# One "<version> <file>: why" per line. A migration that changes or removes anything an older kernel uses never goes
+# here.
+19 0019_state_timers.sql: a new table and its row policy (CREATE TABLE IF NOT EXISTS, DROP POLICY IF EXISTS)

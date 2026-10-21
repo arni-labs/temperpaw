@@ -7,7 +7,10 @@ name: Railway Redeploy
 # the guest read against its counts before. Memory is read after a soak (Railway's figure, and the build's own gauges in
 # Datadog where the environment sends them) and reported; it gates only where MEMORY_LIMIT_GB is set.
 # A deployment that never takes over (Railway keeps the old one serving until /readyz answers) is stopped, and nothing
-# restarts; one that took over and then missed a check is replaced by the image that ran before.
+# restarts; one that took over and then missed a check is replaced by the image that ran before. When the newer kernel
+# added storage migrations the older one does not know, their _sqlx_migrations rows are removed first if every one is
+# listed in scripts/additive_migrations.txt and the environment sets MIGRATION_ROLLBACK=auto and POSTGRES_SERVICE_ID;
+# otherwise the way back stops and names the hand step.
 #
 # mode "check" deploys nothing: it runs the same checks against what runs now.
 #
@@ -102,6 +105,9 @@ jobs:
       DD_API_KEY: ${{ secrets.DD_API_KEY }}
       DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
       DD_SITE: ${{ secrets.DD_SITE }}
+      MIGRATION_ROLLBACK: ${{ vars.MIGRATION_ROLLBACK }}
+      POSTGRES_SERVICE_ID: ${{ vars.POSTGRES_SERVICE_ID }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Validate inputs and secrets
         env:

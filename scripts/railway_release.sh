@@ -20,6 +20,11 @@
 #   DD_API_KEY, DD_APP_KEY, DD_SITE, DD_ENV  read this build's memory gauges from Datadog
 #   POLL_ATTEMPTS, POLL_SECONDS
 #   DRILL            any value: the check reports a deliberate miss, to prove the way back
+#   MIGRATION_ROLLBACK, POSTGRES_SERVICE_ID  "auto" with the environment's Postgres service: going back to a kernel
+#                    that knows fewer storage migrations deletes the newer ones' _sqlx_migrations rows, when every one
+#                    is listed in scripts/additive_migrations.txt (through a TCP proxy opened for that and removed).
+#                    Otherwise the way back stops and says which rows a person must remove.
+#   GH_TOKEN         reads the kernel pin and its migrations from GitHub
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -254,6 +259,82 @@ against_before() { # $1 deployment id
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
 }
 
+# The highest Postgres migration the kernel of one TemperPaw commit knows: its temper pin from Cargo.lock, then that
+# temper commit's crates/temper-store-postgres/migrations.
+known_migration() { # $1 full TemperPaw commit
+  local rev
+  rev="$(gh api "repos/arni-labs/temperpaw/contents/Cargo.lock?ref=$1" -H "Accept: application/vnd.github.raw" |
+    grep -A2 '^name = "temper-store-postgres"$' | grep -o 'rev=[0-9a-f]*' | head -n1)"
+  [ -n "$rev" ] || return 1
+  gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/migrations?ref=${rev#rev=}" \
+    --jq '[.[].name | capture("^(?<n>[0-9]+)_").n | tonumber] | max'
+}
+
+# The environment's Postgres, through a TCP proxy this run opens when there is none, as psql variables.
+db_open() {
+  local proxies vars
+  proxies="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
+    '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id domain proxyPort } }", variables: {s: $s, e: $e}}')")"
+  if [ "$(jq '.data.tcpProxies | length' <<<"$proxies")" = 0 ]; then
+    gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
+      '{query: "mutation($e: String!, $patch: EnvironmentConfig!) { environmentPatchCommit(environmentId: $e, patch: $patch, commitMessage: \"a TCP proxy for a migration rollback, removed after\", skipDeploys: true) }",
+        variables: {e: $e, patch: {services: {($s): {networking: {tcpProxies: {"5432": {}}}}}}}}')" >/dev/null
+    touch "$STATE_DIR/proxy-opened"
+    for _ in $(seq 1 30); do
+      proxies="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
+        '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id domain proxyPort } }", variables: {s: $s, e: $e}}')")"
+      [ "$(jq '.data.tcpProxies | length' <<<"$proxies")" = 0 ] || break
+      sleep 5
+    done
+  fi
+  vars="$(gql "$(jq -n --arg p "$RAILWAY_PROJECT_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" --arg s "$POSTGRES_SERVICE_ID" \
+    '{query: "query($p: String!, $e: String!, $s: String) { variables(projectId: $p, environmentId: $e, serviceId: $s) }", variables: {p: $p, e: $e, s: $s}}')")"
+  PGHOST="$(jq -r '.data.tcpProxies[0].domain' <<<"$proxies")"
+  PGPORT="$(jq -r '.data.tcpProxies[0].proxyPort' <<<"$proxies")"
+  PGUSER="$(jq -r '.data.variables.PGUSER' <<<"$vars")"
+  PGPASSWORD="$(jq -r '.data.variables.PGPASSWORD' <<<"$vars")"
+  PGDATABASE="$(jq -r '.data.variables.PGDATABASE' <<<"$vars")"
+  [ -z "${GITHUB_ACTIONS:-}" ] || echo "::add-mask::${PGPASSWORD}"
+  export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE PGCONNECT_TIMEOUT=20
+}
+
+db_close() { # removes only a proxy this run opened
+  [ -f "$STATE_DIR/proxy-opened" ] || return 0
+  local id
+  id="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
+    '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id } }", variables: {s: $s, e: $e}}')" | jq -r '.data.tcpProxies[0].id // empty')"
+  [ -z "$id" ] || gql "$(jq -n --arg i "$id" '{query: "mutation($i: String!) { tcpProxyDelete(id: $i) }", variables: {i: $i}}')" >/dev/null
+  rm -f "$STATE_DIR/proxy-opened"
+  echo "the TCP proxy is removed"
+}
+
+# Before going back to the build that ran before: the storage migrations the newer kernel added that the older one does
+# not know. An older kernel refuses a database that recorded them ("migration N was previously applied but is missing"),
+# so their _sqlx_migrations rows go, but only when every one is listed as additive. Fails with the reason otherwise.
+migrations_back_to() { # $1 full TemperPaw commit that ran before
+  local old new extra additive rows
+  old="$(known_migration "$1")" || { echo "the migrations of ${1} could not be read" >&2; return 1; }
+  new="$(known_migration "$EXPECTED_SHA")" || { echo "the migrations of ${EXPECTED_SHA} could not be read" >&2; return 1; }
+  [ "$new" -gt "$old" ] || { echo "no storage migration between them (both know up to ${old})"; return 0; }
+  extra="$(seq $((old + 1)) "$new" | tr '\n' ' ')"
+  additive="$(awk '/^[0-9]+ / { print $1 }' "$(dirname "$0")/additive_migrations.txt")"
+  for v in $extra; do
+    grep -qx "$v" <<<"$additive" || {
+      echo "can't roll back past migration ${v}: it is not listed as additive, and ${1:0:7} knows only up to ${old}" >&2
+      return 1
+    }
+  done
+  if [ "${MIGRATION_ROLLBACK:-}" != auto ] || [ -z "${POSTGRES_SERVICE_ID:-}" ]; then
+    echo "going back needs a hand step first: DELETE FROM _sqlx_migrations WHERE version IN ($(tr ' ' ',' <<<"${extra% }")); (additive: ${extra% })" >&2
+    return 1
+  fi
+  db_open
+  rows="$(psql -v ON_ERROR_STOP=1 -Atc "DELETE FROM _sqlx_migrations WHERE version IN ($(tr ' ' ',' <<<"${extra% }")) RETURNING version" | tr '\n' ' ')" ||
+    { db_close; echo "the migration rows could not be removed" >&2; return 1; }
+  echo "removed the _sqlx_migrations rows ${rows:-none} (additive: ${extra% }); the next forward deploy applies them again"
+  db_close
+}
+
 report_misses() { # exits 1 when there are any
   if [ "${#misses[@]}" -gt 0 ]; then
     printf 'MISS: %s\n' "${misses[@]}"
@@ -344,6 +425,7 @@ case "${1:-}" in
     ;;
 
   rollback)
+    trap db_close EXIT
     [ -f "$STATE_DIR/source-set" ] || { echo "the service was not changed, so nothing to roll back"; exit 0; }
     tag="$(jq -r .image_tag "$STATE_DIR/before.json")"
     before_id="$(jq -r .deployment_id "$STATE_DIR/before.json")"
@@ -364,8 +446,11 @@ case "${1:-}" in
       fi
       set_image "$tag"
       echo "${before_id} (${tag}) kept serving"
+      # It serves, but a restart would boot its kernel against whatever the new one migrated.
+      migrations_back_to "$before_sha" || misses+=("the old deployment serves but would not survive a restart: see above")
       id="$before_id"
     else
+      migrations_back_to "$before_sha" || { misses+=("no way back to ${tag}: see above"); report_misses; }
       echo "going back to ${tag}"
       id="$(deploy_image "$tag")"
     fi
