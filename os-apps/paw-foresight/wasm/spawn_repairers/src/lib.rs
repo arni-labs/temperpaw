@@ -317,6 +317,32 @@ fn create_agent(
         .ok_or_else(|| "Agent create returned no entity_id".to_string())
 }
 
+fn dispatch_action(
+    ctx: &Context,
+    api: &str,
+    headers: &[(String, String)],
+    set: &str,
+    id: &str,
+    action: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let resp = ctx.http_call(
+        "POST",
+        &format!("{api}/tdata/{set}('{id}')/TemperPaw.{action}"),
+        headers,
+        &body.to_string(),
+    )?;
+    if (200..300).contains(&resp.status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{set}('{id}').{action} failed (HTTP {}): {}",
+            resp.status,
+            &resp.body[..resp.body.len().min(200)]
+        ))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start_session(
     ctx: &Context,
@@ -458,6 +484,15 @@ fn revise_route(
         &headers,
         &format!("Repairer-{path_id}-rev"),
         "repairer",
+    )?;
+    dispatch_action(
+        ctx,
+        &api,
+        &headers,
+        "Paths",
+        &path_id,
+        "AssignRepairer",
+        &json!({ "repairer_agent_id": repairer_agent_id }),
     )?;
     let repairer_msg = repairer_prompt(
         &path_id,
@@ -663,30 +698,15 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                  {author_agent_id} by construction"
             ),
         );
-        let patch_body = json!({ "repairer_agent_id": repairer_agent_id });
-        match ctx.http_call(
-            "PATCH",
-            &format!("{api}/tdata/Paths('{path_id}')"),
+        dispatch_action(
+            &ctx,
+            &api,
             &headers,
-            &patch_body.to_string(),
-        ) {
-            Ok(r) if r.status < 400 => {}
-            Ok(r) => ctx.log(
-                "warn",
-                &format!(
-                    "spawn_repairers: PATCH Paths('{path_id}') repairer_agent_id failed \
-                     (HTTP {}); Cedar's assigned-repairer check won't bind",
-                    r.status
-                ),
-            ),
-            Err(e) => ctx.log(
-                "warn",
-                &format!(
-                    "spawn_repairers: PATCH Paths('{path_id}') repairer_agent_id failed ({e}); \
-                     Cedar's assigned-repairer check won't bind"
-                ),
-            ),
-        }
+            "Paths",
+            &path_id,
+            "AssignRepairer",
+            &json!({ "repairer_agent_id": repairer_agent_id }),
+        )?;
 
         // 3. Spawn the repairer session.
         let repairer_msg = repairer_prompt(

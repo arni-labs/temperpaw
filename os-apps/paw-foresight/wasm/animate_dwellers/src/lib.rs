@@ -816,24 +816,20 @@ fn phase_contradiction(ctx: &Context, fields: &Value) -> Result<(), String> {
             "severity": "low",
             "note": format!("dweller contradiction ({}): {note}", ctx.entity_id),
         }));
-        let patch = json!({
+        let append = json!({
             "challenge_flags": serde_json::to_string(&flags).unwrap_or_default()
         });
-        let r = ctx.http_call(
-            "PATCH",
-            &format!("{api}/tdata/Paths('{path_id}')"),
+        let r = dispatch(
+            ctx,
+            &api,
             &headers,
-            &patch.to_string(),
+            "Paths",
+            &path_id,
+            "AppendChallengeFlag",
+            &append,
         );
         match r {
-            Ok(resp) if resp.status < 400 => {}
-            Ok(resp) => ctx.log(
-                "warn",
-                &format!(
-                    "animate_dwellers: challenge-flag append on {path_id} failed (HTTP {})",
-                    resp.status
-                ),
-            ),
+            Ok(()) => {}
             Err(e) => ctx.log(
                 "warn",
                 &format!("animate_dwellers: challenge-flag append on {path_id} failed: {e}"),

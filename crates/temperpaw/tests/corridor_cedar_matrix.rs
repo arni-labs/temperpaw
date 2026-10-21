@@ -140,6 +140,32 @@ fn only_the_assigned_repairer_and_adversary_self_report() {
 }
 
 #[test]
+fn path_linkage_actions_are_system_only() {
+    let engine = engine();
+    let a = attrs(&[
+        ("id", serde_json::json!("p-1")),
+        ("RepairerAgentId", serde_json::json!("rep-1")),
+        ("AdversaryAgentId", serde_json::json!("adv-1")),
+    ]);
+
+    let system = ctx("spawn-wasm", "system");
+    for action in ["AssignRepairer", "AssignAdversary", "AppendChallengeFlag"] {
+        assert!(
+            engine.authorize(&system, action, "Path", &a).is_allowed(),
+            "system WASM must dispatch Path.{action}"
+        );
+    }
+
+    let session = ctx("rep-1", "agent");
+    for action in ["AssignRepairer", "AssignAdversary", "AppendChallengeFlag"] {
+        assert!(
+            !engine.authorize(&session, action, "Path", &a).is_allowed(),
+            "sessions must not dispatch Path.{action}"
+        );
+    }
+}
+
+#[test]
 fn claim_amendment_is_relay_writable_but_verdicts_are_system_only() {
     // ADR-004: the repairer (relayed as service:wasm-runtime) may amend a
     // claim through the diff-carrying AmendText — but the verdict actions
