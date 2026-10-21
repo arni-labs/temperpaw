@@ -1,4 +1,5 @@
 name: Railway Redeploy
+run-name: "Railway Redeploy ${{ inputs.environment }} ${{ inputs.image_tag }} ${{ inputs.release }} ${{ inputs.step }} ${{ inputs.token }}"
 
 # Deploys one CI-built image (ghcr.io/arni-labs/temperpaw:sha-*) to the main Temper in one Railway environment, checks
 # it against what ran just before, and goes back to that image on any miss (scripts/railway_release.sh). The checks:
@@ -22,11 +23,25 @@ name: Railway Redeploy
 #
 # Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
 # rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
-# every check. The release captain copies it onto the Factory's Release; this workflow writes nothing there.
+# every check. The release captain copies it onto the Factory's Release; this workflow writes nothing there. When the
+# Factory starts a run it passes release, step and token; the job output "outcome" (also the annotation "outcome") is
+# then ok, or failed with the first miss, with those three echoed.
 
 on:
   workflow_dispatch:
     inputs:
+      release:
+        description: "The Factory's Release id, when the Factory starts this run"
+        required: false
+        default: ""
+      step:
+        description: "The Factory step that starts this run"
+        required: false
+        default: ""
+      token:
+        description: "The Factory's token for this step, echoed in the outcome so it can match the run"
+        required: false
+        default: ""
       environment:
         description: "Where: staging or production"
         type: choice
@@ -82,6 +97,7 @@ jobs:
     outputs:
       result: ${{ steps.record.outputs.result }}
       record: ${{ steps.record.outputs.record }}
+      outcome: ${{ steps.record.outputs.outcome }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 90
     env:
@@ -218,6 +234,9 @@ jobs:
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FACTORY_RELEASE: ${{ inputs.release }}
+          FACTORY_STEP: ${{ inputs.step }}
+          FACTORY_TOKEN: ${{ inputs.token }}
         run: |
           set -uo pipefail
           # What the release captain copies onto the Factory's Release (this run writes nothing there).
@@ -238,6 +257,14 @@ jobs:
               before: $before, new: $new, checked: $checked, rolled_back: $rolled_back}')"
           echo "${record}" | jq .
           echo "result=${result}" >> "${GITHUB_OUTPUT}"
+          # The Factory's outcome: ok only when the release is verified (or a check run passed); failed with the first miss.
+          outcome="$(jq -c --arg r "${FACTORY_RELEASE}" --arg s "${FACTORY_STEP}" --arg t "${FACTORY_TOKEN}" \
+            '{release: $r, step: $s, token: $t, result: (if .result == "verified" or .result == "checked" then "ok" else "failed" end),
+              reason: (if .result == "verified" or .result == "checked" then "\(.ref) \(.result) on \(.environment)"
+                       else "\(.result): \(.misses[0] // "a step failed before the checks")" end),
+              ref, previous_ref, commit, run: .run_url}' <<<"${record}")"
+          echo "outcome=${outcome}" >> "${GITHUB_OUTPUT}"
+          echo "::notice title=outcome::${outcome}"
           echo "record=$(jq -c . <<<"${record}")" >> "${GITHUB_OUTPUT}"
           {
             echo "### ${result}: ${IMAGE_TAG} on ${{ inputs.environment }}"
