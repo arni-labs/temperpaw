@@ -149,6 +149,7 @@ live_sha() {
 # nothing: Railway stages it until a deployment starts. IMAGE_TAG follows it where the service has one.
 set_image() {
   local tag="$1"
+  printf '%s' "$tag" >"$STATE_DIR/source-set"
   if [ -n "$(image_tag_var)" ]; then
     gql "$(jq -n --arg p "$RAILWAY_PROJECT_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" --arg s "$RAILWAY_SERVICE_ID" --arg v "$tag" \
       '{query: "mutation($input: VariableUpsertInput!) { variableUpsert(input: $input) }",
@@ -228,7 +229,7 @@ against_before() { # $1 deployment id
   echo "route_count: ${got:-none} (before: ${want:-none})"
   if [ -z "$got" ]; then
     misses+=("the deployment logged no route table for the default tenant")
-  elif [ -n "$want" ] && [ "$got" != "$want" ]; then
+  elif [ "$got" != "$want" ]; then
     misses+=("route_count ${got}, before ${want}")
   fi
   failed="$(ask_failures "$1")"
@@ -276,8 +277,19 @@ case "${1:-}" in
       echo "nothing names the image of the running deployment ${id} (no image, no IMAGE_TAG, no rollback_tag): no way back, so no deploy" >&2
       exit 1
     }
-    jq -n --arg id "$id" --arg tag "$tag" --arg routes "$(route_count "$id")" --arg sha "$(live_sha)" \
-      --argjson probes "$(probe)" --arg guest "$(guest)" \
+    # The way back must be the build that serves, and every baseline must have been read: without one, a check after
+    # the deploy would have nothing to compare with.
+    sha="$(live_sha)"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "/paw/version names no commit, so the running build is unknown: no deploy" >&2; exit 1; }
+    [ "${sha:0:$((${#tag} - 4))}" = "${tag#sha-}" ] || {
+      echo "${tag} does not name the build that serves (${sha}): no way back, so no deploy" >&2
+      exit 1
+    }
+    routes="$(route_count "$id")"
+    [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
+    probes="$(probe)"
+    guest_was="$(guest)"
+    jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
     ;;
 
@@ -297,12 +309,22 @@ case "${1:-}" in
     fi
     against_before "$new_id"
     if [ "${#misses[@]}" = 0 ]; then
-      echo "running ${SOAK_SECONDS}s before reading memory"
+      echo "running ${SOAK_SECONDS}s, then everything is checked again and memory read"
       sleep "$SOAK_SECONDS"
+      [ "$(live_deployment | jq -r '.id // empty')" = "$new_id" ] || misses+=("deployment ${new_id} no longer serves after the soak")
+      if [ -n "${EXPECTED_SHA:-}" ]; then
+        sha="$(live_sha)"
+        [ "$sha" = "$EXPECTED_SHA" ] || misses+=("after the soak /paw/version reports ${sha:-nothing}, not ${EXPECTED_SHA}")
+      fi
+      against_before "$new_id"
       mem="$(memory_gb "$SOAK_SECONDS" || true)"
       echo "memory (Railway, highest over ${SOAK_SECONDS}s): ${mem:-none} GB${MEMORY_LIMIT_GB:+, limit ${MEMORY_LIMIT_GB} GB}"
-      if [ -n "${MEMORY_LIMIT_GB:-}" ] && [ -n "$mem" ] && awk -v m="$mem" -v l="$MEMORY_LIMIT_GB" 'BEGIN { exit !(m > l) }'; then
-        misses+=("memory ${mem} GB over ${MEMORY_LIMIT_GB} GB")
+      if [ -n "${MEMORY_LIMIT_GB:-}" ]; then
+        if [ -z "$mem" ]; then
+          misses+=("Railway reported no memory, so the ${MEMORY_LIMIT_GB} GB limit could not be checked")
+        elif awk -v m="$mem" -v l="$MEMORY_LIMIT_GB" 'BEGIN { exit !(m > l) }'; then
+          misses+=("memory ${mem} GB over ${MEMORY_LIMIT_GB} GB")
+        fi
       fi
       if [ -n "${DD_API_KEY:-}" ] && [ -n "${DD_APP_KEY:-}" ] && [ -n "${DD_ENV:-}" ] && [ -n "${EXPECTED_SHA:-}" ]; then
         rss="$(datadog_max process_resident_memory_bytes "$SOAK_SECONDS" || true)"
@@ -321,25 +343,34 @@ case "${1:-}" in
     ;;
 
   rollback)
-    [ -f "$STATE_DIR/last-started" ] || { echo "no deployment was started, so nothing to roll back"; exit 0; }
+    [ -f "$STATE_DIR/source-set" ] || { echo "the service was not changed, so nothing to roll back"; exit 0; }
     tag="$(jq -r .image_tag "$STATE_DIR/before.json")"
     before_id="$(jq -r .deployment_id "$STATE_DIR/before.json")"
-    started="$(cat "$STATE_DIR/last-started")"
+    before_sha="$(jq -r .sha "$STATE_DIR/before.json")"
+    started="$(cat "$STATE_DIR/last-started" 2>/dev/null || true)"
     misses=()
-    if [ "$(jq -r '.status // empty' <<<"$(deployment_status "$started")")" != SUCCESS ] &&
-      [ "$(live_deployment | jq -r '.id // empty')" = "$before_id" ]; then
-      # The new deployment never took over, so the old one still serves: stop the new one and point the source back,
-      # without restarting anything.
-      gql "$(jq -n --arg d "$started" '{query: "mutation($d: String!) { deploymentCancel(id: $d) }", variables: {d: $d}}')" >/dev/null ||
-        gql "$(jq -n --arg d "$started" '{query: "mutation($d: String!) { deploymentRemove(id: $d) }", variables: {d: $d}}')" >/dev/null
+    if [ -z "$started" ] || { [ "$(jq -r '.status // empty' <<<"$(deployment_status "$started")")" != SUCCESS ] &&
+      [ "$(live_deployment | jq -r '.id // empty')" = "$before_id" ]; }; then
+      # Nothing took over, so the old deployment still serves: stop whatever started (a deployment Railway may have
+      # begun without answering is the newest one after the old), point the source back, and restart nothing.
+      [ -n "$started" ] || started="$(gql "$(jq -n --arg s "$RAILWAY_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" --arg p "$RAILWAY_PROJECT_ID" \
+        '{query: "query($s: String!, $e: String!, $p: String!) { deployments(first: 1, input: {projectId: $p, serviceId: $s, environmentId: $e}) { edges { node { id } } } }",
+          variables: {s: $s, e: $e, p: $p}}')" | jq -r --arg old "$before_id" '.data.deployments.edges[0].node.id // empty | select(. != $old)')"
+      if [ -n "$started" ]; then
+        gql "$(jq -n --arg d "$started" '{query: "mutation($d: String!) { deploymentCancel(id: $d) }", variables: {d: $d}}')" >/dev/null ||
+          gql "$(jq -n --arg d "$started" '{query: "mutation($d: String!) { deploymentRemove(id: $d) }", variables: {d: $d}}')" >/dev/null
+        echo "deployment ${started} stopped"
+      fi
       set_image "$tag"
-      echo "deployment ${started} stopped; ${before_id} (${tag}) kept serving"
+      echo "${before_id} (${tag}) kept serving"
       id="$before_id"
     else
       echo "going back to ${tag}"
       id="$(deploy_image "$tag")"
     fi
     jq -n --arg id "$id" --arg tag "$tag" '{deployment_id: $id, image_tag: $tag}' | tee "$STATE_DIR/rolled-back.json"
+    sha="$(live_sha)"
+    [ "$sha" = "$before_sha" ] || misses+=("/paw/version reports ${sha:-nothing}, not ${before_sha} that served before")
     against_before "$id"
     report_misses
     echo "back on ${tag}, and it answers as it did before"
