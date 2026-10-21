@@ -2573,8 +2573,11 @@ fn pawfs_filter_parent_and_workspace(parent_id: &str, ws_id: &str) -> String {
 }
 
 fn pawfs_filter_root_directory(ws_id: &str) -> String {
+    // `ParentId eq null` is non-lossless -> disables index pushdown -> full Directories
+    // scan -> 413 QueryTooLarge at workspace scale (ARN-68). Name '/' + WorkspaceId already
+    // uniquely identify the root, so omit the null predicate to keep the read pushed-down.
     format!(
-        "Name eq '/' and WorkspaceId eq '{}' and ParentId eq null",
+        "Name eq '/' and WorkspaceId eq '{}'",
         escape_odata_string(ws_id)
     )
 }
@@ -3443,10 +3446,14 @@ mod tests {
 
     #[test]
     fn pawfs_walk_filters_use_parent_and_directory_pushdown() {
+        // ARN-68: the root filter must NOT use the non-lossless `ParentId eq null`
+        // (it disables index pushdown -> full Directories scan -> 413). Name '/' +
+        // WorkspaceId uniquely identify the root.
         assert_eq!(
             pawfs_filter_root_directory("os-app-docs"),
-            "Name eq '/' and WorkspaceId eq 'os-app-docs' and ParentId eq null"
+            "Name eq '/' and WorkspaceId eq 'os-app-docs'"
         );
+        assert!(!pawfs_filter_root_directory("os-app-docs").contains("eq null"));
         assert_eq!(
             pawfs_filter_name_parent_and_workspace("skills", "dir-parent", "os-app-docs"),
             "Name eq 'skills' and ParentId eq 'dir-parent' and WorkspaceId eq 'os-app-docs'"
