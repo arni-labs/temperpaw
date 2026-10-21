@@ -233,7 +233,7 @@ jobs:
             --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || true)" \
             --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
             --argjson checked "$(read_json checked)" --argjson rolled_back "$(read_json rolled-back)" \
-            '{result: $result, environment: $environment, image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
+            '{result: $result, environment: $environment, ref: $image_tag, previous_ref: ($before.image_tag // null), image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
               commit: $commit, run_url: $run_url, misses: ($misses | split("\n") | map(select(length > 0))),
               before: $before, new: $new, checked: $checked, rolled_back: $rolled_back}')"
           echo "${record}" | jq .
