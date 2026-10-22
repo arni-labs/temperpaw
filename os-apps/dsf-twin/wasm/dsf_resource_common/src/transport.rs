@@ -1,6 +1,8 @@
 use crate::Error;
 use serde_json::Value;
 
+const RAILWAY_GRAPHQL: &str = "https://backboard.railway.com/graphql/v2";
+
 pub struct Request {
     pub method: &'static str,
     pub url: String,
@@ -129,6 +131,9 @@ impl<H: Host> Runtime<'_, H> {
         Ok(secret)
     }
     /// Provider modules supply a fixed origin and encode each target component.
+    ///
+    /// Railway's credential is a project token, scoped to one project and environment. Railway refuses a project
+    /// token sent as a Bearer token ("Not Authorized"), so a Railway request carries it as `Project-Access-Token`.
     pub fn bearer_json(
         &mut self,
         secret_name: &str,
@@ -137,12 +142,17 @@ impl<H: Host> Runtime<'_, H> {
         body: Value,
     ) -> Result<Value, Error> {
         let secret = self.credential(secret_name)?;
+        let credential = if url.starts_with(RAILWAY_GRAPHQL) {
+            ("project-access-token".to_string(), secret)
+        } else {
+            ("authorization".to_string(), format!("Bearer {secret}"))
+        };
         let value = json_body(
             self.host.request(&Request {
                 method,
                 url,
                 headers: vec![
-                    ("authorization".into(), format!("Bearer {secret}")),
+                    credential,
                     ("content-type".into(), "application/json".into()),
                 ],
                 body: if method == "GET" || method == "HEAD" {
@@ -204,6 +214,14 @@ mod tests {
                 serde_json::json!({"query":"query ReadOnlyFixture { __typename }"}),
             )
             .unwrap();
+        runtime
+            .bearer_json(
+                "dsf_railway_token",
+                "GET",
+                "https://api.vercel.com/v9/projects/p".into(),
+                Value::Null,
+            )
+            .unwrap();
         assert!(
             !host.0[0]
                 .headers
@@ -214,8 +232,24 @@ mod tests {
             host.0[1]
                 .headers
                 .iter()
+                .any(|(name, value)| name == "project-access-token"
+                    && value == "provider-only-test-credential"),
+            "a Railway request carries its project token as Project-Access-Token"
+        );
+        assert!(
+            !host.0[1]
+                .headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization")),
+            "and not as a Bearer token, which Railway refuses for a project token"
+        );
+        assert!(
+            host.0[2]
+                .headers
+                .iter()
                 .any(|(name, value)| name == "authorization"
-                    && value == "Bearer provider-only-test-credential")
+                    && value == "Bearer provider-only-test-credential"),
+            "other providers keep the Bearer token"
         );
     }
 }
