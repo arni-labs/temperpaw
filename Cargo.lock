@@ -6462,7 +6462,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 [[package]]
 name = "temper-actor-runtime"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6485,7 +6485,7 @@ dependencies = [
 [[package]]
 name = "temper-authz"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "cedar-policy",
  "cedar-policy-core",
@@ -6501,7 +6501,7 @@ dependencies = [
 [[package]]
 name = "temper-evolution"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "chrono",
  "serde",
@@ -6518,7 +6518,7 @@ dependencies = [
 [[package]]
 name = "temper-jit"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "serde",
  "serde_json",
@@ -6530,7 +6530,7 @@ dependencies = [
 [[package]]
 name = "temper-observe"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -6553,7 +6553,7 @@ dependencies = [
 [[package]]
 name = "temper-odata"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "axum",
  "chrono",
@@ -6567,7 +6567,7 @@ dependencies = [
 [[package]]
 name = "temper-optimize"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "serde",
  "serde_json",
@@ -6582,7 +6582,7 @@ dependencies = [
 [[package]]
 name = "temper-ots"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "chrono",
  "serde",
@@ -6594,7 +6594,7 @@ dependencies = [
 [[package]]
 name = "temper-platform"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6628,7 +6628,7 @@ dependencies = [
 [[package]]
 name = "temper-runtime"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6645,7 +6645,7 @@ dependencies = [
 [[package]]
 name = "temper-sandbox"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "anyhow",
  "monty",
@@ -6660,7 +6660,7 @@ dependencies = [
 [[package]]
 name = "temper-server"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "aes-gcm",
  "async-stream",
@@ -6718,7 +6718,7 @@ dependencies = [
 [[package]]
 name = "temper-spec"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "quick-xml",
  "serde",
@@ -6732,7 +6732,7 @@ dependencies = [
 [[package]]
 name = "temper-store-postgres"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -6750,7 +6750,7 @@ dependencies = [
 [[package]]
 name = "temper-store-redis"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "chrono",
  "fred",
@@ -6767,7 +6767,7 @@ dependencies = [
 [[package]]
 name = "temper-store-turso"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "opentelemetry",
  "reqwest 0.12.28",
@@ -6786,7 +6786,7 @@ dependencies = [
 [[package]]
 name = "temper-verify"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "proptest",
  "serde",
@@ -6800,7 +6800,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=7564964d922a5dd903a9df13af5bf8dd7c05b654#7564964d922a5dd903a9df13af5bf8dd7c05b654"
+source = "git+https://github.com/arni-labs/temper.git?rev=2cf915a53e84b404b0a957c2d7460765459809ef#2cf915a53e84b404b0a957c2d7460765459809ef"
 dependencies = [
  "async-stream",
  "async-trait",
