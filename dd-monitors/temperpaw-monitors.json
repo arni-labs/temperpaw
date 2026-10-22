@@ -25,7 +25,8 @@
     "message": "TemperPaw p95 dispatch latency exceeds 5 seconds over the last 15 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -97,7 +98,8 @@
     "message": "TemperPaw startup time to healthy exceeds 120s over the last 15 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -115,7 +117,8 @@
     "message": "TemperPaw OS app reconcile exceeds 60s during startup.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -314,7 +317,8 @@
     "message": "P99 admission queue wait exceeds 5s \u2014 caps likely too tight relative to offered load.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -404,7 +408,8 @@
     "message": "Remote TemperFS blob transport wait exceeds 2s. Check R2/S3 reachability, blob_adapter structured logs, and affected `workspace_id` / `file_id` / `content_hash` facets before treating this as an agent or LLM problem.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -459,7 +464,8 @@
     "message": "p95 dispatch attempts exceeds 2 \u2014 system-wide transient contention is costing retry budget. Check mailbox saturation and actor cold-start latency before it escalates to exhausted.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:low"
+      "severity:low",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -477,7 +483,8 @@
     "message": "Cold-start registry lock p95 exceeds 500ms for one or more entity types. Direct signal for temper#146 investigation \u2014 capture a CPU profile via /_admin/profile/cpu during the next burst and check for mutex contention.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -495,7 +502,8 @@
     "message": "Actor cold-start p99 exceeds 5s \u2014 freshly spawned actors are not ready to serve within the P1 retry budget. Root cause of the 2026-04-18 File dispatch exhaustions if this alerts. See temper#146.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:high"
+      "severity:high",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -532,7 +540,8 @@
     "message": "p99 Cedar eval exceeds 50ms on the ADR-0084 millisecond metric. If this monitor is No Data while traffic exists, enable Datadog percentile aggregations for temper_cedar_evaluation_duration_ms before treating the gate as live.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:low"
+      "severity:low",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -550,7 +559,8 @@
     "message": "Event-store append p99 exceeds 1s. If this fires on the same replica as an Actor Cold-Start Duration spike, writer-lock or fsync serialization is the bottleneck.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -568,7 +578,8 @@
     "message": "Handler deadlines breached at >5 / 10m. Check the `dying_span` breakdown on the Handler Liveness dashboard to identify which host function is the hang source. Awaits temper#147 primitive.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:high"
+      "severity:high",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -586,7 +597,8 @@
     "message": "Wasmtime epoch-interruption ticker p99 drift exceeds 100ms. Deadlines become imprecise when drift grows. Awaits temper#147 primitive.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -604,7 +616,8 @@
     "message": "p99 time between deadline breach and guest exit exceeds 1s \u2014 guest code is resisting termination. Awaits temper#147 primitive.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -860,7 +873,8 @@
     "tags": [
       "team:temperpaw",
       "severity:medium",
-      "surface:llmobs"
+      "surface:llmobs",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -880,7 +894,8 @@
       "team:temperpaw",
       "severity:medium",
       "surface:dbm",
-      "database:postgres"
+      "database:postgres",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1024,7 +1039,8 @@
       "team:temperpaw",
       "service:temperpaw",
       "signal:apm",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1043,7 +1059,8 @@
     "message": "WASM invocation p95 is above 5s for at least one trigger action. Check module execution, host calls, epoch drift, and integration timeout fallbacks before optimizing callers.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1061,7 +1078,8 @@
     "message": "WASM host HTTP p95 is above 5s. Separate remote dependency latency from guest execution before changing actor or projection code.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1079,7 +1097,8 @@
     "message": "Native BlobStore transport duration exceeds 1s. Check operation/backend/status breakdown, R2/S3 or local filesystem health, and whether File `$value` requests are waiting on durable blob writes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1097,7 +1116,8 @@
     "message": "Blob I/O wait p95 is above 1s. Check whether large session content, file reads, or overflow field writes are moving critical-path work through the blob layer.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1115,7 +1135,8 @@
     "message": "Native BlobStore transport p95 is above 750ms. This is the measured File `$value` residual split between durable blob transport and actor/event work; pivot by operation/backend/status before changing data-plane architecture.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1133,7 +1154,8 @@
     "message": "Remote blob transport wait p95 is above 1.5s. Check backend/object-store health and whether the control plane is depending on remote blob round trips.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1151,7 +1173,8 @@
     "message": "Monty REPL wait p95 is above 1s. This points to tool execution queueing or too-low process concurrency, not necessarily actor runtime latency.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1169,7 +1192,8 @@
     "message": "Session context preparation p95 is above 2s. Inspect loaded entries, content files, token/byte volume, and blob externalization before tuning the provider path.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1187,7 +1211,8 @@
     "message": "At least one session phase has p95 duration above 5s. Use the phase/result tags to separate prompt/context/provider/tool-call work from runtime dispatch latency.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1240,7 +1265,8 @@
     "message": "Background projection updates are waiting too long before execution. This points to queue pressure, executor starvation, or projection write contention.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1258,7 +1284,8 @@
     "message": "End-to-end query projection maintenance is above the latency budget. Compare queue wait, write duration, and Postgres transaction widgets to locate the bottleneck.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1327,7 +1354,8 @@
     "message": "Postgres pool acquisition is consuming the latency budget. Check connection pool saturation, DBM wait events, and deployment concurrency before tuning query code.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1345,7 +1373,8 @@
     "message": "Postgres transaction duration is above the p99 budget. Use DBM plan samples, app-side begin/commit timers, and projection write metrics to separate lock, network, and query execution causes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
@@ -1415,7 +1444,8 @@
     "message": "Max Cedar eval duration exceeded 250ms on the ADR-0084 millisecond metric. Use the AuthZ Phase Breakdown dashboard to identify whether time is in request construction or Cedar authorizer evaluation.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:medium"
+      "severity:medium",
+      "signal:speed"
     ],
     "options": {
       "thresholds": {
