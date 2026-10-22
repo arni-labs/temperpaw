@@ -2332,9 +2332,14 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         println!();
         println!("  API:       http://localhost:{actual_port}/tdata");
         println!("  Dashboard: http://localhost:{actual_port}/dashboard");
+        // Never the key itself: this banner lands in the deployment's log.
         println!(
             "  API key:   {}",
-            config.temper_api_key.as_deref().unwrap_or("")
+            if config.temper_api_key.is_some() {
+                "set (TEMPER_API_KEY)"
+            } else {
+                "not set"
+            }
         );
         println!();
         if has_api_key {
