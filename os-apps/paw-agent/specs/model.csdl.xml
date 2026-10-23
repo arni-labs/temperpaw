@@ -258,6 +258,7 @@
         <Parameter Name="session_mode" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_trace_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_span_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="agent_name" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -901,6 +902,7 @@
       <Action Name="Update" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Agent"/>
         <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="soul_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="instructions_file_id" Type="Edm.String"/>
         <Parameter Name="model" Type="Edm.String"/>
         <Parameter Name="provider" Type="Edm.String"/>
