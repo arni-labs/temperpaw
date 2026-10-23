@@ -3,6 +3,7 @@
 # .github/workflows/railway-redeploy.yml runs it; a person can run it the same way with the same environment.
 #
 #   scripts/railway_release.sh snapshot          what runs now: its deployment, image, routes and probe answers
+#   scripts/railway_release.sh forward           whether EXPECTED_SHA is live already: what serves contains it
 #   scripts/railway_release.sh deploy <sha-tag>  point the service at ghcr.io/arni-labs/temperpaw:<tag>, wait for SUCCESS
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
@@ -24,7 +25,8 @@
 #                    that knows fewer storage migrations deletes the newer ones' _sqlx_migrations rows, when every one
 #                    is listed in scripts/additive_migrations.txt (through a TCP proxy opened for that and removed).
 #                    Otherwise the way back stops and says which rows a person must remove.
-#   GH_TOKEN         reads the kernel pin and its migrations from GitHub
+#   GH_TOKEN         reads the kernel pin and its migrations, and which commit contains which, from GitHub
+#   DEPLOY_ENV       production takes only a commit main contains
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -353,6 +355,13 @@ report_misses() { # exits 1 when there are any
   fi
 }
 
+# Whether commit $1 contains commit $2, by GitHub's compare of the two.
+contains() {
+  local status
+  status="$(gh api "repos/${GITHUB_REPOSITORY:-arni-labs/temperpaw}/compare/$2...$1" --jq .status)" || return 2
+  [ "$status" = ahead ] || [ "$status" = identical ]
+}
+
 case "${1:-}" in
   snapshot)
     live="$(live_deployment)"
@@ -383,6 +392,30 @@ case "${1:-}" in
     guest_was="$(guest)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
+    ;;
+
+  # A deploy never moves the Temper backwards: when what serves already contains the release's commit, the release is
+  # live and nothing deploys (it prints already=true). Production takes only a commit main contains. Going back on
+  # purpose is the roll_back step, which does not run this. (23 Oct 2026: the site's Factory step put the release's own
+  # commit live while master had moved on, and katagami.ai served an older build for 43 minutes.)
+  forward)
+    commit="${EXPECTED_SHA:-}"
+    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "forward needs EXPECTED_SHA, a full commit" >&2; exit 64; }
+    served="$(jq -r '.sha // empty' "$STATE_DIR/before.json")"
+    [[ "$served" =~ ^[0-9a-f]{40}$ ]] || { echo "the snapshot names no commit that serves: no deploy" | tee -a "$STATE_DIR/errors.txt" >&2; exit 1; }
+    rc=0; contains "$served" "$commit" || rc=$?
+    [ "$rc" -le 1 ] || { echo "GitHub could not compare ${commit} with ${served}: no deploy" | tee -a "$STATE_DIR/errors.txt" >&2; exit 1; }
+    if [ "$rc" -eq 0 ]; then
+      echo "already=true"
+      echo "already live: ${served} serves, and it contains ${commit}" >&2
+      exit 0
+    fi
+    if [ "${DEPLOY_ENV:-}" = production ]; then
+      rc=0; contains main "$commit" || rc=$?
+      [ "$rc" -eq 0 ] || { echo "main does not contain ${commit}: only a commit on main goes to production" | tee -a "$STATE_DIR/errors.txt" >&2; exit 1; }
+    fi
+    echo "already=false"
+    echo "${commit} goes on top of ${served}" >&2
     ;;
 
   deploy)
