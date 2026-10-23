@@ -165,12 +165,12 @@ instances:
 }
 
 fn datadog_postgres_agent_dockerfile() -> &'static str {
-    "FROM datadog/agent:7\n\
+    "FROM datadog/agent:7.84.5\n\
      COPY postgres.yaml /etc/datadog-agent/conf.d/postgres.d/conf.yaml\n"
 }
 
 fn datadog_runtime_agent_dockerfile() -> &'static str {
-    "FROM datadog/agent:7\n\
+    "FROM datadog/agent:7.84.5\n\
      LABEL railway_profile=datadog-enhanced\n\
      LABEL org.opencontainers.image.description=\"TemperPaw Railway runtime Datadog Agent. USM requires system-probe host capabilities. Continuous ddprof is canary-gated from the temperpaw service.\"\n"
 }
@@ -2391,7 +2391,7 @@ mod tests {
         let dockerfile = datadog_runtime_agent_dockerfile();
 
         for expected in [
-            "FROM datadog/agent:7",
+            "FROM datadog/agent:7.84.5",
             "railway_profile=datadog-enhanced",
             "USM requires system-probe host capabilities",
             "Continuous ddprof is canary-gated from the temperpaw service",
