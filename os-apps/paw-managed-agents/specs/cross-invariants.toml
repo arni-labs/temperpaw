@@ -13,11 +13,16 @@ kind = "hard"
 on = "ManagedSession.*"
 assert = 'related(ManagedEnvironment, EnvironmentId).status not in ["Archived"]'
 
+# Callers outside the kernel cannot add events to a terminated session. The
+# session.status_terminated event itself is written by the session_terminator
+# module after TerminateSession, and the kernel does not hold its own
+# follow-ons to this rule, so the assertion needs no exception for it (the
+# assertion grammar has no `or`).
 [[invariant]]
 name = "EventRequiresNonArchivedManagedSession"
 kind = "hard"
 on = "SessionEvent.*"
-assert = 'related(ManagedSession, SessionId).status not in ["Terminated"] or Kind in ["session.status_terminated"]'
+assert = 'related(ManagedSession, SessionId).status not in ["Terminated"]'
 
 [[invariant]]
 name = "ResourceRequiresNonArchivedManagedSession"
