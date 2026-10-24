@@ -808,6 +808,12 @@
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 
+      <Action Name="RecordLastSession" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
+        <Parameter Name="last_session_id" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.CronJob"/>
+      </Action>
+
       <Action Name="Start" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.CronScheduler"/>
         <ReturnType Type="TemperPaw.CronScheduler"/>

@@ -275,6 +275,17 @@ The dashboard sidebar shows:
 
 ## Manual Deployment
 
+### A CI-built image, checked, with the way back
+
+The **Railway Redeploy** workflow (`.github/workflows/railway-redeploy.yml`, run by hand) deploys one `sha-*` image from GHCR to the staging or production main Temper and runs `scripts/railway_release.sh`:
+
+1. **snapshot**: what runs now (its deployment and image), its route count from its log, and one answer from each probe in `PROBE_ROUTES`.
+2. **deploy**: the service's source set to the image, with the `railway.toml` deploy settings (`/readyz`, one hour, overlap and draining 0, three restarts), and a new deployment. Railway keeps the old one serving until `/readyz` answers.
+3. **check**: `/healthz` and `/readyz`, `/paw/version` naming the tag's commit, the new boot's route count, every probe and the guest read against the snapshot. Memory (Railway's figure and the build's Datadog gauges) is reported after a soak.
+4. **rollback**, on any miss: a deployment that never took over is stopped and nothing restarts; one that took over is replaced by the image that ran before, checked against the snapshot.
+
+`mode: check` runs the checks against what runs now, deploying nothing. `drill` (staging only) fails the check on purpose to prove the rollback. Each run ends with a release record (job outputs and run summary). An image whose kernel adds a storage migration has no way back: an older binary refuses the newer schema (on staging, `sha-3d79f6e` after `sha-6f410a8`: "migration 19 was previously applied but is missing").
+
 ### Using Railway CLI directly
 
 If you have the Railway CLI linked to your project:

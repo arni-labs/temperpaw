@@ -5263,7 +5263,7 @@ mod tests {
             .expect("OS App Reconcile Regression monitor query should exist");
         assert_eq!(
             reconcile_regression_query,
-            "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6_os_app_reconcile} > 60000"
+            "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6b_os_app_reconcile} > 60000"
         );
 
         let wasm_failure_monitor_query = monitors

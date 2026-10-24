@@ -191,6 +191,36 @@ fn abnormal_state_timeout_monitor_counts_overdue_timers_not_firings() {
     }
 }
 
+fn reads_percentile_series(query: &str) -> bool {
+    let bytes = query.as_bytes();
+    (0..bytes.len()).any(|i| {
+        let starts_term = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let digits = bytes[i + 1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        bytes[i] == b'p' && starts_term && digits > 0 && bytes.get(i + 1 + digits) == Some(&b':')
+    })
+}
+
+/// A Datadog UI save on 23 Oct 2026 turned `avg(last_15m)` into `sum(last_15m)` on monitors whose formula uses
+/// `.as_count()`. A p95 summed over the window grows with the number of points, so three blob latency monitors
+/// alerted on normal latency ("[Temper] Blob Transport Wait Spike" went from about 1 critical a day to 31).
+/// A percentile is compared as an average or a maximum over the window, never a sum.
+#[test]
+fn percentile_monitors_never_sum_over_the_window() {
+    for monitor in load_monitors() {
+        let query = monitor["query"].as_str().unwrap_or_default();
+        if reads_percentile_series(query) {
+            assert!(
+                !query.starts_with("sum("),
+                "{} sums a percentile over the window: {query}",
+                monitor["name"].as_str().unwrap_or("<unnamed>")
+            );
+        }
+    }
+}
+
 #[test]
 fn process_rss_monitor_guards_against_oom_regressions() {
     let monitors = load_monitors();

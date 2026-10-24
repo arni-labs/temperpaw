@@ -8,7 +8,17 @@ const LEGACY_IDENTITY_TERMS: [&str; 8] = [
     "OPENPAW", "OpenPAW", "OpenPaw", "Open Paw", "openpaw", "open paw", "open_paw", "open-paw",
 ];
 
-const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 28] = [
+const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 19] = [
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "Check the Railway service openpaw before the app.",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "service:openpaw status:error",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
     (
         "crates/temperpaw/tests/datadog_observability_contract.rs",
         "\"openpaw.\"",
@@ -16,63 +26,8 @@ const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 28] = [
     ),
     (
         "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"legacy_openpaw_monitor\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
         "\"legacy_openpaw_dashboard\"",
         "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"slack-openpaw-alerts\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"service:openpaw\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "LEGACY_OPENPAW_MONITOR_TERMS",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"OpenPaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"OpenPAW\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"openpaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"service:openpaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"slack-openpaw-alerts\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "legacy_openpaw_monitor",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "legacy OpenPaw identity",
-        "Datadog monitor deploy must document legacy cleanup matching",
     ),
     (
         "scripts/deploy_pipelines.py",
@@ -534,33 +489,27 @@ fn railway_redeploy_uses_current_deployment_api() {
 fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/railway-redeploy.yml"))
         .expect("manual Railway redeploy workflow should be readable");
+    let release = fs::read_to_string(repo_root().join("scripts/railway_release.sh"))
+        .expect("the release script the workflow runs should be readable");
 
     for required in [
         "workflow_dispatch",
-        "environment: production",
+        // One workflow for both environments; each GitHub environment names its own service and key.
+        "|| inputs.environment }}",
+        "options: [staging, production]",
         "RAILWAY_TOKEN",
         "RAILWAY_PROJECT_ID",
         "RAILWAY_ENVIRONMENT_ID",
         "RAILWAY_SERVICE_ID",
         "TEMPERPAW_BASE_URL",
-        "VariableUpsertInput",
-        "skipDeploys: true",
-        // The deploy sets the service's image and asserts the running one.
-        // deploymentRedeploy replays the previous image and is exactly the
-        // mechanism that left production on a stale tag for two days.
-        "serviceInstanceUpdate",
-        "source: { image: $image }",
-        "serviceInstanceDeployV2",
-        "latestDeployment { id status }",
-        "\"${status}\" = \"SUCCESS\"",
-        // expected_sha is proven by the tag naming that build; the version
-        // endpoint is not consulted while it returns 503 (ARN-508).
+        "scripts/railway_release.sh snapshot",
+        "scripts/railway_release.sh deploy",
+        "scripts/railway_release.sh check",
+        "scripts/railway_release.sh rollback",
         "does not match expected_sha",
         "expected_sha cannot be verified for",
         "expected_sha",
-        // Build identity is the image's: BUILD_SHA/BUILD_VERSION are baked and
-        // the entrypoint derives DD_VERSION and the OTEL attributes. The
-        // workflow writes none of them (asserted below).
+        "a drill runs on staging only",
         "run_artifact_batch_e2e",
         "scripts/production_artifact_batch_e2e.sh",
         "PACKAGED_WASM_PATH",
@@ -570,25 +519,53 @@ fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
             "Railway redeploy workflow must contain {required}"
         );
     }
-
+    // A sha-* tag names one build, which makes the version check and the way back exact.
     assert!(
-        workflow.contains("^(edge|latest|sha-[0-9a-f]{7,40})$"),
-        "Railway redeploy workflow must restrict deployable tags to an exact shape"
+        workflow.contains("^sha-[0-9a-f]{7,40}$"),
+        "Railway redeploy workflow must restrict deployable tags to sha-<hex>"
     );
-    for shadowing in [
-        "upsert_var BUILD_SHA",
-        "upsert_var BUILD_VERSION",
-        "upsert_var DD_VERSION",
-        "upsert_var OTEL_RESOURCE_ATTRIBUTES",
+
+    for required in [
+        "VariableUpsertInput",
+        "skipDeploys: true",
+        // The deploy sets the service's image and asserts the running one is it.
+        "serviceInstanceUpdate",
+        "source: {image: $image}",
+        "serviceInstanceDeployV2",
+        "overlapSeconds: 0",
+        "drainingSeconds: 0",
+        "healthcheckPath: \"/readyz\"",
+        "\"$seen\" = \"$image\"",
+        // The new build must report the tag's commit, and serve what the old one served.
+        "/paw/version",
+        "HttpEndpoint route table rebuilt",
+        "deploymentCancel",
     ] {
         assert!(
-            !workflow.contains(shadowing),
-            "Railway redeploy workflow must not write build identity ({shadowing}): the image bakes it and the entrypoint derives the rest; a variable would shadow a per-build value"
+            release.contains(required),
+            "the release script must contain {required}"
         );
     }
+
+    // Build identity is the image's: BUILD_SHA/BUILD_VERSION are baked and the entrypoint derives DD_VERSION and the
+    // OTEL attributes. Neither file writes them.
+    for shadowing in [
+        "BUILD_SHA",
+        "BUILD_VERSION",
+        "DD_VERSION",
+        "OTEL_RESOURCE_ATTRIBUTES",
+    ] {
+        assert!(
+            !workflow.contains(&format!("upsert_var {shadowing}"))
+                && !release.contains(&format!("name: \"{shadowing}\"")),
+            "the redeploy must not write build identity ({shadowing}): the image bakes it and the entrypoint derives the rest; a variable would shadow a per-build value"
+        );
+    }
+    // Going back deploys the earlier image anew. deploymentRedeploy replays the previous deployment's image and
+    // ignores the requested tag, which once left production on a stale tag for two days.
     assert!(
-        !workflow.contains("deploymentRedeploy"),
-        "Railway redeploy workflow must not redeploy the previous deployment: that replays its image and ignores the requested tag"
+        !workflow.contains("deploymentRedeploy") && !release.contains("deploymentRedeploy"),
+        "the redeploy must not use deploymentRedeploy"
     );
 }
 

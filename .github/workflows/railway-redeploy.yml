@@ -1,18 +1,84 @@
 name: Railway Redeploy
+run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_id, inputs.step, inputs.step_token) || format('Railway Redeploy {0} {1}', inputs.environment, inputs.image_tag) }}
+
+# Deploys one CI-built image (ghcr.io/arni-labs/temperpaw:sha-*) to the main Temper in one Railway environment, checks
+# it against what ran just before, and goes back to that image on any miss (scripts/railway_release.sh). The checks:
+# /healthz and /readyz, /paw/version naming the tag's commit, the default tenant's route_count from the new boot log
+# against the old one, each probe (the control routes and the sign-in answers) against the answer it gave before, and
+# the guest read against its counts before. Memory is read after a soak (Railway's figure, and the build's own gauges in
+# Datadog where the environment sends them) and reported; it gates only where MEMORY_LIMIT_GB is set.
+# A deployment that never takes over (Railway keeps the old one serving until /readyz answers) is stopped, and nothing
+# restarts; one that took over and then missed a check is replaced by the image that ran before. When the newer kernel
+# added storage migrations the older one does not know, their _sqlx_migrations rows are removed first if every one is
+# listed in scripts/additive_migrations.txt and the environment sets MIGRATION_ROLLBACK=auto and POSTGRES_SERVICE_ID;
+# otherwise the way back stops and names the hand step.
+#
+# mode "check" deploys nothing: it runs the same checks against what runs now.
+#
+# GitHub environments "staging" and "production" name their own Railway environment and service and operator key:
+# variables RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, TEMPERPAW_BASE_URL, PROBE_ROUTES (one "<GET|POST> <anon|operator|
+# forged-customer|forged-admin|bogus> <path>" per line), GUEST_CHECK_URL, MEMORY_LIMIT_GB (a gate; without it memory is
+# reported only) and DD_ENV; secret TEMPER_API_KEY. An environment's own value wins over the repository's.
+# RAILWAY_TOKEN (an account or team token), RAILWAY_PROJECT_ID and the Datadog keys are the repository's.
+#
+# Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
+# rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
+# every check. The release captain copies it onto the Factory's Release; this workflow writes nothing there. When the
+# Factory starts a run it passes the six inputs of every Factory step (release_id, step, step_token, pr, commit, ref):
+# the run is named "factory <release_id> <step> <step_token>", ref names the image when image_tag is empty, go_live and
+# roll_back run on production, and the conclusion is the outcome (the job output and annotation "outcome" add the reason).
 
 on:
   workflow_dispatch:
     inputs:
-      image_tag:
-        description: "Published GHCR tag to deploy: edge, latest, or sha-*"
-        required: true
-        default: edge
-      expected_sha:
-        description: "Optional full commit SHA the sha-* tag must name (refused for edge/latest)"
+      release_id:
+        description: "The Factory release, when the Factory starts this run"
         required: false
         default: ""
-      base_url:
-        description: "Optional base URL to verify; falls back to TEMPERPAW_BASE_URL secret/variable"
+      step:
+        description: "The Factory step: stage deploys to staging, check_staging checks staging, go_live deploys to production, roll_back deploys ref (the image to go back to) to production"
+        required: false
+        default: ""
+      step_token:
+        description: "The release's token for this attempt at the step"
+        required: false
+        default: ""
+      pr:
+        description: "The pull request's address"
+        required: false
+        default: ""
+      commit:
+        description: "The commit the release ships"
+        required: false
+        default: ""
+      ref:
+        description: "What the release ships: the image tag (sha-*), used when image_tag is empty"
+        required: false
+        default: ""
+      environment:
+        description: "Where: staging or production"
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_tag:
+        description: "Published GHCR tag to deploy: sha-<7..40 hex> (or give it as ref)"
+        required: false
+        default: ""
+      mode:
+        description: "deploy, or check only (deploys nothing)"
+        type: choice
+        options: [deploy, check]
+        default: deploy
+      rollback_tag:
+        description: "The sha-* tag to go back to, when Railway's record of the running deployment names no image (a railway up deploy)"
+        required: false
+        default: ""
+      drill:
+        description: "Staging only: report a deliberate miss after the deploy, to prove the rollback"
+        type: boolean
+        default: false
+      expected_sha:
+        description: "Optional full commit SHA the sha-* tag must name"
         required: false
         default: ""
       poll_attempts:
@@ -22,9 +88,13 @@ on:
       poll_seconds:
         description: "Seconds between polling attempts"
         required: true
-        default: "10"
+        default: "15"
+      soak_seconds:
+        description: "Seconds to run before memory is read"
+        required: true
+        default: "300"
       run_artifact_batch_e2e:
-        description: "Run PawFS ArtifactBatch production E2E after the deployment proof"
+        description: "Run PawFS ArtifactBatch production E2E after the checks pass"
         required: true
         default: "false"
 
@@ -32,260 +102,203 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-temperpaw-production
+  group: deploy-temperpaw-${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
   cancel-in-progress: false
 
 jobs:
   redeploy:
     runs-on: ubuntu-latest
-    environment: production
+    outputs:
+      result: ${{ steps.record.outputs.result }}
+      record: ${{ steps.record.outputs.record }}
+      outcome: ${{ steps.record.outputs.outcome }}
+    environment: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
+    timeout-minutes: 90
     env:
-      IMAGE_TAG: ${{ inputs.image_tag }}
-      EXPECTED_SHA: ${{ inputs.expected_sha }}
-      BASE_URL_INPUT: ${{ inputs.base_url }}
+      IMAGE_TAG: ${{ inputs.image_tag || inputs.ref }}
+      DEPLOY_ENV: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
+      EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
+      FACTORY_STEP: ${{ inputs.step }}
+      FACTORY_COMMIT: ${{ inputs.commit }}
       RUN_ARTIFACT_BATCH_E2E: ${{ inputs.run_artifact_batch_e2e }}
-      TEMPERPAW_BASE_URL: ${{ secrets.TEMPERPAW_BASE_URL || vars.TEMPERPAW_BASE_URL }}
+      BASE_URL: ${{ vars.TEMPERPAW_BASE_URL }}
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
       POLL_SECONDS: ${{ inputs.poll_seconds }}
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || vars.RAILWAY_PROJECT_ID }}
-      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID || vars.RAILWAY_ENVIRONMENT_ID }}
-      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID || vars.RAILWAY_SERVICE_ID }}
+      SOAK_SECONDS: ${{ inputs.soak_seconds }}
+      ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ vars.RAILWAY_SERVICE_ID }}
       TEMPER_API_KEY: ${{ secrets.TEMPER_API_KEY }}
-      RAILWAY_GRAPHQL_URL: https://backboard.railway.com/graphql/v2
+      PROBE_ROUTES: ${{ vars.PROBE_ROUTES }}
+      GUEST_CHECK_URL: ${{ vars.GUEST_CHECK_URL }}
+      MEMORY_LIMIT_GB: ${{ vars.MEMORY_LIMIT_GB }}
+      DD_ENV: ${{ vars.DD_ENV }}
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
+      DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+      DD_SITE: ${{ secrets.DD_SITE }}
+      MIGRATION_ROLLBACK: ${{ vars.MIGRATION_ROLLBACK }}
+      POSTGRES_SERVICE_ID: ${{ vars.POSTGRES_SERVICE_ID }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Validate inputs and secrets
-        run: |
-          set -euo pipefail
-
-          # This value becomes a production source write, so the shape is
-          # exact: edge, latest, or sha- followed by 7 to 40 lowercase hex.
-          if ! [[ "${IMAGE_TAG}" =~ ^(edge|latest|sha-[0-9a-f]{7,40})$ ]]; then
-            echo "image_tag must be edge, latest, or sha-<7..40 hex>" >&2
-            exit 64
-          fi
-          # expected_sha is proven one way today: a sha-* tag must name that
-          # build. /paw/version, which would corroborate it, returns 503
-          # (ARN-508), and a mutable tag proves nothing about the build it
-          # resolved to - so with edge/latest there is no proof to offer.
-          if [ -n "${EXPECTED_SHA}" ]; then
-            case "${IMAGE_TAG}" in
-              sha-*)
-                short="${IMAGE_TAG#sha-}"
-                if [ "${EXPECTED_SHA:0:${#short}}" != "${short}" ]; then
-                  echo "image_tag ${IMAGE_TAG} does not match expected_sha ${EXPECTED_SHA}" >&2
-                  exit 64
-                fi
-                ;;
-              *)
-                echo "expected_sha cannot be verified for ${IMAGE_TAG}: use a sha-* tag (ARN-508)" >&2
-                exit 64
-                ;;
-            esac
-          fi
-
-          if [ -z "${RAILWAY_TOKEN}" ]; then
-            echo "RAILWAY_TOKEN secret is required" >&2
-            exit 65
-          fi
-          if [ -z "${RAILWAY_PROJECT_ID}" ] || [ -z "${RAILWAY_ENVIRONMENT_ID}" ] || [ -z "${RAILWAY_SERVICE_ID}" ]; then
-            echo "RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, and RAILWAY_SERVICE_ID are required as secrets or variables" >&2
-            exit 65
-          fi
-          base_url="${BASE_URL_INPUT:-${TEMPERPAW_BASE_URL:-}}"
-          if [ -z "${base_url}" ]; then
-            echo "base_url input or TEMPERPAW_BASE_URL secret/variable is required" >&2
-            exit 65
-          fi
-          case "${base_url}" in
-            http://*|https://*)
-              ;;
-            *)
-              echo "base_url must start with http:// or https://" >&2
-              exit 64
-              ;;
-          esac
-          echo "BASE_URL=${base_url%/}" >> "${GITHUB_ENV}"
-
-          if [ -n "${EXPECTED_SHA}" ] && ! [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "expected_sha must be a full 40-character lowercase git SHA" >&2
-            exit 64
-          fi
-          case "${RUN_ARTIFACT_BATCH_E2E}" in
-            true|false)
-              ;;
-            *)
-              echo "run_artifact_batch_e2e must be true or false" >&2
-              exit 64
-              ;;
-          esac
-          if [ "${RUN_ARTIFACT_BATCH_E2E}" = "true" ] && [ -z "${TEMPER_API_KEY}" ]; then
-            echo "TEMPER_API_KEY secret is required when run_artifact_batch_e2e=true" >&2
-            exit 65
-          fi
-
-          case "${POLL_ATTEMPTS}" in
-            ''|*[!0-9]*)
-              echo "poll_attempts must be an integer" >&2
-              exit 64
-              ;;
-          esac
-          case "${POLL_SECONDS}" in
-            ''|*[!0-9]*)
-              echo "poll_seconds must be an integer" >&2
-              exit 64
-              ;;
-          esac
-
-      - name: Set Railway deployment variables without implicit deploy
-        run: |
-          set -euo pipefail
-
-          upsert_var() {
-            local name="$1"
-            local value="$2"
-
-            response="$(jq -n \
-              --arg projectId "${RAILWAY_PROJECT_ID}" \
-              --arg environmentId "${RAILWAY_ENVIRONMENT_ID}" \
-              --arg serviceId "${RAILWAY_SERVICE_ID}" \
-              --arg name "${name}" \
-              --arg value "${value}" \
-              '{
-                query: "mutation($input: VariableUpsertInput!) { variableUpsert(input: $input) }",
-                variables: {
-                  input: {
-                    projectId: $projectId,
-                    environmentId: $environmentId,
-                    serviceId: $serviceId,
-                    name: $name,
-                    value: $value,
-                    skipDeploys: true
-                  }
-                }
-              }' | curl -fsS \
-                -H "Authorization: Bearer ${RAILWAY_TOKEN}" \
-                -H "Content-Type: application/json" \
-                --data @- \
-                "${RAILWAY_GRAPHQL_URL}")"
-
-            if jq -e '.errors' >/dev/null <<<"${response}"; then
-              jq -r '.errors[0].message // "Railway variableUpsert failed"' <<<"${response}" >&2
-              exit 1
-            fi
-          }
-
-          # Build identity lives in the image: BUILD_SHA and BUILD_VERSION are
-          # baked (Dockerfile), and the entrypoint derives DD_VERSION and the
-          # OTEL attributes from them. This workflow writes none of them; a
-          # variable here could only shadow a per-build value with a constant.
-          upsert_var IMAGE_TAG "${IMAGE_TAG}"
-
-      - name: Set the service image
-        run: |
-          set -euo pipefail
-          # The service source is a literal image reference. Redeploying the
-          # previous deployment replays whatever image it was built from and
-          # never consults IMAGE_TAG, which is how this workflow spent two days
-          # reporting one tag while production ran another. Railway stages
-          # this change; the next step starts the deployment.
-          response="$(jq -n \
-            --arg serviceId "${RAILWAY_SERVICE_ID}" \
-            --arg environmentId "${RAILWAY_ENVIRONMENT_ID}" \
-            --arg image "ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}" \
-            '{
-              query: "mutation($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }",
-              variables: { serviceId: $serviceId, environmentId: $environmentId, input: { source: { image: $image } } }
-            }' | curl -fsS -H "Authorization: Bearer ${RAILWAY_TOKEN}" -H "Content-Type: application/json" --data @- "${RAILWAY_GRAPHQL_URL}")"
-          if jq -e '.errors' >/dev/null <<<"${response}"; then
-            jq -r '.errors[0].message' <<<"${response}" >&2; exit 1
-          fi
-          echo "service source set to ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"
-
-      - name: Start the deployment
-        id: started
-        run: |
-          set -euo pipefail
-          response="$(jq -n \
-            --arg serviceId "${RAILWAY_SERVICE_ID}" \
-            --arg environmentId "${RAILWAY_ENVIRONMENT_ID}" \
-            '{ query: "mutation($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }",
-               variables: { serviceId: $serviceId, environmentId: $environmentId } }' \
-            | curl -fsS -H "Authorization: Bearer ${RAILWAY_TOKEN}" -H "Content-Type: application/json" --data @- "${RAILWAY_GRAPHQL_URL}")"
-          started="$(jq -r '.data.serviceInstanceDeployV2 // empty' <<<"${response}")"
-          if ! [[ "${started}" =~ ^[0-9a-f-]{36}$ ]]; then
-            echo "serviceInstanceDeployV2 returned no deployment id: ${response}" >&2; exit 1
-          fi
-          echo "deployment started: ${started}"
-          echo "deployment_id=${started}" >> "${GITHUB_OUTPUT}"
-
-      - name: Wait for that deployment to succeed
         env:
-          STARTED: ${{ steps.started.outputs.deployment_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          target="ghcr.io/arni-labs/temperpaw:${IMAGE_TAG}"
-          for attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-            # A poll that does not answer is "not known yet" and costs one attempt.
-            node="$(jq -n --arg serviceId "${RAILWAY_SERVICE_ID}" \
-              '{ query: "query($serviceId: String!) { service(id: $serviceId) { serviceInstances { edges { node { environmentId source { image } latestDeployment { id status } } } } } }",
-                 variables: { serviceId: $serviceId } }' \
-              | curl -fsS -H "Authorization: Bearer ${RAILWAY_TOKEN}" -H "Content-Type: application/json" --data @- "${RAILWAY_GRAPHQL_URL}" \
-              | jq -c --arg env "${RAILWAY_ENVIRONMENT_ID}" '.data.service.serviceInstances.edges[].node | select(.environmentId == $env)' 2>/dev/null || true)"
-            if [ -z "${node}" ]; then
-              echo "Attempt ${attempt}: Railway API did not answer; will retry"
-              sleep "${POLL_SECONDS}"
-              continue
+
+          # This value becomes a source write, so the shape is exact. A sha-* tag names one build, which is what
+          # makes the check (/paw/version) and the way back exact; edge and latest name neither.
+          if ! [[ "${IMAGE_TAG}" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
+            echo "image_tag must be sha-<7..40 hex>" >&2
+            exit 64
+          fi
+          short="${IMAGE_TAG#sha-}"
+          if [ -n "${EXPECTED_SHA_INPUT}" ]; then
+            if ! [[ "${EXPECTED_SHA_INPUT}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "expected_sha must be a full 40-character lowercase git SHA" >&2
+              exit 64
             fi
-            image="$(jq -r '.source.image // empty' <<<"${node}")"
-            dep="$(jq -r '.latestDeployment.id // empty' <<<"${node}")"
-            status="$(jq -r '.latestDeployment.status // empty' <<<"${node}")"
-            # The assertion is bound to the deployment this run started.
-            if [ "${dep}" = "${STARTED}" ] && [ "${image}" = "${target}" ] && [ "${status}" = "SUCCESS" ]; then
-              echo "deployment ${dep} of ${image} is SUCCESS"; exit 0
+            if [ "${EXPECTED_SHA_INPUT:0:${#short}}" != "${short}" ]; then
+              echo "image_tag ${IMAGE_TAG} does not match expected_sha ${EXPECTED_SHA_INPUT}" >&2
+              exit 64
             fi
-            case "${status}" in FAILED|CRASHED|REMOVED)
-              [ "${dep}" = "${STARTED}" ] && { echo "deployment ${dep} ended ${status}" >&2; exit 1; } ;;
+          fi
+          # The full commit /paw/version must report; the tag's short sha must name exactly one commit here.
+          full="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${short}" --jq .sha)"
+          [[ "${full}" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_sha cannot be verified for ${IMAGE_TAG}: no such commit" >&2; exit 64; }
+          # Forward steps must ship the Factory's release commit. Rollback deliberately names an older image.
+          case "${FACTORY_STEP}" in
+            stage|check_staging|go_live)
+              if ! [[ "${FACTORY_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || [ "${full}" != "${FACTORY_COMMIT}" ]; then
+                echo "resolved image commit ${full} does not match Factory commit ${FACTORY_COMMIT} (a full SHA is required)" >&2
+                exit 64
+              fi
+              ;;
+          esac
+          echo "EXPECTED_SHA=${full}" >> "${GITHUB_ENV}"
+          echo "STATE_DIR=${RUNNER_TEMP}/release" >> "${GITHUB_ENV}"
+          if [ -n "${ROLLBACK_TAG}" ] && ! [[ "${ROLLBACK_TAG}" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
+            echo "rollback_tag must be sha-<7..40 hex>" >&2
+            exit 64
+          fi
+          if [ "${{ inputs.drill }}" = true ] && [ "${DEPLOY_ENV}" != staging ]; then
+            echo "a drill runs on staging only" >&2
+            exit 64
+          fi
+
+          for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL TEMPER_API_KEY; do
+            if [ -z "${!v}" ]; then
+              echo "${v} is required (environment ${DEPLOY_ENV})" >&2
+              exit 65
+            fi
+          done
+          case "${BASE_URL}" in
+            https://*) ;;
+            *) echo "TEMPERPAW_BASE_URL must start with https://" >&2; exit 64 ;;
+          esac
+          case "${RUN_ARTIFACT_BATCH_E2E}" in
+            true|false) ;;
+            *) echo "run_artifact_batch_e2e must be true or false" >&2; exit 64 ;;
+          esac
+          for v in POLL_ATTEMPTS POLL_SECONDS SOAK_SECONDS; do
+            case "${!v}" in
+              ''|*[!0-9]*) echo "${v} must be an integer" >&2; exit 64 ;;
             esac
-            echo "Attempt ${attempt}: deployment=${dep:-none} status=${status:-none}"
-            sleep "${POLL_SECONDS}"
           done
-          echo "deployment ${STARTED} of ${target} did not reach SUCCESS within ${POLL_ATTEMPTS} attempts" >&2
-          exit 1
+          echo "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }} ${IMAGE_TAG} (${full}) on ${DEPLOY_ENV} at ${BASE_URL}"
 
-      - name: Verify the process answers
+      - uses: actions/checkout@v6.0.2
+
+      - name: What runs now
+        run: bash scripts/railway_release.sh snapshot
+
+      - name: Deploy the image
+        id: deploy
+        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy'
+        run: bash scripts/railway_release.sh deploy "${IMAGE_TAG}"
+
+      - name: Check what runs against what ran before
+        id: check
+        env:
+          DRILL: ${{ inputs.drill && 'yes' || '' }}
         run: |
           set -euo pipefail
-          # Railway has confirmed the requested image is what deployed. This
-          # proves the process behind it serves: exactly 200 from /healthz.
-          # /readyz is printed for the log; it does not gate this workflow
-          # (images before ADR-0066 still fold Discord into its answer).
-          for attempt in $(seq 1 "${POLL_ATTEMPTS}"); do
-            code="$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL%/}/healthz" || true)"
-            [ "${code:-000}" = "200" ] && { echo "/healthz 200 after ${attempt} attempt(s)"; break; }
-            [ "${attempt}" -eq "${POLL_ATTEMPTS}" ] && { echo "/healthz never returned 200 (last ${code:-000})" >&2; exit 1; }
-            sleep "${POLL_SECONDS}"
-          done
-          readyz="$(curl -sS -o /dev/null -w '%{http_code}' "${BASE_URL%/}/readyz" || true)"
-          echo "/readyz ${readyz:-000} (informational)"
-
-      - name: Check out repository for ArtifactBatch E2E
-        if: ${{ inputs.run_artifact_batch_e2e == 'true' }}
-        uses: actions/checkout@v6.0.2
+          # A check-only run checks the deployment that runs now against itself.
+          [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = deploy ] || jq '{deployment_id, image_tag}' "${STATE_DIR}/before.json" > "${STATE_DIR}/new.json"
+          bash scripts/railway_release.sh check
 
       - name: Build packaged ArtifactBatch WASM for hash proof
-        if: ${{ inputs.run_artifact_batch_e2e == 'true' }}
+        id: package
+        if: inputs.run_artifact_batch_e2e == 'true' && steps.check.outcome == 'success'
         run: |
           set -euo pipefail
           rustup target add wasm32-unknown-unknown
           bash os-apps/paw-fs/wasm/artifact_batch_apply/build.sh
 
       - name: Run ArtifactBatch production E2E
-        if: ${{ inputs.run_artifact_batch_e2e == 'true' }}
+        id: e2e
+        if: inputs.run_artifact_batch_e2e == 'true' && steps.check.outcome == 'success'
         env:
           TEMPER_BASE_URL: ${{ env.BASE_URL }}
-          TEMPER_API_KEY: ${{ secrets.TEMPER_API_KEY }}
           TENANT_ID: default
           RUN_SUFFIX: gh-${{ github.run_id }}-${{ github.run_attempt }}
           PACKAGED_WASM_PATH: os-apps/paw-fs/wasm/artifact_batch_apply/artifact_batch_apply.wasm
         run: bash scripts/production_artifact_batch_e2e.sh
+
+      - name: Go back to the image that ran before
+        id: rollback
+        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.package.outcome == 'failure' || steps.e2e.outcome == 'failure')
+        run: bash scripts/railway_release.sh rollback
+
+      - name: The release record
+        id: record
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FACTORY_RELEASE: ${{ inputs.release_id }}
+          FACTORY_STEP: ${{ inputs.step }}
+          FACTORY_TOKEN: ${{ inputs.step_token }}
+        run: |
+          set -uo pipefail
+          # What the release captain copies onto the Factory's Release (this run writes nothing there).
+          if [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = check ]; then
+            result=$([ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ] && echo checked || echo check-failed)
+          elif [ "${ROLLBACK_OUTCOME}" = success ]; then result=rolled_back
+          elif [ "${ROLLBACK_OUTCOME}" = failure ]; then result=rollback_failed
+          elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
+          else result=failed; fi
+          read_json() { [ -f "${STATE_DIR:-/nonexistent}/$1.json" ] && jq -c . "${STATE_DIR}/$1.json" || echo null; }
+          record="$(jq -n --arg result "$result" --arg environment "${DEPLOY_ENV}" --arg image_tag "${IMAGE_TAG}" \
+            --arg commit "${EXPECTED_SHA:-}" --arg run_url "${RUN_URL}" \
+            --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || cat "${STATE_DIR:-/nonexistent}/errors.txt" 2>/dev/null || true)" \
+            --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
+            --argjson checked "$(read_json checked)" --argjson rolled_back "$(read_json rolled-back)" \
+            '{result: $result, environment: $environment, ref: $image_tag, previous_ref: ($before.image_tag // null), image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
+              commit: $commit, run_url: $run_url, misses: ($misses | split("\n") | map(select(length > 0))),
+              before: $before, new: $new, checked: $checked, rolled_back: $rolled_back}')"
+          echo "${record}" | jq .
+          echo "result=${result}" >> "${GITHUB_OUTPUT}"
+          # The Factory's outcome: ok only when the release is verified (or a check run passed); failed with the first miss.
+          outcome="$(jq -c --arg r "${FACTORY_RELEASE}" --arg s "${FACTORY_STEP}" --arg t "${FACTORY_TOKEN}" \
+            '{release: $r, step: $s, token: $t, result: (if .result == "verified" or .result == "checked" then "ok" else "failed" end),
+              reason: (if .result == "verified" or .result == "checked" then "\(.ref) \(.result) on \(.environment)"
+                       else "\(.result): \(.misses[0] // "a step failed before the checks")" end),
+              ref, previous_ref, commit, run: .run_url}' <<<"${record}")"
+          echo "outcome=${outcome}" >> "${GITHUB_OUTPUT}"
+          echo "::notice title=outcome::${outcome}"
+          echo "record=$(jq -c . <<<"${record}")" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### ${result}: ${IMAGE_TAG} on ${DEPLOY_ENV}"
+            echo "Previous image: $(jq -r '.previous_image_tag // "unknown"' <<<"${record}"). Run: ${RUN_URL}"
+            jq -r '.misses[] | "- miss: \(.)"' <<<"${record}"
+            echo '```json'
+            echo "${record}" | jq .
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
