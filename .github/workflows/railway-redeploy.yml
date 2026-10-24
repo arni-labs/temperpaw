@@ -5,8 +5,9 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # it against what ran just before, and goes back to that image on any miss (scripts/railway_release.sh). The checks:
 # /healthz and /readyz, /paw/version naming the tag's commit, the default tenant's route_count from the new boot log
 # against the old one, each probe (the control routes and the sign-in answers) against the answer it gave before, and
-# the guest read against its counts before. Memory is read after a soak (Railway's figure, and the build's own gauges in
-# Datadog where the environment sends them) and reported; it gates only where MEMORY_LIMIT_GB is set.
+# the guest read against what it held before (nothing lost; new records are fine). Memory is read after a soak
+# (Railway's figure, and the build's own gauges in Datadog where the environment sends them) and reported; it gates
+# only where MEMORY_LIMIT_GB is set.
 # A deployment that never takes over (Railway keeps the old one serving until /readyz answers) is stopped, and nothing
 # restarts; one that took over and then missed a check is replaced by the image that ran before. When the newer kernel
 # added storage migrations the older one does not know, their _sqlx_migrations rows are removed first if every one is
