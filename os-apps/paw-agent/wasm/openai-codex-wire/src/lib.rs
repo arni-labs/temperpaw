@@ -94,9 +94,17 @@ pub fn is_openai_codex_token_expired_error(status: u16, body: &str) -> bool {
     if status != 401 {
         return false;
     }
+    // A revoked or invalidated token goes through the same auth gate as an
+    // expired one, instead of failing the turn as a plain API error.
     let lower = body.to_ascii_lowercase();
     lower.contains("token_expired")
+        || lower.contains("token_invalidated")
+        || lower.contains("token_revoked")
         || lower.contains("authentication token is expired")
+        || lower.contains("authentication token has been invalidated")
+        || lower.contains("invalidated oauth token")
+        || lower.contains("token has been invalidated")
+        || lower.contains("token has been revoked")
         || lower.contains("token is expired")
 }
 
