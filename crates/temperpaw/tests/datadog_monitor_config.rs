@@ -130,14 +130,13 @@ fn monitor_queries_use_current_runtime_metric_names_and_zero_fill_sparse_counter
         "[Temper] Dispatch Retry Budget Exhausted",
         "[Temper] Permanent Actor Failures",
         "[Temper] Mailbox Saturation (mailbox_full spike)",
-        "[Temper] Excessive Overdue Timers on Replay",
+        "[Temper] Abnormal State Timeout Firing",
         "[Temper] Spec Liveness Violation",
         "[Temper] Admission Deferred Spike",
         "[Temper] Unexpected Mailbox Drops (post-P4)",
         "[Temper] Profiler Upload Failures",
         "[Temper] Session Memory Externalization Spike",
         "[Temper] Integration Silent Exit (ADR-0056)",
-        "[Temper] Hydration Re-arm Overdue Spike",
         "[Temper] Turso Write Retry Exhaustion",
         "[TemperPaw] Session Phase Budget Exceeded",
         "[Temper] Query Projection Update Errors",
@@ -153,6 +152,28 @@ fn monitor_queries_use_current_runtime_metric_names_and_zero_fill_sparse_counter
             "{name} should zero-fill absent healthy sparse counter data, got {query}"
         );
         assert_eq!(monitor["options"]["notify_no_data"].as_bool(), Some(false));
+    }
+}
+
+/// A state timer that fires on time is how a spec polls, schedules a step or meets a deadline, so counting firings
+/// alerted on healthy polling: a run computer checks every 60 s while Ready, and two or three of them kept
+/// "[Temper] Abnormal State Timeout Firing" in Alert on 24 Oct 2026. Abnormal is a timer the kernel finds already
+/// past its own deadline, on hydration or on replay, for any entity type: one monitor, grouped by entity_type.
+#[test]
+fn abnormal_state_timeout_monitor_counts_overdue_timers_not_firings() {
+    let monitors = load_monitors();
+    let by_name = monitors_by_name(&monitors);
+    let query = by_name["[Temper] Abnormal State Timeout Firing"]["query"].as_str().unwrap();
+    assert!(!query.contains("temper_state_timeout_fired_total"), "counts firings, so polls trip it: {query}");
+    for signal in [
+        "temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue} by {entity_type}",
+        "temper_scheduler_overdue_on_replay_total{service:temperpaw} by {entity_type}",
+    ] {
+        assert!(query.contains(signal), "misses {signal}: {query}");
+    }
+    assert!(query.ends_with("> 0"), "one overdue timer is abnormal: {query}");
+    for name in ["[Temper] Excessive Overdue Timers on Replay", "[Temper] Hydration Re-arm Overdue Spike"] {
+        assert!(!by_name.contains_key(name), "{name} watches a signal the abnormal monitor already alerts on");
     }
 }
 
