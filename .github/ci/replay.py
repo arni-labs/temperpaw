@@ -29,7 +29,7 @@ import sys
 import tomllib
 
 SPEC = re.compile(r"\.ioa\.toml$")
-MARK = re.compile(r"^\s*Replay intended:\s*(.+?):\s*(\S.*)$", re.MULTILINE)
+MARK = re.compile(r"^[ \t]*Replay intended:[ \t]*(.+?):[ \t]*(\S.*)$", re.MULTILINE)
 
 
 def git(*args):
@@ -45,7 +45,7 @@ TARGET = re.compile(r"^\s*(?:append\(\s*|remove\(\s*)?([A-Za-z_]\w*)")
 
 
 def statements(effect, fresh):
-    """An action's effects as replay applies them. schedule() only arms a timer, and a replay never arms one. A
+    """An action's effects as replay applies them. Timer effects only arm timers, and replay never arms one. A
     statement that sets a field this change adds leaves every record reading as if the field had always been there,
     and one that sets a field this change removes is reported once, as that field. Both are in `fresh`."""
     if effect is None:
@@ -53,6 +53,8 @@ def statements(effect, fresh):
     items = effect if isinstance(effect, list) else [effect]
     out = []
     for e in items:
+        if isinstance(e, dict) and e.get("type") in ("schedule", "schedule_at"):
+            continue
         if not isinstance(e, str):
             out.append(json.dumps(e, sort_keys=True))
             continue

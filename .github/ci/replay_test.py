@@ -49,6 +49,23 @@ class Changes(unittest.TestCase):
         ) + '\n[[action]]\nname = "Hold"\nkind = "input"\nfrom = ["Queued"]\nto = "Held"\n\n[[state]]\nname = "note"\ntype = "string"\ninitial = ""\n'
         self.assertEqual(keys(SPEC, new), [])
 
+    def test_timer_tables_do_not_rewrite_records(self):
+        for timer in ('{ type = "schedule", action = "Check", delay_seconds = 1 }',
+                      '{ type = "schedule_at", action = "Check", at = "2026-10-24T12:00:00Z" }'):
+            with self.subTest(timer=timer):
+                old = SPEC.replace("\"schedule('Check', 1)\"", timer)
+                changed = old.replace('delay_seconds = 1', 'delay_seconds = 5').replace('12:00:00Z', '13:00:00Z')
+                self.assertEqual(keys(old, changed), [])
+                self.assertEqual(keys(old, old.replace(', ' + timer, '')), [])
+                self.assertEqual(keys(old, old.replace('"driven = true"', '"driven = false"')), ["x.ioa.toml action Ship"])
+
+    def test_other_table_effects_still_count(self):
+        for effect in ('{ type = "assign", field = "title", value = "old" }',
+                       '{ field = "title", value = "old" }'):
+            with self.subTest(effect=effect):
+                old = SPEC.replace('"driven = true"', effect)
+                self.assertEqual(keys(old, old.replace('value = "old"', 'value = "new"')), ["x.ioa.toml action Ship"])
+
     def test_an_existing_actions_to_is_a_rewrite(self):
         # v43: Ship's to changed, and every shipped release read Planned.
         self.assertEqual(keys(SPEC, SPEC.replace('to = "Queued"', 'to = "Planned"')), ["x.ioa.toml action Ship"])
@@ -107,6 +124,8 @@ class Main(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as said:
             self.assertEqual(replay.main(self.base, self.head, ""), 1)
             self.assertEqual(replay.main(self.base, self.head, "Replay intended: specs/release.ioa.toml action Ship:"), 1)
+            for suffix in ("\n## Verification", "\n\nUnrelated prose", " \t\nMore prose"):
+                self.assertEqual(replay.main(self.base, self.head, "Replay intended: specs/release.ioa.toml action Ship:" + suffix), 1)
             self.assertEqual(replay.main(self.base, self.head, "Replay intended: specs/release.ioa.toml action Ship: no record was ever shipped"), 0)
         self.assertIn("specs/release.ioa.toml action Ship: from ['Unmade'] to Queued", said.getvalue())
 
