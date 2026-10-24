@@ -1,4 +1,10 @@
 //! Provider Auth Gate — ensures subscription OAuth is fresh before LLM calls.
+//!
+//! When OpenAI Codex needs a person to sign in, the gate polls a device code
+//! that is still usable (they may have entered it already) and otherwise
+//! starts a fresh device login. The Session then fails with the link, the
+//! code and how long it lasts; sending the message again after signing in
+//! polls the code and continues.
 
 use temper_wasm_sdk::prelude::*;
 use wasm_helpers::{resolve_temper_api_url, runtime_headers_as, timestamp_millis_string};
@@ -49,8 +55,10 @@ fn run_provider_auth_gate() -> Result<(), String> {
                 set_success_result(ready_action, &ready_params(&fields, status, ""));
                 return Ok(());
             }
-            if let Some(error) = codex_auth_status_blocks_before_dispatch(&parsed) {
-                return Err(error);
+            if codex_auth_status_needs_person(&parsed) {
+                let status = sign_in(&ctx, &temper_api_url, &headers, &parsed)?;
+                set_success_result(ready_action, &ready_params(&fields, &status, ""));
+                return Ok(());
             }
         }
     }
@@ -62,21 +70,37 @@ fn run_provider_auth_gate() -> Result<(), String> {
         &format!("provider_auth_gate: dispatching OpenAICodexAuth.{auth_action}"),
     );
     let resp = ctx.http_call("POST", &url, &headers, "{}")?;
-    if !(200..300).contains(&resp.status) {
-        return Err(format!(
+    let parsed: Value = if (200..300).contains(&resp.status) {
+        serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}))
+    } else {
+        // The refresh moves are not moves from every state (none leaves
+        // DeviceCodeReady), so a refused one can still mean a person has to
+        // sign in.
+        let refused = format!(
             "OpenAI Codex auth {auth_action} failed (HTTP {}): {}",
             resp.status,
             body_snippet(&resp.body)
-        ));
-    }
+        );
+        let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
+        let current = ctx
+            .http_call("GET", &status_url, &headers, "")
+            .ok()
+            .filter(|status| (200..300).contains(&status.status))
+            .and_then(|status| serde_json::from_str::<Value>(&status.body).ok());
+        match current {
+            Some(current) if !codex_auth_status_allows_provider_call(&current) => current,
+            _ => return Err(refused),
+        }
+    };
+    let status = if codex_auth_status_allows_provider_call(&parsed) {
+        codex_auth_status_value(&parsed)
+            .unwrap_or("Ready")
+            .to_string()
+    } else {
+        sign_in(&ctx, &temper_api_url, &headers, &parsed)?
+    };
 
-    let parsed: Value = serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}));
-    let status = codex_auth_status_value(&parsed).unwrap_or("Ready");
-    if let Some(error) = codex_auth_status_error(&parsed) {
-        return Err(error);
-    }
-
-    set_success_result(ready_action, &ready_params(&fields, status, ""));
+    set_success_result(ready_action, &ready_params(&fields, &status, ""));
     Ok(())
 }
 
@@ -128,39 +152,6 @@ fn codex_auth_status_value(parsed: &Value) -> Option<&str> {
         .filter(|status| !status.trim().is_empty())
 }
 
-fn codex_auth_status_error(parsed: &Value) -> Option<String> {
-    if codex_auth_status_allows_provider_call(parsed) {
-        return None;
-    }
-
-    let status = codex_auth_status_value(parsed).unwrap_or("missing");
-    let detail = parsed
-        .get("last_error")
-        .or_else(|| parsed.get("error"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-
-    if status.eq_ignore_ascii_case("failed") {
-        let error = detail.unwrap_or("OpenAI Codex auth failed");
-        return Some(format!("{error}. {}", codex_auth_login_guidance(parsed)));
-    }
-
-    if matches!(
-        status.to_ascii_lowercase().as_str(),
-        "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected" | "idle"
-    ) {
-        return Some(format!(
-            "OpenAI Codex sign-in is required before calling the provider; auth status is {status}. {}",
-            codex_auth_login_guidance(parsed)
-        ));
-    }
-
-    Some(format!(
-        "OpenAI Codex auth returned status {status}; OpenAI Codex sign-in is required. {}",
-        codex_auth_login_guidance(parsed)
-    ))
-}
-
 fn codex_auth_status_allows_provider_call(parsed: &Value) -> bool {
     let status = codex_auth_status_value(parsed).unwrap_or("");
     if status.eq_ignore_ascii_case("ready") {
@@ -176,43 +167,168 @@ fn codex_auth_status_is_configured(parsed: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn codex_auth_status_blocks_before_dispatch(parsed: &Value) -> Option<String> {
+/// Whether the status waits on a person or on a sign-in step under way, so
+/// dispatching a refresh would not help. A Failed or Idle entity may still
+/// refresh from its stored tokens, so those dispatch first.
+fn codex_auth_status_needs_person(parsed: &Value) -> bool {
     if codex_auth_status_allows_provider_call(parsed) {
-        return None;
+        return false;
     }
-    let status = codex_auth_status_value(parsed)?;
-    if matches!(
-        status.to_ascii_lowercase().as_str(),
-        "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected"
-    ) {
-        return codex_auth_status_error(parsed);
-    }
-    None
+    codex_auth_status_value(parsed).is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected"
+        )
+    })
 }
 
-fn codex_auth_login_guidance(parsed: &Value) -> String {
-    let verification_url = parsed
-        .get("verification_uri")
-        .or_else(|| parsed.get("verification_url"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let user_code = parsed
-        .get("user_code")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
+/// What the gate does with an auth status that needs a person to sign in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignInStep {
+    /// A device code is out and still usable: poll it, since the person may
+    /// have entered it already.
+    Poll,
+    /// A sign-in step is being started, polled or refreshed right now.
+    InProgress,
+    /// No usable device code: start a device login for a fresh one.
+    Start,
+}
 
-    match (verification_url, user_code) {
-        (Some(url), Some(code)) => format!(
-            "In Discord, DM the bot `codex auth`, open {url}, enter code {code}, then reply `codex auth done`."
-        ),
-        (Some(url), None) => format!(
-            "In Discord, DM the bot `codex auth`, open {url}, complete sign-in, then reply `codex auth done`."
-        ),
-        (None, Some(code)) => format!(
-            "In Discord, DM the bot `codex auth`, enter code {code} at the device-login page, then reply `codex auth done`."
-        ),
-        (None, None) => "In Discord, DM the bot `codex auth`, complete the device login, then reply `codex auth done`.".to_string(),
+/// A person needs time to open the link and type the code, so a code with
+/// less than this left would run out while they enter it.
+const DEVICE_CODE_MIN_LEFT_MS: i64 = 30_000;
+
+fn sign_in_step(status: &Value, now_ms: i64) -> SignInStep {
+    match codex_auth_status_value(status)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("devicecodeready") if device_code_ms_left(status, now_ms).is_some() => {
+            SignInStep::Poll
+        }
+        Some("starting" | "polling" | "refreshing") => SignInStep::InProgress,
+        _ => SignInStep::Start,
     }
+}
+
+/// How long the status's device code stays worth entering, if it has one.
+/// A Failed entity can still hold an old login's code, so only a
+/// DeviceCodeReady status's code is ever offered.
+fn device_code_ms_left(status: &Value, now_ms: i64) -> Option<i64> {
+    status_text(status, &["verification_url", "verification_uri"])?;
+    status_text(status, &["user_code"])?;
+    let expires_at_ms = status.get("expires_at_ms").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str()?.trim().parse().ok())
+    })?;
+    let left_ms = expires_at_ms - now_ms;
+    (left_ms > DEVICE_CODE_MIN_LEFT_MS).then_some(left_ms)
+}
+
+fn sign_in_prompt(status: &Value, now_ms: i64) -> Option<String> {
+    let left_ms = device_code_ms_left(status, now_ms)?;
+    let url = status_text(status, &["verification_url", "verification_uri"])?;
+    let code = status_text(status, &["user_code"])?;
+    let within = match left_ms / 60_000 {
+        0 | 1 => "a minute".to_string(),
+        minutes => format!("{minutes} minutes"),
+    };
+    Some(format!(
+        "OpenAI Codex sign-in is required. Open {url} and enter code {code} within {within}, then send your message again."
+    ))
+}
+
+fn status_text<'a>(status: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .filter_map(|key| status.get(*key).and_then(Value::as_str))
+        .find(|value| !value.trim().is_empty())
+}
+
+/// Settles an auth status that does not allow a provider call. Returns the
+/// status when the person turns out to have signed in, and otherwise the
+/// prompt that tells them how, as the error the Session fails with.
+fn sign_in(
+    ctx: &Context,
+    temper_api_url: &str,
+    headers: &[(String, String)],
+    status: &Value,
+) -> Result<String, String> {
+    let now_ms = Context::get_time_millis();
+    let pending = match sign_in_step(status, now_ms) {
+        SignInStep::Poll => {
+            ctx.log(
+                "info",
+                "provider_auth_gate: polling the OpenAI Codex device code",
+            );
+            let polled =
+                codex_auth_post(ctx, temper_api_url, headers, "/paw/setup/openai-codex/poll")?;
+            if codex_auth_status_allows_provider_call(&polled) {
+                return Ok(codex_auth_status_value(&polled)
+                    .unwrap_or("Ready")
+                    .to_string());
+            }
+            match sign_in_step(&polled, now_ms) {
+                SignInStep::Poll => polled,
+                SignInStep::InProgress => return Err(sign_in_under_way(&polled)),
+                SignInStep::Start => start_device_login(ctx, temper_api_url, headers)?,
+            }
+        }
+        SignInStep::InProgress => return Err(sign_in_under_way(status)),
+        SignInStep::Start => start_device_login(ctx, temper_api_url, headers)?,
+    };
+    Err(sign_in_prompt(&pending, now_ms).unwrap_or_else(|| {
+        format!(
+            "OpenAI Codex sign-in is required, and starting a device login left auth status {}{}.",
+            codex_auth_status_value(&pending).unwrap_or("missing"),
+            status_text(&pending, &["last_error", "error"])
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        )
+    }))
+}
+
+fn start_device_login(
+    ctx: &Context,
+    temper_api_url: &str,
+    headers: &[(String, String)],
+) -> Result<Value, String> {
+    ctx.log(
+        "info",
+        "provider_auth_gate: starting an OpenAI Codex device login",
+    );
+    codex_auth_post(
+        ctx,
+        temper_api_url,
+        headers,
+        "/paw/setup/openai-codex/device-login",
+    )
+}
+
+fn sign_in_under_way(status: &Value) -> String {
+    format!(
+        "OpenAI Codex sign-in is under way (auth status {}); send your message again in a minute.",
+        codex_auth_status_value(status).unwrap_or("missing")
+    )
+}
+
+/// One setup-API sign-in step. The route waits for the auth module, so its
+/// answer is the status after the step.
+fn codex_auth_post(
+    ctx: &Context,
+    temper_api_url: &str,
+    headers: &[(String, String)],
+    path: &str,
+) -> Result<Value, String> {
+    let resp = ctx.http_call("POST", &format!("{temper_api_url}{path}"), headers, "{}")?;
+    if !(200..300).contains(&resp.status) {
+        return Err(format!(
+            "OpenAI Codex sign-in step {path} failed (HTTP {}): {}",
+            resp.status,
+            body_snippet(&resp.body)
+        ));
+    }
+    Ok(serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({})))
 }
 
 fn ready_params(fields: &Value, status: &str, error: &str) -> Value {
@@ -307,22 +423,7 @@ mod tests {
         });
 
         assert!(codex_auth_status_allows_provider_call(&status));
-        assert!(codex_auth_status_error(&status).is_none());
-    }
-
-    #[test]
-    fn device_code_codex_auth_blocks_with_discord_guidance() {
-        let status = json!({
-            "status": "DeviceCodeReady",
-            "configured": false,
-            "verification_uri": "https://microsoft.com/devicelogin",
-            "user_code": "ABCD-EFGH"
-        });
-
-        let error = codex_auth_status_error(&status).expect("device code should block");
-        assert!(error.contains("DM the bot"));
-        assert!(error.contains("ABCD-EFGH"));
-        assert!(error.contains("https://microsoft.com/devicelogin"));
+        assert!(!codex_auth_status_needs_person(&status));
     }
 
     const NOW_MS: i64 = 1_800_000_000_000;
@@ -408,6 +509,6 @@ mod tests {
             "configured": false
         });
 
-        assert!(codex_auth_status_blocks_before_dispatch(&status).is_some());
+        assert!(codex_auth_status_needs_person(&status));
     }
 }
