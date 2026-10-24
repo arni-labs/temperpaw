@@ -1,0 +1,38 @@
+name: replay
+
+# Whether a pull request's Temper specs would rewrite the records they already have (.github/ci/replay.py says how).
+# Temper replays each record's events through the spec it runs now, so an existing action's to, effects or from, a
+# state, a field or a whole type taken out reads every record that went through it differently. On 24 Oct 2026 this
+# came up three times in arni-labs/katagami: the Factory's v43 (every shipped release read Planned), #1023's rename
+# and #1036's Remove plan. The same check runs there; change both together.
+# A change that is meant says so in the pull request's description, one line per change with its reason:
+#   Replay intended: <the change as the check prints it>: <why>
+# Editing the description runs the check again, and the description is read when the job runs, so a re-run sees the
+# newest one. Not a required check in branch protection, but the shipper and the Factory read every check on a pull
+# request, and a red one keeps it from landing.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read # the description, read when the job runs
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      # The merge of the pull request into its base: the first parent is the base, so the diff is what merging changes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: The check's own tests
+        run: python3 -m unittest discover -s .github/ci -p 'replay_test.py'
+      - name: Existing records replay the same
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' > "$RUNNER_TEMP/body.md"
+          python3 .github/ci/replay.py HEAD^1 HEAD "$RUNNER_TEMP/body.md"
