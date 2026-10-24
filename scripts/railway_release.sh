@@ -136,14 +136,17 @@ guest() {
     2>/dev/null || jq -nc --arg c "$code" '{status: $c, ok: false, things: {}}'
 }
 
-# One guest read as "<status> <ok> <thing count, ...>", with "+" on a count the page limit cut.
+# The guest reads go to jq as files: their ids outgrow the 128 KiB a single argument may hold on Linux.
+
+# One guest read (a file) as "<status> <ok> <thing count, ...>", with "+" on a count the page limit cut.
 guest_counts() {
-  jq -r '"\(.status) \(.ok) \([.things | to_entries[] | "\(.key) \(.value.ids | length)\(if .value.whole then "" else "+" end)"] | join(", "))"' <<<"$1"
+  jq -r '"\(.status) \(.ok) \([.things | to_entries[] | "\(.key) \(.value.ids | length)\(if .value.whole then "" else "+" end)"] | join(", "))"' "$1"
 }
 
-# What the guest read lost since $1, as of $2: one line per miss, nothing when every record is still there.
+# What the guest read lost between the files $1 (before) and $2 (now): one line per miss, nothing when every record
+# is still there.
 guest_lost() {
-  jq -rn --argjson was "$1" --argjson now "$2" '
+  jq -rn --slurpfile was "$1" --slurpfile now "$2" '$was[0] as $was | $now[0] as $now |
     if $now.status != "200" or $now.ok != true then "the guest read answered \($now.status) \($now.ok)"
     else $was.things | to_entries[] | .key as $thing | .value as $w | $now.things[$thing] as $n
       | if $n == null then "the guest read has no \($thing) any more"
@@ -272,11 +275,10 @@ against_before() { # $1 deployment id
     [ "$now" = "$was" ] || misses+=("${key} answered ${now}, before ${was}")
   done < <(jq -r 'keys[]' <<<"$after")
   if [ -n "${GUEST_CHECK_URL:-}" ]; then
-    now="$(guest)"
-    was="$(cat "$STATE_DIR/guest-before.json")"
-    guest_now="$(guest_counts "$now")"
-    echo "guest read: ${guest_now} (before: $(guest_counts "$was"))"
-    lost="$(guest_lost "$was" "$now")"
+    guest >"$STATE_DIR/guest-now.json"
+    guest_now="$(guest_counts "$STATE_DIR/guest-now.json")"
+    echo "guest read: ${guest_now} (before: $(guest_counts "$STATE_DIR/guest-before.json"))"
+    lost="$(guest_lost "$STATE_DIR/guest-before.json" "$STATE_DIR/guest-now.json")"
     while IFS= read -r key; do
       [ -n "$key" ] || continue
       misses+=("$key")
@@ -408,9 +410,12 @@ case "${1:-}" in
     probes="$(probe)"
     guest_was=""
     if [ -n "${GUEST_CHECK_URL:-}" ]; then
-      # Every id the read returned, for the check; the record keeps only the counts.
+      # Every id the read returned, for the check; the record keeps only the counts. A read that failed holds no ids,
+      # so nothing after the deploy could be found missing.
       guest >"$STATE_DIR/guest-before.json"
-      guest_was="$(guest_counts "$(cat "$STATE_DIR/guest-before.json")")"
+      guest_was="$(guest_counts "$STATE_DIR/guest-before.json")"
+      jq -e '.status == "200" and .ok == true' "$STATE_DIR/guest-before.json" >/dev/null ||
+        { echo "the guest read answered ${guest_was}: no baseline, so no deploy" >&2; exit 1; }
     fi
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
