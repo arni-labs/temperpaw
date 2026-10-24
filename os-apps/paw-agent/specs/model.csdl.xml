@@ -189,6 +189,8 @@
         <Property Name="UserMessage" Type="Edm.String"/>
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
+        <Property Name="DefaultModel" Type="Edm.String"/>
+        <Property Name="DefaultProvider" Type="Edm.String"/>
         <Property Name="ProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ToolsEnabled" Type="Edm.String"/>
         <Property Name="SandboxUrl" Type="Edm.String"/>
@@ -797,6 +799,8 @@
         <Parameter Name="user_message" Type="Edm.String" Nullable="true"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="default_model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="default_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 

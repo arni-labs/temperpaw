@@ -6,14 +6,16 @@
 //! - **trigger**: Same schedule parsing, plus template substitution on
 //!   `user_message_template` (replacing `{{run_count}}`, `{{last_result}}`,
 //!   `{{now}}`), returns
-//!   `TriggerComplete { next_run_at, user_message, model, provider }`.
-//!   A job with no template keeps its own `user_message`, unchanged. A job
-//!   with no `model` or `provider` runs on the tenant's default, which the
-//!   Trigger config names as `default_llm_model` and `default_llm_provider`.
+//!   `TriggerComplete { next_run_at, user_message, model, provider,
+//!   default_model, default_provider }`. A job with no template keeps its own
+//!   `user_message`, unchanged. A job with no `model` or `provider` runs on the
+//!   tenant's current default, which the Trigger config names as
+//!   `default_llm_model` and `default_llm_provider`.
 //!
-//! A job created through OData stores the CSDL's PascalCase property names
-//! (`UserMessage`, `Model`) next to the spec's snake_case fields; the trigger
-//! reads either.
+//! OData writes a job's fields under the CSDL's PascalCase property names
+//! (`UserMessage`, `Model`), next to the spec's snake_case fields, and a run
+//! writes its settings back into the snake_case ones. So the trigger reads the
+//! PascalCase name first: it is the one OData clients edit.
 //!
 //! Mode is determined by the `mode` key in integration config.
 
@@ -66,9 +68,9 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 // message and the job's own, so a job with no template sends
                 // its message unchanged; an empty one would empty every run.
                 let template =
-                    job_field(&fields, &["user_message_template", "UserMessageTemplate"]);
+                    job_field(&fields, &["UserMessageTemplate", "user_message_template"]);
                 let user_message = if template.is_empty() {
-                    job_field(&fields, &["user_message", "UserMessage"]).to_string()
+                    job_field(&fields, &["UserMessage", "user_message"]).to_string()
                 } else {
                     let run_count = fields
                         .get("run_count")
@@ -87,19 +89,18 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 };
 
                 // Like the message, these become the run's Session settings and
-                // the job's own, so the first run writes the tenant default
-                // onto a job that had none. A Session with no model stops in
-                // context_preparer and says why; failing here instead would
-                // stop the job's schedule.
-                let model = session_setting(
+                // are written back into the job's own fields. A Session with no
+                // model stops in context_preparer and says why; failing here
+                // instead would stop the job's schedule.
+                let (model, model_is_default) = session_setting(
                     &fields,
-                    &["model", "Model"],
+                    ["Model", "model", "default_model"],
                     &ctx.config,
                     "default_llm_model",
                 );
-                let provider = session_setting(
+                let (provider, provider_is_default) = session_setting(
                     &fields,
-                    &["provider", "Provider"],
+                    ["Provider", "provider", "default_provider"],
                     &ctx.config,
                     "default_llm_provider",
                 );
@@ -121,6 +122,8 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                         "user_message": user_message,
                         "model": model,
                         "provider": provider,
+                        "default_model": if model_is_default { model.as_str() } else { "" },
+                        "default_provider": if provider_is_default { provider.as_str() } else { "" },
                     }),
                 );
             }
@@ -151,28 +154,38 @@ fn job_field<'a>(fields: &'a Value, keys: &[&str]) -> &'a str {
         .unwrap_or("")
 }
 
-/// The job's own setting, else the tenant default in `config[default_key]`.
-/// The server leaves a `{secret:...}` template in place when the tenant holds
-/// no such secret, so a value still holding one is no setting.
+/// A run's Session setting, and whether it is the tenant default in
+/// `config[default_key]`.
+///
+/// `[odata, spec, written_default]` name the job's fields. The job's own
+/// setting is its OData field, else its spec field. A run writes its setting
+/// back into the spec field and the default it used into `written_default`,
+/// so a spec field still holding that default is not the job's own: the run
+/// takes the tenant's current default, which may have changed since. The
+/// server leaves a `{secret:...}` template in place when the tenant holds no
+/// such secret, so a value still holding one is no setting.
 fn session_setting(
     fields: &Value,
-    keys: &[&str],
+    [odata, spec, written_default]: [&str; 3],
     config: &BTreeMap<String, String>,
     default_key: &str,
-) -> String {
-    let own = job_field(fields, keys).trim();
-    let setting = if own.is_empty() {
-        config
-            .get(default_key)
-            .map(|value| value.trim())
-            .unwrap_or("")
+) -> (String, bool) {
+    let spec_value = job_field(fields, &[spec]).trim();
+    let own = match job_field(fields, &[odata]).trim() {
+        "" if spec_value == job_field(fields, &[written_default]).trim() => "",
+        "" => spec_value,
+        odata_value => odata_value,
+    };
+    let (setting, is_default) = if own.is_empty() {
+        let default = config.get(default_key).map(|value| value.trim());
+        (default.unwrap_or(""), true)
     } else {
-        own
+        (own, false)
     };
     if setting.contains("{secret:") {
-        String::new()
+        (String::new(), is_default)
     } else {
-        setting.to_string()
+        (setting.to_string(), is_default)
     }
 }
 

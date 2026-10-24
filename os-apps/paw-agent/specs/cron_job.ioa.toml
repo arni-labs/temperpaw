@@ -58,6 +58,19 @@ name = "provider"
 type = "string"
 initial = ""
 
+# The tenant default the last run used for a job with no model or provider of
+# its own. A run writes its settings back into model and provider, so these
+# tell the next run that those values are the default, not the job's choice.
+[[state]]
+name = "default_model"
+type = "string"
+initial = ""
+
+[[state]]
+name = "default_provider"
+type = "string"
+initial = ""
+
 [[state]]
 name = "provider_options_json"
 type = "string"
@@ -205,7 +218,7 @@ default_llm_provider = "{secret:llm_provider}"
 name = "TriggerComplete"
 kind = "input"
 from = ["Active"]
-params = ["next_run_at", "user_message", "model", "provider"]
+params = ["next_run_at", "user_message", "model", "provider", "default_model", "default_provider"]
 hint = "Cron computation complete. Spawn Session with copied fields, schedule next run."
 effect = ["spawn('Session', 'Configure', last_session_id, copy(system_prompt, user_message, model, provider, provider_options_json, temperature, tools_enabled, soul_id, sandbox_url, max_turns))", "schedule_at('Trigger', next_run_at)"]
 
