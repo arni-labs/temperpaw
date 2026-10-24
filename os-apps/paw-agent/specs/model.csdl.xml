@@ -186,6 +186,7 @@
         <Property Name="SoulId" Type="Edm.String"/>
         <Property Name="SystemPrompt" Type="Edm.String"/>
         <Property Name="UserMessageTemplate" Type="Edm.String"/>
+        <Property Name="UserMessage" Type="Edm.String"/>
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
         <Property Name="ProviderOptionsJson" Type="Edm.String"/>
@@ -792,8 +793,10 @@
 
       <Action Name="TriggerComplete" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
-        <Parameter Name="last_session_id" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="last_result" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="next_run_at" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="user_message" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 

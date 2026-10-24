@@ -196,13 +196,16 @@ on_failure = "TriggerFailed"
 
 [action.triggers.config]
 mode = "trigger"
+# The tenant's defaults, for a job that names no model or provider.
+default_llm_model = "{secret:llm_model}"
+default_llm_provider = "{secret:llm_provider}"
 
 
 [[action]]
 name = "TriggerComplete"
 kind = "input"
 from = ["Active"]
-params = ["next_run_at", "user_message"]
+params = ["next_run_at", "user_message", "model", "provider"]
 hint = "Cron computation complete. Spawn Session with copied fields, schedule next run."
 effect = ["spawn('Session', 'Configure', last_session_id, copy(system_prompt, user_message, model, provider, provider_options_json, temperature, tools_enabled, soul_id, sandbox_url, max_turns))", "schedule_at('Trigger', next_run_at)"]
 
