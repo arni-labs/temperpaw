@@ -1337,7 +1337,7 @@ async fn upsert_secret(
     );
 
     // Cache in memory + persist to Turso
-    let _ = vault.cache_secret(&state.tenant, &req.key, req.value.clone());
+    vault.cache_secret(&state.tenant, &req.key, req.value.clone());
 
     if let Ok((ciphertext, nonce)) = vault.encrypt(req.value.as_bytes()) {
         let _ = state
@@ -1464,8 +1464,7 @@ async fn save_soul(
     match save_soul_to_temper(&client, &state.base_url, &state.tenant, &generated, &auth).await {
         Ok(()) => {
             if let Some(vault) = state.platform.server.secrets_vault.as_ref() {
-                let _ =
-                    vault.cache_secret(&state.tenant, "paw_personalized_soul", "true".to_string());
+                vault.cache_secret(&state.tenant, "paw_personalized_soul", "true".to_string());
                 if let Ok((ciphertext, nonce)) = vault.encrypt(b"true") {
                     let _ = state
                         .storage
@@ -2673,8 +2672,8 @@ async fn persist_infra_secret(
     key: &str,
     value: &str,
 ) {
-    let _ = vault.cache_secret(tenant, key, value.to_string());
-    let _ = vault.cache_platform_secret(key, value.to_string());
+    vault.cache_secret(tenant, key, value.to_string());
+    vault.cache_platform_secret(key, value.to_string());
     if let Ok((ciphertext, nonce)) = vault.encrypt(value.as_bytes()) {
         let _ = storage
             .upsert_secret(tenant, key, &ciphertext, &nonce)
@@ -3278,7 +3277,7 @@ async fn persist_discord_public_key(
     tenant: &str,
     public_key: &str,
 ) {
-    let _ = vault.cache_secret(tenant, "discord_public_key", public_key.to_string());
+    vault.cache_secret(tenant, "discord_public_key", public_key.to_string());
     if let Ok((ct, nc)) = vault.encrypt(public_key.as_bytes()) {
         let _ = storage
             .upsert_secret(tenant, "discord_public_key", &ct, &nc)
@@ -3452,14 +3451,14 @@ async fn connect_discord(
         }
     };
 
-    let _ = vault.cache_secret(&state.tenant, "discord_bot_token", req.bot_token.clone());
+    vault.cache_secret(&state.tenant, "discord_bot_token", req.bot_token.clone());
     if let Ok((ct, nc)) = vault.encrypt(req.bot_token.as_bytes()) {
         let _ = state
             .storage
             .upsert_secret(&state.tenant, "discord_bot_token", &ct, &nc)
             .await;
     }
-    let _ = vault.cache_secret(
+    vault.cache_secret(
         &state.tenant,
         "discord_public_key",
         resolved_public_key.clone(),
@@ -3471,7 +3470,7 @@ async fn connect_discord(
         ("discord_forum_channel_id", req.forum_channel_id.clone()),
     ] {
         if let Some(value) = value {
-            let _ = vault.cache_secret(&state.tenant, key, value.clone());
+            vault.cache_secret(&state.tenant, key, value.clone());
             if let Ok((ct, nc)) = vault.encrypt(value.as_bytes()) {
                 let _ = state
                     .storage
@@ -3520,8 +3519,8 @@ async fn connect_slack(
 ) -> impl IntoResponse {
     // Save tokens to vault + Turso
     if let Some(vault) = state.platform.server.secrets_vault.as_ref() {
-        let _ = vault.cache_secret(&state.tenant, "slack_bot_token", req.bot_token.clone());
-        let _ = vault.cache_secret(&state.tenant, "slack_app_token", req.app_token.clone());
+        vault.cache_secret(&state.tenant, "slack_bot_token", req.bot_token.clone());
+        vault.cache_secret(&state.tenant, "slack_app_token", req.app_token.clone());
         if let Ok((ct, nc)) = vault.encrypt(req.bot_token.as_bytes()) {
             let _ = state
                 .storage
