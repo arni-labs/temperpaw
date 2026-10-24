@@ -1041,7 +1041,7 @@
     "name": "[Temper] Native Blob Transport Duration Spike",
     "type": "query alert",
     "query": "avg(last_15m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} * clamp_max(count:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class}.as_count() / 2, 1) > 2000",
-    "message": "Native BlobStore transport duration exceeds 1s. Check operation/backend/status breakdown, R2/S3 or local filesystem health, and whether File `$value` requests are waiting on durable blob writes.\n\n@slack-temperpaw-alerts",
+    "message": "Native BlobStore transport p95 is above 2s (warning at 1s) over 15 minutes for an operation, backend, outcome and status. A group with fewer than two requests in an interval counts at half its p95, so one slow request does not alert. Check operation/backend/status breakdown, R2/S3 or local filesystem health, and whether File `$value` requests are waiting on durable blob writes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1077,7 +1077,7 @@
     "name": "[Temper] Native Blob Transport p95 Regression",
     "type": "query alert",
     "query": "avg(last_30m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} * clamp_max(count:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class}.as_count() / 2, 1) > 1500",
-    "message": "Native BlobStore transport p95 is above 750ms. This is the measured File `$value` residual split between durable blob transport and actor/event work; pivot by operation/backend/status before changing data-plane architecture.\n\n@slack-temperpaw-alerts",
+    "message": "Native BlobStore transport p95 is above 1.5s (warning at 1s) over 30 minutes for an operation, backend, outcome and status. A group with fewer than two requests in an interval counts at half its p95, so one slow request does not alert. This is the measured File `$value` residual split between durable blob transport and actor/event work; pivot by operation/backend/status before changing data-plane architecture.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"

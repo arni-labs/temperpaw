@@ -8,7 +8,17 @@ const LEGACY_IDENTITY_TERMS: [&str; 8] = [
     "OPENPAW", "OpenPAW", "OpenPaw", "Open Paw", "openpaw", "open paw", "open_paw", "open-paw",
 ];
 
-const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 17] = [
+const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 19] = [
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "Check the Railway service openpaw before the app.",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "service:openpaw status:error",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
     (
         "crates/temperpaw/tests/datadog_observability_contract.rs",
         "\"openpaw.\"",

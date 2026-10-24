@@ -1400,36 +1400,62 @@ fn managed_session_events_expose_queryable_bridge_context() {
 
 /// Reconcile deletes only monitors TemperPaw owns: the team tag or a name from the file. On 24 Oct 2026 a dry run
 /// found that matching words in a monitor's text would have deleted seven of Katagami's own monitors, whose
-/// runbooks name the Railway service.
+/// runbooks name the Railway service. A Datadog UI save turns "metric alert" into "query alert", and that must
+/// not make a deploy delete and recreate the monitor.
 #[test]
-fn datadog_monitor_deploy_reconciles_only_monitors_it_owns() {
-    let script = std::fs::read_to_string(repo_root().join("scripts/deploy_monitors.py"))
-        .expect("deploy_monitors.py should be readable");
-
-    for required in [
-        "team:temperpaw",
-        "is_temperpaw_owned_monitor",
-        "datadog_request(",
-        "\"DELETE\"",
-        "Delete orphan monitor",
-    ] {
-        assert!(
-            script.contains(required),
-            "Datadog monitor deploy must include reconciliation clause `{required}`"
-        );
-    }
-
-    let ownership = script
-        .split("\ndef is_temperpaw_owned_monitor")
-        .nth(1)
-        .and_then(|rest| rest.split("\ndef ").next())
-        .expect("deploy_monitors.py should define is_temperpaw_owned_monitor");
-    for text_field in ["message", "query", "search_text"] {
-        assert!(
-            !ownership.contains(text_field),
-            "monitor ownership must not be read from `{text_field}`: {ownership}"
-        );
-    }
+fn datadog_monitor_deploy_owns_only_tagged_or_file_named_monitors() {
+    const PROBE: &str = r#"
+import importlib.util, json, sys, types
+sys.modules["requests"] = types.SimpleNamespace(Response=object, HTTPError=Exception)
+spec = importlib.util.spec_from_file_location("deploy_monitors", sys.argv[1])
+deploy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deploy)
+monitors = json.loads(sys.argv[2])
+print(json.dumps({
+    "owned": [deploy.is_temperpaw_owned_monitor(m, {"[Temper] In The File"}) for m in monitors],
+    "same_type": [deploy.same_monitor_type(*pair) for pair in json.loads(sys.argv[3])],
+}))
+"#;
+    let monitors = serde_json::json!([
+        {
+            "name": "[Katagami] Temper is unreachable",
+            "message": "Check the Railway service openpaw before the app.",
+            "query": "logs(\"service:openpaw status:error\").last(\"5m\") > 0",
+            "tags": ["katagami"]
+        },
+        {"name": "[Temper] Retired Monitor", "message": "", "query": "", "tags": ["team:temperpaw"]},
+        {"name": "[Temper] In The File", "message": "", "query": "", "tags": []}
+    ]);
+    let type_pairs = serde_json::json!([
+        ["query alert", "metric alert"],
+        ["metric alert", "query alert"],
+        ["log alert", "log alert"],
+        ["log alert", "metric alert"]
+    ]);
+    let output = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(PROBE)
+        .arg(repo_root().join("scripts/deploy_monitors.py"))
+        .arg(monitors.to_string())
+        .arg(type_pairs.to_string())
+        .output()
+        .expect("python3 should run deploy_monitors.py");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        answer["owned"],
+        serde_json::json!([false, true, true]),
+        "only the team tag or a name from the file makes a monitor TemperPaw's"
+    );
+    assert_eq!(
+        answer["same_type"],
+        serde_json::json!([true, true, true, false]),
+        "metric alert and query alert are one type; other types still differ"
+    );
 }
 
 #[test]
