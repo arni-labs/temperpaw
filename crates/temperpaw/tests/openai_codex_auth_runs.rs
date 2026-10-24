@@ -1,8 +1,10 @@
 //! OpenAICodexAuth sign-in under the real spec, an in-process Temper server and
 //! the packaged openai_codex_auth module, with OpenAI answered by a simulated
-//! host. Each action's declared module runs and the callback it names is
-//! dispatched, the way the server chains them inline, so a path only passes
-//! through moves the spec declares.
+//! host. The server's own WASM host always makes real requests, so the server
+//! holds the spec's moves without their triggers and this test runs the module
+//! each move declares, then dispatches the callback it names, the way the
+//! server chains them inline. A path only passes through moves the spec
+//! declares.
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use temper_runtime::{ActorSystem, tenant::TenantId};
@@ -44,9 +46,46 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+/// The spec without its `[[action.triggers]]` blocks, so the server runs no
+/// module of its own.
+fn ioa_without_triggers(ioa: &str) -> String {
+    let mut out = String::new();
+    let mut in_trigger = false;
+    for line in ioa.lines() {
+        let header = line.trim_start();
+        if header.starts_with("[[action.triggers]]") {
+            in_trigger = true;
+            continue;
+        }
+        if in_trigger && header.starts_with("[[") {
+            in_trigger = false;
+        }
+        if !in_trigger {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 async fn server() -> ServerState {
     let xml = std::fs::read_to_string(app().join("specs/model.csdl.xml")).unwrap();
-    let ioa = std::fs::read_to_string(app().join("specs/openai_codex_auth.ioa.toml")).unwrap();
+    let full = std::fs::read_to_string(app().join("specs/openai_codex_auth.ioa.toml")).unwrap();
+    let ioa = ioa_without_triggers(&full);
+    let held = temper_spec::automaton::parse_automaton(&ioa).unwrap();
+    let mut moves = spec().actions;
+    for action in &mut moves {
+        action.triggers.clear();
+    }
+    assert_eq!(
+        serde_json::to_value(&held.actions).unwrap(),
+        serde_json::to_value(&moves).unwrap(),
+        "only the triggers are left out"
+    );
+    assert_eq!(
+        serde_json::to_value(&held.state_timeouts).unwrap(),
+        serde_json::to_value(spec().state_timeouts).unwrap()
+    );
     let mut registry = SpecRegistry::new();
     registry.register_tenant(
         "default",
