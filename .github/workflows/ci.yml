@@ -98,6 +98,7 @@ jobs:
           cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_start/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_poll/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-agent/wasm/openai-chat-wire/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-agent/wasm/openai-codex-wire/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-agent/wasm/monty_repl/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-media/wasm/openrouter_image_generate/Cargo.toml --quiet
       - name: Dashboard build

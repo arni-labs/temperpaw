@@ -215,4 +215,20 @@ mod tests {
         assert!(!is_openai_codex_token_expired_error(500, body));
         assert!(!is_openai_codex_token_expired_error(401, "{}"));
     }
+
+    #[test]
+    fn codex_revoked_or_invalidated_token_routes_to_auth_recovery() {
+        // The 401 body OpenAI Codex returned in production on 2 and 3 June.
+        let revoked = r#"{"error":{"message":"Encountered invalidated oauth token for user, failing request","type":null,"code":"token_revoked","param":null},"status":401}"#;
+        // The same refusal under the token_invalidated code.
+        let invalidated = r#"{"error":{"message":"Your authentication token has been invalidated.","code":"token_invalidated"}}"#;
+
+        assert!(is_openai_codex_token_expired_error(401, revoked));
+        assert!(is_openai_codex_token_expired_error(401, invalidated));
+        assert!(!is_openai_codex_token_expired_error(403, revoked));
+        assert!(!is_openai_codex_token_expired_error(
+            401,
+            r#"{"error":{"message":"Missing scope","code":"insufficient_scope"}}"#
+        ));
+    }
 }
