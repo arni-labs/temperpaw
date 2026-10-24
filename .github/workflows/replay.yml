@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The merge of the pull request into its base: the first parent is the base, so the diff is what merging changes.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 2
       - name: The check's own tests
