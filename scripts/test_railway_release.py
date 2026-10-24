@@ -52,6 +52,44 @@ class RailwayReleaseTests(unittest.TestCase):
                 else:
                     self.assertFalse(output.exists(), 'rejected release must not export a deployment SHA')
 
+    def test_packaging_failure_recovery_and_result(self):
+        workflow = (ROOT / '.github/workflows/railway-redeploy.yml').read_text()
+        package = workflow.split('      - name: Build packaged', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('id: package', package)
+        self.assertIn('PACKAGE_OUTCOME: ${{ steps.package.outcome }}', workflow)
+        rollback = workflow.split('        id: rollback\n', 1)[1].split('        run:', 1)[0]
+        condition = rollback.split('        if: ', 1)[1].strip()
+        mode_expr = "(inputs.step == 'check_staging' && 'check' || inputs.mode)"
+        selection = workflow.split('          if [ "${{ ' + mode_expr + ' }}" = check ]; then', 1)[1].split('          read_json()', 1)[0]
+        for mode, package_outcome, e2e, recovery, expected in [
+            ('deploy', 'failure', 'skipped', 'success', 'rolled_back'),
+            ('deploy', 'failure', 'skipped', 'failure', 'rollback_failed'),
+            ('deploy', 'failure', 'skipped', 'skipped', 'failed'),
+            ('check', 'failure', 'skipped', 'skipped', 'check-failed'),
+            ('check', 'success', 'failure', 'skipped', 'check-failed'),
+            ('deploy', 'success', 'success', 'skipped', 'verified'),
+            ('deploy', 'skipped', 'skipped', 'skipped', 'verified'),
+            ('check', 'skipped', 'skipped', 'skipped', 'checked'),
+        ]:
+            with self.subTest(mode=mode, package=package_outcome, recovery=recovery):
+                # Evaluate the workflow's recovery predicate with concrete step outcomes.
+                expr = condition.replace('always()', 'True').replace(mode_expr, repr(mode))
+                for step, outcome in [('deploy', 'success'), ('check', 'success'),
+                                      ('package', package_outcome), ('e2e', e2e)]:
+                    expr = expr.replace('steps.' + step + '.outcome', repr(outcome))
+                self.assertEqual(eval(expr.replace('&&', ' and ').replace('||', ' or '),
+                                      {'__builtins__': {}}),
+                                 mode == 'deploy' and package_outcome == 'failure')
+                script = 'if [ "' + mode + '" = check ]; then' + selection + '\nprintf "%s" "$result"'
+                env = dict(os.environ, DEPLOY_OUTCOME='success', CHECK_OUTCOME='success',
+                           PACKAGE_OUTCOME=package_outcome, E2E_OUTCOME=e2e,
+                           ROLLBACK_OUTCOME=recovery)
+                result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+                # These are precisely the two results the Factory maps to ok.
+                self.assertEqual(result.stdout in ('verified', 'checked'), package_outcome != 'failure' and e2e != 'failure')
+
     def test_proxy_cleanup_in_conditional(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
         function = 'db_close()' + script.split('db_close()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'

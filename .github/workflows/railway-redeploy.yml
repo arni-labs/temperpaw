@@ -230,6 +230,7 @@ jobs:
           bash scripts/railway_release.sh check
 
       - name: Build packaged ArtifactBatch WASM for hash proof
+        id: package
         if: inputs.run_artifact_batch_e2e == 'true' && steps.check.outcome == 'success'
         run: |
           set -euo pipefail
@@ -248,7 +249,7 @@ jobs:
 
       - name: Go back to the image that ran before
         id: rollback
-        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.e2e.outcome == 'failure')
+        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.package.outcome == 'failure' || steps.e2e.outcome == 'failure')
         run: bash scripts/railway_release.sh rollback
 
       - name: The release record
@@ -257,6 +258,7 @@ jobs:
         env:
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -267,10 +269,10 @@ jobs:
           set -uo pipefail
           # What the release captain copies onto the Factory's Release (this run writes nothing there).
           if [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = check ]; then
-            result=$([ "${CHECK_OUTCOME}" = success ] && echo checked || echo check-failed)
+            result=$([ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ] && echo checked || echo check-failed)
           elif [ "${ROLLBACK_OUTCOME}" = success ]; then result=rolled_back
           elif [ "${ROLLBACK_OUTCOME}" = failure ]; then result=rollback_failed
-          elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
+          elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
           else result=failed; fi
           read_json() { [ -f "${STATE_DIR:-/nonexistent}/$1.json" ] && jq -c . "${STATE_DIR}/$1.json" || echo null; }
           record="$(jq -n --arg result "$result" --arg environment "${DEPLOY_ENV}" --arg image_tag "${IMAGE_TAG}" \
