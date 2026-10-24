@@ -213,7 +213,11 @@ async fn a_poll_of_a_code_with_no_time_left_gets_a_new_code() {
             &server,
             "PollDeviceLogin",
             openai(&[
-                (DEVICE_TOKEN_URL, 403, json!({ "error": "authorization_pending" })),
+                (
+                    DEVICE_TOKEN_URL,
+                    403,
+                    json!({ "error": "authorization_pending" }),
+                ),
                 new_code(),
             ]),
         )
@@ -231,7 +235,11 @@ async fn a_poll_of_a_code_with_time_left_keeps_it() {
     let after = settle(
         &server,
         "PollDeviceLogin",
-        openai(&[(DEVICE_TOKEN_URL, 403, json!({ "error": "authorization_pending" }))]),
+        openai(&[(
+            DEVICE_TOKEN_URL,
+            403,
+            json!({ "error": "authorization_pending" }),
+        )]),
     )
     .await;
     assert_eq!(after["status"], "DeviceCodeReady", "{after}");
@@ -271,12 +279,18 @@ async fn a_refresh_openai_refuses_gets_a_new_code() {
 async fn a_login_with_no_refresh_token_gets_a_code_even_after_a_disconnect() {
     let never_signed_in = server().await;
     let after = settle(&never_signed_in, "EnsureFresh", openai(&[new_code()])).await;
-    assert_eq!(after["status"], "DeviceCodeReady", "never signed in: {after}");
+    assert_eq!(
+        after["status"], "DeviceCodeReady",
+        "never signed in: {after}"
+    );
 
     let disconnected = server().await;
     act(&disconnected, "Disconnect", json!({})).await;
     let after = settle(&disconnected, "EnsureFresh", openai(&[new_code()])).await;
-    assert_eq!(after["status"], "DeviceCodeReady", "after a disconnect: {after}");
+    assert_eq!(
+        after["status"], "DeviceCodeReady",
+        "after a disconnect: {after}"
+    );
     assert_eq!(after["fields"]["user_code"], "NEW-CODE");
 }
 
