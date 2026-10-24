@@ -87,6 +87,7 @@ jobs:
           cargo test --locked -p temperpaw --quiet
           cargo test --locked -p paw-codex-worker --quiet
           cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-channels/wasm/route_message/Cargo.toml --quiet
           # os-app WASM modules are their own workspaces, so `-p temperpaw` does
           # not reach them. These five carry the OTS trajectory contract — the
           # emitter that reads the record, the two writers that produce it, and
@@ -98,7 +99,6 @@ jobs:
           cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_start/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_poll/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-agent/wasm/openai-chat-wire/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-channels/wasm/route_message/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-agent/wasm/monty_repl/Cargo.toml --quiet
           cargo test --manifest-path os-apps/paw-media/wasm/openrouter_image_generate/Cargo.toml --quiet
       - name: Dashboard build
