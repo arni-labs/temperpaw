@@ -1450,7 +1450,7 @@ fn deploy_configures_postgres_dbm_agent_when_datadog_is_enabled() {
 
     for required in [
         "datadog-postgres-agent",
-        "datadog/agent:7",
+        "datadog/agent:7.84.5",
         "dbm: true",
         "PGHOST=${{Postgres.PGHOST}}",
         "PGPASSWORD=${{Postgres.PGPASSWORD}}",
@@ -1635,7 +1635,7 @@ fn setup_api_can_ensure_railway_datadog_runtime_agent_without_exposing_tokens() 
         "ensure_datadog_runtime_agent",
         "serviceCreate",
         "ServiceSourceInput",
-        "datadog/agent:7",
+        "datadog/agent:7.84.5",
         "datadog-runtime-agent",
         "railway_datadog_runtime_agent_service_id",
         "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",

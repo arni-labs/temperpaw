@@ -46,7 +46,9 @@ const OPENAI_CODEX_EXPIRES_AT_MS: &str = "openai_codex_expires_at_ms";
 const OPENAI_CODEX_ACCOUNT_ID: &str = "openai_codex_account_id";
 const RAILWAY_GRAPHQL_URL: &str = "https://backboard.railway.com/graphql/v2";
 const DATADOG_RUNTIME_AGENT_SERVICE_NAME: &str = "datadog-runtime-agent";
-const DATADOG_RUNTIME_AGENT_IMAGE: &str = "datadog/agent:7";
+// An exact Agent version, never the floating `7`: on 22 Oct 2026 a routine redeploy pulled 7.78.4 -> 7.84.5 unreviewed and
+// moved what Datadog reports for Temper's histogram percentiles. An upgrade is a change to this line (and the CLI's).
+const DATADOG_RUNTIME_AGENT_IMAGE: &str = "datadog/agent:7.84.5";
 const DATADOG_RUNTIME_AGENT_HOST: &str = "datadog-runtime-agent.railway.internal";
 const DEFAULT_GENESIS_REGISTRY_URL: &str = "https://genesis-production-164d.up.railway.app";
 
