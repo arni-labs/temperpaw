@@ -325,6 +325,82 @@ mod tests {
         assert!(error.contains("https://microsoft.com/devicelogin"));
     }
 
+    const NOW_MS: i64 = 1_800_000_000_000;
+
+    fn device_code(status: &str, expires_in_ms: i64) -> Value {
+        json!({
+            "status": status,
+            "configured": false,
+            "verification_url": "https://auth.openai.com/codex/device",
+            "user_code": "ABCD-EFGH",
+            "expires_at_ms": (NOW_MS + expires_in_ms).to_string(),
+        })
+    }
+
+    #[test]
+    fn a_usable_device_code_is_polled_before_anyone_is_asked_again() {
+        // The person may have entered it already; polling completes the login.
+        assert_eq!(
+            sign_in_step(&device_code("DeviceCodeReady", 10 * 60_000), NOW_MS),
+            SignInStep::Poll
+        );
+    }
+
+    #[test]
+    fn a_sign_in_with_no_usable_code_starts_a_fresh_device_login() {
+        for status in [
+            device_code("DeviceCodeReady", -60_000),
+            device_code("DeviceCodeReady", 10_000),
+            json!({"status": "DeviceCodeReady", "configured": false}),
+            // A Failed entity can still hold the code of an old login.
+            device_code("Failed", -20 * 86_400_000),
+            json!({"status": "Failed", "configured": true, "last_error": "refresh_token_reused"}),
+            json!({"status": "Idle", "configured": false}),
+            json!({"status": "Disconnected", "configured": false}),
+            json!({"configured": false}),
+        ] {
+            assert_eq!(sign_in_step(&status, NOW_MS), SignInStep::Start, "{status}");
+        }
+    }
+
+    #[test]
+    fn a_sign_in_already_under_way_is_left_to_finish() {
+        for status in [
+            json!({"status": "Starting", "configured": false}),
+            json!({"status": "Polling", "configured": false}),
+            json!({"status": "Refreshing", "configured": false}),
+        ] {
+            assert_eq!(
+                sign_in_step(&status, NOW_MS),
+                SignInStep::InProgress,
+                "{status}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sign_in_prompt_gives_the_link_the_code_and_the_time_left() {
+        let prompt = sign_in_prompt(
+            &device_code("DeviceCodeReady", 14 * 60_000 + 30_000),
+            NOW_MS,
+        )
+        .expect("a usable code makes a prompt");
+        assert!(
+            prompt.contains("https://auth.openai.com/codex/device"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("ABCD-EFGH"), "{prompt}");
+        assert!(prompt.contains("14 minutes"), "{prompt}");
+        assert!(prompt.contains("send your message again"), "{prompt}");
+        // Nothing handles a `codex auth` command, so the prompt never names one.
+        assert!(!prompt.contains("codex auth"), "{prompt}");
+
+        assert_eq!(
+            sign_in_prompt(&device_code("DeviceCodeReady", -60_000), NOW_MS),
+            None
+        );
+    }
+
     #[test]
     fn unconfigured_refreshing_codex_auth_blocks_before_dispatch() {
         let status = json!({
