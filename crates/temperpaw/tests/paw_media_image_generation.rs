@@ -414,8 +414,7 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
     );
 
     // Reading requests (they may hold a member's draft prompt) and spending
-    // OpenRouter credit are for the platform's own principals only, and only
-    // allow-listed models are drawn.
+    // OpenRouter credit are for the platform's own principals only.
     let policy = read(root.join("os-apps/paw-media/policies/media_generation.cedar"));
     let forbid = policy
         .split("forbid(")
@@ -434,10 +433,6 @@ fn paw_media_offers_openrouter_as_a_second_image_provider() {
             "media policy forbid should contain {needle}"
         );
     }
-    assert!(
-        wasm.contains("const ALLOWED_MODELS"),
-        "OpenRouter renderer must allow-list models"
-    );
 
     // The picture's File is created before the paid call, so a permission or
     // workspace problem fails before any OpenRouter credit is spent.

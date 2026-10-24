@@ -734,7 +734,7 @@ async fn load_accounts(state: &AuthState) -> Result<BTreeMap<String, LocalAccoun
 
 async fn save_accounts(state: &AuthState, accounts: &BTreeMap<String, LocalAccount>) -> Result<()> {
     let payload = serde_json::to_string(accounts).context("Failed to encode auth accounts")?;
-    let _ = state
+    state
         .vault
         .cache_secret(state.tenant(), ACCOUNTS_SECRET_KEY, payload.clone());
 

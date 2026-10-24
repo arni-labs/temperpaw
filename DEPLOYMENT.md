@@ -90,7 +90,7 @@ curl -fsS -X POST \
 ```
 
 That governed endpoint creates or reuses `datadog-runtime-agent` from
-`datadog/agent:7`, sets Agent and app Datadog variables, stores the Runtime
+`datadog/agent:7.84.5` (an exact version: a redeploy never upgrades it), sets Agent and app Datadog variables, stores the Runtime
 Agent service id, and redeploys the Agent plus the app. It does not return the
 Railway token or Datadog API key.
 
