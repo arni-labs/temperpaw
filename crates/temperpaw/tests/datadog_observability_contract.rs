@@ -397,7 +397,7 @@ fn monitors_cover_session_trace_llmobs_and_postgres_dbm_health() {
         "[Temper] Profiler Upload Failures",
         "trace-analytics alert",
         "@observability_event:temperpaw.agent.session -trace_id:*",
-        "@module_name:provider_caller",
+        "@gen_ai.system:*",
         "postgresql.queries.count",
         "type:sql",
         "@db.system:postgresql",
@@ -572,7 +572,6 @@ fn datadog_covers_temperfs_blob_and_document_services() {
         "observability_event:temperpaw.fs",
         "fs.outcome:error",
         "temper_blob_native_transport_duration_ms",
-        "temper_blob_transport_wait_duration_ms",
         "temper_session_large_content_externalized_total",
     ] {
         assert!(
@@ -1399,16 +1398,16 @@ fn managed_session_events_expose_queryable_bridge_context() {
     }
 }
 
+/// Reconcile deletes only monitors TemperPaw owns: the team tag or a name from the file. On 24 Oct 2026 a dry run
+/// found that matching words in a monitor's text would have deleted seven of Katagami's own monitors, whose
+/// runbooks name the Railway service.
 #[test]
-fn datadog_monitor_deploy_reconciles_untagged_legacy_monitors() {
+fn datadog_monitor_deploy_reconciles_only_monitors_it_owns() {
     let script = std::fs::read_to_string(repo_root().join("scripts/deploy_monitors.py"))
         .expect("deploy_monitors.py should be readable");
 
     for required in [
-        "legacy_openpaw_monitor",
         "team:temperpaw",
-        "slack-openpaw-alerts",
-        "service:openpaw",
         "is_temperpaw_owned_monitor",
         "datadog_request(",
         "\"DELETE\"",
@@ -1416,7 +1415,19 @@ fn datadog_monitor_deploy_reconciles_untagged_legacy_monitors() {
     ] {
         assert!(
             script.contains(required),
-            "Datadog monitor deploy must include untagged legacy reconciliation clause `{required}`"
+            "Datadog monitor deploy must include reconciliation clause `{required}`"
+        );
+    }
+
+    let ownership = script
+        .split("\ndef is_temperpaw_owned_monitor")
+        .nth(1)
+        .and_then(|rest| rest.split("\ndef ").next())
+        .expect("deploy_monitors.py should define is_temperpaw_owned_monitor");
+    for text_field in ["message", "query", "search_text"] {
+        assert!(
+            !ownership.contains(text_field),
+            "monitor ownership must not be read from `{text_field}`: {ownership}"
         );
     }
 }
