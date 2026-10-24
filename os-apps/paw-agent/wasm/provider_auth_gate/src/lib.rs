@@ -223,7 +223,7 @@ fn device_code_ms_left(status: &Value, now_ms: i64) -> Option<i64> {
             .or_else(|| value.as_str()?.trim().parse().ok())
     })?;
     let left_ms = expires_at_ms - now_ms;
-    (left_ms > DEVICE_CODE_MIN_LEFT_MS).then_some(left_ms)
+    Some(left_ms)
 }
 
 fn sign_in_prompt(status: &Value, now_ms: i64) -> Option<String> {
