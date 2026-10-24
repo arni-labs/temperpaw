@@ -1548,7 +1548,7 @@ fn unwritten_first_turn<'a>(
         fields,
         &["session_entries_materialized", "SessionEntriesMaterialized"],
     )
-    .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"));
+    .is_some_and(|_| false);
     if !unwritten || session_leaf_id != format!("u-{session_id}-0") {
         return None;
     }
