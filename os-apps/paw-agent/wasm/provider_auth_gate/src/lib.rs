@@ -1,10 +1,11 @@
 //! Provider Auth Gate — ensures subscription OAuth is fresh before LLM calls.
 //!
-//! When OpenAI Codex needs a person to sign in, the gate polls a device code
-//! that is still usable (they may have entered it already) and otherwise
-//! starts a fresh device login. The Session then fails with the link, the
-//! code and how long it lasts; sending the message again after signing in
-//! polls the code and continues.
+//! The gate makes one OpenAICodexAuth move for the auth status it reads:
+//! PollDeviceLogin while a device code is out, and the configured refresh
+//! otherwise. The auth spec's callbacks do the rest, so the move ends with the
+//! login ready or with a device code a person can still enter. When it is not
+//! ready, the Session fails with the link, the code and how long it lasts;
+//! sending the message again after signing in polls the code and continues.
 
 use temper_wasm_sdk::prelude::*;
 use wasm_helpers::{resolve_temper_api_url, runtime_headers_as, timestamp_millis_string};
@@ -39,68 +40,51 @@ fn run_provider_auth_gate() -> Result<(), String> {
         Some("application/json"),
     );
 
-    if auth_action == "EnsureFresh" {
-        let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
-        let resp = ctx.http_call("GET", &status_url, &headers, "")?;
-        if (200..300).contains(&resp.status) {
-            let parsed: Value = serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}));
-            let status = codex_auth_status_value(&parsed).unwrap_or("");
-            if codex_auth_status_allows_provider_call(&parsed) {
-                ctx.log(
-                    "info",
-                    &format!(
-                        "provider_auth_gate: OpenAICodexAuth status is {status}; skipping EnsureFresh"
-                    ),
-                );
-                set_success_result(ready_action, &ready_params(&fields, status, ""));
-                return Ok(());
-            }
-            if codex_auth_status_needs_person(&parsed) {
-                let status = sign_in(&ctx, &temper_api_url, &headers, &parsed)?;
-                set_success_result(ready_action, &ready_params(&fields, &status, ""));
-                return Ok(());
-            }
-        }
-    }
-
-    let url = format!("{temper_api_url}{}", auth_endpoint_path(auth_action));
-
-    ctx.log(
-        "info",
-        &format!("provider_auth_gate: dispatching OpenAICodexAuth.{auth_action}"),
-    );
-    let resp = ctx.http_call("POST", &url, &headers, "{}")?;
-    let parsed: Value = if (200..300).contains(&resp.status) {
+    let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
+    let resp = ctx.http_call("GET", &status_url, &headers, "")?;
+    let current: Value = if (200..300).contains(&resp.status) {
         serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}))
     } else {
-        // The refresh moves are not moves from every state (none leaves
-        // DeviceCodeReady), so a refused one can still mean a person has to
-        // sign in.
-        let refused = format!(
-            "OpenAI Codex auth {auth_action} failed (HTTP {}): {}",
-            resp.status,
-            body_snippet(&resp.body)
-        );
-        let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
-        let current = ctx
-            .http_call("GET", &status_url, &headers, "")
-            .ok()
-            .filter(|status| (200..300).contains(&status.status))
-            .and_then(|status| serde_json::from_str::<Value>(&status.body).ok());
-        match current {
-            Some(current) if !codex_auth_status_allows_provider_call(&current) => current,
-            _ => return Err(refused),
-        }
+        json!({})
     };
-    let status = if codex_auth_status_allows_provider_call(&parsed) {
-        codex_auth_status_value(&parsed)
-            .unwrap_or("Ready")
-            .to_string()
-    } else {
-        sign_in(&ctx, &temper_api_url, &headers, &parsed)?
+    let action = match auth_move(&current, auth_action) {
+        AuthMove::Proceed => {
+            let status = codex_auth_status_value(&current).unwrap_or("Ready");
+            ctx.log(
+                "info",
+                &format!(
+                    "provider_auth_gate: OpenAICodexAuth status is {status}; skipping {auth_action}"
+                ),
+            );
+            set_success_result(ready_action, &ready_params(&fields, status, ""));
+            return Ok(());
+        }
+        AuthMove::Wait => return Err(sign_in_under_way(&current)),
+        AuthMove::Dispatch(action) => action,
     };
 
-    set_success_result(ready_action, &ready_params(&fields, &status, ""));
+    let url = format!("{temper_api_url}{}", auth_endpoint_path(action));
+    ctx.log(
+        "info",
+        &format!("provider_auth_gate: dispatching OpenAICodexAuth.{action}"),
+    );
+    let resp = ctx.http_call("POST", &url, &headers, "{}")?;
+    if !(200..300).contains(&resp.status) {
+        return Err(format!(
+            "OpenAI Codex auth {action} failed (HTTP {}): {}",
+            resp.status,
+            body_snippet(&resp.body)
+        ));
+    }
+
+    let parsed: Value = serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}));
+    if !codex_auth_status_allows_provider_call(&parsed) {
+        // The route answers once the move and its callbacks are done, so the
+        // time left is measured from now, not from before the request.
+        return Err(sign_in_needed(&parsed, Context::get_time_millis()));
+    }
+    let status = codex_auth_status_value(&parsed).unwrap_or("Ready");
+    set_success_result(ready_action, &ready_params(&fields, status, ""));
     Ok(())
 }
 
@@ -141,6 +125,7 @@ fn auth_endpoint_path(auth_action: &str) -> &'static str {
     match auth_action {
         "ForceRefresh" => "/paw/setup/openai-codex/force-refresh",
         "Refresh" => "/paw/setup/openai-codex/refresh",
+        "PollDeviceLogin" => "/paw/setup/openai-codex/poll",
         _ => "/paw/setup/openai-codex/ensure-fresh",
     }
 }
@@ -167,69 +152,66 @@ fn codex_auth_status_is_configured(parsed: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the status waits on a person or on a sign-in step under way, so
-/// dispatching a refresh would not help. A Failed or Idle entity may still
-/// refresh from its stored tokens, so those dispatch first.
-fn codex_auth_status_needs_person(parsed: &Value) -> bool {
-    if codex_auth_status_allows_provider_call(parsed) {
-        return false;
-    }
-    codex_auth_status_value(parsed).is_some_and(|status| {
-        matches!(
-            status.to_ascii_lowercase().as_str(),
-            "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected"
-        )
-    })
-}
-
-/// What the gate does with an auth status that needs a person to sign in.
+/// The one OpenAICodexAuth move the gate makes for an auth status. What
+/// follows the move is the auth spec's declared callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SignInStep {
-    /// A device code is out and still usable: poll it, since the person may
-    /// have entered it already.
-    Poll,
+enum AuthMove<'a> {
+    /// The status allows a provider call already.
+    Proceed,
     /// A sign-in step is being started, polled or refreshed right now.
-    InProgress,
-    /// No usable device code: start a device login for a fresh one.
-    Start,
+    Wait,
+    /// Dispatch this OpenAICodexAuth action.
+    Dispatch(&'a str),
 }
 
-/// A person needs time to open the link and type the code, so a code with
-/// less than this left would run out while they enter it.
-const DEVICE_CODE_MIN_LEFT_MS: i64 = 30_000;
-
-fn sign_in_step(status: &Value, now_ms: i64) -> SignInStep {
+fn auth_move<'a>(status: &Value, auth_action: &'a str) -> AuthMove<'a> {
+    if auth_action == "EnsureFresh" && codex_auth_status_allows_provider_call(status) {
+        return AuthMove::Proceed;
+    }
     match codex_auth_status_value(status)
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("devicecodeready") if device_code_ms_left(status, now_ms).is_some() => {
-            SignInStep::Poll
-        }
-        Some("starting" | "polling" | "refreshing") => SignInStep::InProgress,
-        _ => SignInStep::Start,
+        // The person may have entered the code already. A code that ran out
+        // is replaced by the poll itself.
+        Some("devicecodeready") => AuthMove::Dispatch("PollDeviceLogin"),
+        Some("starting" | "polling" | "refreshing") => AuthMove::Wait,
+        _ => AuthMove::Dispatch(auth_action),
     }
 }
 
-/// How long the status's device code stays worth entering, if it has one.
-/// A Failed entity can still hold an old login's code, so only a
-/// DeviceCodeReady status's code is ever offered.
-fn device_code_ms_left(status: &Value, now_ms: i64) -> Option<i64> {
-    status_text(status, &["verification_url", "verification_uri"])?;
-    status_text(status, &["user_code"])?;
-    let expires_at_ms = status.get("expires_at_ms").and_then(|value| {
+/// What a Session fails with when the auth status after the gate's move does
+/// not allow a provider call.
+fn sign_in_needed(status: &Value, now_ms: i64) -> String {
+    sign_in_prompt(status, now_ms).unwrap_or_else(|| {
+        format!(
+            "OpenAI Codex auth is not ready (status {}{}); send your message again to try once more.",
+            codex_auth_status_value(status).unwrap_or("missing"),
+            status_text(status, &["last_error", "error"])
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        )
+    })
+}
+
+/// The link, the code and the time left, when the status holds a device code
+/// that has not run out. A Failed entity can still hold an old login's code,
+/// so only a DeviceCodeReady status's code is offered.
+fn sign_in_prompt(status: &Value, now_ms: i64) -> Option<String> {
+    if !codex_auth_status_value(status)?.eq_ignore_ascii_case("devicecodeready") {
+        return None;
+    }
+    let url = status_text(status, &["verification_url", "verification_uri"])?;
+    let code = status_text(status, &["user_code"])?;
+    let expires_at_ms: i64 = status.get("expires_at_ms").and_then(|value| {
         value
             .as_i64()
             .or_else(|| value.as_str()?.trim().parse().ok())
     })?;
     let left_ms = expires_at_ms - now_ms;
-    (left_ms > DEVICE_CODE_MIN_LEFT_MS).then_some(left_ms)
-}
-
-fn sign_in_prompt(status: &Value, now_ms: i64) -> Option<String> {
-    let left_ms = device_code_ms_left(status, now_ms)?;
-    let url = status_text(status, &["verification_url", "verification_uri"])?;
-    let code = status_text(status, &["user_code"])?;
+    if left_ms <= 0 {
+        return None;
+    }
     let within = match left_ms / 60_000 {
         0 | 1 => "a minute".to_string(),
         minutes => format!("{minutes} minutes"),
@@ -245,90 +227,11 @@ fn status_text<'a>(status: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find(|value| !value.trim().is_empty())
 }
 
-/// Settles an auth status that does not allow a provider call. Returns the
-/// status when the person turns out to have signed in, and otherwise the
-/// prompt that tells them how, as the error the Session fails with.
-fn sign_in(
-    ctx: &Context,
-    temper_api_url: &str,
-    headers: &[(String, String)],
-    status: &Value,
-) -> Result<String, String> {
-    let now_ms = Context::get_time_millis();
-    let pending = match sign_in_step(status, now_ms) {
-        SignInStep::Poll => {
-            ctx.log(
-                "info",
-                "provider_auth_gate: polling the OpenAI Codex device code",
-            );
-            let polled =
-                codex_auth_post(ctx, temper_api_url, headers, "/paw/setup/openai-codex/poll")?;
-            if codex_auth_status_allows_provider_call(&polled) {
-                return Ok(codex_auth_status_value(&polled)
-                    .unwrap_or("Ready")
-                    .to_string());
-            }
-            match sign_in_step(&polled, now_ms) {
-                SignInStep::Poll => polled,
-                SignInStep::InProgress => return Err(sign_in_under_way(&polled)),
-                SignInStep::Start => start_device_login(ctx, temper_api_url, headers)?,
-            }
-        }
-        SignInStep::InProgress => return Err(sign_in_under_way(status)),
-        SignInStep::Start => start_device_login(ctx, temper_api_url, headers)?,
-    };
-    Err(sign_in_prompt(&pending, now_ms).unwrap_or_else(|| {
-        format!(
-            "OpenAI Codex sign-in is required, and starting a device login left auth status {}{}.",
-            codex_auth_status_value(&pending).unwrap_or("missing"),
-            status_text(&pending, &["last_error", "error"])
-                .map(|error| format!(": {error}"))
-                .unwrap_or_default()
-        )
-    }))
-}
-
-fn start_device_login(
-    ctx: &Context,
-    temper_api_url: &str,
-    headers: &[(String, String)],
-) -> Result<Value, String> {
-    ctx.log(
-        "info",
-        "provider_auth_gate: starting an OpenAI Codex device login",
-    );
-    codex_auth_post(
-        ctx,
-        temper_api_url,
-        headers,
-        "/paw/setup/openai-codex/device-login",
-    )
-}
-
 fn sign_in_under_way(status: &Value) -> String {
     format!(
         "OpenAI Codex sign-in is under way (auth status {}); send your message again in a minute.",
         codex_auth_status_value(status).unwrap_or("missing")
     )
-}
-
-/// One setup-API sign-in step. The route waits for the auth module, so its
-/// answer is the status after the step.
-fn codex_auth_post(
-    ctx: &Context,
-    temper_api_url: &str,
-    headers: &[(String, String)],
-    path: &str,
-) -> Result<Value, String> {
-    let resp = ctx.http_call("POST", &format!("{temper_api_url}{path}"), headers, "{}")?;
-    if !(200..300).contains(&resp.status) {
-        return Err(format!(
-            "OpenAI Codex sign-in step {path} failed (HTTP {}): {}",
-            resp.status,
-            body_snippet(&resp.body)
-        ));
-    }
-    Ok(serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({})))
 }
 
 fn ready_params(fields: &Value, status: &str, error: &str) -> Value {
@@ -391,6 +294,10 @@ mod tests {
             auth_endpoint_path("Refresh"),
             "/paw/setup/openai-codex/refresh"
         );
+        assert_eq!(
+            auth_endpoint_path("PollDeviceLogin"),
+            "/paw/setup/openai-codex/poll"
+        );
     }
 
     #[test]
@@ -423,7 +330,7 @@ mod tests {
         });
 
         assert!(codex_auth_status_allows_provider_call(&status));
-        assert!(!codex_auth_status_needs_person(&status));
+        assert_eq!(auth_move(&status, "EnsureFresh"), AuthMove::Proceed);
     }
 
     const NOW_MS: i64 = 1_800_000_000_000;
@@ -439,53 +346,76 @@ mod tests {
     }
 
     #[test]
-    fn a_usable_device_code_is_polled_before_anyone_is_asked_again() {
-        // The person may have entered it already; polling completes the login.
-        assert_eq!(
-            sign_in_step(&device_code("DeviceCodeReady", 10 * 60_000), NOW_MS),
-            SignInStep::Poll
-        );
-    }
-
-    #[test]
-    fn a_sign_in_with_no_usable_code_starts_a_fresh_device_login() {
-        for status in [
-            device_code("DeviceCodeReady", -60_000),
-            device_code("DeviceCodeReady", 10_000),
-            json!({"status": "DeviceCodeReady", "configured": false}),
-            // A Failed entity can still hold the code of an old login.
-            device_code("Failed", -20 * 86_400_000),
-            json!({"status": "Failed", "configured": true, "last_error": "refresh_token_reused"}),
-            json!({"status": "Idle", "configured": false}),
-            json!({"status": "Disconnected", "configured": false}),
-            json!({"configured": false}),
-        ] {
-            assert_eq!(sign_in_step(&status, NOW_MS), SignInStep::Start, "{status}");
+    fn a_device_code_that_is_out_is_polled_whatever_its_time_left() {
+        // The person may have entered it; a code that ran out is replaced by
+        // the poll's own callback, not by a second move from the gate.
+        for expires_in_ms in [10 * 60_000, 10_000, -60_000] {
+            for auth_action in ["EnsureFresh", "ForceRefresh"] {
+                assert_eq!(
+                    auth_move(&device_code("DeviceCodeReady", expires_in_ms), auth_action),
+                    AuthMove::Dispatch("PollDeviceLogin"),
+                    "{auth_action}, {expires_in_ms} ms left"
+                );
+            }
         }
     }
 
     #[test]
-    fn a_sign_in_already_under_way_is_left_to_finish() {
+    fn a_sign_in_step_under_way_is_left_to_finish() {
         for status in [
             json!({"status": "Starting", "configured": false}),
             json!({"status": "Polling", "configured": false}),
             json!({"status": "Refreshing", "configured": false}),
         ] {
             assert_eq!(
-                sign_in_step(&status, NOW_MS),
-                SignInStep::InProgress,
+                auth_move(&status, "EnsureFresh"),
+                AuthMove::Wait,
                 "{status}"
             );
         }
+        assert_eq!(
+            auth_move(
+                &json!({"status": "Refreshing", "configured": true}),
+                "ForceRefresh"
+            ),
+            AuthMove::Wait
+        );
+    }
+
+    #[test]
+    fn any_other_status_gets_the_configured_refresh() {
+        for status in [
+            json!({"status": "Idle", "configured": false}),
+            json!({"status": "Failed", "configured": true, "last_error": "refresh_token_reused"}),
+            // A Failed entity can still hold the code of an old login.
+            device_code("Failed", -20 * 86_400_000),
+            json!({"status": "Disconnected", "configured": false}),
+            json!({"configured": false}),
+            json!({}),
+        ] {
+            assert_eq!(
+                auth_move(&status, "EnsureFresh"),
+                AuthMove::Dispatch("EnsureFresh"),
+                "{status}"
+            );
+        }
+        // A provider that reported token_expired asks for a refresh even
+        // when the status says Ready.
+        assert_eq!(
+            auth_move(
+                &json!({"status": "Ready", "configured": true}),
+                "ForceRefresh"
+            ),
+            AuthMove::Dispatch("ForceRefresh")
+        );
     }
 
     #[test]
     fn the_sign_in_prompt_gives_the_link_the_code_and_the_time_left() {
-        let prompt = sign_in_prompt(
+        let prompt = sign_in_needed(
             &device_code("DeviceCodeReady", 14 * 60_000 + 30_000),
             NOW_MS,
-        )
-        .expect("a usable code makes a prompt");
+        );
         assert!(
             prompt.contains("https://auth.openai.com/codex/device"),
             "{prompt}"
@@ -496,19 +426,20 @@ mod tests {
         // Nothing handles a `codex auth` command, so the prompt never names one.
         assert!(!prompt.contains("codex auth"), "{prompt}");
 
-        assert_eq!(
-            sign_in_prompt(&device_code("DeviceCodeReady", -60_000), NOW_MS),
-            None
-        );
+        let prompt = sign_in_needed(&device_code("DeviceCodeReady", 90_000), NOW_MS);
+        assert!(prompt.contains("within a minute"), "{prompt}");
     }
 
     #[test]
-    fn unconfigured_refreshing_codex_auth_blocks_before_dispatch() {
-        let status = json!({
-            "status": "Refreshing",
-            "configured": false
-        });
-
-        assert!(codex_auth_status_needs_person(&status));
+    fn a_code_that_ran_out_or_belongs_to_an_old_login_is_never_offered() {
+        for status in [
+            device_code("DeviceCodeReady", -59_000),
+            device_code("DeviceCodeReady", 0),
+            device_code("Failed", 10 * 60_000),
+        ] {
+            let failure = sign_in_needed(&status, NOW_MS);
+            assert!(!failure.contains("ABCD-EFGH"), "{status}: {failure}");
+            assert!(failure.contains("send your message again"), "{failure}");
+        }
     }
 }
