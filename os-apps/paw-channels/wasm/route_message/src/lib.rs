@@ -2026,6 +2026,50 @@ fn nested_i64_field(value: &Value, keys: &[&str]) -> Option<i64> {
 mod tests {
     use super::*;
 
+    // --- Continuing a first turn that never wrote its entries ------------
+
+    #[test]
+    fn a_continuation_writes_the_first_turn_a_failed_session_left_unwritten() {
+        let prior = json!({
+            "user_message": "What changed in last night's deploy?",
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(
+            unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+            Some("What changed in last night's deploy?")
+        );
+        let odata_spelling = json!({
+            "UserMessage": "What changed?",
+            "SessionEntriesMaterialized": "FALSE",
+        });
+        assert_eq!(
+            unwritten_first_turn(&odata_spelling, "ss-1", "u-ss-1-0"),
+            Some("What changed?")
+        );
+    }
+
+    #[test]
+    fn a_continuation_writes_no_first_turn_unless_the_session_says_it_never_did() {
+        let message = "What changed in last night's deploy?";
+        for prior in [
+            json!({"user_message": message, "session_entries_materialized": "true"}),
+            json!({"user_message": message, "session_entries_materialized": ""}),
+            json!({"user_message": message}),
+            json!({"user_message": " ", "session_entries_materialized": "false"}),
+        ] {
+            assert_eq!(
+                unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+                None,
+                "{prior}"
+            );
+        }
+        let past_first_turn = json!({
+            "user_message": message,
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(unwritten_first_turn(&past_first_turn, "ss-1", "a-3"), None);
+    }
+
     // --- Stale-session wake-up (ADR-0039) -------------------------------
 
     #[test]
