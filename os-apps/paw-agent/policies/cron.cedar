@@ -31,6 +31,29 @@ permit(
   principal.agent_type == "system"
 };
 
+// RecordLastSession rewrites a job's record of which Session its last run
+// spawned. It repairs records a kernel replay bug left wrong, so only the
+// verified operator may do it (the owner's decision, 24 Oct 2026): not Admin,
+// people or agents, and not a self-declared operator claim.
+permit(
+  principal is Agent,
+  action == Action::"RecordLastSession",
+  resource is CronJob
+) when {
+  principal has agent_type && principal.agent_type == "operator" &&
+  principal has agentTypeVerified && principal.agentTypeVerified == true
+};
+
+forbid(
+  principal,
+  action == Action::"RecordLastSession",
+  resource is CronJob
+) unless {
+  principal is Agent &&
+  principal has agent_type && principal.agent_type == "operator" &&
+  principal has agentTypeVerified && principal.agentTypeVerified == true
+};
+
 // Any authenticated agent can read cron jobs
 permit(
   principal,
