@@ -118,6 +118,8 @@ jobs:
       IMAGE_TAG: ${{ inputs.image_tag || inputs.ref }}
       DEPLOY_ENV: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
       EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
+      FACTORY_STEP: ${{ inputs.step }}
+      FACTORY_COMMIT: ${{ inputs.commit }}
       RUN_ARTIFACT_BATCH_E2E: ${{ inputs.run_artifact_batch_e2e }}
       BASE_URL: ${{ vars.TEMPERPAW_BASE_URL }}
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
@@ -166,6 +168,15 @@ jobs:
           # The full commit /paw/version must report; the tag's short sha must name exactly one commit here.
           full="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${short}" --jq .sha)"
           [[ "${full}" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_sha cannot be verified for ${IMAGE_TAG}: no such commit" >&2; exit 64; }
+          # Forward steps must ship the Factory's release commit. Rollback deliberately names an older image.
+          case "${FACTORY_STEP}" in
+            stage|check_staging|go_live)
+              if ! [[ "${FACTORY_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || [ "${full}" != "${FACTORY_COMMIT}" ]; then
+                echo "resolved image commit ${full} does not match Factory commit ${FACTORY_COMMIT} (a full SHA is required)" >&2
+                exit 64
+              fi
+              ;;
+          esac
           echo "EXPECTED_SHA=${full}" >> "${GITHUB_ENV}"
           echo "STATE_DIR=${RUNNER_TEMP}/release" >> "${GITHUB_ENV}"
           if [ -n "${ROLLBACK_TAG}" ] && ! [[ "${ROLLBACK_TAG}" =~ ^sha-[0-9a-f]{7,40}$ ]]; then

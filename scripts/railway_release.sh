@@ -310,11 +310,18 @@ db_open() {
 
 db_close() { # removes only a proxy this run opened
   [ -f "$STATE_DIR/proxy-opened" ] || return 0
-  local id
-  id="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
-    '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id } }", variables: {s: $s, e: $e}}')" | jq -r '.data.tcpProxies[0].id // empty')"
-  [ -z "$id" ] || gql "$(jq -n --arg i "$id" '{query: "mutation($i: String!) { tcpProxyDelete(id: $i) }", variables: {i: $i}}')" >/dev/null
-  rm -f "$STATE_DIR/proxy-opened"
+  local id proxies deleted
+  proxies="$(gql "$(jq -n --arg s "$POSTGRES_SERVICE_ID" --arg e "$RAILWAY_ENVIRONMENT_ID" \
+    '{query: "query($s: String!, $e: String!) { tcpProxies(serviceId: $s, environmentId: $e) { id } }", variables: {s: $s, e: $e}}')")" || return 1
+  # Missing or malformed data cannot prove that the proxy is absent.
+  id="$(jq -er '.data.tcpProxies | if type == "array" then
+    if length == 0 then "" else .[0].id | select(type == "string" and length > 0) end
+    else error("tcpProxies must be an array") end' <<<"$proxies")" || return 1
+  if [ -n "$id" ]; then
+    deleted="$(gql "$(jq -n --arg i "$id" '{query: "mutation($i: String!) { tcpProxyDelete(id: $i) }", variables: {i: $i}}')")" || return 1
+    jq -e '.data.tcpProxyDelete == true' >/dev/null <<<"$deleted" || return 1
+  fi
+  rm -f "$STATE_DIR/proxy-opened" || return 1
   echo "the TCP proxy is removed"
 }
 
