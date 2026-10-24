@@ -239,37 +239,21 @@
   {
     "name": "[Temper] Abnormal State Timeout Firing",
     "type": "metric alert",
-    "query": "sum(last_15m):sum:temper_state_timeout_fired_total{service:temperpaw} by {entity_type,state}.as_count() > 25",
-    "message": "State timeout firing unusually often for one or more (entity_type, state) combos. Likely causes: after_seconds too tight, or sessions are genuinely stuck.\n\n@slack-temperpaw-alerts",
+    "query": "sum(last_15m):default_zero(sum:temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue} by {entity_type}.as_count()) + default_zero(sum:temper_scheduler_overdue_on_replay_total{service:temperpaw} by {entity_type}.as_count()) > 0",
+    "message": "A record of this entity type sat in a timed state past its own deadline. The kernel found its state_timeout already overdue: when an actor hydrated into a state whose timer was no longer live (ADR-0056), or when the scheduler replayed timers after a restart (ADR-0049). A timer that fires on time never counts, whether it is a poll (a run computer's Making poll every 2 s, its Ready check every 60 s), a scheduled step or a deadline, so this stays quiet under normal load: in the 30 days to 24 Oct 2026 it would have alerted twice (13:08 and 13:27 UTC on 24 Oct), both KatagamiRunComputer records left Ready while POST /katagami/pass/computer answered 503.\n\nCheck: the Temper kernel dashboard's hydration re-arm and overdue-on-replay widgets for the entity_type and state, then the records of that type in that state. One or two means records whose timers were lost; a wave right after a deploy means replay lag.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:high"
+      "severity:high",
+      "adr:0049",
+      "adr:0056"
     ],
     "options": {
       "thresholds": {
-        "critical": 25,
-        "warning": 10
+        "critical": 0
       },
       "notify_no_data": false,
+      "require_full_window": false,
       "renotify_interval": 60
-    }
-  },
-  {
-    "name": "[Temper] Excessive Overdue Timers on Replay",
-    "type": "metric alert",
-    "query": "sum(last_30m):default_zero(sum:temper_scheduler_overdue_on_replay_total{service:temperpaw}.as_count()) > 100",
-    "message": "Many scheduled-action timers missed their deadline across a server restart window. Review deploy cadence or investigate replay lag.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 100,
-        "warning": 30
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
     }
   },
   {
@@ -741,25 +725,6 @@
       },
       "notify_no_data": false,
       "renotify_interval": 60
-    }
-  },
-  {
-    "name": "[Temper] Hydration Re-arm Overdue Spike",
-    "type": "metric alert",
-    "query": "sum(last_10m):default_zero(sum:temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue}.as_count()) > 20",
-    "message": "Hydration re-arm (ADR-0056 Sub-Decision 1) fired `on_timeout` immediately on more than 20 entities in 10 min. A modest burst is normal on deploy (actors hydrating into stale states), but a sustained spike indicates a wave of orphaned entities. Check `temper_state_timeout_fired_total{action:TimeoutFail}` for the downstream TimeoutFails, and inspect the affected entity_type tags.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium",
-      "adr:0056"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 20,
-        "warning": 5
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
     }
   },
   {
