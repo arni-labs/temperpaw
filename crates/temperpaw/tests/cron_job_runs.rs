@@ -9,6 +9,7 @@ use temper_runtime::{ActorSystem, tenant::TenantId};
 use temper_server::{
     registry::SpecRegistry,
     request_context::AgentContext,
+    secrets::{SecretsVault, resolve_secret_templates},
     state::{DispatchCommand, ServerState},
 };
 use temper_wasm::{
@@ -81,9 +82,35 @@ async fn job(server: &ServerState) -> Value {
     serde_json::to_value(&row.state).unwrap()
 }
 
+/// The Trigger move's module config as the server hands it over: the spec's
+/// config with the tenant's `{secret:...}` templates resolved, and any the
+/// tenant does not hold left as written.
+fn trigger_config(tenant_secrets: &[(&str, &str)]) -> BTreeMap<String, String> {
+    let ioa = std::fs::read_to_string(app().join("specs/cron_job.ioa.toml")).unwrap();
+    let spec = temper_spec::automaton::parse_automaton(&ioa).unwrap();
+    let integration = spec
+        .integrations
+        .iter()
+        .find(|integration| integration.name == "cron_compute_next")
+        .expect("the Trigger move runs cron_compute_next");
+    let vault = SecretsVault::new(&[7u8; 32]);
+    for (key, value) in tenant_secrets {
+        vault.cache_secret("default", key, (*value).to_string());
+    }
+    resolve_secret_templates(&integration.config, &vault, "default")
+}
+
 /// One run: Trigger, the packaged module's answer to it, and that answer
 /// applied as TriggerComplete. Returns what TriggerComplete carried.
 async fn run_once(server: &ServerState, run: u32) -> Value {
+    run_once_with_secrets(server, run, &[]).await
+}
+
+async fn run_once_with_secrets(
+    server: &ServerState,
+    run: u32,
+    tenant_secrets: &[(&str, &str)],
+) -> Value {
     act(
         server,
         "Trigger",
@@ -100,7 +127,7 @@ async fn run_once(server: &ServerState, run: u32) -> Value {
         entity_state: job(server).await,
         agent_id: None,
         session_id: None,
-        integration_config: BTreeMap::from([("mode".into(), "trigger".into())]),
+        integration_config: trigger_config(tenant_secrets),
         trace_id: String::new(),
         workflow_root_entity_type: None,
         workflow_root_entity_id: None,
@@ -168,6 +195,68 @@ async fn a_template_still_writes_each_runs_message() {
         completed["user_message"],
         "Write this week's digest; the last one said: three notes."
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_with_no_model_runs_on_the_tenants_default() {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "user_message": MESSAGE,
+    }))
+    .await;
+    let completed = run_once_with_secrets(
+        &server,
+        1,
+        &[("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")],
+    )
+    .await;
+    // The Session a run spawns takes these over the job's empty fields; one
+    // with no model stops in context_preparer before its first turn.
+    assert_eq!(completed["model"], "gpt-5.5");
+    assert_eq!(completed["provider"], "openai_codex");
+    let fields = job(&server).await["fields"].clone();
+    assert_eq!(fields["model"], "gpt-5.5");
+    assert_eq!(fields["provider"], "openai_codex");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_created_with_odata_property_names_keeps_its_message_and_model() {
+    // The CSDL names CronJob's properties in PascalCase, and an OData create
+    // stores them under those names next to the spec's snake_case fields.
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+        "Model": "claude-sonnet-5-5",
+        "Provider": "anthropic",
+    }))
+    .await;
+    let completed = run_once_with_secrets(
+        &server,
+        1,
+        &[("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")],
+    )
+    .await;
+    assert_eq!(completed["user_message"], MESSAGE);
+    assert_eq!(completed["model"], "claude-sonnet-5-5");
+    assert_eq!(completed["provider"], "anthropic");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_with_no_model_anywhere_still_completes_its_run() {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "user_message": MESSAGE,
+    }))
+    .await;
+    // A failed Trigger stops the job's schedule, so a run with nothing to
+    // resolve completes with no model and its Session reports why.
+    let completed = run_once(&server, 1).await;
+    assert_eq!(completed["model"], "");
+    assert_eq!(completed["provider"], "");
+    assert_eq!(completed["user_message"], MESSAGE);
 }
 
 #[tokio::test(flavor = "multi_thread")]
