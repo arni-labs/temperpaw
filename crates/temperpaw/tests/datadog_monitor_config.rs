@@ -163,17 +163,31 @@ fn monitor_queries_use_current_runtime_metric_names_and_zero_fill_sparse_counter
 fn abnormal_state_timeout_monitor_counts_overdue_timers_not_firings() {
     let monitors = load_monitors();
     let by_name = monitors_by_name(&monitors);
-    let query = by_name["[Temper] Abnormal State Timeout Firing"]["query"].as_str().unwrap();
-    assert!(!query.contains("temper_state_timeout_fired_total"), "counts firings, so polls trip it: {query}");
+    let query = by_name["[Temper] Abnormal State Timeout Firing"]["query"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !query.contains("temper_state_timeout_fired_total"),
+        "counts firings, so polls trip it: {query}"
+    );
     for signal in [
         "temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue} by {entity_type}",
         "temper_scheduler_overdue_on_replay_total{service:temperpaw} by {entity_type}",
     ] {
         assert!(query.contains(signal), "misses {signal}: {query}");
     }
-    assert!(query.ends_with("> 0"), "one overdue timer is abnormal: {query}");
-    for name in ["[Temper] Excessive Overdue Timers on Replay", "[Temper] Hydration Re-arm Overdue Spike"] {
-        assert!(!by_name.contains_key(name), "{name} watches a signal the abnormal monitor already alerts on");
+    assert!(
+        query.ends_with("> 0"),
+        "one overdue timer is abnormal: {query}"
+    );
+    for name in [
+        "[Temper] Excessive Overdue Timers on Replay",
+        "[Temper] Hydration Re-arm Overdue Spike",
+    ] {
+        assert!(
+            !by_name.contains_key(name),
+            "{name} watches a signal the abnormal monitor already alerts on"
+        );
     }
 }
 
