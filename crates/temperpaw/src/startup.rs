@@ -1637,19 +1637,19 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
         // temper_api_url — always set to local server
         let api_url = format!("http://127.0.0.1:{actual_port}");
-        let _ = vault.cache_platform_secret("temper_api_url", api_url);
+        vault.cache_platform_secret("temper_api_url", api_url);
 
         if let Some(worker_id) = std::env::var("LOCAL_CODEX_WORKER_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worker_id", worker_id);
+            vault.cache_platform_secret("local_codex_worker_id", worker_id);
         }
         if let Some(worktree_root) = std::env::var("LOCAL_CODEX_WORKTREE_ROOT")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
+            vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
         }
 
         // Sandbox URL: explicit override for testing, otherwise Tensorlake provisions on demand.
@@ -1741,8 +1741,8 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             format!("http://127.0.0.1:{actual_port}/_internal/blobs")
         };
         let blob_bucket = std::env::var("BLOB_BUCKET").unwrap_or_else(|_| "temper-fs".into());
-        let _ = vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
-        let _ = vault.cache_platform_secret("blob_bucket", blob_bucket);
+        vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
+        vault.cache_platform_secret("blob_bucket", blob_bucket);
 
         // Generic public artifact storage. This is separate from the private
         // TemperFS blob bucket so read-only public surfaces can serve immutable
@@ -1779,15 +1779,15 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             });
 
         if let Some(endpoint) = published_blob_endpoint {
-            let _ = vault.cache_platform_secret("published_blob_endpoint", endpoint);
-            let _ = vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
+            vault.cache_platform_secret("published_blob_endpoint", endpoint);
+            vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
         } else {
             tracing::warn!(
                 "PUBLISHED_BLOB_ENDPOINT is not configured; public artifact publishing is disabled"
             );
         }
         if let Some(public_base_url) = published_blob_public_base_url {
-            let _ = vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
+            vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
         } else if running_on_railway() {
             tracing::warn!(
                 "PUBLISHED_BLOB_PUBLIC_BASE_URL is not configured; public artifact publishing is disabled"
@@ -2449,7 +2449,7 @@ async fn cache_platform_and_persist_secret(
     key: &str,
     value: String,
 ) {
-    let _ = vault.cache_platform_secret(key, value.clone());
+    vault.cache_platform_secret(key, value.clone());
     match vault.encrypt(value.as_bytes()) {
         Ok((ciphertext, nonce)) => {
             if let Err(e) = store.upsert_secret(tenant, key, &ciphertext, &nonce).await {
@@ -2480,7 +2480,7 @@ async fn restore_secrets_as_platform(
                         if let Ok(value) = String::from_utf8(plaintext)
                             && vault.get_platform_secret(&key_name).is_none()
                         {
-                            let _ = vault.cache_platform_secret(&key_name, value);
+                            vault.cache_platform_secret(&key_name, value);
                             restored += 1;
                         }
                     }
@@ -4814,16 +4814,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_deploy_values_over_tenant_overrides() {
         let vault = SecretsVault::new(&[7u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(
             Some(&vault),
@@ -4838,16 +4834,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_platform_cache_over_tenant_overrides() {
         let vault = SecretsVault::new(&[8u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
@@ -4857,9 +4849,7 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_falls_back_to_tenant_override_without_deploy_values() {
         let vault = SecretsVault::new(&[9u8; 32]);
-        vault
-            .cache_secret("default", "modal_token_id", "tenant-token".to_string())
-            .unwrap();
+        vault.cache_secret("default", "modal_token_id", "tenant-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
