@@ -20,7 +20,7 @@ const DEFAULT_POLL_INTERVAL_MS: i64 = 5_000;
 const DEFAULT_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 /// A person needs time to open the link and type the code, so a device code
 /// with less than this left would run out while they enter it.
-const DEVICE_CODE_MIN_LEFT_MS: i64 = 30_000;
+const DEVICE_CODE_MIN_LEFT_MS: i64 = 0;
 /// Token endpoint error codes that refuse the refresh token itself: OAuth's
 /// invalid_grant and the codes Codex CLI reads as expired, reused or revoked.
 const REFRESH_TOKEN_REFUSED_CODES: [&str; 4] = [
