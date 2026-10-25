@@ -21,9 +21,11 @@
 #   POLL_ATTEMPTS, POLL_SECONDS
 #   DRILL            any value: the check reports a deliberate miss, to prove the way back
 #   MIGRATION_ROLLBACK, POSTGRES_SERVICE_ID  "auto" with the environment's Postgres service: going back to a kernel
-#                    that knows fewer storage migrations deletes the newer ones' _sqlx_migrations rows, when every one
-#                    is listed in scripts/additive_migrations.txt (through a TCP proxy opened for that and removed).
-#                    Otherwise the way back stops and says which rows a person must remove.
+#                    that knows fewer storage migrations, and refuses a database that recorded ones it does not know,
+#                    deletes the newer ones' _sqlx_migrations rows, when every one is listed in
+#                    scripts/additive_migrations.txt (through a TCP proxy opened for that and removed). Otherwise the
+#                    way back stops and says which rows a person must remove. A kernel that ignores unknown migrations
+#                    needs neither: the rows stay.
 #   GH_TOKEN         reads the kernel pin and its migrations from GitHub
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
@@ -260,15 +262,33 @@ against_before() { # $1 deployment id
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
 }
 
-# The highest Postgres migration the kernel of one TemperPaw commit knows: its temper pin from Cargo.lock, then that
-# temper commit's crates/temper-store-postgres/migrations.
-known_migration() { # $1 full TemperPaw commit
+# The temper commit one TemperPaw commit's kernel is built from: its temper pin in Cargo.lock.
+kernel_rev() { # $1 full TemperPaw commit
   local rev
   rev="$(gh api "repos/arni-labs/temperpaw/contents/Cargo.lock?ref=$1" -H "Accept: application/vnd.github.raw" |
     grep -A2 '^name = "temper-store-postgres"$' | grep -o 'rev=[0-9a-f]*' | head -n1)"
   [ -n "$rev" ] || return 1
-  gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/migrations?ref=${rev#rev=}" \
+  printf '%s' "${rev#rev=}"
+}
+
+# The highest Postgres migration the kernel of one TemperPaw commit knows: that temper commit's
+# crates/temper-store-postgres/migrations.
+known_migration() { # $1 full TemperPaw commit
+  local rev
+  rev="$(kernel_rev "$1")" || return 1
+  gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/migrations?ref=${rev}" \
     --jq '[.[].name | capture("^(?<n>[0-9]+)_").n | tonumber] | max'
+}
+
+# Whether the kernel of one TemperPaw commit boots on a database that recorded migrations it does not know: its
+# migrator sets ignore_missing (crates/temper-store-postgres/src/migration.rs). Kernels from before that refuse
+# such a database ("migration N was previously applied but is missing").
+ignores_unknown_migrations() { # $1 full TemperPaw commit
+  local rev source
+  rev="$(kernel_rev "$1")" || return 1
+  source="$(gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/src/migration.rs?ref=${rev}" \
+    -H "Accept: application/vnd.github.raw")" || return 1
+  grep -q 'set_ignore_missing(true)' <<<"$source"
 }
 
 # The environment's Postgres, through a TCP proxy this run opens when there is none, as psql variables.
@@ -326,8 +346,9 @@ db_close() { # removes only a proxy this run opened
 }
 
 # Before going back to the build that ran before: the storage migrations the newer kernel added that the older one does
-# not know. An older kernel refuses a database that recorded them ("migration N was previously applied but is missing"),
-# so their _sqlx_migrations rows go, but only when every one is listed as additive. Fails with the reason otherwise.
+# not know. Each must be listed as additive, so the older kernel can run beside what it added. An older kernel that
+# ignores unknown migrations boots as it is; one that refuses a database that recorded them ("migration N was previously
+# applied but is missing") needs their _sqlx_migrations rows gone first. Fails with the reason otherwise.
 migrations_back_to() { # $1 full TemperPaw commit that ran before
   local old new extra additive rows
   old="$(known_migration "$1")" || { echo "the migrations of ${1} could not be read" >&2; return 1; }
@@ -341,6 +362,10 @@ migrations_back_to() { # $1 full TemperPaw commit that ran before
       return 1
     }
   done
+  if ignores_unknown_migrations "$1"; then
+    echo "${1:0:7}'s kernel ignores migrations it does not know, so it boots beside ${extra% } (additive) as they are"
+    return 0
+  fi
   if [ "${MIGRATION_ROLLBACK:-}" != auto ] || [ -z "${POSTGRES_SERVICE_ID:-}" ]; then
     echo "going back needs a hand step first: DELETE FROM _sqlx_migrations WHERE version IN ($(tr ' ' ',' <<<"${extra% }")); (additive: ${extra% })" >&2
     return 1
