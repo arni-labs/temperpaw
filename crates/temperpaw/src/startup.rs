@@ -336,9 +336,13 @@ async fn start_http_endpoint_routes(state: &PlatformState) {
     }
 }
 
-/// Starts the kernel's background runtime, as temper-cli's `serve` does. Old pin: metrics loop only.
+/// Starts the kernel's background runtime, as temper-cli's `serve` does: arms again the state timers and scheduled
+/// actions the last process left waiting, from their rows, and starts the runtime metrics loop. Without it every timer
+/// waiting at a restart or deploy is lost. Runs once, after every startup install, because installs before it leave
+/// their timer follow-up to its boot walk. That walk runs in the background and logs `state timers after boot` when
+/// it ends.
 async fn start_kernel_runtime(state: &PlatformState) {
-    state.server.spawn_runtime_metrics_loop();
+    state.server.start_runtime().await;
 }
 
 fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
@@ -5461,9 +5465,9 @@ on_timeout = "Fire"
         );
         assert!(
             dashboard_json.contains(
-                "avg:temper_turso_query_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
+                "avg:temper_turso_operation_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
             ),
-            "Dashboard should include Turso query duration."
+            "Dashboard should include Turso operation duration."
         );
         assert!(
             dashboard_json.contains(
