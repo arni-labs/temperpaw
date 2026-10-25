@@ -12,7 +12,9 @@
 # Optional:
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
 #                    after the deploy must equal the answer before it
-#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok with the same counts
+#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok and have lost nothing: each
+#                    thing's count at least what it was, and every id from before still there where the read returned
+#                    the whole thing. Records that arrive meanwhile are fine.
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
 #   EXPECTED_SHA     the full commit /paw/version must report
 #   SOAK_SECONDS     how long the new deployment runs before memory is read (default 300)
@@ -122,15 +124,37 @@ probe() {
   printf '%s' "$out"
 }
 
-# The guest read: "<status> <ok> <thing count, ...>".
+# The guest read as {status, ok, things: {<thing>: {whole, ids}}}. whole is false when the read stopped at a page
+# limit (more), so its ids are a window that new records can push old ones out of.
 guest() {
-  [ -n "${GUEST_CHECK_URL:-}" ] || return 0
   local body code
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
-  sed '$d' <<<"$body" | jq -r --arg c "$code" \
-    '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
-    2>/dev/null || echo "$code false not JSON"
+  sed '$d' <<<"$body" | jq -c --arg c "$code" \
+    '{status: $c, ok: (.ok // false), things: ([(.data.records // [])[] | select(type == "object")
+      | {key: .thing, value: {whole: (.more != true), ids: ([(.records // [])[] | .id] | sort)}}] | from_entries)}' \
+    2>/dev/null || jq -nc --arg c "$code" '{status: $c, ok: false, things: {}}'
+}
+
+# The guest reads go to jq as files: their ids outgrow the 128 KiB a single argument may hold on Linux.
+
+# One guest read (a file) as "<status> <ok> <thing count, ...>", with "+" on a count the page limit cut.
+guest_counts() {
+  jq -r '"\(.status) \(.ok) \([.things | to_entries[] | "\(.key) \(.value.ids | length)\(if .value.whole then "" else "+" end)"] | join(", "))"' "$1"
+}
+
+# What the guest read lost between the files $1 (before) and $2 (now): one line per miss, nothing when every record
+# is still there.
+guest_lost() {
+  jq -rn --slurpfile was "$1" --slurpfile now "$2" '$was[0] as $was | $now[0] as $now |
+    if $now.status != "200" or $now.ok != true then "the guest read answered \($now.status) \($now.ok)"
+    else $was.things | to_entries[] | .key as $thing | .value as $w | $now.things[$thing] as $n
+      | if $n == null then "the guest read has no \($thing) any more"
+        elif ($n.ids | length) < ($w.ids | length) then "the guest read has \($thing) \($n.ids | length), before \($w.ids | length)"
+        elif $w.whole and $n.whole and (($w.ids - $n.ids) | length) > 0
+        then "the guest read lost \(($w.ids - $n.ids) | length) \($thing): \(($w.ids - $n.ids)[:3] | join(", "))"
+        else empty end
+    end'
 }
 
 wait_healthy() {
@@ -227,9 +251,10 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
     jq -r '[.series[]?.pointlist[]?[1] | select(. != null)] | max // empty'
 }
 
-# Everything that must equal the snapshot, for a deployment that now serves. Appends misses to the array named misses.
+# Everything that must equal the snapshot (the guest read may only have grown), for a deployment that now serves.
+# Appends misses to the array named misses.
 against_before() { # $1 deployment id
-  local want got failed after key was now guest_now
+  local want got failed after key was now guest_now lost
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
   want="$(jq -r .route_count "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
@@ -250,11 +275,14 @@ against_before() { # $1 deployment id
     [ "$now" = "$was" ] || misses+=("${key} answered ${now}, before ${was}")
   done < <(jq -r 'keys[]' <<<"$after")
   if [ -n "${GUEST_CHECK_URL:-}" ]; then
-    guest_now="$(guest)"
-    was="$(jq -r .guest "$STATE_DIR/before.json")"
-    echo "guest read: ${guest_now} (before: ${was})"
-    case "$guest_now" in "200 true "*) ;; *) misses+=("the guest read answered ${guest_now}") ;; esac
-    [ "$guest_now" = "$was" ] || misses+=("the guest read changed: ${guest_now}, before ${was}")
+    guest >"$STATE_DIR/guest-now.json"
+    guest_now="$(guest_counts "$STATE_DIR/guest-now.json")"
+    echo "guest read: ${guest_now} (before: $(guest_counts "$STATE_DIR/guest-before.json"))"
+    lost="$(guest_lost "$STATE_DIR/guest-before.json" "$STATE_DIR/guest-now.json")"
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      misses+=("$key")
+    done <<<"$lost"
   fi
   jq -n --arg id "$1" --arg routes "${got:-}" --argjson probes "$after" --arg guest "${guest_now:-}" \
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
@@ -387,7 +415,15 @@ case "${1:-}" in
     routes="$(route_count "$id")"
     [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
     probes="$(probe)"
-    guest_was="$(guest)"
+    guest_was=""
+    if [ -n "${GUEST_CHECK_URL:-}" ]; then
+      # Every id the read returned, for the check; the record keeps only the counts. A read that failed holds no ids,
+      # so nothing after the deploy could be found missing.
+      guest >"$STATE_DIR/guest-before.json"
+      guest_was="$(guest_counts "$STATE_DIR/guest-before.json")"
+      jq -e '.status == "200" and .ok == true' "$STATE_DIR/guest-before.json" >/dev/null ||
+        { echo "the guest read answered ${guest_was}: no baseline, so no deploy" >&2; exit 1; }
+    fi
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
     ;;
