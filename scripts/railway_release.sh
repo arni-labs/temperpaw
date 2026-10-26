@@ -7,7 +7,7 @@
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
 #
-# Environment: RAILWAY_API_TOKEN (an account or team token), RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
+# Environment: RAILWAY_API_TOKEN (a project token for that environment), RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
 # RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
 # Optional:
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
@@ -45,7 +45,8 @@ mkdir -p "$STATE_DIR"
 
 gql() { # $1: the request body; prints the response, fails on an error
   local response
-  response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  # A project token goes in Project-Access-Token: sent as a Bearer token, Railway answers "Not Authorized".
+  response="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
     --data "$1" "$GQL")" || { echo "Railway API did not answer" | tee -a "$STATE_DIR/errors.txt" >&2; return 1; }
   if jq -e '.errors' >/dev/null <<<"$response"; then
     # Which call failed: the first field the request names (deployments, variableUpsert, ...), never its variables.
