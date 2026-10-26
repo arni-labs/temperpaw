@@ -158,12 +158,14 @@ probe() {
 # The guest read: "<status> <ok> <thing count, ...>".
 guest() {
   [ -n "${GUEST_CHECK_URL:-}" ] || return 0
-  local body code
+  local body code read
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
-  sed '$d' <<<"$body" | jq -r --arg c "$code" \
+  # jq given an empty body prints nothing and succeeds, so an empty answer is named here rather than read as "".
+  read="$(sed '$d' <<<"$body" | jq -r --arg c "$code" \
     '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
-    2>/dev/null || echo "$code false not JSON"
+    2>/dev/null || true)"
+  printf '%s' "${read:-${code:-000} false no JSON body}"
 }
 
 wait_healthy() {
@@ -451,6 +453,10 @@ case "${1:-}" in
     [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
     probes="$(probe)"
     guest_was="$(guest)"
+    case "${GUEST_CHECK_URL:+set}:$guest_was" in
+      : | "set:200 true "*) ;;
+      *) echo "the guest read answered ${guest_was}: no baseline, so no deploy" >&2; exit 1 ;;
+    esac
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
     ;;
