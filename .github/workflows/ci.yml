@@ -22,6 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: WASM artifact packaging regression
         run: bash scripts/test-wasm-build-artifacts.sh
+      - name: Release script regressions
+        run: python3 scripts/test_railway_release.py
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Cargo clippy
