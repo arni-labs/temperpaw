@@ -4140,18 +4140,7 @@ mod tests {
     static GENESIS_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn empty_install_result() -> temper_platform::os_apps::InstallResult {
-        temper_platform::os_apps::InstallResult {
-            added: Vec::new(),
-            updated: Vec::new(),
-            skipped: Vec::new(),
-            wasm_modules: Vec::new(),
-            wasm_skipped: Vec::new(),
-            wasm_failures: Vec::new(),
-            agents: Vec::new(),
-            skills: Vec::new(),
-            adrs_bootstrapped: Vec::new(),
-            seed_instances: Vec::new(),
-        }
+        temper_platform::os_apps::InstallResult::default()
     }
 
     #[test]
