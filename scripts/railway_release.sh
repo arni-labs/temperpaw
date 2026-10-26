@@ -162,10 +162,9 @@ guest() {
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
   # jq given an empty body prints nothing and succeeds, so an empty answer is named here rather than read as "".
-  read="$(sed '$d' <<<"$body" | jq -r --arg c "$code" \
+  sed '$d' <<<"$body" | jq -r --arg c "$code" \
     '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
-    2>/dev/null || true)"
-  printf '%s' "${read:-${code:-000} false no JSON body}"
+    2>/dev/null || echo "$code false not JSON"
 }
 
 # The snapshot's guest read: a check after the deploy compares with it, so anything but a good read stops the release.
