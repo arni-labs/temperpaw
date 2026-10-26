@@ -336,6 +336,15 @@ async fn start_http_endpoint_routes(state: &PlatformState) {
     }
 }
 
+/// Starts the kernel's background runtime, as temper-cli's `serve` does: arms again the state timers and scheduled
+/// actions the last process left waiting, from their rows, and starts the runtime metrics loop. Without it every timer
+/// waiting at a restart or deploy is lost. Runs once, after every startup install, because installs before it leave
+/// their timer follow-up to its boot walk. That walk runs in the background and logs `state timers after boot` when
+/// it ends.
+async fn start_kernel_runtime(state: &PlatformState) {
+    state.server.start_runtime().await;
+}
+
 fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
     let registry = state.registry.read().unwrap(); // ci-ok: infallible lock
     registry.tenant_ids().into_iter().cloned().collect()
@@ -2142,6 +2151,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         "phase_7_dispatcher_refresh complete"
     );
 
+    // Phase 7a: Start the kernel runtime once specs, Cedar, WASM, apps and the reaction dispatcher are in place.
+    // Requests still wait at the startup gate until mark_ready.
+    start_kernel_runtime(&state).await;
+
     // Phase 7b: Session recovery — recover or fail orphaned sessions (ADR-0025).
     if recover_indexes_before_reconcile {
         recover_orphaned_sessions(&state, &tenant).await;
@@ -2261,7 +2274,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     }
 
     // Spawn background loops
-    state.server.spawn_runtime_metrics_loop();
     crate::allocator::spawn_allocator_metrics_loop();
     spawn_actor_passivation_loop(&state);
 
@@ -4118,9 +4130,9 @@ mod tests {
         paw_soul_content_is_personalized, repair_default_agent_tools_enabled,
         resolve_startup_secret, runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
-        start_http_endpoint_routes, startup_discord_connect_result, startup_discord_summary_label,
-        startup_os_apps, startup_surface_runtime_indexes_required_before_reconcile,
-        wait_for_runtime_server,
+        start_http_endpoint_routes, start_kernel_runtime, startup_discord_connect_result,
+        startup_discord_summary_label, startup_os_apps,
+        startup_surface_runtime_indexes_required_before_reconcile, wait_for_runtime_server,
     };
     use crate::transport_manager::TransportStatus;
 
@@ -4248,6 +4260,133 @@ mod tests {
         assert!(
             routed(&state, &tenant, "/app/before").await,
             "and the earlier row still routes"
+        );
+    }
+
+    const TIMED_PROBE_IOA: &str = r#"
+[automaton]
+name = "Probe"
+states = ["Idle", "Armed", "Fired"]
+initial = "Idle"
+allow_indefinite_states = ["Idle", "Fired"]
+strict_action_params = true
+
+[[action]]
+name = "Arm"
+from = ["Idle"]
+to = "Armed"
+params = []
+
+[[action]]
+name = "Fire"
+from = ["Armed"]
+to = "Fired"
+params = []
+
+[[state_timeout]]
+state = "Armed"
+after_seconds = 2
+on_timeout = "Fire"
+"#;
+
+    const TIMED_PROBE_CSDL: &str = r#"<?xml version="1.0"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:DataServices><Schema Namespace="Probe" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+<EntityType Name="Probe"><Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.String" Nullable="false"/>
+</EntityType>
+<Action Name="Arm" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<Action Name="Fire" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<EntityContainer Name="Container">
+<EntitySet Name="Probes" EntityType="Probe.Probe"/>
+</EntityContainer>
+</Schema></edmx:DataServices></edmx:Edmx>"#;
+
+    /// One TemperPaw process on the event store at `events`. It runs on its own runtime, so dropping it kills its
+    /// in-memory timers as a process exit would.
+    fn boot_timed_probe(events: &str) -> (tokio::runtime::Runtime, temper_platform::PlatformState) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = runtime.block_on(async {
+            let mut registry = temper_server::SpecRegistry::new();
+            registry.register_tenant(
+                "default",
+                temper_spec::csdl::parse_csdl(TIMED_PROBE_CSDL).unwrap(),
+                TIMED_PROBE_CSDL.to_string(),
+                &[("Probe", TIMED_PROBE_IOA)],
+            );
+            let mut state = temper_platform::PlatformState::with_registry(registry, None);
+            let store = temper_store_turso::TursoEventStore::new(events, None)
+                .await
+                .unwrap();
+            state
+                .server
+                .set_storage_stack(temper_server::StorageStack::from_turso(store));
+            state
+                .server
+                .authz
+                .reload_tenant_policies("default", "permit(principal, action, resource);")
+                .unwrap();
+            start_kernel_runtime(&state).await;
+            state
+        });
+        (runtime, state)
+    }
+
+    #[test]
+    fn a_state_timer_the_last_process_left_waiting_fires_after_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let tenant = TenantId::default();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        runtime.block_on(async {
+            state
+                .server
+                .get_or_create_tenant_entity(&tenant, "Probe", "r", serde_json::json!({}))
+                .await
+                .unwrap();
+            let armed = state
+                .server
+                .dispatch_tenant_action(
+                    &tenant,
+                    "Probe",
+                    "r",
+                    "Arm",
+                    serde_json::json!({}),
+                    &temper_server::request_context::AgentContext::system(),
+                )
+                .await
+                .unwrap();
+            assert!(armed.success, "Arm: {:?}", armed.error);
+        });
+        // The process exits inside the two-second budget, before its timer fires.
+        drop(state);
+        runtime.shutdown_background();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        let status = runtime.block_on(async {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let status = state
+                    .server
+                    .get_tenant_entity_state(&tenant, "Probe", "r")
+                    .await
+                    .unwrap()
+                    .state
+                    .status;
+                if status == "Fired" || std::time::Instant::now() >= deadline {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        assert_eq!(
+            status, "Fired",
+            "the restarted process fires the timer the last one left waiting"
         );
     }
 
@@ -5326,9 +5465,9 @@ mod tests {
         );
         assert!(
             dashboard_json.contains(
-                "avg:temper_turso_query_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
+                "avg:temper_turso_operation_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
             ),
-            "Dashboard should include Turso query duration."
+            "Dashboard should include Turso operation duration."
         );
         assert!(
             dashboard_json.contains(
