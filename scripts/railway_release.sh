@@ -47,14 +47,31 @@ mkdir -p "$STATE_DIR"
 
 # Railway reads a project token (one environment of one project) from Project-Access-Token, and an account or
 # workspace token from Authorization: Bearer. Only a project token answers projectToken; it must be this environment's.
-token_environment="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
-  --data '{"query":"query { projectToken { environmentId } }"}' "$GQL" 2>/dev/null | jq -r '.data.projectToken.environmentId // empty' 2>/dev/null || true)"
+if ! token_response="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  --data '{"query":"query { projectToken { environmentId } }"}' "$GQL")"; then
+  echo "Railway API, projectToken: lookup did not answer" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
+# Only an explicit authorization rejection confirms that this is not a project token. An unreadable or
+# unexpected response must not silently change the header used for the rest of the release.
+if ! token_environment="$(jq -er '
+  if (.errors // [] | length) == 0 and
+     (.data.projectToken.environmentId | type == "string" and length > 0) then
+    .data.projectToken.environmentId
+  elif (.data.projectToken == null) and (.errors | type == "array" and length > 0) and
+       all(.errors[]; .message == "Not Authorized") then
+    ""
+  else error("unexpected projectToken response") end
+' <<<"$token_response" 2>/dev/null)"; then
+  echo "Railway API, projectToken: malformed or unexpected lookup response" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
 if [ -z "$token_environment" ]; then
   RAILWAY_AUTH="Authorization: Bearer ${RAILWAY_API_TOKEN}"
 elif [ "$token_environment" = "$RAILWAY_ENVIRONMENT_ID" ]; then
   RAILWAY_AUTH="Project-Access-Token: ${RAILWAY_API_TOKEN}"
 else
-  echo "RAILWAY_API_TOKEN is a project token for another Railway environment (${token_environment:0:8}), not ${RAILWAY_ENVIRONMENT_ID:0:8}" >&2
+  echo "RAILWAY_API_TOKEN is a project token for another Railway environment (${token_environment:0:8}), not ${RAILWAY_ENVIRONMENT_ID:0:8}" | tee -a "$STATE_DIR/errors.txt" >&2
   exit 64
 fi
 
