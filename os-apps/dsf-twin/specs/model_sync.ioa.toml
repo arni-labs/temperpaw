@@ -520,3 +520,4 @@ on_timeout = "RefreshIfDue"
 [[invariant]]
 name = "BoundedCollectionFailures"
 assert = "failure_count <= 3"
+lemma = [{ name = "collecting_under_three", assert = "(=> (= $DsfModelSync.status DsfModelSync/Collecting) (< $DsfModelSync.failure_count 3))" }]
