@@ -283,11 +283,12 @@ known_migration() { # $1 full TemperPaw commit
 # Whether the kernel of one TemperPaw commit boots on a database that recorded migrations it does not know: its
 # migrator sets ignore_missing (crates/temper-store-postgres/src/migration.rs). Kernels from before that refuse
 # such a database ("migration N was previously applied but is missing").
+# Returns 0 for support, 1 for confirmed lack of support, 2 when the lookup fails.
 ignores_unknown_migrations() { # $1 full TemperPaw commit
   local rev source
-  rev="$(kernel_rev "$1")" || return 1
+  rev="$(kernel_rev "$1")" || { echo "the kernel pin of ${1} could not be read" >&2; return 2; }
   source="$(gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/src/migration.rs?ref=${rev}" \
-    -H "Accept: application/vnd.github.raw")" || return 1
+    -H "Accept: application/vnd.github.raw")" || { echo "the migrator source of kernel ${rev} could not be read" >&2; return 2; }
   grep -q 'set_ignore_missing(true)' <<<"$source"
 }
 
@@ -350,7 +351,7 @@ db_close() { # removes only a proxy this run opened
 # ignores unknown migrations boots as it is; one that refuses a database that recorded them ("migration N was previously
 # applied but is missing") needs their _sqlx_migrations rows gone first. Fails with the reason otherwise.
 migrations_back_to() { # $1 full TemperPaw commit that ran before
-  local old new extra additive rows
+  local old new extra additive rows lookup_status
   old="$(known_migration "$1")" || { echo "the migrations of ${1} could not be read" >&2; return 1; }
   new="$(known_migration "$EXPECTED_SHA")" || { echo "the migrations of ${EXPECTED_SHA} could not be read" >&2; return 1; }
   [ "$new" -gt "$old" ] || { echo "no storage migration between them (both know up to ${old})"; return 0; }
@@ -365,6 +366,12 @@ migrations_back_to() { # $1 full TemperPaw commit that ran before
   if ignores_unknown_migrations "$1"; then
     echo "${1:0:7}'s kernel ignores migrations it does not know, so it boots beside ${extra% } (additive) as they are"
     return 0
+  else
+    lookup_status=$?
+    if [ "$lookup_status" -ne 1 ]; then
+      echo "${1:0:7}'s kernel migration behavior could not be checked; stopping rollback" >&2
+      return 1
+    fi
   fi
   if [ "${MIGRATION_ROLLBACK:-}" != auto ] || [ -z "${POSTGRES_SERVICE_ID:-}" ]; then
     echo "going back needs a hand step first: DELETE FROM _sqlx_migrations WHERE version IN ($(tr ' ' ',' <<<"${extra% }")); (additive: ${extra% })" >&2
