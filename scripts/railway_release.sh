@@ -7,8 +7,8 @@
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
 #
-# Environment: RAILWAY_API_TOKEN (an account or team token), RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
-# RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
+# Environment: RAILWAY_API_TOKEN (this environment's project token, or an account or workspace token),
+# RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
 # Optional:
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
 #                    after the deploy must equal the answer before it
@@ -45,9 +45,39 @@ for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SER
 done
 mkdir -p "$STATE_DIR"
 
+# Railway reads a project token (one environment of one project) from Project-Access-Token, and an account or
+# workspace token from Authorization: Bearer. Only a project token answers projectToken; it must be this environment's.
+if ! token_response="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  --data '{"query":"query { projectToken { environmentId } }"}' "$GQL")"; then
+  echo "Railway API, projectToken: lookup did not answer" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
+# Only an explicit authorization rejection confirms that this is not a project token. An unreadable or
+# unexpected response must not silently change the header used for the rest of the release.
+if ! token_environment="$(jq -er '
+  if (.errors // [] | length) == 0 and
+     (.data.projectToken.environmentId | type == "string" and length > 0) then
+    .data.projectToken.environmentId
+  elif (.data.projectToken == null) and (.errors | type == "array" and length > 0) and
+       all(.errors[]; .message == "Not Authorized") then
+    ""
+  else error("unexpected projectToken response") end
+' <<<"$token_response" 2>/dev/null)"; then
+  echo "Railway API, projectToken: malformed or unexpected lookup response" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
+if [ -z "$token_environment" ]; then
+  RAILWAY_AUTH="Authorization: Bearer ${RAILWAY_API_TOKEN}"
+elif [ "$token_environment" = "$RAILWAY_ENVIRONMENT_ID" ]; then
+  RAILWAY_AUTH="Project-Access-Token: ${RAILWAY_API_TOKEN}"
+else
+  echo "RAILWAY_API_TOKEN is a project token for another Railway environment (${token_environment:0:8}), not ${RAILWAY_ENVIRONMENT_ID:0:8}" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 64
+fi
+
 gql() { # $1: the request body; prints the response, fails on an error
   local response
-  response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  response="$(curl -fsS --max-time 30 -H "$RAILWAY_AUTH" -H "Content-Type: application/json" \
     --data "$1" "$GQL")" || { echo "Railway API did not answer" | tee -a "$STATE_DIR/errors.txt" >&2; return 1; }
   if jq -e '.errors' >/dev/null <<<"$response"; then
     # Which call failed: the first field the request names (deployments, variableUpsert, ...), never its variables.

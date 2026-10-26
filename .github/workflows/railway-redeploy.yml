@@ -19,7 +19,9 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # variables RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, TEMPERPAW_BASE_URL, PROBE_ROUTES (one "<GET|POST> <anon|operator|
 # forged-customer|forged-admin|bogus> <path>" per line), GUEST_CHECK_URL, MEMORY_LIMIT_GB (a gate; without it memory is
 # reported only) and DD_ENV; secret TEMPER_API_KEY. An environment's own value wins over the repository's.
-# RAILWAY_TOKEN (an account or team token), RAILWAY_PROJECT_ID and the Datadog keys are the repository's.
+# RAILWAY_TOKEN is the environment's own project token when the environment has one (railway_release.sh sends it as
+# Project-Access-Token), else the repository's account or workspace token. RAILWAY_PROJECT_ID and the Datadog keys are
+# the repository's.
 #
 # Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
 # rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
