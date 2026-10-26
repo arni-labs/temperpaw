@@ -90,6 +90,49 @@ class RailwayReleaseTests(unittest.TestCase):
                 # These are precisely the two results the Factory maps to ok.
                 self.assertEqual(result.stdout in ('verified', 'checked'), package_outcome != 'failure' and e2e != 'failure')
 
+    def test_migration_lookup_failure_stops_before_deletion(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('kernel_rev', 'ignores_unknown_migrations', 'migrations_back_to'):
+            functions += name + '()' + script.split(name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        mock = r'''
+known_migration() { if [ "$1" = old ]; then echo 19; else echo 20; fi; }
+gh() {
+  if [[ "$2" == *Cargo.lock* ]]; then
+    [ "$SCENARIO" != pin_failure ] || { echo 'pin unavailable' >&2; return 1; }
+    if [ "$SCENARIO" = pin_missing ]; then
+      echo 'no kernel pin'
+    else
+      printf 'name = "temper-store-postgres"\nsource = "git+https://example.test?rev=abc"\n'
+    fi
+  else
+    [ "$SCENARIO" != source_failure ] || { echo 'source unavailable' >&2; return 1; }
+    if [ "$SCENARIO" = supported ]; then echo 'migrator.set_ignore_missing(true);';
+    else echo 'migrator.run(pool).await'; fi
+  fi
+}
+db_open() { echo DATABASE_OPENED; }
+db_close() { :; }
+psql() { echo DATABASE_DELETE >&2; echo 20; }
+'''
+        for scenario in ('pin_failure', 'pin_missing', 'source_failure', 'supported', 'unsupported'):
+            for mode in ('', 'auto'):
+                with self.subTest(scenario=scenario, mode=mode), tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, 'additive_migrations.txt').write_text('20 additive\n')
+                    env = dict(os.environ, EXPECTED_SHA='new', SCENARIO=scenario,
+                               MIGRATION_ROLLBACK=mode, POSTGRES_SERVICE_ID='test')
+                    command = 'set -euo pipefail\n' + functions + mock + '\nmigrations_back_to old || exit 7\n'
+                    result = subprocess.run(['bash', '-c', command, tmp + '/release.sh'],
+                                            env=env, capture_output=True, text=True)
+                    failed_lookup = scenario in ('pin_failure', 'pin_missing', 'source_failure')
+                    ok = scenario == 'supported' or (scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
+                    self.assertEqual('could not be checked' in result.stderr, failed_lookup)
+                    self.assertEqual('DATABASE_OPENED' in result.stdout, scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual('DATABASE_DELETE' in result.stderr, scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual('DELETE FROM' in result.stderr, scenario == 'unsupported' and mode == '')
+                    self.assertEqual('boots beside' in result.stdout, scenario == 'supported')
+
     def test_proxy_cleanup_in_conditional(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
         function = 'db_close()' + script.split('db_close()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
