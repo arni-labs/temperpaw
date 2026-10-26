@@ -52,14 +52,15 @@ if ! token_response="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILW
   echo "Railway API, projectToken: lookup did not answer" | tee -a "$STATE_DIR/errors.txt" >&2
   exit 1
 fi
-# Only an explicit authorization rejection confirms that this is not a project token. An unreadable or
+# Only an explicit rejection confirms that this is not a project token: Railway answers an account or workspace
+# token with "Project Token not found" (seen 26 Oct 2026) and has answered "Not Authorized". An unreadable or
 # unexpected response must not silently change the header used for the rest of the release.
 if ! token_environment="$(jq -er '
   if (.errors // [] | length) == 0 and
      (.data.projectToken.environmentId | type == "string" and length > 0) then
     .data.projectToken.environmentId
   elif (.data.projectToken == null) and (.errors | type == "array" and length > 0) and
-       all(.errors[]; .message == "Not Authorized") then
+       all(.errors[]; .message == "Not Authorized" or .message == "Project Token not found") then
     ""
   else error("unexpected projectToken response") end
 ' <<<"$token_response" 2>/dev/null)"; then
