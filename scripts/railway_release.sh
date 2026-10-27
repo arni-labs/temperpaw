@@ -168,6 +168,16 @@ guest() {
   printf '%s' "${read:-${code:-000} false no JSON body}"
 }
 
+# The snapshot's guest read: a check after the deploy compares with it, so anything but a good read stops the release.
+guest_baseline() {
+  local was
+  was="$(guest)"
+  case "${GUEST_CHECK_URL:+set}:$was" in
+    : | "set:200 true "*) printf '%s' "$was" ;;
+    *) echo "the guest read answered ${was}: no baseline, so no deploy" >&2; return 1 ;;
+  esac
+}
+
 wait_healthy() {
   local attempt healthz readyz
   for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
@@ -452,11 +462,7 @@ case "${1:-}" in
     routes="$(route_count "$id")"
     [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
     probes="$(probe)"
-    guest_was="$(guest)"
-    case "${GUEST_CHECK_URL:+set}:$guest_was" in
-      : | "set:200 true "*) ;;
-      *) echo "the guest read answered ${guest_was}: no baseline, so no deploy" >&2; exit 1 ;;
-    esac
+    guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
     ;;

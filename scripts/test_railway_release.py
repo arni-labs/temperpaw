@@ -170,6 +170,39 @@ gql() {
                 self.assertEqual(marker.exists(), not ok)
                 self.assertEqual('the TCP proxy is removed' in result.stdout, ok)
 
+    def test_guest_baseline_needs_a_good_read(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('guest', 'guest_baseline'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        # curl answers with the scenario's body, then the status line -w adds.
+        mock = r'''
+curl() {
+  case "$SCENARIO" in
+    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[1,2]}]}}\n200' ;;
+    empty) printf '\n200' ;;
+    html) printf '<html>bad gateway</html>\n502' ;;
+    refused) printf '\n000'; return 7 ;;
+  esac
+}
+'''
+        for scenario, url, ok, read in [
+            ('good', 'https://example.test/guest', True, '200 true find 2'),
+            ('empty', 'https://example.test/guest', False, '200 false no JSON body'),
+            ('html', 'https://example.test/guest', False, '502 false no JSON body'),
+            ('refused', 'https://example.test/guest', False, '000 false no JSON body'),
+            ('empty', '', True, ''),
+        ]:
+            with self.subTest(scenario=scenario, url=url):
+                command = 'set -euo pipefail\n' + functions + mock + '\nwas="$(guest_baseline)" || exit 7\nprintf "%s" "$was"\n'
+                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url)
+                result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
+                if ok:
+                    self.assertEqual(result.stdout, read)
+                else:
+                    self.assertIn('the guest read answered ' + read + ': no baseline, so no deploy', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
