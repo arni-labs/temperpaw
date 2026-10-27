@@ -29,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   bump:
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     env:
       STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
       TEMPER_REPO: arni-labs/temper

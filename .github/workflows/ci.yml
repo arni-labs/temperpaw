@@ -13,7 +13,7 @@ on:
 jobs:
   # Fast lane: what a PR waits on. Target <5 min. (ARN-429)
   checks:
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable
@@ -44,7 +44,7 @@ jobs:
   # iteration. (ARN-429)
   full:
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable

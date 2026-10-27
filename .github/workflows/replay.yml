@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   replay:
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     steps:
       # The merge of the pull request into its base: the first parent is the base, so the diff is what merging changes.
       - uses: actions/checkout@v6.0.2

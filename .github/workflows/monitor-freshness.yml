@@ -12,7 +12,7 @@ on:
 
 jobs:
   monitor-freshness:
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     permissions:
       issues: write
       contents: read

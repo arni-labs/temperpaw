@@ -49,7 +49,7 @@ jobs:
       (github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == github.event.repository.default_branch &&
        github.event.workflow_run.conclusion == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: arni-ubuntu-4core
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6.0.2
