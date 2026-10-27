@@ -11,7 +11,8 @@
 # RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
 # Optional:
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
-#                    after the deploy must equal the answer before it
+#                    after the deploy must equal the answer before it. An operator probe on a route's path also shows
+#                    the route table serves when Railway drops the deployment's "route table rebuilt" log line
 #   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok with the same counts
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
 #   EXPECTED_SHA     the full commit /paw/version must report
@@ -126,6 +127,24 @@ log_fields() {
 # The default tenant's route count, from the last rebuild a deployment logged (its boot rebuild for a new one).
 route_count() {
   log_fields "$1" "@fields.message:\"${ROUTE_MESSAGE}\"" | jq -s -r '[.[] | select(.tenant == "default")] | sort_by(.timestamp) | last | .route_count // empty'
+}
+
+# Whether the default tenant's route table serves, read from the probes rather than the logs, since Railway can drop a
+# deployment's log lines. A signed-in request the table cannot match answers 404 {"error":"no route matches"}, and a
+# built-in path answers a method it lacks with 405, so a path whose TRACE gets that 404 belongs to the table, and a
+# signed-in probe there answering anything but 404 shows the table holds its route. Prints the first such probe.
+routes_serve() { # $1 probe answers, as probe prints them
+  local method auth path body
+  while read -r method auth path; do
+    [ "${auth:-}" = operator ] || continue
+    [ "$(jq -r --arg k "$method $auth $path" '.[$k] // "404"' <<<"$1")" != 404 ] || continue
+    body="$(curl -s -m 30 -X TRACE -H "Authorization: Bearer ${TEMPER_API_KEY}" -H "X-Tenant-Id: default" "${BASE_URL}${path}" || true)"
+    if jq -e '.error == "no route matches"' >/dev/null 2>&1 <<<"$body"; then
+      echo "${method} ${path}"
+      return 0
+    fi
+  done <<<"${PROBE_ROUTES:-}"
+  return 1
 }
 
 ask_failures() {
@@ -274,19 +293,23 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
 
 # Everything that must equal the snapshot, for a deployment that now serves. Appends misses to the array named misses.
 against_before() { # $1 deployment id
-  local want got failed after key was now guest_now
+  local want got failed after key was now guest_now served
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
-  want="$(jq -r .route_count "$STATE_DIR/before.json")"
+  # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
+  want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
   echo "route_count: ${got:-none} (before: ${want:-none})"
-  if [ -z "$got" ]; then
-    misses+=("the deployment logged no route table for the default tenant")
-  elif [ "$got" != "$want" ]; then
-    misses+=("route_count ${got}, before ${want}")
-  fi
+  [ -z "$got" ] || [ -z "$want" ] || [ "$got" = "$want" ] || misses+=("route_count ${got}, before ${want}")
   failed="$(ask_failures "$1")"
   [ "${failed:-0}" = 0 ] || misses+=("${failed} route actor ask(s) failed during a rebuild")
   after="$(probe)"
+  if [ -z "$got" ]; then
+    if served="$(routes_serve "$after")"; then
+      echo "no route table line in the logs; ${served} reaches its route"
+    else
+      misses+=("the deployment logged no route table for the default tenant, and no signed-in probe reaches a route")
+    fi
+  fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     was="$(jq -r --arg k "$key" '.probes[$k]' "$STATE_DIR/before.json")"
@@ -460,8 +483,15 @@ case "${1:-}" in
       exit 1
     }
     routes="$(route_count "$id")"
-    [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
     probes="$(probe)"
+    if ! [[ "$routes" =~ ^[0-9]+$ ]]; then
+      routes=""
+      served="$(routes_serve "$probes")" || {
+        echo "deployment ${id} logged no route table for the default tenant and no signed-in probe reaches a route: no baseline, so no deploy" >&2
+        exit 1
+      }
+      echo "deployment ${id} logged no route table; ${served} reaches its route" >&2
+    fi
     guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
