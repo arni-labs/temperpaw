@@ -284,7 +284,7 @@ The **Railway Redeploy** workflow (`.github/workflows/railway-redeploy.yml`, run
 3. **check**: `/healthz` and `/readyz`, `/paw/version` naming the tag's commit, the new boot's route count, every probe and the guest read against the snapshot. Memory (Railway's figure and the build's Datadog gauges) is reported after a soak.
 4. **rollback**, on any miss: a deployment that never took over is stopped and nothing restarts; one that took over is replaced by the image that ran before, checked against the snapshot.
 
-`mode: check` runs the checks against what runs now, deploying nothing. `drill` (staging only) fails the check on purpose to prove the rollback. Each run ends with a release record (job outputs and run summary). An image whose kernel adds a storage migration has no way back: an older binary refuses the newer schema (on staging, `sha-3d79f6e` after `sha-6f410a8`: "migration 19 was previously applied but is missing").
+`mode: check` runs the checks against what runs now, deploying nothing. `drill` (staging only) fails the check on purpose to prove the rollback. Each run ends with a release record (job outputs and run summary). An image whose kernel adds a storage migration has a way back only when the migration is listed in `scripts/additive_migrations.txt`. A kernel whose migrator ignores unknown migrations then boots on the migrated database as it is. An older one refuses it (on staging, `sha-3d79f6e` after `sha-6f410a8`: "migration 19 was previously applied but is missing"), so the way back first deletes the newer rows from `_sqlx_migrations` where `MIGRATION_ROLLBACK` is `auto`, and otherwise stops and names them.
 
 ### Using Railway CLI directly
 

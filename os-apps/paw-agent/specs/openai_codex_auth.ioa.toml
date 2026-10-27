@@ -3,6 +3,12 @@
 # Device-code OAuth is modeled as entity state transitions. Setup routes create
 # this singleton entity and dispatch one action; all external OpenAI auth calls
 # and vault writes happen in the WASM integration.
+#
+# A refresh that cannot succeed without the person (no refresh token, or one
+# OpenAI refuses) and a poll of a device code that has run out both answer
+# SignInRequired, which requests a new code. So EnsureFresh and
+# PollDeviceLogin each end at Ready, at DeviceCodeReady with a code the person
+# can still enter, or at Failed.
 
 [automaton]
 name = "OpenAICodexAuth"
@@ -78,6 +84,25 @@ params = ["verification_url", "user_code", "device_auth_id", "poll_interval_ms",
 hint = "Device code is ready for the user, or authorization is still pending."
 
 [[action]]
+name = "SignInRequired"
+kind = "input"
+from = ["Polling", "Refreshing"]
+to = "Starting"
+params = ["last_error"]
+hint = "The stored login cannot be refreshed, or the device code ran out: request a new device code."
+
+[[action.triggers]]
+name = "openai_codex_auth_restart"
+kind = "wasm"
+module = "openai_codex_auth"
+on_failure = "Fail"
+
+[action.triggers.config]
+mode = "start"
+temper_api_url = "{secret:temper_api_url}"
+openai_auth_base_url = "https://auth.openai.com"
+
+[[action]]
 name = "PollDeviceLogin"
 kind = "input"
 from = ["DeviceCodeReady"]
@@ -124,7 +149,7 @@ openai_auth_base_url = "https://auth.openai.com"
 [[action]]
 name = "EnsureFresh"
 kind = "input"
-from = ["Idle", "Ready", "Failed"]
+from = ["Idle", "Ready", "Failed", "Disconnected"]
 to = "Refreshing"
 hint = "Ensure the stored OpenAI Codex access token is fresh, refreshing it only when it is missing or near expiry."
 

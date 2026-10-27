@@ -1,4 +1,11 @@
 //! Provider Auth Gate — ensures subscription OAuth is fresh before LLM calls.
+//!
+//! The gate makes one OpenAICodexAuth move for the auth status it reads:
+//! PollDeviceLogin while a device code is out, and the configured refresh
+//! otherwise. The auth spec's callbacks do the rest, so the move ends with the
+//! login ready or with a device code a person can still enter. When it is not
+//! ready, the Session fails with the link, the code and how long it lasts;
+//! sending the message again after signing in polls the code and continues.
 
 use temper_wasm_sdk::prelude::*;
 use wasm_helpers::{resolve_temper_api_url, runtime_headers_as, timestamp_millis_string};
@@ -33,49 +40,50 @@ fn run_provider_auth_gate() -> Result<(), String> {
         Some("application/json"),
     );
 
-    if auth_action == "EnsureFresh" {
-        let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
-        let resp = ctx.http_call("GET", &status_url, &headers, "")?;
-        if (200..300).contains(&resp.status) {
-            let parsed: Value = serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}));
-            let status = codex_auth_status_value(&parsed).unwrap_or("");
-            if codex_auth_status_allows_provider_call(&parsed) {
-                ctx.log(
-                    "info",
-                    &format!(
-                        "provider_auth_gate: OpenAICodexAuth status is {status}; skipping EnsureFresh"
-                    ),
-                );
-                set_success_result(ready_action, &ready_params(&fields, status, ""));
-                return Ok(());
-            }
-            if let Some(error) = codex_auth_status_blocks_before_dispatch(&parsed) {
-                return Err(error);
-            }
+    let status_url = format!("{temper_api_url}/paw/setup/openai-codex/status");
+    let resp = ctx.http_call("GET", &status_url, &headers, "")?;
+    let current: Value = if (200..300).contains(&resp.status) {
+        serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    let action = match auth_move(&current, auth_action) {
+        AuthMove::Proceed => {
+            let status = codex_auth_status_value(&current).unwrap_or("Ready");
+            ctx.log(
+                "info",
+                &format!(
+                    "provider_auth_gate: OpenAICodexAuth status is {status}; skipping {auth_action}"
+                ),
+            );
+            set_success_result(ready_action, &ready_params(&fields, status, ""));
+            return Ok(());
         }
-    }
+        AuthMove::Wait => return Err(sign_in_under_way(&current)),
+        AuthMove::Dispatch(action) => action,
+    };
 
-    let url = format!("{temper_api_url}{}", auth_endpoint_path(auth_action));
-
+    let url = format!("{temper_api_url}{}", auth_endpoint_path(action));
     ctx.log(
         "info",
-        &format!("provider_auth_gate: dispatching OpenAICodexAuth.{auth_action}"),
+        &format!("provider_auth_gate: dispatching OpenAICodexAuth.{action}"),
     );
     let resp = ctx.http_call("POST", &url, &headers, "{}")?;
     if !(200..300).contains(&resp.status) {
         return Err(format!(
-            "OpenAI Codex auth {auth_action} failed (HTTP {}): {}",
+            "OpenAI Codex auth {action} failed (HTTP {}): {}",
             resp.status,
             body_snippet(&resp.body)
         ));
     }
 
     let parsed: Value = serde_json::from_str(&resp.body).unwrap_or_else(|_| json!({}));
-    let status = codex_auth_status_value(&parsed).unwrap_or("Ready");
-    if let Some(error) = codex_auth_status_error(&parsed) {
-        return Err(error);
+    if !codex_auth_status_allows_provider_call(&parsed) {
+        // The route answers once the move and its callbacks are done, so the
+        // time left is measured from now, not from before the request.
+        return Err(sign_in_needed(&parsed, Context::get_time_millis()));
     }
-
+    let status = codex_auth_status_value(&parsed).unwrap_or("Ready");
     set_success_result(ready_action, &ready_params(&fields, status, ""));
     Ok(())
 }
@@ -117,6 +125,7 @@ fn auth_endpoint_path(auth_action: &str) -> &'static str {
     match auth_action {
         "ForceRefresh" => "/paw/setup/openai-codex/force-refresh",
         "Refresh" => "/paw/setup/openai-codex/refresh",
+        "PollDeviceLogin" => "/paw/setup/openai-codex/poll",
         _ => "/paw/setup/openai-codex/ensure-fresh",
     }
 }
@@ -126,39 +135,6 @@ fn codex_auth_status_value(parsed: &Value) -> Option<&str> {
         .get("status")
         .and_then(Value::as_str)
         .filter(|status| !status.trim().is_empty())
-}
-
-fn codex_auth_status_error(parsed: &Value) -> Option<String> {
-    if codex_auth_status_allows_provider_call(parsed) {
-        return None;
-    }
-
-    let status = codex_auth_status_value(parsed).unwrap_or("missing");
-    let detail = parsed
-        .get("last_error")
-        .or_else(|| parsed.get("error"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-
-    if status.eq_ignore_ascii_case("failed") {
-        let error = detail.unwrap_or("OpenAI Codex auth failed");
-        return Some(format!("{error}. {}", codex_auth_login_guidance(parsed)));
-    }
-
-    if matches!(
-        status.to_ascii_lowercase().as_str(),
-        "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected" | "idle"
-    ) {
-        return Some(format!(
-            "OpenAI Codex sign-in is required before calling the provider; auth status is {status}. {}",
-            codex_auth_login_guidance(parsed)
-        ));
-    }
-
-    Some(format!(
-        "OpenAI Codex auth returned status {status}; OpenAI Codex sign-in is required. {}",
-        codex_auth_login_guidance(parsed)
-    ))
 }
 
 fn codex_auth_status_allows_provider_call(parsed: &Value) -> bool {
@@ -176,43 +152,86 @@ fn codex_auth_status_is_configured(parsed: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn codex_auth_status_blocks_before_dispatch(parsed: &Value) -> Option<String> {
-    if codex_auth_status_allows_provider_call(parsed) {
-        return None;
-    }
-    let status = codex_auth_status_value(parsed)?;
-    if matches!(
-        status.to_ascii_lowercase().as_str(),
-        "starting" | "devicecodeready" | "polling" | "refreshing" | "disconnected"
-    ) {
-        return codex_auth_status_error(parsed);
-    }
-    None
+/// The one OpenAICodexAuth move the gate makes for an auth status. What
+/// follows the move is the auth spec's declared callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthMove<'a> {
+    /// The status allows a provider call already.
+    Proceed,
+    /// A sign-in step is being started, polled or refreshed right now.
+    Wait,
+    /// Dispatch this OpenAICodexAuth action.
+    Dispatch(&'a str),
 }
 
-fn codex_auth_login_guidance(parsed: &Value) -> String {
-    let verification_url = parsed
-        .get("verification_uri")
-        .or_else(|| parsed.get("verification_url"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let user_code = parsed
-        .get("user_code")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-
-    match (verification_url, user_code) {
-        (Some(url), Some(code)) => format!(
-            "In Discord, DM the bot `codex auth`, open {url}, enter code {code}, then reply `codex auth done`."
-        ),
-        (Some(url), None) => format!(
-            "In Discord, DM the bot `codex auth`, open {url}, complete sign-in, then reply `codex auth done`."
-        ),
-        (None, Some(code)) => format!(
-            "In Discord, DM the bot `codex auth`, enter code {code} at the device-login page, then reply `codex auth done`."
-        ),
-        (None, None) => "In Discord, DM the bot `codex auth`, complete the device login, then reply `codex auth done`.".to_string(),
+fn auth_move<'a>(status: &Value, auth_action: &'a str) -> AuthMove<'a> {
+    if auth_action == "EnsureFresh" && codex_auth_status_allows_provider_call(status) {
+        return AuthMove::Proceed;
     }
+    match codex_auth_status_value(status)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        // The person may have entered the code already. A code that ran out
+        // is replaced by the poll itself.
+        Some("devicecodeready") => AuthMove::Dispatch("PollDeviceLogin"),
+        Some("starting" | "polling" | "refreshing") => AuthMove::Wait,
+        _ => AuthMove::Dispatch(auth_action),
+    }
+}
+
+/// What a Session fails with when the auth status after the gate's move does
+/// not allow a provider call.
+fn sign_in_needed(status: &Value, now_ms: i64) -> String {
+    sign_in_prompt(status, now_ms).unwrap_or_else(|| {
+        format!(
+            "OpenAI Codex auth is not ready (status {}{}); send your message again to try once more.",
+            codex_auth_status_value(status).unwrap_or("missing"),
+            status_text(status, &["last_error", "error"])
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        )
+    })
+}
+
+/// The link, the code and the time left, when the status holds a device code
+/// that has not run out. A Failed entity can still hold an old login's code,
+/// so only a DeviceCodeReady status's code is offered.
+fn sign_in_prompt(status: &Value, now_ms: i64) -> Option<String> {
+    if !codex_auth_status_value(status)?.eq_ignore_ascii_case("devicecodeready") {
+        return None;
+    }
+    let url = status_text(status, &["verification_url", "verification_uri"])?;
+    let code = status_text(status, &["user_code"])?;
+    let expires_at_ms: i64 = status.get("expires_at_ms").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str()?.trim().parse().ok())
+    })?;
+    let left_ms = expires_at_ms - now_ms;
+    if left_ms <= 0 {
+        return None;
+    }
+    let within = match left_ms / 60_000 {
+        0 | 1 => "a minute".to_string(),
+        minutes => format!("{minutes} minutes"),
+    };
+    Some(format!(
+        "OpenAI Codex sign-in is required. Open {url} and enter code {code} within {within}, then send your message again."
+    ))
+}
+
+fn status_text<'a>(status: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .filter_map(|key| status.get(*key).and_then(Value::as_str))
+        .find(|value| !value.trim().is_empty())
+}
+
+fn sign_in_under_way(status: &Value) -> String {
+    format!(
+        "OpenAI Codex sign-in is under way (auth status {}); send your message again in a minute.",
+        codex_auth_status_value(status).unwrap_or("missing")
+    )
 }
 
 fn ready_params(fields: &Value, status: &str, error: &str) -> Value {
@@ -275,6 +294,10 @@ mod tests {
             auth_endpoint_path("Refresh"),
             "/paw/setup/openai-codex/refresh"
         );
+        assert_eq!(
+            auth_endpoint_path("PollDeviceLogin"),
+            "/paw/setup/openai-codex/poll"
+        );
     }
 
     #[test]
@@ -307,31 +330,116 @@ mod tests {
         });
 
         assert!(codex_auth_status_allows_provider_call(&status));
-        assert!(codex_auth_status_error(&status).is_none());
+        assert_eq!(auth_move(&status, "EnsureFresh"), AuthMove::Proceed);
     }
 
-    #[test]
-    fn device_code_codex_auth_blocks_with_discord_guidance() {
-        let status = json!({
-            "status": "DeviceCodeReady",
+    const NOW_MS: i64 = 1_800_000_000_000;
+
+    fn device_code(status: &str, expires_in_ms: i64) -> Value {
+        json!({
+            "status": status,
             "configured": false,
-            "verification_uri": "https://microsoft.com/devicelogin",
-            "user_code": "ABCD-EFGH"
-        });
-
-        let error = codex_auth_status_error(&status).expect("device code should block");
-        assert!(error.contains("DM the bot"));
-        assert!(error.contains("ABCD-EFGH"));
-        assert!(error.contains("https://microsoft.com/devicelogin"));
+            "verification_url": "https://auth.openai.com/codex/device",
+            "user_code": "ABCD-EFGH",
+            "expires_at_ms": (NOW_MS + expires_in_ms).to_string(),
+        })
     }
 
     #[test]
-    fn unconfigured_refreshing_codex_auth_blocks_before_dispatch() {
-        let status = json!({
-            "status": "Refreshing",
-            "configured": false
-        });
+    fn a_device_code_that_is_out_is_polled_whatever_its_time_left() {
+        // The person may have entered it; a code that ran out is replaced by
+        // the poll's own callback, not by a second move from the gate.
+        for expires_in_ms in [10 * 60_000, 10_000, -60_000] {
+            for auth_action in ["EnsureFresh", "ForceRefresh"] {
+                assert_eq!(
+                    auth_move(&device_code("DeviceCodeReady", expires_in_ms), auth_action),
+                    AuthMove::Dispatch("PollDeviceLogin"),
+                    "{auth_action}, {expires_in_ms} ms left"
+                );
+            }
+        }
+    }
 
-        assert!(codex_auth_status_blocks_before_dispatch(&status).is_some());
+    #[test]
+    fn a_sign_in_step_under_way_is_left_to_finish() {
+        for status in [
+            json!({"status": "Starting", "configured": false}),
+            json!({"status": "Polling", "configured": false}),
+            json!({"status": "Refreshing", "configured": false}),
+        ] {
+            assert_eq!(
+                auth_move(&status, "EnsureFresh"),
+                AuthMove::Wait,
+                "{status}"
+            );
+        }
+        assert_eq!(
+            auth_move(
+                &json!({"status": "Refreshing", "configured": true}),
+                "ForceRefresh"
+            ),
+            AuthMove::Wait
+        );
+    }
+
+    #[test]
+    fn any_other_status_gets_the_configured_refresh() {
+        for status in [
+            json!({"status": "Idle", "configured": false}),
+            json!({"status": "Failed", "configured": true, "last_error": "refresh_token_reused"}),
+            // A Failed entity can still hold the code of an old login.
+            device_code("Failed", -20 * 86_400_000),
+            json!({"status": "Disconnected", "configured": false}),
+            json!({"configured": false}),
+            json!({}),
+        ] {
+            assert_eq!(
+                auth_move(&status, "EnsureFresh"),
+                AuthMove::Dispatch("EnsureFresh"),
+                "{status}"
+            );
+        }
+        // A provider that reported token_expired asks for a refresh even
+        // when the status says Ready.
+        assert_eq!(
+            auth_move(
+                &json!({"status": "Ready", "configured": true}),
+                "ForceRefresh"
+            ),
+            AuthMove::Dispatch("ForceRefresh")
+        );
+    }
+
+    #[test]
+    fn the_sign_in_prompt_gives_the_link_the_code_and_the_time_left() {
+        let prompt = sign_in_needed(
+            &device_code("DeviceCodeReady", 14 * 60_000 + 30_000),
+            NOW_MS,
+        );
+        assert!(
+            prompt.contains("https://auth.openai.com/codex/device"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("ABCD-EFGH"), "{prompt}");
+        assert!(prompt.contains("14 minutes"), "{prompt}");
+        assert!(prompt.contains("send your message again"), "{prompt}");
+        // Nothing handles a `codex auth` command, so the prompt never names one.
+        assert!(!prompt.contains("codex auth"), "{prompt}");
+
+        let prompt = sign_in_needed(&device_code("DeviceCodeReady", 90_000), NOW_MS);
+        assert!(prompt.contains("within a minute"), "{prompt}");
+    }
+
+    #[test]
+    fn a_code_that_ran_out_or_belongs_to_an_old_login_is_never_offered() {
+        for status in [
+            device_code("DeviceCodeReady", -59_000),
+            device_code("DeviceCodeReady", 0),
+            device_code("Failed", 10 * 60_000),
+        ] {
+            let failure = sign_in_needed(&status, NOW_MS);
+            assert!(!failure.contains("ABCD-EFGH"), "{status}: {failure}");
+            assert!(failure.contains("send your message again"), "{failure}");
+        }
     }
 }

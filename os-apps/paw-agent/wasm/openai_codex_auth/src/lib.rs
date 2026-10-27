@@ -18,6 +18,17 @@ const OPENAI_CODEX_DEVICE_CALLBACK_URL: &str = "https://auth.openai.com/deviceau
 const DEVICE_CODE_TTL_MS: i64 = 15 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS: i64 = 5_000;
 const DEFAULT_REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
+/// A person needs time to open the link and type the code, so a device code
+/// with less than this left would run out while they enter it.
+const DEVICE_CODE_MIN_LEFT_MS: i64 = 30_000;
+/// Token endpoint error codes that refuse the refresh token itself: OAuth's
+/// invalid_grant and the codes Codex CLI reads as expired, reused or revoked.
+const REFRESH_TOKEN_REFUSED_CODES: [&str; 4] = [
+    "invalid_grant",
+    "refresh_token_expired",
+    "refresh_token_reused",
+    "refresh_token_invalidated",
+];
 
 const SECRET_ACCESS_TOKEN: &str = "openai_codex_access_token";
 const SECRET_REFRESH_TOKEN: &str = "openai_codex_refresh_token";
@@ -117,6 +128,17 @@ fn poll_device_login(ctx: &Context, fields: &Value) -> Result<(), String> {
         &body,
     )?;
 
+    let authorized = (200..300).contains(&resp.status);
+    if !authorized && !device_code_usable(fields, Context::get_time_millis()) {
+        return sign_in_required(
+            ctx,
+            format!(
+                "OpenAI Codex device code ran out before sign-in (poll HTTP {})",
+                resp.status
+            ),
+        );
+    }
+
     if resp.status == 403 || resp.status == 404 {
         set_success_result(
             "DeviceCodeReady",
@@ -131,7 +153,7 @@ fn poll_device_login(ctx: &Context, fields: &Value) -> Result<(), String> {
         return Ok(());
     }
 
-    if !(200..300).contains(&resp.status) {
+    if !authorized {
         return Err(format!(
             "OpenAI device authorization failed: HTTP {} {}",
             resp.status,
@@ -185,22 +207,17 @@ fn ensure_tokens_fresh(ctx: &Context, force_refresh: bool) -> Result<(), String>
         return Ok(());
     }
 
-    refresh_tokens(ctx).map_err(|err| {
-        if err.contains("refresh token is missing")
-            || err.contains("invalid_grant")
-            || err.contains("expired")
-        {
-            format!("{err}. OpenAI Codex sign-in is required; start the Codex device login again.")
-        } else {
-            err
-        }
-    })
+    refresh_tokens(ctx)
 }
 
+/// Refreshes the stored tokens. When no refresh can succeed without the
+/// person (no refresh token, or OpenAI refuses it), it asks for a new sign-in
+/// instead of failing.
 fn refresh_tokens(ctx: &Context) -> Result<(), String> {
     let auth_base_url = auth_base_url(ctx);
-    let refresh_token = resolve_config_or_secret(ctx, SECRET_REFRESH_TOKEN)
-        .ok_or("OpenAI Codex refresh token is missing")?;
+    let Some(refresh_token) = resolve_config_or_secret(ctx, SECRET_REFRESH_TOKEN) else {
+        return sign_in_required(ctx, "OpenAI Codex refresh token is missing".to_string());
+    };
 
     let body = form_encode(&[
         ("grant_type", "refresh_token"),
@@ -218,15 +235,47 @@ fn refresh_tokens(ctx: &Context) -> Result<(), String> {
         &body,
     )?;
     if !(200..300).contains(&resp.status) {
-        return Err(format!(
+        let error = format!(
             "OpenAI Codex token refresh failed: HTTP {} {}",
             resp.status,
             body_snippet(&resp.body)
-        ));
+        );
+        if refresh_token_refused(resp.status, &resp.body) {
+            return sign_in_required(ctx, error);
+        }
+        return Err(error);
     }
 
     let tokens = parse_token_response(&resp.body)?;
     store_tokens_and_complete(ctx, tokens)
+}
+
+/// Whether OpenAI refused the refresh token itself, so only a new sign-in
+/// helps. Codex CLI treats every 401 from the token endpoint this way.
+fn refresh_token_refused(status: u16, body: &str) -> bool {
+    status == 401
+        || ((400..500).contains(&status)
+            && REFRESH_TOKEN_REFUSED_CODES
+                .iter()
+                .any(|code| body.contains(code)))
+}
+
+/// Whether the device code in `fields` still has time for a person to enter.
+fn device_code_usable(fields: &Value, now_ms: i64) -> bool {
+    field_str(fields, "expires_at_ms")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .is_some_and(|expires_at_ms| expires_at_ms - now_ms > DEVICE_CODE_MIN_LEFT_MS)
+}
+
+/// Asks the state machine for a new device code: the stored login cannot be
+/// refreshed, or the device code ran out.
+fn sign_in_required(ctx: &Context, reason: String) -> Result<(), String> {
+    ctx.log(
+        "info",
+        &format!("openai_codex_auth: sign-in required: {reason}"),
+    );
+    set_success_result("SignInRequired", &json!({ "last_error": reason }));
+    Ok(())
 }
 
 fn exchange_authorization_code(
