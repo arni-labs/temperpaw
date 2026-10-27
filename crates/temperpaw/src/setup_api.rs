@@ -10,7 +10,7 @@ use std::{env, fs};
 
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
@@ -18,6 +18,7 @@ use axum::{Json, Router};
 use opentelemetry::trace::{Span as _, SpanKind, Status, Tracer as _};
 use opentelemetry::{KeyValue, global};
 use serde::{Deserialize, Serialize};
+use temper_authz::{AuthenticatedRequestContext, PrincipalKind};
 use temper_platform::PlatformState;
 use temper_platform::genesis_install::GenesisRegistryInstallRequest;
 use temper_runtime::tenant::TenantId;
@@ -691,14 +692,22 @@ async fn ensure_openai_codex_auth_entity(state: &SetupApiState) -> Result<()> {
     Ok(())
 }
 
+/// Runs one OpenAICodexAuth move as `caller`, the setup route's caller, and
+/// answers with the status the move and its callbacks leave.
+///
+/// The move acts for the caller, never as System. Its module saves the tokens
+/// through this server's own `/paw/setup/secrets`, and the kernel gives the
+/// module of a System dispatch no internal capability for that call
+/// (`SystemContextNotDelegable`), so the save fails before it is sent.
 async fn dispatch_openai_codex_auth_action(
     state: &SetupApiState,
     action: &str,
+    caller: &AuthenticatedRequestContext,
 ) -> Result<OpenAICodexAuthStatus> {
     ensure_openai_codex_auth_entity(state).await?;
     let tenant_id = TenantId::new(&state.tenant);
-    let system = AgentContext::system();
-    state
+    let agent_ctx = caller_agent_context(caller);
+    let response = state
         .platform
         .server
         .dispatch_tenant_action_ext(
@@ -708,13 +717,45 @@ async fn dispatch_openai_codex_auth_action(
             action,
             serde_json::json!({}),
             DispatchExtOptions {
-                agent_ctx: &system,
+                agent_ctx: &agent_ctx,
                 await_integration: true,
                 await_reactions: true,
             },
         )
         .await
         .map_err(|error| anyhow!("OpenAICodexAuth.{action} failed: {error}"))?;
+    // Which kind of caller moved the sign-in, and through which module (the
+    // provider gate's calls name it), without naming the person.
+    let security_context = caller.security_context();
+    let caller_kind = format!("{:?}", security_context.principal.kind);
+    let caller_agent_type = security_context
+        .principal
+        .agent_type
+        .as_deref()
+        .unwrap_or("");
+    let via_module = security_context
+        .context_attrs
+        .get("module")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if response.success {
+        tracing::info!(
+            action,
+            caller_kind,
+            caller_agent_type,
+            via_module,
+            "OpenAICodexAuth move made as its caller"
+        );
+    } else {
+        tracing::warn!(
+            action,
+            caller_kind,
+            caller_agent_type,
+            via_module,
+            error = response.error.as_deref().unwrap_or("refused"),
+            "OpenAICodexAuth move refused; answering with the status as it stands"
+        );
+    }
 
     let snapshot = openai_codex_auth_snapshot(state).await;
     Ok(openai_codex_status_from_snapshot(
@@ -1176,8 +1217,41 @@ async fn install_app_from_genesis(
     }
 }
 
-async fn start_openai_codex_device_login(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "StartDeviceLogin").await {
+/// The dispatch context a setup request acts with: its caller's own
+/// authority, attached the way the kernel's OData routes attach it.
+fn caller_agent_context(caller: &AuthenticatedRequestContext) -> AgentContext {
+    let security_context = caller.security_context();
+    let principal = &security_context.principal;
+    let named = matches!(principal.kind, PrincipalKind::Agent | PrincipalKind::Admin);
+    AgentContext {
+        security_ctx: Some(security_context.clone()),
+        agent_id: named.then(|| principal.id.clone()),
+        agent_type: if named {
+            principal.agent_type.clone()
+        } else {
+            None
+        },
+        ..AgentContext::default()
+    }
+}
+
+/// Answers a setup route that makes one OpenAICodexAuth move: the status the
+/// move leaves, or why it could not run. Every caller the edge admits to these
+/// routes arrives with its authority attached.
+async fn openai_codex_auth_move(
+    state: &SetupApiState,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+    action: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(Extension(caller)) = caller else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": format!("OpenAICodexAuth.{action} needs an authenticated caller")
+            })),
+        );
+    };
+    match dispatch_openai_codex_auth_action(state, action, &caller).await {
         Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1186,54 +1260,46 @@ async fn start_openai_codex_device_login(State(state): State<SetupApiState>) -> 
     }
 }
 
-async fn poll_openai_codex_device_login(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "PollDeviceLogin").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn start_openai_codex_device_login(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "StartDeviceLogin").await
 }
 
-async fn refresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "Refresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn poll_openai_codex_device_login(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "PollDeviceLogin").await
 }
 
-async fn ensure_fresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "EnsureFresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn refresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "Refresh").await
 }
 
-async fn force_refresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "ForceRefresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn ensure_fresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "EnsureFresh").await
 }
 
-async fn disconnect_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "Disconnect").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn force_refresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "ForceRefresh").await
+}
+
+async fn disconnect_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "Disconnect").await
 }
 
 #[derive(Deserialize)]
@@ -3895,6 +3961,67 @@ mod tests {
             resource_attributes,
             "service.name=temperpaw,service.version=build-sha,deployment.environment=prod,dd_llmobs_enabled=false"
         );
+    }
+
+    /// The sign-in's module saves its tokens through this server's own
+    /// `/paw/setup/secrets`, on a capability the kernel issues for the context
+    /// its move carries. So the move carries its caller, never System.
+    #[test]
+    fn a_codex_move_carries_its_caller_so_its_module_can_save() {
+        use temper_authz::{
+            AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext,
+        };
+        use temper_runtime::tenant::TenantId;
+        use temper_server::internal_invocation::InternalInvocationCredentialStore;
+
+        let store = InternalInvocationCredentialStore::runtime();
+        let tenant = TenantId::new("default");
+        let save = "http://127.0.0.1:8080/paw/setup/secrets";
+        let issues_save = |security_context: SecurityContext| {
+            store
+                .issue_for_url(
+                    AuthenticatedRequestContext::new(tenant.clone(), security_context),
+                    "POST",
+                    save,
+                )
+                .is_ok()
+        };
+
+        let mut dashboard = SecurityContext::anonymous();
+        dashboard.principal = Principal {
+            id: "dashboard-person".to_string(),
+            kind: PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            attributes: Default::default(),
+        };
+        let operator = SecurityContext::from_resolved_identity("operator-1", "operator", None);
+        for caller in [dashboard, operator] {
+            let caller = AuthenticatedRequestContext::new(tenant.clone(), caller);
+            let agent_ctx = super::caller_agent_context(&caller);
+            let carried = agent_ctx
+                .security_ctx
+                .clone()
+                .expect("the move carries its caller");
+            let principal = &caller.security_context().principal;
+            assert_eq!(carried.principal.id, principal.id);
+            assert_eq!(carried.principal.kind, principal.kind);
+            assert_eq!(agent_ctx.agent_id.as_deref(), Some(principal.id.as_str()));
+            assert_eq!(agent_ctx.agent_type, principal.agent_type);
+            assert!(
+                issues_save(carried),
+                "{:?} gets a capability",
+                principal.kind
+            );
+        }
+
+        // System, what these routes dispatched as before, gets none: its
+        // module's save failed before it was sent.
+        let system = temper_server::request_context::AgentContext::system()
+            .security_ctx
+            .expect("System names itself");
+        assert!(!issues_save(system));
     }
 
     #[test]
