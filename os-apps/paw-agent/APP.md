@@ -45,8 +45,8 @@ Group of agents working together.
 Scheduled agent runs using cron expressions. Self-scheduling via `schedule_at` effects.
 
 - **States**: Created -> Active <-> Paused -> Expired
-- **Key actions**: `Configure`, `Activate`, `Trigger` (auto-spawns Session), `Pause`, `Resume`
-- **WASM**: `cron_compute_next` parses cron schedule and substitutes message templates
+- **Key actions**: `Configure`, `Activate`, `Trigger` (auto-spawns Session), `Pause`, `Resume`; `RecordLastSession` is an operator-only repair
+- **WASM**: `cron_compute_next` parses cron schedule and substitutes message templates; a job with no template sends its own `user_message`
 
 ### Plan
 Plan entity with review workflow. Worker creates, lead reviews, human escalation optional.

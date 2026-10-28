@@ -808,6 +808,12 @@
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 
+      <Action Name="RecordLastSession" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
+        <Parameter Name="last_session_id" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.CronJob"/>
+      </Action>
+
       <Action Name="Start" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.CronScheduler"/>
         <ReturnType Type="TemperPaw.CronScheduler"/>
@@ -999,6 +1005,12 @@
         <Parameter Name="device_auth_id" Type="Edm.String" Nullable="false"/>
         <Parameter Name="poll_interval_ms" Type="Edm.String" Nullable="false"/>
         <Parameter Name="expires_at_ms" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
+      </Action>
+
+      <Action Name="SignInRequired" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.OpenAICodexAuth"/>
+        <Parameter Name="last_error" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
       </Action>
 

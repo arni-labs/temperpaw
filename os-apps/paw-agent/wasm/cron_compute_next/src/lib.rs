@@ -6,6 +6,7 @@
 //! - **trigger**: Same schedule parsing, plus template substitution on
 //!   `user_message_template` (replacing `{{run_count}}`, `{{last_result}}`,
 //!   `{{now}}`), returns `TriggerComplete { next_run_at, user_message }`.
+//!   A job with no template keeps its own `user_message`, unchanged.
 //!
 //! Mode is determined by the `mode` key in integration config.
 
@@ -52,25 +53,35 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         match mode {
             "trigger" => {
-                // Template substitution for user_message
+                // TriggerComplete's user_message becomes this run's Session
+                // message and the job's own, so a job with no template sends
+                // its message unchanged; an empty one would empty every run.
                 let template = fields
                     .get("user_message_template")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let run_count = fields
-                    .get("run_count")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                let last_result = fields
-                    .get("last_result")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let now_str = unix_to_iso8601(now_secs);
+                let user_message = if template.trim().is_empty() {
+                    fields
+                        .get("user_message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    let run_count = fields
+                        .get("run_count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let last_result = fields
+                        .get("last_result")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let now_str = unix_to_iso8601(now_secs);
 
-                let user_message = template
-                    .replace("{{run_count}}", &run_count.to_string())
-                    .replace("{{last_result}}", last_result)
-                    .replace("{{now}}", &now_str);
+                    template
+                        .replace("{{run_count}}", &run_count.to_string())
+                        .replace("{{last_result}}", last_result)
+                        .replace("{{now}}", &now_str)
+                };
 
                 ctx.log(
                     "info",

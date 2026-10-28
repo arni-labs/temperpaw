@@ -219,3 +219,13 @@ kind = "input"
 from = ["Active"]
 to = "Expired"
 hint = "Max runs reached or manually expired."
+
+# Operator repair of the run a job names. A kernel replay bug left some jobs
+# naming a Session they never spawned, and no other move sets this field.
+# policies/cron.cedar allows it to the verified operator only.
+[[action]]
+name = "RecordLastSession"
+kind = "input"
+from = ["Active", "Paused"]
+params = ["last_session_id"]
+hint = "Operator repair: set the Session this job's last run spawned."
