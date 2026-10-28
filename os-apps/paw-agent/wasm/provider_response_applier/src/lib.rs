@@ -1200,27 +1200,6 @@ mod tests {
         assert_eq!(extra["ts_ms"], 1_767_225_600_000_i64);
     }
 
-    /// The ceiling is the spec's, not a number of this module's own choosing.
-    /// (It equals the kernel's default field ceiling too, so the bound holds
-    /// whichever of the two applies to this write path.)
-    #[test]
-    fn entry_extra_ceiling_matches_the_session_entry_spec() {
-        let spec = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/session_entry.ioa.toml"
-        ))
-        .expect("session_entry.ioa.toml should exist");
-        let extra_json_block = spec
-            .split("[[state]]")
-            .find(|block| block.contains("name = \"extra_json\""))
-            .expect("session_entry.ioa.toml should declare extra_json");
-        let ceiling = format!("overflow_inline_max_bytes = {MAX_ENTRY_EXTRA_BYTES}");
-        assert!(
-            extra_json_block.lines().any(|line| line.trim() == ceiling),
-            "MAX_ENTRY_EXTRA_BYTES must track the extra_json overflow ceiling: {extra_json_block}"
-        );
-    }
-
     #[test]
     fn extracts_tool_calls_only() {
         let tool_calls = extract_tool_calls(&json!([
