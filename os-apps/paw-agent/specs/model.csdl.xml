@@ -258,6 +258,8 @@
         <Parameter Name="session_mode" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_trace_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_span_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_choice" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_image" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
