@@ -31,6 +31,7 @@ Immutable record of a specific file version. Each upload spawns a fresh `FileVer
 
 - **States**: Current -> Superseded
 - **Key actions**: `Create` (file_id, version_number, content_hash, mime_type, size_bytes, previous_version_id, created_by), `Supersede`
+- **Deletes**: a version belongs to its File, so deleting a File deletes its versions (`Relation.DeletePolicy` cascade on `FileVersion.File`). This needs a Temper kernel that reads that annotation; on an older kernel the File delete is refused while it has versions.
 
 ## Setup
 
