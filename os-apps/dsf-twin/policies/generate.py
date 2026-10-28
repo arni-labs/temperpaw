@@ -10,7 +10,10 @@ import tomllib
 
 APP = Path(__file__).resolve().parents[1]
 MEMBER = '(principal has agent_type && principal has agentTypeVerified && principal.agentTypeVerified == true && ["dsf-factory", "human"].contains(principal.agent_type))'
-RUNTIME = '(principal is System || (principal has role && principal.role == "service" && principal has agent_type && ["wasm-runtime", "dsf-factory-runtime", "timeout-scheduler"].contains(principal.agent_type)))'
+# Internal actions arrive from the kernel's own principals, or as a move the
+# kernel makes for the caller: a module's answer, a reaction or a timer
+# (`context.via` other than "request"). A caller's direct request is not one.
+RUNTIME = '(principal is System || (principal has role && principal.role == "service" && principal has agent_type && ["wasm-runtime", "dsf-factory-runtime", "timeout-scheduler"].contains(principal.agent_type)) || (context has via && context.via != "request"))'
 HUMAN = {
     "DsfFlow": {"Register", "Revise", "Retire"},
     "DsfParticipant": {"RegisterAgent", "RegisterCohort", "ObserveActivity", "Retire"},
