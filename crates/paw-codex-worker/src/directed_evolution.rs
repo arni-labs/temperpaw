@@ -530,3 +530,4 @@ include!("directed_evolution/workdir.rs");
 include!("directed_evolution/mechanical_evaluator.rs");
 include!("directed_evolution/prompt.rs");
 include!("directed_evolution/tests.rs");
+include!("directed_evolution/prompt_tests.rs");

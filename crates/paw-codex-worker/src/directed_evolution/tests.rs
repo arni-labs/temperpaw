@@ -66,6 +66,30 @@ mod directed_evolution_tests {
     }
 
     #[test]
+    fn stale_stage_work_cancels_when_variant_already_eliminated() {
+        let work_item = DirectedEvolutionWorkItemState {
+            id: "wi-user".to_string(),
+            status: "Queued".to_string(),
+            role: "viability_evaluator".to_string(),
+            target_entity_type: "StageResult".to_string(),
+            target_entity_id: "sr-2".to_string(),
+            prompt_ref: String::new(),
+            context_ref: String::new(),
+            output_schema_ref: String::new(),
+            correlation_json: "{}".to_string(),
+        };
+
+        let reason = stale_directed_evolution_stage_work_reason(
+            &work_item,
+            &json!({ "Status": "Running", "VariantId": "var-2" }),
+            &json!({ "Status": "Eliminated" }),
+        )
+        .expect("eliminated variant should cancel");
+
+        assert!(reason.contains("Target variant is already Eliminated"));
+    }
+
+    #[test]
     fn stage_work_continues_for_running_active_variant() {
         let work_item = DirectedEvolutionWorkItemState {
             id: "wi-review".to_string(),
