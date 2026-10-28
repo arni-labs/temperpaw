@@ -99,12 +99,10 @@ async fn spawned_session(server: &ServerState) -> Value {
                 .get_tenant_entity_state(&tenant(), "Session", &session_id)
                 .await
                 .unwrap();
-            let fields = serde_json::to_value(&row.state).unwrap()["fields"].clone();
-            if fields["user_message"]
-                .as_str()
-                .is_some_and(|m| !m.is_empty())
-            {
-                return fields;
+            let state = serde_json::to_value(&row.state).unwrap();
+            // Configure schedules ProvisionWorkspace even for an empty message.
+            if state["status"] != "Created" {
+                return state["fields"].clone();
             }
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -317,6 +315,51 @@ async fn a_job_created_with_odata_property_names_keeps_its_message_and_model() {
     assert_eq!(session["user_message"], "Write the monthly digest instead.");
     assert_eq!(session["model"], "gpt-5.5");
     assert_eq!(session["provider"], "anthropic");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_user_message_with_an_empty_string_clears_the_next_runs_message() {
+    assert_clearing_odata_user_message_clears_the_next_runs_message(json!("")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_user_message_with_null_clears_the_next_runs_message() {
+    assert_clearing_odata_user_message_clears_the_next_runs_message(Value::Null).await;
+}
+
+async fn assert_clearing_odata_user_message_clears_the_next_runs_message(cleared: Value) {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    run_once_with_secrets(&server, 1, &defaults).await;
+    assert_eq!(spawned_session(&server).await["user_message"], MESSAGE);
+
+    // OData PATCH clears the authoritative field, leaving the last run's copy.
+    server
+        .update_tenant_entity_fields(
+            &tenant(),
+            "CronJob",
+            JOB,
+            json!({"UserMessage": cleared}),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(job(&server).await["fields"]["user_message"], MESSAGE);
+
+    for run in 2..=3 {
+        let completed = run_once_with_secrets(&server, run, &defaults).await;
+        assert_eq!(
+            completed["user_message"], "",
+            "cleared with {cleared}, run {run}"
+        );
+        assert_eq!(job(&server).await["fields"]["user_message"], "");
+        assert_eq!(spawned_session(&server).await["user_message"], "");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

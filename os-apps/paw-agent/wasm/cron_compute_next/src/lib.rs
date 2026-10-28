@@ -145,12 +145,12 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     0
 }
 
-/// The first of `keys` the job holds a non-blank string under, as written,
-/// or "".
+/// The first present field in `keys`, as written, or "" for null or absence.
+/// An explicitly cleared OData field overrides the previous run's spec copy.
 fn job_field<'a>(fields: &'a Value, keys: &[&str]) -> &'a str {
     keys.iter()
-        .filter_map(|key| fields.get(*key).and_then(Value::as_str))
-        .find(|value| !value.trim().is_empty())
+        .find_map(|key| fields.get(*key))
+        .and_then(Value::as_str)
         .unwrap_or("")
 }
 
