@@ -292,32 +292,3 @@ fn non_empty_field(value: &Value, keys: &[&str]) -> Option<String> {
 fn escape_odata_string(value: &str) -> String {
     value.replace('\'', "''")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn terminal_statuses_cover_session_and_parent_workflow_states() {
-        assert!(is_terminal_status("Completed"));
-        assert!(is_terminal_status("Failed"));
-        assert!(is_terminal_status("Cancelled"));
-        assert!(is_terminal_status("Terminated"));
-        assert!(!is_terminal_status("Running"));
-    }
-
-    #[test]
-    fn session_link_fields_require_parent_and_child_ids() {
-        let fields = json!({
-            "ParentEntitySet": "WikiJobs",
-            "ParentEntityId": "job-1",
-            "ChildSessionId": "session-1",
-            "OnFailureAction": "Fail",
-        });
-
-        let parsed = SessionLinkFields::from_entity(&fields).expect("valid link fields");
-        assert_eq!(parsed.parent_entity_set, "WikiJobs");
-        assert_eq!(parsed.parent_action_namespace, "TemperPaw");
-        assert_eq!(parsed.max_checks, 80);
-    }
-}

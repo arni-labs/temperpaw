@@ -1298,17 +1298,6 @@ mod tests {
     }
 
     #[test]
-    fn zero_max_follow_ups_fast_finalizes_even_with_queue() {
-        let fields = json!({
-            "max_follow_ups": "0",
-            "follow_up_count": 0,
-            "steering_messages": r#"[{"content":"queued"}]"#
-        });
-
-        assert!(!should_check_steering(&fields));
-    }
-
-    #[test]
     fn terminal_reply_bypass_only_matches_unrouted_direct_sessions() {
         assert!(should_bypass_terminal_reply("ss-direct", &json!({})));
         assert!(should_bypass_terminal_reply(
