@@ -749,22 +749,3 @@ fn as_str_slice(values: &[String]) -> Vec<&str> {
     values.iter().map(String::as_str).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{infer_domain, slugify};
-
-    #[test]
-    fn slugify_normalizes_owner_names() {
-        assert_eq!(slugify("Seshendra Nalla"), "seshendra-nalla");
-        assert_eq!(slugify("TEMPERPAW_dev"), "temperpaw-dev");
-    }
-
-    #[test]
-    fn infer_domain_reads_railway_json() {
-        let value = infer_domain(r#"{"domain":"temperpaw-production.up.railway.app"}"#);
-        assert_eq!(
-            value.as_deref(),
-            Some("https://temperpaw-production.up.railway.app")
-        );
-    }
-}

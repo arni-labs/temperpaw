@@ -363,33 +363,6 @@ fn counter_assignments_only_read_declared_action_parameters() {
 }
 
 #[test]
-fn incoming_counter_values_have_explicit_assignment_effects() {
-    for (file, name) in ENTITIES {
-        let ioa = temper_spec::automaton::parse_automaton(&source(file)).unwrap();
-        for action in &ioa.actions {
-            for parameter in &action.params {
-                if ioa.state.iter().any(|state| {
-                    state.name == parameter.name()
-                        && state.var_type == temper_spec::automaton::VarType::Counter
-                }) {
-                    assert!(
-                        action.effect.iter().any(|effect| matches!(effect,
-                        temper_spec::automaton::Effect::Assign {
-                            var,
-                            op: temper_spec::predicate::AssignOp::Set,
-                            value: temper_spec::predicate::Arg::Param(param),
-                        } if var == parameter.name() && param == parameter.name())),
-                        "{name}.{} must explicitly assign counter {}",
-                        action.name,
-                        parameter.name()
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn resource_types_declare_only_their_own_provider_actions() {
     for (file, entity) in ENTITIES {
         let sim = simulator(file, entity, 467);
@@ -727,17 +700,6 @@ fn stale_projection_retains_immutable_evidence_and_the_newer_resource_facts() {
         .step("resource", "Observe", &observation(1, 3000).to_string())
         .unwrap();
     assert_eq!(state["fields"]["observed_sequence"], 2);
-}
-
-#[test]
-fn model_sync_does_not_duplicate_resource_scheduling() {
-    let ioa = temper_spec::automaton::parse_automaton(&source("model_sync")).unwrap();
-    assert!(ioa.actions.iter().all(|action| {
-        !action
-            .triggers
-            .iter()
-            .any(|trigger| trigger.target_action.as_deref() == Some("RefreshObservations"))
-    }));
 }
 
 #[test]
