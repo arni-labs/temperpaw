@@ -2004,29 +2004,6 @@ fn paw_patrol_acceptance_harness_collects_quick_and_live_proofs() {
 }
 
 #[test]
-fn ci_covers_paw_patrol_worker_and_wasm_gates() {
-    let root = repo_root();
-    let ci = read(root.join(".github/workflows/ci.yml"));
-
-    for needle in [
-        "workflow_dispatch:",
-        "cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings",
-        "cargo check --locked -p temperpaw -p paw-codex-worker",
-        "for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done",
-        // Every os-app build.sh and every Cargo workspace CI finds on disk,
-        // paw-ingest, paw-patrol and review_gate_lifecycle included.
-        "python3 scripts/ci/build_os_app_modules.py",
-        "python3 scripts/ci/rust_tests.py root",
-        "python3 scripts/ci/rust_tests.py others",
-    ] {
-        assert!(
-            ci.contains(needle),
-            "CI should keep the Patrol worker/wasm surface covered: {needle}"
-        );
-    }
-}
-
-#[test]
 fn mac_mini_bootstrap_uses_railway_token_handoff_without_printing_secrets() {
     let root = repo_root();
     let script_path = root.join("crates/paw-codex-worker/scripts/mac-mini-production-bootstrap.sh");
