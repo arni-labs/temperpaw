@@ -69,7 +69,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 // its message unchanged; an empty one would empty every run.
                 let template =
                     job_field(&fields, &["UserMessageTemplate", "user_message_template"]);
-                let user_message = if template.is_empty() {
+                let user_message = if template.trim().is_empty() {
                     job_field(&fields, &["UserMessage", "user_message"]).to_string()
                 } else {
                     let run_count = fields

@@ -207,6 +207,36 @@ async fn a_job_without_a_template_gives_every_run_its_own_message() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_whitespace_only_template_preserves_the_saved_message() {
+    assert_whitespace_only_template_preserves_the_saved_message("user_message_template").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_odata_whitespace_only_template_preserves_the_saved_message() {
+    assert_whitespace_only_template_preserves_the_saved_message("UserMessageTemplate").await;
+}
+
+async fn assert_whitespace_only_template_preserves_the_saved_message(template_field: &str) {
+    for message_field in ["user_message", "UserMessage"] {
+        let mut fields = json!({
+            "name": "weekly digest",
+            "schedule": "*/10 * * * *",
+            "model": "gpt-5.5",
+            "provider": "openai_codex",
+        });
+        fields[template_field] = json!(" \t\n");
+        fields[message_field] = json!(MESSAGE);
+        let server = server_with_job(fields).await;
+        for run in 1..=2 {
+            let completed = run_once(&server, run).await;
+            assert_eq!(completed["user_message"], MESSAGE, "run {run}");
+            assert_eq!(job(&server).await["fields"]["user_message"], MESSAGE);
+            assert_eq!(spawned_session(&server).await["user_message"], MESSAGE);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_template_still_writes_each_runs_message() {
     let server = server_with_job(json!({
         "name": "weekly digest",
