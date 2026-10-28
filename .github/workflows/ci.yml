@@ -65,10 +65,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The packaged modules and their stamps from main's latest build: an app whose sources a change leaves alone is
+      # not built again. The nightly run builds every app.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            os-apps/**/*.wasm
+            !os-apps/**/target/**
+            ~/.cache/temperpaw-os-app-modules
+          key: os-app-modules-${{ github.sha }}
+          restore-keys: os-app-modules-
       - name: Every os-app module, built and packaged as a release builds it
+        env:
+          REUSE: ${{ github.event_name != 'schedule' && '--reuse' || '' }}
         run: |
-          python3 scripts/ci/build_os_app_modules.py
+          python3 scripts/ci/build_os_app_modules.py ${REUSE:+"$REUSE"}
           bash scripts/verify_route_message_wasm.sh
+      - name: The modules' cache key, from their stamps
+        id: modules
+        if: github.ref == 'refs/heads/main'
+        run: echo "key=os-app-modules-$(cat ~/.cache/temperpaw-os-app-modules/*.stamp | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            os-apps/**/*.wasm
+            !os-apps/**/target/**
+            ~/.cache/temperpaw-os-app-modules
+          key: ${{ steps.modules.outputs.key }}
       - name: cargo test, the root workspace
         run: python3 scripts/ci/rust_tests.py root
 
