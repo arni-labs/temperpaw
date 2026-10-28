@@ -551,8 +551,9 @@ fn corridor_wasm_modules_are_packaged_for_core_startup() {
         dockerfile.contains("cd /app/os-apps/paw-foresight/wasm && bash build.sh"),
         "Dockerfile must build paw-foresight WASM before copying os-apps into the runtime image"
     );
+    // CI builds every os-app build.sh it finds on disk, this one included.
     assert!(
-        ci.contains("os-apps/paw-foresight/wasm/build.sh"),
+        ci.contains("python3 scripts/ci/build_os_app_modules.py"),
         "CI must build paw-foresight WASM so fresh core startup images do not miss corridor modules"
     );
     assert!(

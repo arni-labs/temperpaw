@@ -388,10 +388,15 @@ fn emitter_carries_unmodeled_signal_in_kernel_modeled_fields() {
 
     // `-p temperpaw` does not reach the os-app WASM modules — they are their
     // own workspaces — so a gate living in one of them only fires if CI runs
-    // that manifest. Asserting the source text of a test nothing executes
-    // proves nothing.
+    // that workspace. Asserting the source text of a test nothing executes
+    // proves nothing. CI runs every workspace it finds on disk
+    // (scripts/ci/rust_tests.py), so each of these must stay a workspace.
     let ci = fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
         .expect("ci.yml should exist");
+    assert!(
+        ci.contains("python3 scripts/ci/rust_tests.py others"),
+        "CI must run every os-app workspace's tests; the OTS contract is asserted in them"
+    );
     for module in [
         "emit_ots_trajectory",
         "provider_response_applier",
@@ -399,11 +404,13 @@ fn emitter_carries_unmodeled_signal_in_kernel_modeled_fields() {
         "openai-chat-wire",
         "monty_repl",
     ] {
+        let manifest = fs::read_to_string(
+            repo_root().join(format!("os-apps/paw-agent/wasm/{module}/Cargo.toml")),
+        )
+        .unwrap_or_else(|error| panic!("{module} must keep its Cargo.toml: {error}"));
         assert!(
-            ci.contains(&format!(
-                "cargo test --manifest-path os-apps/paw-agent/wasm/{module}/Cargo.toml"
-            )),
-            "CI must run {module}'s tests; the OTS contract is asserted there"
+            manifest.lines().any(|line| line.trim() == "[workspace]"),
+            "CI must run {module}'s tests; the OTS contract is asserted there, and CI finds a workspace by its [workspace]"
         );
     }
 

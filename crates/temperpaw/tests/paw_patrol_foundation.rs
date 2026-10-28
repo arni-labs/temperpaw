@@ -2013,11 +2013,11 @@ fn ci_covers_paw_patrol_worker_and_wasm_gates() {
         "cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings",
         "cargo check --locked -p temperpaw -p paw-codex-worker",
         "for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done",
-        "os-apps/paw-ingest/wasm/build.sh",
-        "os-apps/paw-patrol/wasm/build.sh",
-        "cargo test --locked -p paw-codex-worker --quiet",
-        "cargo test --locked -p temperpaw --quiet",
-        "cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet",
+        // Every os-app build.sh and every Cargo workspace CI finds on disk,
+        // paw-ingest, paw-patrol and review_gate_lifecycle included.
+        "python3 scripts/ci/build_os_app_modules.py",
+        "python3 scripts/ci/rust_tests.py root",
+        "python3 scripts/ci/rust_tests.py others",
     ] {
         assert!(
             ci.contains(needle),

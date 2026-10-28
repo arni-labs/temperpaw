@@ -210,8 +210,9 @@ fn paw_media_wasm_is_built_into_ci_and_production_images() {
         dockerfile.contains("cd /app/os-apps/paw-media/wasm && bash build.sh"),
         "Dockerfile must build paw-media WASM before copying os-apps into the runtime image"
     );
+    // CI builds every os-app build.sh it finds on disk, this one included.
     assert!(
-        ci.contains("os-apps/paw-media/wasm/build.sh"),
+        ci.contains("python3 scripts/ci/build_os_app_modules.py"),
         "CI must build paw-media WASM so missing renderer packaging fails before deploy"
     );
     assert!(
