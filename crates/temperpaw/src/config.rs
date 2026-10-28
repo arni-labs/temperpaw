@@ -144,6 +144,11 @@ pub struct Config {
     /// GitHub token for repo cloning and PR flows.
     pub github_token: Option<String>,
 
+    /// Genesis (temper-git) token for pushing app bundles to the Genesis
+    /// registry. Genesis requires auth on push; supplied as the Basic-auth
+    /// username on git pushes to the Genesis host.
+    pub genesis_token: Option<String>,
+
     /// Datadog API key for monitor and events APIs.
     pub dd_api_key: Option<String>,
 
@@ -282,6 +287,7 @@ impl Config {
             modal_token_secret: optional_env("MODAL_TOKEN_SECRET"),
             modal_bridge_url: optional_env("MODAL_BRIDGE_URL"),
             github_token: optional_env("GITHUB_TOKEN"),
+            genesis_token: optional_env("GENESIS_TOKEN"),
             dd_api_key: optional_env("DD_API_KEY"),
             dd_app_key: optional_env("DD_APP_KEY"),
             dd_site: std::env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string()),
