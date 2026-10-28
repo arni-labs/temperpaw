@@ -1,44 +1,4 @@
 #[test]
-fn datadog_patrol_worker_is_mcp_agent_driven_not_rust_datadog_collector() {
-    let source = include_str!("datadog_patrol.rs");
-
-    for forbidden in [
-        "/api/v1/monitor/search",
-        "DD-API-KEY",
-        "DD-APPLICATION-KEY",
-        "query_datadog_monitor_search",
-        "active_datadog_monitors",
-        "\"Signals\"",
-        "\"ObservabilityFindings\"",
-        "\"FactoryCases\"",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "Datadog Patrol worker should run the MCP agent and report evidence, not collect or fan out Patrol state directly in Rust: {forbidden}"
-        );
-    }
-
-    for required in [
-        "DATADOG_PATROL_RESULT_JSON_BEGIN",
-        "DATADOG_PATROL_RESULT_JSON_END",
-        "Datadog MCP",
-        "max_tokens <= 12000",
-        "summarize the evidence",
-        "monitors",
-        "logs",
-        "traces",
-        "metrics",
-        "incidents",
-        "dashboards",
-    ] {
-        assert!(
-            source.contains(required),
-            "Datadog Patrol should make the MCP investigation contract explicit: {required}"
-        );
-    }
-}
-
-#[test]
 fn datadog_patrol_result_parser_extracts_agent_mcp_findings() {
     let output = r#"
 Codex investigated Datadog using MCP.

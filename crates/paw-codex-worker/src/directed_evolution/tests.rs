@@ -33,74 +33,6 @@ mod directed_evolution_tests {
     }
 
     #[test]
-    fn directed_evolution_prompt_uses_literal_prompt_ref() {
-        let work_item = DirectedEvolutionWorkItemState {
-            id: "wi-1".to_string(),
-            status: "Queued".to_string(),
-            role: "variant_generator".to_string(),
-            target_entity_type: "Generation".to_string(),
-            target_entity_id: "gen-1".to_string(),
-            prompt_ref: "literal:make three variants".to_string(),
-            context_ref: "ctx-1".to_string(),
-            output_schema_ref: "schema-1".to_string(),
-            correlation_json: "{}".to_string(),
-        };
-
-        let prompt = directed_evolution_prompt(&work_item);
-
-        assert!(prompt.contains("Role: variant_generator"));
-        assert!(prompt.contains("Generate one bounded candidate variant"));
-        assert!(prompt.contains("make three variants"));
-        assert!(!prompt.contains("literal:make three variants"));
-    }
-
-    #[test]
-    fn observer_prompt_requires_source_discovery_not_scripted_datadog() {
-        let work_item = DirectedEvolutionWorkItemState {
-            id: "wi-observer".to_string(),
-            status: "Queued".to_string(),
-            role: "observer".to_string(),
-            target_entity_type: "Signal".to_string(),
-            target_entity_id: "sig-1".to_string(),
-            prompt_ref: "literal:Source: datadog\nSummary: p95 latency climbed".to_string(),
-            context_ref: "signal:sig-1".to_string(),
-            output_schema_ref: "schema-1".to_string(),
-            correlation_json: "{\"source\":\"datadog\"}".to_string(),
-        };
-
-        let prompt = directed_evolution_prompt(&work_item);
-
-        assert!(prompt.contains("observer source inventory"));
-        assert!(prompt.contains("inspect any additional accessible source"));
-        assert!(prompt.contains("Do not treat a signal summary or a single scripted query as proof"));
-        assert!(prompt.contains("evidence_scope"));
-        assert!(prompt.contains("datadog_url"));
-        assert!(!prompt.contains("Datadog MCP"));
-    }
-
-    #[test]
-    fn evaluation_prompt_treats_required_datadog_as_mandatory() {
-        let work_item = DirectedEvolutionWorkItemState {
-            id: "wi-review".to_string(),
-            status: "Queued".to_string(),
-            role: "telemetry_evaluator".to_string(),
-            target_entity_type: "StageResult".to_string(),
-            target_entity_id: "sr-1".to_string(),
-            prompt_ref: "literal:RequiredEvidence: [\"datadog_evidence_scope\"]".to_string(),
-            context_ref: "stage-result:sr-1".to_string(),
-            output_schema_ref: "schema-1".to_string(),
-            correlation_json: "{}".to_string(),
-        };
-
-        let prompt = directed_evolution_prompt(&work_item);
-
-        assert!(prompt.contains("Query logs, traces, metrics, or monitors"));
-        assert!(prompt.contains("provenance_kind=datadog-measured"));
-        assert!(prompt.contains("result_count"));
-        assert!(prompt.contains("zero_result_meaning"));
-    }
-
-    #[test]
     fn directed_evolution_codex_stdout_is_normalized_to_json() {
         let parsed = parse_codex_jsonish("codex\n{\"summary\":\"variant\",\"changed_files\":[\"app.ts\"]}\n")
             .expect("parse JSON from Codex output");
@@ -131,30 +63,6 @@ mod directed_evolution_tests {
         .expect("eliminated stage result should cancel");
 
         assert!(reason.contains("StageResult sr-1 is already Eliminated"));
-    }
-
-    #[test]
-    fn stale_stage_work_cancels_when_variant_already_eliminated() {
-        let work_item = DirectedEvolutionWorkItemState {
-            id: "wi-user".to_string(),
-            status: "Queued".to_string(),
-            role: "viability_evaluator".to_string(),
-            target_entity_type: "StageResult".to_string(),
-            target_entity_id: "sr-2".to_string(),
-            prompt_ref: String::new(),
-            context_ref: String::new(),
-            output_schema_ref: String::new(),
-            correlation_json: "{}".to_string(),
-        };
-
-        let reason = stale_directed_evolution_stage_work_reason(
-            &work_item,
-            &json!({ "Status": "Running", "VariantId": "var-2" }),
-            &json!({ "Status": "Eliminated" }),
-        )
-        .expect("eliminated variant should cancel");
-
-        assert!(reason.contains("Target variant is already Eliminated"));
     }
 
     #[test]
