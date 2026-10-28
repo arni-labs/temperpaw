@@ -13,20 +13,10 @@ use std::path::{Path, PathBuf};
 #[derive(serde::Deserialize)]
 struct AppManifest {
     name: String,
-    #[serde(default)]
-    dependencies: Vec<String>,
-    #[serde(default)]
-    wasm_modules: Vec<WasmModule>,
-}
-
-#[derive(serde::Deserialize)]
-struct WasmModule {
-    name: String,
 }
 
 struct App {
     dir: PathBuf,
-    manifest: AppManifest,
 }
 
 fn os_apps_dir() -> PathBuf {
@@ -44,7 +34,7 @@ fn read_apps() -> BTreeMap<String, App> {
         let source = std::fs::read_to_string(&manifest_path).expect("app.toml should be readable");
         let manifest: AppManifest = toml::from_str(&source)
             .unwrap_or_else(|error| panic!("{} should parse: {error}", manifest_path.display()));
-        apps.insert(manifest.name.clone(), App { dir, manifest });
+        apps.insert(manifest.name, App { dir });
     }
     assert!(!apps.is_empty(), "os-apps should hold at least one app");
     apps
