@@ -61,3 +61,51 @@ startup_loading = "lazy"
 name = "session_recoverer"
 criticality = "app-required"
 startup_loading = "lazy"
+
+# Every other module a paw-agent spec triggers. The installer registers only
+# declared modules; one left out here is never installed, and its trigger
+# fails with "WASM module not found".
+[[wasm_modules]]
+name = "sandbox_provisioner"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "context_compactor"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "steering_checker"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "workspace_restorer"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "request_approval"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "request_plan_review"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "plan_approval_handler"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "plan_review_feedback_handler"
+criticality = "app-required"
+startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "cron_compute_next"
+criticality = "app-required"
+startup_loading = "lazy"

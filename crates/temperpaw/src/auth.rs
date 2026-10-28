@@ -190,20 +190,39 @@ pub async fn middleware(
 
     if let Some(token) = bearer_token(request.headers()) {
         // The kernel's own edge resolves a bearer on its routes. TemperPaw's
-        // routes have no edge but this one, so here the bearer must be the
-        // tenant's operator credential, unless it is an internal call.
-        let internal_call = from_loopback
-            && (has_principal_headers(request.headers())
-                || temper_server::internal_invocation::is_internal_invocation_bearer(&token));
-        if is_temperpaw_route(&path) && !internal_call {
-            match is_operator_bearer(&state, &token).await {
-                Ok(true) => {}
-                Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
-                Err(()) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            }
+        // routes have no edge but this one, so here the bearer resolves to the
+        // caller its handlers act for: the internal capability a WASM module
+        // presents over loopback, or the tenant's operator credential.
+        // TemperPaw's own local clients name themselves with principal
+        // headers instead, below.
+        if !is_temperpaw_route(&path) {
+            ensure_tenant_header(request.headers_mut(), state.tenant());
+            return next.run(request).await;
         }
-        ensure_tenant_header(request.headers_mut(), state.tenant());
-        return next.run(request).await;
+        let internal_capability =
+            temper_server::internal_invocation::is_internal_invocation_bearer(&token);
+        if internal_capability || !(from_loopback && has_principal_headers(request.headers())) {
+            let caller = if from_loopback && internal_capability {
+                internal_caller(&state, &request, &token)
+            } else {
+                operator_caller(&state, &token).await
+            };
+            match caller {
+                Ok(caller) => {
+                    if internal_capability {
+                        // Consumed: it opens nothing again, and no handler may
+                        // forward it.
+                        request
+                            .headers_mut()
+                            .remove(axum::http::header::AUTHORIZATION);
+                    }
+                    request.extensions_mut().insert(caller);
+                }
+                Err(status) => return status.into_response(),
+            }
+            ensure_tenant_header(request.headers_mut(), state.tenant());
+            return next.run(request).await;
+        }
     }
 
     // Internal WASM agent calls carry principal headers but no Bearer token
@@ -397,31 +416,79 @@ fn is_temperpaw_route(path: &str) -> bool {
         || path.starts_with("/dashboard")
 }
 
-/// Whether `token` resolves, by the kernel's own identity check, to this
-/// deployment's operator: the credential `TEMPER_API_KEY` bootstraps
-/// (`temper_platform::bootstrap::bootstrap_operator_credential`), or another
-/// issued to the operator, in the deployment's own tenant, whose secrets and
-/// apps TemperPaw's routes act on. A trusted issuer's token (a person, a
-/// computer) is never the operator. `Err` when the identity store cannot be
-/// read.
-async fn is_operator_bearer(state: &AuthState, token: &str) -> Result<bool, ()> {
+/// The caller `token` names when it resolves, by the kernel's own identity
+/// check, to this deployment's operator: the credential `TEMPER_API_KEY`
+/// bootstraps (`temper_platform::bootstrap::bootstrap_operator_credential`),
+/// or another issued to the operator, in the deployment's own tenant, whose
+/// secrets and apps TemperPaw's routes act on. The caller is the one the
+/// kernel's edge makes of the same credential. A trusted issuer's token (a
+/// person, a computer) is never the operator. 503 when the identity store
+/// cannot be read.
+async fn operator_caller(
+    state: &AuthState,
+    token: &str,
+) -> Result<AuthenticatedRequestContext, StatusCode> {
     if temper_server::internal_invocation::is_internal_invocation_bearer(token) {
-        return Ok(false);
+        return Err(StatusCode::UNAUTHORIZED);
     }
+    let tenant = TenantId::new(state.tenant());
     match temper_server::identity::IdentityResolver::new()
-        .resolve(&state.server, &TenantId::new(state.tenant()), token)
+        .resolve(&state.server, &tenant, token)
         .await
     {
-        Ok(identity) => Ok(!identity.from_jwt && identity.agent_type_name == "operator"),
-        Err(temper_server::identity::IdentityError::Invalid) => Ok(false),
+        Ok(identity) if !identity.from_jwt && identity.agent_type_name == "operator" => {
+            Ok(AuthenticatedRequestContext::new(
+                tenant,
+                SecurityContext::from_resolved_identity(
+                    &identity.agent_instance_id,
+                    &identity.agent_type_name,
+                    None,
+                ),
+            ))
+        }
+        Ok(_) | Err(temper_server::identity::IdentityError::Invalid) => {
+            Err(StatusCode::UNAUTHORIZED)
+        }
         Err(temper_server::identity::IdentityError::Unavailable(reason)) => {
             tracing::warn!(
                 reason,
                 "operator credential check unavailable; failing closed"
             );
-            Err(())
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
+}
+
+/// The caller an internal capability was issued for, consumed for this exact
+/// request the way the kernel's edge consumes one on its own routes. A WASM
+/// module's call acts for whoever caused its transition, so a handler that
+/// dispatches on that call acts for the same caller.
+fn internal_caller(
+    state: &AuthState,
+    request: &Request<Body>,
+    token: &str,
+) -> Result<AuthenticatedRequestContext, StatusCode> {
+    let tenant = header_value(request.headers(), "x-tenant-id")
+        .map(|tenant| tenant.trim().to_string())
+        .filter(|tenant| !tenant.is_empty())
+        .unwrap_or_else(|| state.tenant().to_string());
+    state
+        .server
+        .internal_invocation_credentials
+        .consume_for_request(
+            token,
+            &TenantId::new(&tenant),
+            request.method(),
+            request.uri(),
+        )
+        .map_err(|error| {
+            tracing::warn!(
+                %error,
+                path = %request.uri().path(),
+                "internal capability refused on a TemperPaw route"
+            );
+            StatusCode::UNAUTHORIZED
+        })
 }
 
 fn is_public_path(method: &str, path: &str) -> bool {
@@ -922,7 +989,23 @@ mod tests {
     fn temperpaw_routes() -> Router {
         Router::new().route(
             "/paw/setup/secrets/{key}",
-            get(|| async { "temperpaw handler" }).post(|| async { "temperpaw handler" }),
+            get(caller_probe).post(caller_probe),
+        )
+    }
+
+    /// What a TemperPaw handler is handed: the caller the edge attached, and
+    /// whether a bearer is left for it to forward.
+    async fn caller_probe(
+        context: Option<Extension<AuthenticatedRequestContext>>,
+        headers: HeaderMap,
+    ) -> String {
+        let caller = context.map(|Extension(context)| {
+            let principal = &context.security_context().principal;
+            format!("{:?} {}", principal.kind, principal.id)
+        });
+        format!(
+            "temperpaw handler caller={caller:?} bearer={}",
+            headers.contains_key("authorization")
         )
     }
 
@@ -1059,8 +1142,11 @@ mod tests {
     }
 
     /// The probe edge over a kernel state holding an operator credential for
-    /// `api_key` in the default tenant.
-    async fn edge_with_operator(root: &std::path::Path, api_key: &str) -> Router {
+    /// `api_key` in the default tenant, and that kernel state.
+    async fn edge_with_operator(
+        root: &std::path::Path,
+        api_key: &str,
+    ) -> (Router, temper_server::ServerState) {
         let platform = temper_platform::PlatformState::new(None);
         temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
             .await
@@ -1071,7 +1157,37 @@ mod tests {
         issue_credential(&platform, "worker", WORKER_KEY).await;
         let mut state = AuthState::for_tests(root).await;
         state.server = platform.server.clone();
-        layer(temperpaw_routes().fallback(authority_probe), state)
+        (
+            layer(temperpaw_routes().fallback(authority_probe), state),
+            platform.server.clone(),
+        )
+    }
+
+    /// A capability the kernel's WASM host would present for a module of a
+    /// move `caller_id` made, bound to `method` and `url`.
+    fn kernel_capability(
+        server: &temper_server::ServerState,
+        caller_id: &str,
+        method: &str,
+        url: &str,
+    ) -> String {
+        let mut security_context = temper_authz::SecurityContext::anonymous();
+        security_context.principal = temper_authz::Principal {
+            id: caller_id.to_string(),
+            kind: temper_authz::PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            attributes: Default::default(),
+        };
+        server
+            .internal_invocation_credentials
+            .issue_for_url(
+                AuthenticatedRequestContext::new(TenantId::new("default"), security_context),
+                method,
+                url,
+            )
+            .unwrap()
     }
 
     /// An active credential for `key`, of a new agent type named `name`, made
@@ -1149,7 +1265,7 @@ mod tests {
     #[tokio::test]
     async fn principal_headers_from_another_host_open_nothing() {
         let tempdir = tempfile::tempdir().unwrap();
-        let app = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
 
         for (case, request) in [
             (
@@ -1187,7 +1303,7 @@ mod tests {
     #[tokio::test]
     async fn temperpaw_routes_take_only_the_operator_bearer() {
         let tempdir = tempfile::tempdir().unwrap();
-        let app = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
         let remote = |request| from_peer(request, [10, 0, 0, 7]);
 
         for (case, token) in [
@@ -1226,39 +1342,104 @@ mod tests {
         );
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_text(response).await, "temperpaw handler");
+        // The handler acts for the operator and may forward its credential.
+        let body = body_text(response).await;
+        assert!(
+            body.starts_with("temperpaw handler caller=Some(\"Agent ")
+                && body.ends_with("bearer=true"),
+            "unexpected body: {body}"
+        );
     }
 
     #[tokio::test]
-    async fn loopback_internal_calls_still_pass() {
+    async fn a_kernel_capability_opens_its_one_request_as_its_caller() {
         let tempdir = tempfile::tempdir().unwrap();
-        let app = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let (app, server) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
         let local = |request| from_peer(request, [127, 0, 0, 1]);
-
-        // A WASM module's call: principal headers, and the kernel's internal
-        // capability as its bearer.
-        let request = with_header(
+        let module_call = |method: &str, token: &str| {
             with_header(
-                local(anonymous("GET", SECRET)),
-                "x-temper-principal-id",
-                "system",
-            ),
-            "x-temper-principal-kind",
-            "agent",
-        );
-        let request = with_header(request, "authorization", "Bearer temper-internal-v1.0000");
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+                with_header(local(anonymous(method, SECRET)), "x-tenant-id", "default"),
+                "authorization",
+                &format!("Bearer {token}"),
+            )
+        };
+        let url = format!("http://127.0.0.1:8080{SECRET}");
 
-        // The kernel's WASM host drops principal headers from its internal
-        // calls and sends only its capability.
+        // A module's call back into TemperPaw, as the kernel's WASM host makes
+        // it: the capability alone. Its handler acts for the move's caller and
+        // has no bearer left to forward.
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(response).await,
+            "temperpaw handler caller=Some(\"Admin dashboard-person\") bearer=false"
+        );
+
+        // It opens nothing a second time.
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "replayed");
+
+        // Nor any request it was not issued for, nor from another host.
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
+        let response = app
+            .clone()
+            .oneshot(module_call("POST", &token))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "another method"
+        );
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
         let request = with_header(
-            local(anonymous("GET", SECRET)),
+            from_peer(anonymous("GET", SECRET), [10, 0, 0, 7]),
             "authorization",
-            "Bearer temper-internal-v1.0000",
+            &format!("Bearer {token}"),
         );
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "capability alone");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "from another host"
+        );
+
+        // A made-up capability opens nothing, with or without principal
+        // headers beside it.
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", "temper-internal-v1.0000"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "made up");
+        let response = app
+            .oneshot(claiming_admin(module_call(
+                "GET",
+                "temper-internal-v1.0000",
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "made up, with principal headers"
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_clients_still_name_themselves() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let local = |request| from_peer(request, [127, 0, 0, 1]);
 
         // A request a local proxy relayed (a tunnel) is not a local call.
         let relayed = with_header(

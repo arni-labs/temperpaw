@@ -24,7 +24,7 @@ fn source(name: &str) -> String {
 }
 
 #[test]
-fn legacy_resource_bootstrap_preserves_used_sequences() {
+fn legacy_resource_without_an_operation_counter_keeps_its_used_sequences() {
     use temper_server::entity_actor::{EntityState, effects::process_action};
     for (file, entity) in ENTITIES.iter().take(6) {
         let text = source(file);
@@ -51,34 +51,25 @@ fn legacy_resource_bootstrap_preserves_used_sequences() {
         params.insert("expected_operation_sequence".into(), json!(0));
         let params = Value::Object(params);
         // Recovered legacy state: no persisted operation counter or corresponding field.
-        let mut state: EntityState = serde_json::from_value(json!({
+        let legacy: EntityState = serde_json::from_value(json!({
             "entity_type":entity,"entity_id":"legacy","status":"Active","item_count":0,
             "fields":{},"counters":{"model_sequence":7,"observed_sequence":9}
         }))
         .unwrap();
-        let before = serde_json::to_value(&state).unwrap();
+
+        // The missing counter reads as its declared initial value, 0, so the first
+        // operation runs as sequence 1 and the used sequences stay as they were.
+        let mut state = legacy.clone();
         assert!(
-            !process_action(&mut state, &table, &operation.name, &params).success,
+            process_action(&mut state, &table, &operation.name, &params).success,
             "{entity}"
         );
-        assert_eq!(serde_json::to_value(&state).unwrap(), before, "{entity}");
-        let start = text
-            .find("[[action]]\nname = \"BootstrapOperationSequence\"")
-            .unwrap();
-        let end = start + text[start + 1..].find("[[action]]").unwrap() + 1;
-        let without_bootstrap = format!("{}{}", &text[..start], &text[end..]);
-        let old_table = TransitionTable::from_ioa_source(&without_bootstrap);
-        assert!(!process_action(&mut state, &old_table, &operation.name, &params).success);
-        assert!(
-            !process_action(
-                &mut state,
-                &old_table,
-                "BootstrapOperationSequence",
-                &json!({})
-            )
-            .success
-        );
-        assert_eq!(serde_json::to_value(&state).unwrap(), before, "{entity}");
+        assert_eq!(state.counters["operation_sequence"], 1, "{entity}");
+        assert_eq!(state.counters["model_sequence"], 7, "{entity}");
+        assert_eq!(state.counters["observed_sequence"], 9, "{entity}");
+
+        // Bootstrapping first still leads to the same place.
+        let mut state = legacy;
         for _ in 0..2 {
             let result =
                 process_action(&mut state, &table, "BootstrapOperationSequence", &json!({}));
