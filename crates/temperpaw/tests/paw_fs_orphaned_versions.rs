@@ -1,7 +1,7 @@
 //! The platform operator reads FileVersions and removes the ones whose File is gone: File deletes from before
 //! `FileVersion.File` cascaded (#590) left their versions behind. Cedar sees only a version's own fields, so it cannot
-//! tell whether the File is still there. The version's `Orphan` move checks that (`File[file_id]` not found, or the
-//! kernel's tombstone), and the operator may delete only a version that made that move.
+//! tell whether the File is still there. The version's `Orphan` move checks that (`File[file_id]` reads as the kernel's
+//! tombstone of a deleted File), and the operator may delete only a version that made that move.
 use serde_json::json;
 use std::{collections::HashMap, fs, path::PathBuf};
 use temper_authz::{AuthzDecision, AuthzEngine, SecurityContext};
@@ -15,7 +15,7 @@ fn os_app(path: &str) -> String {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
 }
 
-/// The version's `Orphan` move from `state`, with its File read as `file` (`None`: not found).
+/// The version's `Orphan` move from `state`, with its File read as `file` (`None`: the read failed).
 fn orphan(state: &str, file_id: &str, file: Vec<Option<&str>>) -> (bool, String) {
     let table = TransitionTable::from_ioa_source(&os_app("specs/file_version.ioa.toml"));
     let mut ctx = EvalContext::default();
@@ -66,8 +66,15 @@ fn an_operator_delete_of_a_version_whose_file_still_exists_is_refused() {
             );
         }
     }
-    // And a version that did not move is not the operator's to delete.
     for state in ["Current", "Superseded"] {
+        // A File the kernel could not read is not taken for a deleted one. (A File id that was never
+        // created reads as File's first state, Created, since the read starts that File.)
+        assert_eq!(
+            orphan(state, "fl-1", vec![None]),
+            (false, state.to_string()),
+            "{state}, File not read"
+        );
+        // And a version that did not move is not the operator's to delete.
         assert!(!allowed(&operator(), "delete", state), "{state}");
     }
 }
@@ -75,16 +82,11 @@ fn an_operator_delete_of_a_version_whose_file_still_exists_is_refused() {
 #[test]
 fn a_version_whose_file_is_gone_moves_to_orphaned_and_the_operator_may_delete_it() {
     for state in ["Current", "Superseded"] {
-        // Not found, or the kernel's tombstone of a deleted File.
-        assert_eq!(
-            orphan(state, "fl-1", vec![None]),
-            (true, "Orphaned".to_string()),
-            "{state}, not found"
-        );
+        // The kernel keeps a deleted File's tombstone, which reads as Deleted.
         assert_eq!(
             orphan(state, "fl-1", vec![Some("Deleted")]),
             (true, "Orphaned".to_string()),
-            "{state}, tombstone"
+            "{state}"
         );
     }
     // A version that names no File is not taken for one whose File is gone.
