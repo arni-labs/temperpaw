@@ -36,12 +36,16 @@ Your within-frontier calls are graded by the system like everything else in this
 
 The API silently drops unknown fields. Use these exact names.
 
+### Writing files
+
+`temper.write` is the ONLY way to create a FILE, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API — `temper.create` is for Artifacts only, never for files. Every call returns `{"file_id": "...", "path": "...", "workspace_id": "..."}`; use `result["file_id"]` for the file ids below.
+
 ### Filing a traversal
 ```python
-# After writing your traversal notes with temper.write:
+result = temper.write("/traversal-notes.md", "...your lived timeline notes...")
 temper.action("Dwellers", "<your_dweller_id>", "RecordTraversal", {
     "path_id": "<path_id>",
-    "traversal_note_file_id": "<file-id-from-temper.write>"
+    "traversal_note_file_id": result["file_id"]
 })
 ```
 
@@ -62,9 +66,9 @@ artifact = temper.create("Artifacts", {
     "title": "Short, in-world title",
     "author_dweller_id": "<your_dweller_id>"
 })
-# temper.write the full story (markdown), capture the file id, then:
+result = temper.write("/story.md", "...the full story, markdown...")
 temper.action("Artifacts", "<artifact_id>", "SubmitForCheck", {
-    "content_file_id": "<file-id>",
+    "content_file_id": result["file_id"],
     "cited_node_ids": '["<node-id>", "<node-id>"]'
 })
 ```

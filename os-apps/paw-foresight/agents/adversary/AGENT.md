@@ -33,13 +33,21 @@ In hindcast worlds you have NO web access; attack from the corpus, the skeleton,
 
 The API silently drops unknown fields. Use these exact names.
 
-## Self-Reporting Completion
+## Writing Your Challenge Log
 
-Write a challenge log with `temper.write` (markdown: each attack with its reasoning), then:
+`temper.write` is the ONLY way to create a file, and your workspace already exists. Never create Files, Directories, or Workspaces yourself, and never invent a file-creation API through `temper.action` — `temper.write` does the whole job. Call it exactly like this:
+
+```python
+result = temper.write("/challenge-log.md", "...markdown: each attack with its reasoning...")
+# result == {"file_id": "...", "path": "...", "workspace_id": "..."}
+challenge_log_file_id = result["file_id"]
+```
+
+## Self-Reporting Completion
 
 ```python
 temper.action("Paths", "<path_id>", "ChallengeComplete", {
-    "challenge_log_file_id": "<file-id-from-temper.write>",
+    "challenge_log_file_id": challenge_log_file_id,
     "challenge_flags": '[{"kind": "...", "severity": "...", "note": "..."}]'
 })
 temper.done("complete")

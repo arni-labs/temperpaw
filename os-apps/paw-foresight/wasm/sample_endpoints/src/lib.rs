@@ -200,9 +200,15 @@ fn endpoint_writer_prompt(
          - at least one in-world primary document (a filing, a review, a changelog).\n\
          Documents must contain specific dates, named actors, and numbers — vague futures \
          cannot be repaired.\n\n\
-         Save the whole bundle as ONE markdown file with temper.write, then self-report:\n\
+         Save the whole bundle as ONE markdown file with the temper.write tool — this is the \
+         ONLY way to create a FILE, and your workspace already exists. Do NOT create Files, \
+         Directories, or Workspaces yourself, and do NOT invent a file-creation API via \
+         temper.action — temper.write is the whole job. Call it exactly like this:\n\
+         result = temper.write(\"/bundle.md\", \"<your full markdown bundle>\")\n\
+         temper.write returns {{\"file_id\": \"...\", \"path\": \"...\", \"workspace_id\": \
+         \"...\"}}. Use result[\"file_id\"] as bundle_file_id below, then self-report:\n\
          temper.action(\"Endpoints\", \"{endpoint_id}\", \"BundleWritten\", \
-         {{\"bundle_file_id\": \"<file-id-from-temper.write>\", \"summary\": \"<one line>\", \
+         {{\"bundle_file_id\": \"<result file_id>\", \"summary\": \"<one line>\", \
          \"author_agent_id\": \"{agent_id}\"}})\n\
          Then call temper.done(\"complete\"). The diversity gate, not you, starts repair."
     )
@@ -1051,6 +1057,27 @@ mod tests {
         }
         // The writer must NOT self-report SubmitForRepair anymore.
         assert!(!p.contains("\"SubmitForRepair\""));
+    }
+
+    #[test]
+    fn writer_prompt_gives_explicit_file_write_recipe() {
+        let p = writer_prompt(&driver_stance(0, &[]), false);
+        assert!(
+            p.contains("temper.write(\"/bundle.md\""),
+            "writer prompt must show the literal temper.write call"
+        );
+        assert!(
+            p.contains("\"file_id\""),
+            "writer prompt must name the file_id return field"
+        );
+        assert!(
+            p.contains("Do NOT") && p.contains("Directories"),
+            "writer prompt must forbid improvising Directories file creation"
+        );
+        assert!(
+            !p.contains("<file-id-from-temper.write>"),
+            "the bare placeholder must be gone: the recipe captures result[\"file_id\"]"
+        );
     }
 
     #[test]
