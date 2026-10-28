@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const EXPECTED_TEMPER_REV: &str = "aead3d22c769382523430c7f769a1aea8486d360";
 const OLD_TEMPER_REV: &str = "c584a52b59924e66502576646f50131b0d763a2a";
 
 fn repo_root() -> PathBuf {
@@ -15,6 +14,19 @@ fn repo_root() -> PathBuf {
 fn repo_file(path: &str) -> String {
     let root = repo_root();
     fs::read_to_string(root.join(path)).unwrap_or_else(|e| panic!("read {path}: {e}"))
+}
+
+/// The Temper rev the server builds against: temper-platform's pin in crates/temperpaw/Cargo.toml.
+fn server_temper_rev() -> String {
+    repo_file("crates/temperpaw/Cargo.toml")
+        .lines()
+        .find(|line| {
+            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
+        })
+        .and_then(|line| line.split("rev = \"").nth(1))
+        .and_then(|rest| rest.get(..40))
+        .map(str::to_string)
+        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev")
 }
 
 fn collect_cargo_tomls(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -296,6 +308,7 @@ fn artifact_batch_apply_returns_explicit_success_to_wasm_host() {
 #[test]
 fn packaged_wasm_sdk_pins_match_temper_dependency_revision() {
     let root = repo_root();
+    let expected_rev = server_temper_rev();
     let mut manifests = Vec::new();
     collect_cargo_tomls(&root.join("os-apps"), &mut manifests);
 
@@ -304,7 +317,7 @@ fn packaged_wasm_sdk_pins_match_temper_dependency_revision() {
         let source = fs::read_to_string(&manifest)
             .unwrap_or_else(|e| panic!("read {}: {e}", manifest.display()));
         if source.contains("temper-wasm-sdk")
-            && (source.contains(OLD_TEMPER_REV) || !source.contains(EXPECTED_TEMPER_REV))
+            && (source.contains(OLD_TEMPER_REV) || !source.contains(&expected_rev))
         {
             stale.push(
                 manifest
@@ -318,6 +331,6 @@ fn packaged_wasm_sdk_pins_match_temper_dependency_revision() {
 
     assert!(
         stale.is_empty(),
-        "packaged WASM manifests must pin temper-wasm-sdk to {EXPECTED_TEMPER_REV}; stale: {stale:?}"
+        "packaged WASM manifests must pin temper-wasm-sdk to the server's Temper rev {expected_rev}; stale: {stale:?}"
     );
 }

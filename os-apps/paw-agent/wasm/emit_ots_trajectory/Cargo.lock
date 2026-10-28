@@ -453,7 +453,7 @@ dependencies = [
 [[package]]
 name = "temper-ots"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
+source = "git+https://github.com/arni-labs/temper.git?rev=997e418574fca8fb81b8e2270fba123d8c4dcbbf#997e418574fca8fb81b8e2270fba123d8c4dcbbf"
 dependencies = [
  "chrono",
  "serde",
@@ -465,7 +465,7 @@ dependencies = [
 [[package]]
 name = "temper-runtime"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
+source = "git+https://github.com/arni-labs/temper.git?rev=997e418574fca8fb81b8e2270fba123d8c4dcbbf#997e418574fca8fb81b8e2270fba123d8c4dcbbf"
 dependencies = [
  "anyhow",
  "chrono",
@@ -482,7 +482,7 @@ dependencies = [
 [[package]]
 name = "temper-spec"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
+source = "git+https://github.com/arni-labs/temper.git?rev=997e418574fca8fb81b8e2270fba123d8c4dcbbf#997e418574fca8fb81b8e2270fba123d8c4dcbbf"
 dependencies = [
  "quick-xml",
  "serde",
@@ -496,7 +496,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm-sdk"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=aead3d22c769382523430c7f769a1aea8486d360#aead3d22c769382523430c7f769a1aea8486d360"
+source = "git+https://github.com/arni-labs/temper.git?rev=997e418574fca8fb81b8e2270fba123d8c4dcbbf#997e418574fca8fb81b8e2270fba123d8c4dcbbf"
 dependencies = [
  "serde",
  "serde_json",
