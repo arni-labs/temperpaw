@@ -7,11 +7,12 @@
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
 #
-# Environment: RAILWAY_API_TOKEN (an account or team token), RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID,
-# RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
+# Environment: RAILWAY_API_TOKEN (this environment's project token, or an account or workspace token),
+# RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
 # Optional:
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
-#                    after the deploy must equal the answer before it
+#                    after the deploy must equal the answer before it. An operator probe on a route's path also shows
+#                    the route table serves when Railway drops the deployment's "route table rebuilt" log line
 #   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok with the same counts
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
 #   EXPECTED_SHA     the full commit /paw/version must report
@@ -21,9 +22,11 @@
 #   POLL_ATTEMPTS, POLL_SECONDS
 #   DRILL            any value: the check reports a deliberate miss, to prove the way back
 #   MIGRATION_ROLLBACK, POSTGRES_SERVICE_ID  "auto" with the environment's Postgres service: going back to a kernel
-#                    that knows fewer storage migrations deletes the newer ones' _sqlx_migrations rows, when every one
-#                    is listed in scripts/additive_migrations.txt (through a TCP proxy opened for that and removed).
-#                    Otherwise the way back stops and says which rows a person must remove.
+#                    that knows fewer storage migrations, and refuses a database that recorded ones it does not know,
+#                    deletes the newer ones' _sqlx_migrations rows, when every one is listed in
+#                    scripts/additive_migrations.txt (through a TCP proxy opened for that and removed). Otherwise the
+#                    way back stops and says which rows a person must remove. A kernel that ignores unknown migrations
+#                    needs neither: the rows stay.
 #   GH_TOKEN         reads the kernel pin and its migrations from GitHub
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
@@ -43,9 +46,40 @@ for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SER
 done
 mkdir -p "$STATE_DIR"
 
+# Railway reads a project token (one environment of one project) from Project-Access-Token, and an account or
+# workspace token from Authorization: Bearer. Only a project token answers projectToken; it must be this environment's.
+if ! token_response="$(curl -fsS --max-time 30 -H "Project-Access-Token: ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  --data '{"query":"query { projectToken { environmentId } }"}' "$GQL")"; then
+  echo "Railway API, projectToken: lookup did not answer" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
+# Only an explicit rejection confirms that this is not a project token: Railway answers an account or workspace
+# token with "Project Token not found" (seen 26 Oct 2026) and has answered "Not Authorized". An unreadable or
+# unexpected response must not silently change the header used for the rest of the release.
+if ! token_environment="$(jq -er '
+  if (.errors // [] | length) == 0 and
+     (.data.projectToken.environmentId | type == "string" and length > 0) then
+    .data.projectToken.environmentId
+  elif (.data.projectToken == null) and (.errors | type == "array" and length > 0) and
+       all(.errors[]; .message == "Not Authorized" or .message == "Project Token not found") then
+    ""
+  else error("unexpected projectToken response") end
+' <<<"$token_response" 2>/dev/null)"; then
+  echo "Railway API, projectToken: malformed or unexpected lookup response" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 1
+fi
+if [ -z "$token_environment" ]; then
+  RAILWAY_AUTH="Authorization: Bearer ${RAILWAY_API_TOKEN}"
+elif [ "$token_environment" = "$RAILWAY_ENVIRONMENT_ID" ]; then
+  RAILWAY_AUTH="Project-Access-Token: ${RAILWAY_API_TOKEN}"
+else
+  echo "RAILWAY_API_TOKEN is a project token for another Railway environment (${token_environment:0:8}), not ${RAILWAY_ENVIRONMENT_ID:0:8}" | tee -a "$STATE_DIR/errors.txt" >&2
+  exit 64
+fi
+
 gql() { # $1: the request body; prints the response, fails on an error
   local response
-  response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${RAILWAY_API_TOKEN}" -H "Content-Type: application/json" \
+  response="$(curl -fsS --max-time 30 -H "$RAILWAY_AUTH" -H "Content-Type: application/json" \
     --data "$1" "$GQL")" || { echo "Railway API did not answer" | tee -a "$STATE_DIR/errors.txt" >&2; return 1; }
   if jq -e '.errors' >/dev/null <<<"$response"; then
     # Which call failed: the first field the request names (deployments, variableUpsert, ...), never its variables.
@@ -95,6 +129,24 @@ route_count() {
   log_fields "$1" "@fields.message:\"${ROUTE_MESSAGE}\"" | jq -s -r '[.[] | select(.tenant == "default")] | sort_by(.timestamp) | last | .route_count // empty'
 }
 
+# Whether the default tenant's route table serves, read from the probes rather than the logs, since Railway can drop a
+# deployment's log lines. A signed-in request the table cannot match answers 404 {"error":"no route matches"}, and a
+# built-in path answers a method it lacks with 405, so a path whose TRACE gets that 404 belongs to the table, and a
+# signed-in probe there answering anything but 404 shows the table holds its route. Prints the first such probe.
+routes_serve() { # $1 probe answers, as probe prints them
+  local method auth path body
+  while read -r method auth path; do
+    [ "${auth:-}" = operator ] || continue
+    [ "$(jq -r --arg k "$method $auth $path" '.[$k] // "404"' <<<"$1")" != 404 ] || continue
+    body="$(curl -s -m 30 -X TRACE -H "Authorization: Bearer ${TEMPER_API_KEY}" -H "X-Tenant-Id: default" "${BASE_URL}${path}" || true)"
+    if jq -e '.error == "no route matches"' >/dev/null 2>&1 <<<"$body"; then
+      echo "${method} ${path}"
+      return 0
+    fi
+  done <<<"${PROBE_ROUTES:-}"
+  return 1
+}
+
 ask_failures() {
   log_fields "$1" "@fields.message:\"${ASK_FAILED_MESSAGE}\"" | jq -s 'length'
 }
@@ -125,12 +177,24 @@ probe() {
 # The guest read: "<status> <ok> <thing count, ...>".
 guest() {
   [ -n "${GUEST_CHECK_URL:-}" ] || return 0
-  local body code
+  local body code read
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
-  sed '$d' <<<"$body" | jq -r --arg c "$code" \
+  # jq given an empty body prints nothing and succeeds, so an empty answer is named here rather than read as "".
+  read="$(sed '$d' <<<"$body" | jq -r --arg c "$code" \
     '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
-    2>/dev/null || echo "$code false not JSON"
+    2>/dev/null || true)"
+  printf '%s' "${read:-${code:-000} false no JSON body}"
+}
+
+# The snapshot's guest read: a check after the deploy compares with it, so anything but a good read stops the release.
+guest_baseline() {
+  local was
+  was="$(guest)"
+  case "${GUEST_CHECK_URL:+set}:$was" in
+    : | "set:200 true "*) printf '%s' "$was" ;;
+    *) echo "the guest read answered ${was}: no baseline, so no deploy" >&2; return 1 ;;
+  esac
 }
 
 wait_healthy() {
@@ -229,19 +293,23 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
 
 # Everything that must equal the snapshot, for a deployment that now serves. Appends misses to the array named misses.
 against_before() { # $1 deployment id
-  local want got failed after key was now guest_now
+  local want got failed after key was now guest_now served
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
-  want="$(jq -r .route_count "$STATE_DIR/before.json")"
+  # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
+  want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
   echo "route_count: ${got:-none} (before: ${want:-none})"
-  if [ -z "$got" ]; then
-    misses+=("the deployment logged no route table for the default tenant")
-  elif [ "$got" != "$want" ]; then
-    misses+=("route_count ${got}, before ${want}")
-  fi
+  [ -z "$got" ] || [ -z "$want" ] || [ "$got" = "$want" ] || misses+=("route_count ${got}, before ${want}")
   failed="$(ask_failures "$1")"
   [ "${failed:-0}" = 0 ] || misses+=("${failed} route actor ask(s) failed during a rebuild")
   after="$(probe)"
+  if [ -z "$got" ]; then
+    if served="$(routes_serve "$after")"; then
+      echo "no route table line in the logs; ${served} reaches its route"
+    else
+      misses+=("the deployment logged no route table for the default tenant, and no signed-in probe reaches a route")
+    fi
+  fi
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     was="$(jq -r --arg k "$key" '.probes[$k]' "$STATE_DIR/before.json")"
@@ -260,15 +328,34 @@ against_before() { # $1 deployment id
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
 }
 
-# The highest Postgres migration the kernel of one TemperPaw commit knows: its temper pin from Cargo.lock, then that
-# temper commit's crates/temper-store-postgres/migrations.
-known_migration() { # $1 full TemperPaw commit
+# The temper commit one TemperPaw commit's kernel is built from: its temper pin in Cargo.lock.
+kernel_rev() { # $1 full TemperPaw commit
   local rev
   rev="$(gh api "repos/arni-labs/temperpaw/contents/Cargo.lock?ref=$1" -H "Accept: application/vnd.github.raw" |
     grep -A2 '^name = "temper-store-postgres"$' | grep -o 'rev=[0-9a-f]*' | head -n1)"
   [ -n "$rev" ] || return 1
-  gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/migrations?ref=${rev#rev=}" \
+  printf '%s' "${rev#rev=}"
+}
+
+# The highest Postgres migration the kernel of one TemperPaw commit knows: that temper commit's
+# crates/temper-store-postgres/migrations.
+known_migration() { # $1 full TemperPaw commit
+  local rev
+  rev="$(kernel_rev "$1")" || return 1
+  gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/migrations?ref=${rev}" \
     --jq '[.[].name | capture("^(?<n>[0-9]+)_").n | tonumber] | max'
+}
+
+# Whether the kernel of one TemperPaw commit boots on a database that recorded migrations it does not know: its
+# migrator sets ignore_missing (crates/temper-store-postgres/src/migration.rs). Kernels from before that refuse
+# such a database ("migration N was previously applied but is missing").
+# Returns 0 for support, 1 for confirmed lack of support, 2 when the lookup fails.
+ignores_unknown_migrations() { # $1 full TemperPaw commit
+  local rev source
+  rev="$(kernel_rev "$1")" || { echo "the kernel pin of ${1} could not be read" >&2; return 2; }
+  source="$(gh api "repos/arni-labs/temper/contents/crates/temper-store-postgres/src/migration.rs?ref=${rev}" \
+    -H "Accept: application/vnd.github.raw")" || { echo "the migrator source of kernel ${rev} could not be read" >&2; return 2; }
+  grep -q 'set_ignore_missing(true)' <<<"$source"
 }
 
 # The environment's Postgres, through a TCP proxy this run opens when there is none, as psql variables.
@@ -326,10 +413,11 @@ db_close() { # removes only a proxy this run opened
 }
 
 # Before going back to the build that ran before: the storage migrations the newer kernel added that the older one does
-# not know. An older kernel refuses a database that recorded them ("migration N was previously applied but is missing"),
-# so their _sqlx_migrations rows go, but only when every one is listed as additive. Fails with the reason otherwise.
+# not know. Each must be listed as additive, so the older kernel can run beside what it added. An older kernel that
+# ignores unknown migrations boots as it is; one that refuses a database that recorded them ("migration N was previously
+# applied but is missing") needs their _sqlx_migrations rows gone first. Fails with the reason otherwise.
 migrations_back_to() { # $1 full TemperPaw commit that ran before
-  local old new extra additive rows
+  local old new extra additive rows lookup_status
   old="$(known_migration "$1")" || { echo "the migrations of ${1} could not be read" >&2; return 1; }
   new="$(known_migration "$EXPECTED_SHA")" || { echo "the migrations of ${EXPECTED_SHA} could not be read" >&2; return 1; }
   [ "$new" -gt "$old" ] || { echo "no storage migration between them (both know up to ${old})"; return 0; }
@@ -341,6 +429,16 @@ migrations_back_to() { # $1 full TemperPaw commit that ran before
       return 1
     }
   done
+  if ignores_unknown_migrations "$1"; then
+    echo "${1:0:7}'s kernel ignores migrations it does not know, so it boots beside ${extra% } (additive) as they are"
+    return 0
+  else
+    lookup_status=$?
+    if [ "$lookup_status" -ne 1 ]; then
+      echo "${1:0:7}'s kernel migration behavior could not be checked; stopping rollback" >&2
+      return 1
+    fi
+  fi
   if [ "${MIGRATION_ROLLBACK:-}" != auto ] || [ -z "${POSTGRES_SERVICE_ID:-}" ]; then
     echo "going back needs a hand step first: DELETE FROM _sqlx_migrations WHERE version IN ($(tr ' ' ',' <<<"${extra% }")); (additive: ${extra% })" >&2
     return 1
@@ -385,9 +483,16 @@ case "${1:-}" in
       exit 1
     }
     routes="$(route_count "$id")"
-    [[ "$routes" =~ ^[0-9]+$ ]] || { echo "deployment ${id} logged no route table for the default tenant: no baseline, so no deploy" >&2; exit 1; }
     probes="$(probe)"
-    guest_was="$(guest)"
+    if ! [[ "$routes" =~ ^[0-9]+$ ]]; then
+      routes=""
+      served="$(routes_serve "$probes")" || {
+        echo "deployment ${id} logged no route table for the default tenant and no signed-in probe reaches a route: no baseline, so no deploy" >&2
+        exit 1
+      }
+      echo "deployment ${id} logged no route table; ${served} reaches its route" >&2
+    fi
+    guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
     ;;
