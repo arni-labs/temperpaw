@@ -75,7 +75,7 @@ fn row_id(row: &Value) -> &str {
 /// formatted to 4 decimals (yes = 1.0, no = 0.0).
 fn brier(probability: f64, outcome_yes: bool) -> String {
     let outcome = if outcome_yes { 1.0 } else { 0.0 };
-    format!("{:.4}", (probability - outcome).powi(2))
+    format!("{:.4}", (probability - outcome).abs())
 }
 
 /// The resolve-threshold rule: a market price only settles a question when
