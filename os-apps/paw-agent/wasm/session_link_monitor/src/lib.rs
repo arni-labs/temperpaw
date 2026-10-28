@@ -171,9 +171,7 @@ fn dispatch_parent_completed(
         &json!({
             "output": if result.is_empty() { "{}" } else { result.as_str() },
             "child_session_id": link.child_session_id,
-            "ChildSessionId": link.child_session_id,
             "child_status": "Completed",
-            "ChildStatus": "Completed",
         }),
     )
 }
@@ -219,9 +217,7 @@ fn dispatch_parent_error(
             "error_message": error_message,
             "ErrorMessage": error_message,
             "child_session_id": link.child_session_id,
-            "ChildSessionId": link.child_session_id,
             "child_status": child_status,
-            "ChildStatus": child_status,
         }),
     )
 }

@@ -175,7 +175,7 @@ name = "Complete"
 kind = "input"
 from = ["Running"]
 to = "Completed"
-params = ["output"]
+params = ["output", "child_session_id", "child_status"]
 hint = "Mark job as successfully completed with output summary."
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
@@ -196,7 +196,7 @@ name = "Fail"
 kind = "input"
 from = ["Ready", "Running"]
 to = "Failed"
-params = ["error_message"]
+params = ["error_message", "child_session_id", "child_status"]
 hint = "Mark job as failed with error details."
 
 [[action.triggers]]
