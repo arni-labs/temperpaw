@@ -55,6 +55,18 @@ fn collect_cargo_manifests(root: &Path, relative_dir: &Path, files: &mut Vec<Pat
     }
 }
 
+/// The Temper rev the server builds against: temper-platform's pin in crates/temperpaw/Cargo.toml.
+fn server_temper_rev(manifest: &str) -> &str {
+    manifest
+        .lines()
+        .find(|line| {
+            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
+        })
+        .and_then(|line| line.split("rev = \"").nth(1))
+        .and_then(|rest| rest.get(..40))
+        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev")
+}
+
 #[test]
 fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     let manifest = load_text("crates/temperpaw/Cargo.toml");
@@ -62,14 +74,7 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     // The kernel pin moves with every bump (temper-pin-bump.yml), so the contract
     // is one arni-labs rev across the server crates, resolved in Cargo.lock, and
     // none of the known-bad revs below; it does not name the current rev.
-    let expected_rev = manifest
-        .lines()
-        .find(|line| {
-            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
-        })
-        .and_then(|line| line.split("rev = \"").nth(1))
-        .and_then(|rest| rest.get(..40))
-        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev");
+    let expected_rev = server_temper_rev(&manifest);
     let pre_llmobs_opt_out_rev = "510a0d9bc9517f7819d66849446cdf6aff2d5295";
     let observe_wait_only_rev = "6ccc483af87abbf6d9b060d0e6a6def3adfe6718";
     let host_boundary_rev = "7b170cf71246e01c337e81062b54ea8c597b9293";
@@ -128,7 +133,12 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
 #[test]
 fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
     let root = repo_root();
-    let expected_rev = "aead3d22c769382523430c7f769a1aea8486d360";
+    // The server's own pin, read from its manifest, so the two cannot drift apart while this passes.
+    let server_manifest = load_text("crates/temperpaw/Cargo.toml");
+    let expected_rev = server_temper_rev(&server_manifest);
+    let expected_lock_source = format!(
+        "source = \"git+https://github.com/arni-labs/temper.git?rev={expected_rev}#{expected_rev}\""
+    );
     let expected_dependency = format!(
         "temper-wasm-sdk = {{ git = \"https://github.com/arni-labs/temper.git\", rev = \"{expected_rev}\""
     );
@@ -148,7 +158,7 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         sdk_manifests += 1;
         assert!(
             manifest.contains(&expected_dependency),
-            "{} must pin temper-wasm-sdk to the same Temper rev as the server so guest modules do not drift away from WASM host-call and observability contracts",
+            "{} must pin temper-wasm-sdk to the server's Temper rev {expected_rev} (crates/temperpaw/Cargo.toml) so guest modules do not drift away from WASM host-call and observability contracts",
             manifest_path.display()
         );
         assert!(
@@ -162,11 +172,16 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         if absolute_lock_path.exists() {
             let lockfile = fs::read_to_string(&absolute_lock_path)
                 .unwrap_or_else(|err| panic!("failed to read {}: {err}", lock_path.display()));
-            if lockfile.contains("name = \"temper-wasm-sdk\"") {
+            if let Some(sdk_source) = lockfile
+                .split("[[package]]")
+                .find(|package| package.contains("name = \"temper-wasm-sdk\""))
+                .and_then(|package| package.lines().find(|line| line.starts_with("source = ")))
+            {
                 sdk_lockfiles += 1;
-                assert!(
-                    lockfile.contains(expected_rev),
-                    "{} must resolve temper-wasm-sdk to the same Temper runtime rev as the server",
+                assert_eq!(
+                    sdk_source,
+                    expected_lock_source,
+                    "{} must resolve temper-wasm-sdk to the server's Temper rev",
                     lock_path.display()
                 );
                 assert!(
@@ -1982,7 +1997,8 @@ fn wasm_guest_observability_live_proof_is_temper_native_and_datadog_backed() {
 
     assert!(
         probe_manifest.contains("temper-wasm-sdk")
-            && probe_manifest.contains("aead3d22c769382523430c7f769a1aea8486d360"),
+            && probe_manifest
+                .contains(server_temper_rev(&load_text("crates/temperpaw/Cargo.toml"))),
         "proof WASM must build against the same guest SDK runtime rev as production modules"
     );
 }
