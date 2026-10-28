@@ -159,6 +159,12 @@ def main():
         / "temperpaw-monitors.json"
     )
     monitors = json.loads(monitors_path.read_text())
+    # Imported here, where scripts/ is on the path: tests load this module from elsewhere for its helpers.
+    from check_monitors import problems
+
+    file_problems = problems(monitors)
+    if file_problems:
+        sys.exit("Monitor file checks failed:\n\n" + "\n".join(file_problems))
     desired_names = {m["name"] for m in monitors}
 
     base_url = f"https://api.{site}/api/v1"

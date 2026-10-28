@@ -31,6 +31,8 @@ jobs:
           "$RUNNER_TEMP/route-message-tests/bin/python" scripts/test-route-message-continuation.py "$wasm_path"
       - name: Release script regressions
         run: python3 scripts/test_railway_release.py
+      - name: Datadog monitors file
+        run: python3 scripts/check_monitors.py
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Cargo clippy
