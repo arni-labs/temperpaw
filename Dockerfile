@@ -44,7 +44,7 @@ FROM debian:bookworm-slim
 ARG TARGETARCH
 ARG DDPROF_VERSION=0.26.0
 RUN apt-get update \
-    && apt-get install -y ca-certificates curl libz3-4 git xz-utils \
+    && apt-get install -y ca-certificates curl libz3-4 git xz-utils nscd \
     && rm -rf /var/lib/apt/lists/* \
     && case "${TARGETARCH:-amd64}" in \
         amd64|arm64) ddprof_arch="${TARGETARCH:-amd64}" ;; \
@@ -54,6 +54,10 @@ RUN apt-get update \
     && tar -xJf /tmp/ddprof.tar.xz -C /usr/local/bin --strip-components=2 ddprof/bin/ddprof \
     && chmod +x /usr/local/bin/ddprof \
     && rm -f /tmp/ddprof.tar.xz
+# nscd caches host lookups (scripts/nscd.conf says why each setting is what it is). The entrypoint starts it before
+# the server. Nothing creates /var/run/nscd without systemd, and nscd will not start without it.
+COPY scripts/nscd.conf /etc/nscd.conf
+RUN mkdir -p /var/run/nscd /var/cache/nscd
 ARG BUILD_VERSION=dev
 ARG BUILD_SHA=unknown
 WORKDIR /app
