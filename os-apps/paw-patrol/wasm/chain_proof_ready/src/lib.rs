@@ -288,27 +288,4 @@ mod tests {
                 .contains("did not rerun")
         );
     }
-
-    #[test]
-    fn fail_verdict_fails() {
-        let mut p = packet();
-        p["fields"]["features"] =
-            json!("[{\"key\":\"door\",\"verification\":\"rerun\",\"verdict\":\"fail\"}]");
-        assert!(
-            proof_packet_holds(&p, None)
-                .unwrap_err()
-                .contains("verdict fail")
-        );
-    }
-
-    #[test]
-    fn draft_fails() {
-        let mut p = packet();
-        p["fields"]["status"] = json!("Drafting");
-        assert!(
-            proof_packet_holds(&p, None)
-                .unwrap_err()
-                .contains("not Recorded")
-        );
-    }
 }

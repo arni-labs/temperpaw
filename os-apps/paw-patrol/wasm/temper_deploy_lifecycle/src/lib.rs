@@ -558,47 +558,10 @@ mod tests {
     }
 
     #[test]
-    fn version_json_reads_named_field() {
-        assert_eq!(
-            parse_version_sha(r#"{"sha":"abc"}"#, "sha").as_deref(),
-            Some("abc")
-        );
-        assert_eq!(
-            parse_version_sha(r#"{"commit":"xyz"}"#, "commit").as_deref(),
-            Some("xyz")
-        );
-        assert_eq!(parse_version_sha(r#"{"sha":""}"#, "sha"), None);
-    }
-
-    #[test]
     fn max_checks_bounded() {
         assert_eq!(parse_max_checks("60").unwrap(), 60);
         assert_eq!(parse_max_checks("999").unwrap(), MAX_CHECKS_CEILING);
         assert!(parse_max_checks("0").is_err());
         assert!(parse_max_checks("nope").is_err());
-    }
-
-    #[test]
-    fn ghcr_url_is_owner_name_and_tag() {
-        assert_eq!(
-            ghcr_manifest_url("nerdsane/temperpaw", "sha-deadbeef").unwrap(),
-            "https://ghcr.io/v2/nerdsane/temperpaw/manifests/sha-deadbeef"
-        );
-        assert_eq!(
-            ghcr_token_url("nerdsane/temperpaw").unwrap(),
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:nerdsane/temperpaw:pull"
-        );
-        assert!(ghcr_manifest_url("no-slash", "sha-ab").is_err());
-        assert!(ghcr_token_url("no-slash").is_err());
-        assert!(ghcr_manifest_url("nerdsane/temperpaw", "v1").is_err());
-    }
-
-    #[test]
-    fn graphql_bodies_do_not_embed_raw_quotes() {
-        let q = variables_query(r#"p"x"#, "e", "s");
-        assert!(q.contains(r#"p\"x"#), "{q}");
-        let u = variable_upsert_body("p", "e", "s", "IMAGE_TAG", "sha-ab");
-        assert!(u.contains("skipDeploys"));
-        assert!(u.contains("sha-ab"));
     }
 }

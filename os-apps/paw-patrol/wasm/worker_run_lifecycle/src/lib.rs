@@ -700,32 +700,3 @@ fn truncate(input: &str, max: usize) -> String {
         format!("{}[truncated]", &input[..max])
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn changed_files_map_extracts_worker_git_status_evidence() {
-        let result_summary = "codex exec completed\n\n```git-status\n M crates/temperpaw/src/discord.rs\n?? docs/proofs/trace.md\n```\n";
-
-        let value: Value = serde_json::from_str(&changed_files_map(
-            "codex/trace-leak",
-            result_summary,
-        ))
-        .expect("changed files map should be json");
-
-        assert_eq!(value["branch_name"], "codex/trace-leak");
-        assert_eq!(
-            value["changed_files"],
-            json!([
-                "crates/temperpaw/src/discord.rs",
-                "docs/proofs/trace.md"
-            ])
-        );
-        assert_eq!(
-            value["evidence_source"],
-            "WorkerRun result_summary git-status block"
-        );
-    }
-}

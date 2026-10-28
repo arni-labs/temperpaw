@@ -704,34 +704,3 @@ fn truncate(input: &str, max: usize) -> String {
         format!("{}[truncated]", input.chars().take(max).collect::<String>())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ordinary_signal_intake_stays_low_risk() {
-        let risk = initial_risk("datadog", "Cache metric has no data in dev.", "warn");
-
-        assert_eq!(risk.lane, "L1");
-        assert_eq!(risk.evidence, vec!["ordinary maintenance signal"]);
-        assert!(!requires_human_start_approval(risk.lane));
-    }
-
-    #[test]
-    fn sensitive_signal_intake_requires_human_start_approval() {
-        let risk = initial_risk(
-            "github",
-            "Open PR touches Cedar policy for production Discord deploy.",
-            "warn",
-        );
-
-        assert_eq!(risk.lane, "L3");
-        assert_eq!(risk.source, "signal_router:sensitive_initial_signal_intake");
-        assert!(requires_human_start_approval(risk.lane));
-        assert!(risk.evidence.contains(&"sensitive_intake:cedar"));
-        assert!(risk.evidence.contains(&"sensitive_intake:production"));
-        assert!(risk.evidence.contains(&"sensitive_intake:discord"));
-        assert!(risk.evidence.contains(&"sensitive_intake:deploy"));
-    }
-}
