@@ -158,11 +158,12 @@ fn job_field<'a>(fields: &'a Value, keys: &[&str]) -> &'a str {
 /// `config[default_key]`.
 ///
 /// `[odata, spec, written_default]` name the job's fields. The job's own
-/// setting is its OData field, else its spec field. A run writes its setting
-/// back into the spec field and the default it used into `written_default`,
-/// so a spec field still holding that default is not the job's own: the run
-/// takes the tenant's current default, which may have changed since. The
-/// server leaves a `{secret:...}` template in place when the tenant holds no
+/// setting is its OData field, else its spec field. A blank or null OData field
+/// clears the choice, ignoring the old spec copy. A run writes its setting back
+/// into the spec field and the default it used into `written_default`, so a spec
+/// field still holding that default is not the job's own: the run takes the
+/// tenant's current default, which may have changed since. The server leaves a
+/// `{secret:...}` template in place when the tenant holds no
 /// such secret, so a value still holding one is no setting.
 fn session_setting(
     fields: &Value,
@@ -171,10 +172,10 @@ fn session_setting(
     default_key: &str,
 ) -> (String, bool) {
     let spec_value = job_field(fields, &[spec]).trim();
-    let own = match job_field(fields, &[odata]).trim() {
-        "" if spec_value == job_field(fields, &[written_default]).trim() => "",
-        "" => spec_value,
-        odata_value => odata_value,
+    let own = match fields.get(odata) {
+        Some(value) => value.as_str().unwrap_or("").trim(),
+        None if spec_value == job_field(fields, &[written_default]).trim() => "",
+        None => spec_value,
     };
     let (setting, is_default) = if own.is_empty() {
         let default = config.get(default_key).map(|value| value.trim());

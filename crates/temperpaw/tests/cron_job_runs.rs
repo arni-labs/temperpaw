@@ -320,6 +320,62 @@ async fn a_job_created_with_odata_property_names_keeps_its_message_and_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_model_settings_with_empty_strings_uses_tenant_defaults() {
+    assert_clearing_odata_model_settings_uses_tenant_defaults(json!("")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_model_settings_with_null_uses_tenant_defaults() {
+    assert_clearing_odata_model_settings_uses_tenant_defaults(Value::Null).await;
+}
+
+async fn assert_clearing_odata_model_settings_uses_tenant_defaults(cleared: Value) {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+        "Model": "claude-sonnet-5-5",
+        "Provider": "anthropic",
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    run_once_with_secrets(&server, 1, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "claude-sonnet-5-5");
+    assert_eq!(session["provider"], "anthropic");
+
+    // OData PATCH merges the cleared authoritative fields, leaving the
+    // previous run's snake_case copies in place.
+    server
+        .update_tenant_entity_fields(
+            &tenant(),
+            "CronJob",
+            JOB,
+            json!({"Model": cleared, "Provider": cleared}),
+            false,
+        )
+        .await
+        .unwrap();
+    let fields = job(&server).await["fields"].clone();
+    assert_eq!(fields["model"], "claude-sonnet-5-5");
+    assert_eq!(fields["provider"], "anthropic");
+    run_once_with_secrets(&server, 2, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "gpt-5.5", "cleared with {cleared}");
+    assert_eq!(
+        session["provider"], "openai_codex",
+        "cleared with {cleared}"
+    );
+
+    // Clearing also restores following later changes to tenant defaults.
+    let changed_defaults = [("llm_model", "gpt-6.1-sol"), ("llm_provider", "openai")];
+    run_once_with_secrets(&server, 3, &changed_defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "gpt-6.1-sol", "cleared with {cleared}");
+    assert_eq!(session["provider"], "openai", "cleared with {cleared}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_job_with_no_model_anywhere_still_completes_its_run() {
     let server = server_with_job(json!({
         "name": "weekly digest",
