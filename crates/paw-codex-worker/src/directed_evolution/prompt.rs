@@ -40,6 +40,9 @@ fn directed_evolution_prompt(work_item: &DirectedEvolutionWorkItemState) -> Stri
     let output_contract = directed_evolution_output_contract(&work_item.role);
     let prompt_body =
         directed_evolution_worker_prompt_body(&work_item.role, &literal_prompt_ref(&work_item.prompt_ref));
+    let join_block = directed_evolution_prompt_join_block(&directed_evolution_join_fields(
+        &work_item.correlation_json,
+    ));
     format!(
         r#"You are a Codex WorkerRun executing a Directed Evolution WorkItem.
 
@@ -50,6 +53,8 @@ TargetEntityId: {target_entity_id}
 ContextRef: {context_ref}
 OutputSchemaRef: {output_schema_ref}
 CorrelationJson: {correlation_json}
+ResolvedCorrelation:
+{join_block}
 
 Role contract:
 {role_contract}
@@ -68,10 +73,23 @@ Required output shape for this role:
         context_ref = work_item.context_ref,
         output_schema_ref = work_item.output_schema_ref,
         correlation_json = work_item.correlation_json,
+        join_block = join_block,
         role_contract = role_contract,
         prompt_body = prompt_body,
         output_contract = output_contract,
     )
+}
+
+fn directed_evolution_prompt_join_block(join: &DirectedEvolutionJoinFields) -> String {
+    let entries = join.entries();
+    if entries.is_empty() {
+        return "(none)".to_string();
+    }
+    entries
+        .iter()
+        .map(|(key, value)| format!("de.{key}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn directed_evolution_output_contract(role: &str) -> &'static str {

@@ -89,18 +89,28 @@ async fn query_boot_entity_ids(
     entity_set: &str,
     status: &str,
 ) -> Result<Vec<String>> {
+    query_boot_entity_ids_filtered(client, config, entity_set, &format!("Status eq '{status}'"))
+        .await
+}
+
+async fn query_boot_entity_ids_filtered(
+    client: &reqwest::Client,
+    config: &Config,
+    entity_set: &str,
+    filter: &str,
+) -> Result<Vec<String>> {
     let url = format!(
-        "{}/tdata/{}?$filter=Status eq '{}'&$orderby=Id desc&$top=50",
-        config.temper_url, entity_set, status
+        "{}/tdata/{}?$filter={}&$orderby=Id desc&$top=50",
+        config.temper_url, entity_set, filter
     );
     let response = client
         .get(url)
         .headers(headers(config)?)
         .send()
         .await
-        .with_context(|| format!("query {entity_set} with status {status} on boot"))?;
+        .with_context(|| format!("query {entity_set} with filter {filter} on boot"))?;
     if !response.status().is_success() {
-        warn!(entity_set, status, http_status = %response.status(), "boot query failed");
+        warn!(entity_set, filter, http_status = %response.status(), "boot query failed");
         return Ok(Vec::new());
     }
 

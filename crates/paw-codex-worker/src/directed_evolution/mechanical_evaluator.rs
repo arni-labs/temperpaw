@@ -7,14 +7,8 @@ async fn run_directed_evolution_mechanical_evaluator(
     config: &Config,
     work_item: &DirectedEvolutionWorkItemState,
 ) -> Result<Value> {
-    if work_item.target_entity_type != "StageResult" {
-        bail!(
-            "mechanical Directed Evolution evaluator {} requires a StageResult target, got {}",
-            work_item.role,
-            work_item.target_entity_type
-        );
-    }
-
+    // Target-type integrity is asserted once at role dispatch
+    // (directed_evolution_role_target_mismatch) before this runs.
     let stage_result =
         fetch_directed_evolution_entity_fields(client, config, "StageResults", &work_item.target_entity_id)
             .await?;

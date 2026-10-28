@@ -35,6 +35,20 @@ fn headers(config: &Config) -> Result<HeaderMap> {
     Ok(headers)
 }
 
+fn headers_with_observe_metadata(
+    config: &Config,
+    observe_metadata: Option<&str>,
+) -> Result<HeaderMap> {
+    let mut headers = headers(config)?;
+    if let Some(value) = observe_metadata.filter(|value| !value.trim().is_empty()) {
+        headers.insert(
+            TEMPER_OBSERVE_METADATA_HEADER,
+            HeaderValue::from_str(value).context("invalid X-Temper-Observe-Metadata value")?,
+        );
+    }
+    Ok(headers)
+}
+
 fn event_stream_headers(config: &Config) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(

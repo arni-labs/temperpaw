@@ -224,8 +224,14 @@ async fn run_dsf_model_patrol(
         &dsf_prompt(patrol_id, &observation_id, &evidence),
     )?;
     let output =
-        run_codex_exec_command_with_args(config, &workdir, args, "run DSF model investigation")
-            .await?;
+        run_codex_exec_command_with_args(
+            config,
+            &workdir,
+            args,
+            "run DSF model investigation",
+            &[],
+        )
+        .await?;
     if !output.status.success() {
         bail!(
             "DSF subscription investigation exited {:?}; stderr bytes={}",

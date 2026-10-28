@@ -3,6 +3,7 @@ async fn directed_evolution_observer_source_inventory_prompt(
     config: &Config,
     work_item: &DirectedEvolutionWorkItemState,
     workdir: &DirectedEvolutionWorkdir,
+    observe_metadata: &str,
 ) -> Result<String> {
     let correlation = serde_json::from_str::<Value>(&work_item.correlation_json)
         .unwrap_or_else(|_| json!({}));
@@ -33,7 +34,7 @@ async fn directed_evolution_observer_source_inventory_prompt(
         "correlation": correlation,
         "sources": {
             "genesis_control_plane": directed_evolution_observer_genesis_sources(client, config, work_item, &correlation).await,
-            "runtime_odata_state": directed_evolution_observer_runtime_sources(client, &correlation).await,
+            "runtime_odata_state": directed_evolution_observer_runtime_sources(client, &correlation, observe_metadata).await,
             "datadog_observability": directed_evolution_observer_datadog_sources(client, work_item, &correlation).await,
             "app_source_or_description": directed_evolution_observer_app_sources(workdir, &correlation),
         },
@@ -237,6 +238,7 @@ fn directed_evolution_observer_fields_sample(entity_set: &str, id: &str, fields:
 async fn directed_evolution_observer_runtime_sources(
     client: &reqwest::Client,
     correlation: &Value,
+    observe_metadata: &str,
 ) -> Value {
     let Some(runtime_base) = observer_string(correlation, "runtime_base_url")
         .or_else(|| observer_string(correlation, "runtimeBaseUrl"))
@@ -257,6 +259,7 @@ async fn directed_evolution_observer_runtime_sources(
         &format!("{runtime_base}/tdata/$metadata"),
         &tenant,
         auth_token.as_deref(),
+        Some(observe_metadata),
     )
     .await;
     let entity_sets = metadata
@@ -274,6 +277,7 @@ async fn directed_evolution_observer_runtime_sources(
                 &tenant,
                 auth_token.as_deref(),
                 &entity_set,
+                Some(observe_metadata),
             )
             .await,
         );
@@ -294,6 +298,7 @@ async fn observer_runtime_get_text(
     url: &str,
     tenant: &str,
     auth_token: Option<&str>,
+    observe_metadata: Option<&str>,
 ) -> Value {
     let mut request = client.get(url).header(ACCEPT, "application/json");
     if !tenant.trim().is_empty() {
@@ -301,6 +306,9 @@ async fn observer_runtime_get_text(
     }
     if let Some(token) = auth_token.filter(|value| !value.trim().is_empty()) {
         request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if let Some(metadata) = observe_metadata.filter(|value| !value.trim().is_empty()) {
+        request = request.header(TEMPER_OBSERVE_METADATA_HEADER, metadata);
     }
     match request.send().await {
         Ok(response) => {
@@ -325,9 +333,11 @@ async fn observer_runtime_collection_sample(
     tenant: &str,
     auth_token: Option<&str>,
     entity_set: &str,
+    observe_metadata: Option<&str>,
 ) -> Value {
     let url = format!("{runtime_base}/tdata/{entity_set}?$top=12");
-    let result = observer_runtime_get_text(client, &url, tenant, auth_token).await;
+    let result =
+        observer_runtime_get_text(client, &url, tenant, auth_token, observe_metadata).await;
     let samples = result
         .get("body_preview")
         .and_then(Value::as_str)
