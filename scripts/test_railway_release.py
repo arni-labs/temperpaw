@@ -90,6 +90,49 @@ class RailwayReleaseTests(unittest.TestCase):
                 # These are precisely the two results the Factory maps to ok.
                 self.assertEqual(result.stdout in ('verified', 'checked'), package_outcome != 'failure' and e2e != 'failure')
 
+    def test_migration_lookup_failure_stops_before_deletion(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('kernel_rev', 'ignores_unknown_migrations', 'migrations_back_to'):
+            functions += name + '()' + script.split(name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        mock = r'''
+known_migration() { if [ "$1" = old ]; then echo 19; else echo 20; fi; }
+gh() {
+  if [[ "$2" == *Cargo.lock* ]]; then
+    [ "$SCENARIO" != pin_failure ] || { echo 'pin unavailable' >&2; return 1; }
+    if [ "$SCENARIO" = pin_missing ]; then
+      echo 'no kernel pin'
+    else
+      printf 'name = "temper-store-postgres"\nsource = "git+https://example.test?rev=abc"\n'
+    fi
+  else
+    [ "$SCENARIO" != source_failure ] || { echo 'source unavailable' >&2; return 1; }
+    if [ "$SCENARIO" = supported ]; then echo 'migrator.set_ignore_missing(true);';
+    else echo 'migrator.run(pool).await'; fi
+  fi
+}
+db_open() { echo DATABASE_OPENED; }
+db_close() { :; }
+psql() { echo DATABASE_DELETE >&2; echo 20; }
+'''
+        for scenario in ('pin_failure', 'pin_missing', 'source_failure', 'supported', 'unsupported'):
+            for mode in ('', 'auto'):
+                with self.subTest(scenario=scenario, mode=mode), tempfile.TemporaryDirectory() as tmp:
+                    Path(tmp, 'additive_migrations.txt').write_text('20 additive\n')
+                    env = dict(os.environ, EXPECTED_SHA='new', SCENARIO=scenario,
+                               MIGRATION_ROLLBACK=mode, POSTGRES_SERVICE_ID='test')
+                    command = 'set -euo pipefail\n' + functions + mock + '\nmigrations_back_to old || exit 7\n'
+                    result = subprocess.run(['bash', '-c', command, tmp + '/release.sh'],
+                                            env=env, capture_output=True, text=True)
+                    failed_lookup = scenario in ('pin_failure', 'pin_missing', 'source_failure')
+                    ok = scenario == 'supported' or (scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
+                    self.assertEqual('could not be checked' in result.stderr, failed_lookup)
+                    self.assertEqual('DATABASE_OPENED' in result.stdout, scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual('DATABASE_DELETE' in result.stderr, scenario == 'unsupported' and mode == 'auto')
+                    self.assertEqual('DELETE FROM' in result.stderr, scenario == 'unsupported' and mode == '')
+                    self.assertEqual('boots beside' in result.stdout, scenario == 'supported')
+
     def test_proxy_cleanup_in_conditional(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
         function = 'db_close()' + script.split('db_close()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
@@ -126,6 +169,83 @@ gql() {
                 self.assertEqual(result.returncode == 0, ok, result.stderr)
                 self.assertEqual(marker.exists(), not ok)
                 self.assertEqual('the TCP proxy is removed' in result.stdout, ok)
+
+    def test_guest_baseline_needs_a_good_read(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('guest', 'guest_baseline'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        # curl answers with the scenario's body, then the status line -w adds.
+        mock = r'''
+curl() {
+  case "$SCENARIO" in
+    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[1,2]}]}}\n200' ;;
+    empty) printf '\n200' ;;
+    html) printf '<html>bad gateway</html>\n502' ;;
+    refused) printf '\n000'; return 7 ;;
+  esac
+}
+'''
+        for scenario, url, ok, read in [
+            ('good', 'https://example.test/guest', True, '200 true find 2'),
+            ('empty', 'https://example.test/guest', False, '200 false no JSON body'),
+            ('html', 'https://example.test/guest', False, '502 false no JSON body'),
+            ('refused', 'https://example.test/guest', False, '000 false no JSON body'),
+            ('empty', '', True, ''),
+        ]:
+            with self.subTest(scenario=scenario, url=url):
+                command = 'set -euo pipefail\n' + functions + mock + '\nwas="$(guest_baseline)" || exit 7\nprintf "%s" "$was"\n'
+                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url)
+                result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
+                if ok:
+                    self.assertEqual(result.stdout, read)
+                else:
+                    self.assertIn('the guest read answered ' + read + ': no baseline, so no deploy', result.stderr)
+
+    def test_route_table_read_from_probes_when_the_log_line_is_missing(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('routes_serve', 'against_before'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        # The table answers a method no route takes with its 404; a built-in path answers 405 with no body.
+        mock = r'''
+wait_healthy() { :; }
+ask_failures() { echo 0; }
+route_count() { printf '%s' "$LOGGED"; }
+probe() { printf '%s' "$AFTER"; }
+curl() {
+  case "${*: -1}" in
+    *"$TABLE_PATH") [ "$TABLE" = loaded ] && printf '{"error":"no route matches","path":"x"}' ;;
+  esac
+  return 0
+}
+'''
+        judge = 'POST operator /katagami/judge'
+        status = 'GET operator /paw/setup/status'
+        for logged, before_count, answers, table, misses in [
+            ('11', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '', {judge: '401', status: '200'}, 'loaded', []),
+            ('10', '11', {judge: '401', status: '200'}, 'loaded', ['route_count 10, before 11']),
+            # Only a built-in path answers, or the route path answers 404: nothing shows the table serves.
+            ('', '11', {judge: '404', status: '200'}, 'loaded',
+             ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
+            ('', '11', {judge: '401', status: '200'}, 'empty',
+             ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
+        ]:
+            with self.subTest(logged=logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
+                before = {'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
+                Path(tmp, 'before.json').write_text(__import__('json').dumps(before))
+                command = ('set -euo pipefail\n' + functions + mock +
+                           '\nmisses=()\nagainst_before dep\nprintf "MISS %s\\n" "${misses[@]+"${misses[@]}"}"\n')
+                env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, TABLE=table, TABLE_PATH='/katagami/judge',
+                           AFTER=__import__('json').dumps(answers), PROBE_ROUTES=judge + '\n' + status,
+                           BASE_URL='https://example.test', TEMPER_API_KEY='test')
+                result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                got = [line[5:] for line in result.stdout.splitlines() if line.startswith('MISS ') and line[5:]]
+                self.assertEqual(got, misses, result.stdout)
 
 
 if __name__ == '__main__':

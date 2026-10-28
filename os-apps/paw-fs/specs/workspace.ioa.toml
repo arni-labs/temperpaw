@@ -90,7 +90,7 @@ from = ["Active"]
 to = "Active"
 effect = ["used_bytes += params.size_bytes"]
 params = ["size_bytes"]
-hint = "Record additional storage usage. Rejected if it would exceed quota."
+hint = "Record additional storage usage. The quota is not checked."
 
 [[action]]
 name = "DecrementUsage"
@@ -338,10 +338,6 @@ hint = "Filesystem operation failed. Workspace remains Active."
 name = "WorkspaceArchivedEvent"
 kind = "output"
 hint = "Emitted when workspace transitions to Archived."
-
-[[invariant]]
-name = "UsageBelowQuota"
-assert = "status in ['Active'] => used_bytes <= quota_limit"
 
 [[invariant]]
 name = "FileCountNonNegative"

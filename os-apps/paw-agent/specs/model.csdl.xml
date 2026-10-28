@@ -1015,6 +1015,12 @@
         <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
       </Action>
 
+      <Action Name="SignInRequired" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.OpenAICodexAuth"/>
+        <Parameter Name="last_error" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
+      </Action>
+
       <Action Name="PollDeviceLogin" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.OpenAICodexAuth"/>
         <ReturnType Type="TemperPaw.OpenAICodexAuth"/>

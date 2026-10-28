@@ -22,19 +22,6 @@ permit(
     resource is File
 );
 
-// Agents can create, update, lock, and unlock files in their own workspace.
-// Resource attributes are the entity's raw fields (snake_case): an earlier
-// form of this permit compared resource.workspaceId, which never exists at
-// evaluation time, so the permit was dead code — found when corridor
-// sessions hit 403 on their first workspace-scoped write.
-permit(
-    principal is Agent,
-    action in [Action::"StreamUpdated", Action::"Create", Action::"create", Action::"update", Action::"Lock", Action::"Unlock"],
-    resource is File
-) when {
-    resource.workspace_id == principal.workspaceid
-};
-
 // System agents execute Temper-native PawFS workflows such as ArtifactBatch and
 // Monty write helpers; their target workspace is carried in the entity fields.
 permit(
@@ -60,15 +47,6 @@ forbid(
     resource is File
 ) when {
     resource.status == "Locked"
-};
-
-// Archive requires workspace admin
-permit(
-    principal is Agent,
-    action == Action::"FileArchive",
-    resource is File
-) when {
-    principal in Group::"WorkspaceAdmins" && resource.workspaceId == principal.workspaceid
 };
 
 // The wasm-runtime service writes files on behalf of sessions (turn
