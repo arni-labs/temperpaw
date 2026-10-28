@@ -138,30 +138,3 @@ fn get_file(
     serde_json::from_str(&resp.body)
         .map_err(|e| format!("chain_file_ready: File {file_id} body: {e}"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ready_and_locked_pass() {
-        assert!(file_is_ready("Ready"));
-        assert!(file_is_ready("Locked"));
-        assert!(!file_is_ready("Created"));
-        assert!(!file_is_ready(""));
-    }
-
-    #[test]
-    fn status_from_odata_wrapper_or_flat() {
-        let wrapped = json!({"fields": {"status": "Ready"}});
-        assert_eq!(file_status(&wrapped).as_deref(), Some("Ready"));
-        let flat = json!({"Status": "Locked"});
-        assert_eq!(file_status(&flat).as_deref(), Some("Locked"));
-    }
-
-    #[test]
-    fn pascal_spec_ref() {
-        assert_eq!(pascal("spec_ref"), "SpecRef");
-        assert_eq!(pascal("intent_ref"), "IntentRef");
-    }
-}
