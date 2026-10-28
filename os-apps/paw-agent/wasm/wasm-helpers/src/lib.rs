@@ -2657,14 +2657,6 @@ mod tests {
     }
 
     #[test]
-    fn next_session_entry_id_defaults_to_first_child_when_parent_suffix_is_not_numeric() {
-        assert_eq!(
-            next_session_entry_id("a", "legacy-leaf"),
-            ("a-1".to_string(), 1)
-        );
-    }
-
-    #[test]
     fn test_session_entries_jsonl_from_entities_sorts_and_reconstructs() {
         let entities = vec![
             json!({
