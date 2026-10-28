@@ -496,6 +496,12 @@ on_timeout = "Refresh"
 name = "BoundedCollectionFailures"
 assert = "failure_count <= 3"
 
+# A sync starts collecting only under three failures; the proof by induction
+# needs this, and no guess supplies it.
+[[invariant.lemma]]
+name = "collecting_under_three"
+assert = "(=> (= $DsfModelSync.status DsfModelSync/Collecting) (< $DsfModelSync.failure_count 3))"
+
 [[state_timeout]]
 state = "Idle"
 after_seconds = 60
