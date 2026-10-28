@@ -214,6 +214,63 @@ fn paw_patrol_is_discoverable_by_the_os_app_catalog() {
     );
 }
 
+#[test]
+fn paw_agent_is_discoverable_by_the_os_app_catalog() {
+    let root = repo_root();
+    temper_platform::os_apps::set_os_apps_dir(root.join("os-apps"));
+
+    let startup_apps = temper_platform::os_apps::list_startup_os_apps();
+    assert!(
+        startup_apps.iter().any(|app| app == "paw-agent"),
+        "paw-agent should be part of the startup OS app surface: {startup_apps:?}"
+    );
+
+    let specs_dir = root.join("os-apps/paw-agent/specs");
+    let mut parse_errors = Vec::new();
+    for entry in
+        std::fs::read_dir(&specs_dir).expect("paw-agent specs directory should be readable")
+    {
+        let path = entry
+            .expect("paw-agent spec entry should be readable")
+            .path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("paw-agent IOA spec should be readable");
+        if let Err(error) = temper_jit::TransitionTable::try_from_ioa_source(&source) {
+            parse_errors.push(format!("{}: {error}", path.display()));
+        }
+    }
+    assert!(
+        parse_errors.is_empty(),
+        "paw-agent IOA specs should parse individually:\n{}",
+        parse_errors.join("\n")
+    );
+
+    let bundle = temper_platform::os_apps::get_os_app("paw-agent")
+        .expect("paw-agent should load as an OS app bundle");
+    assert_eq!(
+        bundle.specs.len(),
+        13,
+        "paw-agent should expose all active Agent entity specs"
+    );
+    assert!(
+        bundle
+            .csdl
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TemperPaw"),
+        "paw-agent bundle should include the TemperPaw CSDL namespace"
+    );
+    assert!(
+        bundle
+            .specs
+            .iter()
+            .any(|(entity_type, _)| entity_type == "Session"),
+        "paw-agent bundle should include the Session spec"
+    );
+}
+
 // --- ARN-434: narrow Cedar permits for the shadow-sweep writes ---
 
 #[test]
