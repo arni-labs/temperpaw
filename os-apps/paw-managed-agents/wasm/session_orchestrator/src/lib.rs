@@ -573,3 +573,47 @@ trait Pipe: Sized {
 }
 
 impl<T> Pipe for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_event_content_records_bridge_observability_context() {
+        let content = running_event_content(
+            &json!({ "ParentSessionId": "parent-session-1" }),
+            "managed-session-1",
+            "inner-session-1",
+            "inner-agent-1",
+            "managed-agent-1",
+            "parent-session-1",
+            "environment-1",
+            "ManagedAgents.StartSession",
+        );
+        let raw = content["Content"].as_str().expect("content should be JSON");
+        let parsed: Value = serde_json::from_str(raw).expect("content JSON should parse");
+
+        assert_eq!(
+            content["ObservabilityEvent"],
+            "temperpaw.agent.session"
+        );
+        assert_eq!(content["ManagedSessionId"], "managed-session-1");
+        assert_eq!(content["InnerSessionId"], "inner-session-1");
+        assert_eq!(content["InnerAgentId"], "inner-agent-1");
+        assert_eq!(content["ManagedAgentId"], "managed-agent-1");
+        assert_eq!(content["ParentSessionId"], "parent-session-1");
+        assert_eq!(content["EnvironmentId"], "environment-1");
+        assert_eq!(content["ActionName"], "ManagedAgents.StartSession");
+        assert_eq!(
+            parsed["observability_event"],
+            "temperpaw.agent.session"
+        );
+        assert_eq!(parsed["managed_session_id"], "managed-session-1");
+        assert_eq!(parsed["inner_session_id"], "inner-session-1");
+        assert_eq!(parsed["inner_agent_id"], "inner-agent-1");
+        assert_eq!(parsed["managed_agent_id"], "managed-agent-1");
+        assert_eq!(parsed["parent_session_id"], "parent-session-1");
+        assert_eq!(parsed["environment_id"], "environment-1");
+        assert_eq!(parsed["action_name"], "ManagedAgents.StartSession");
+    }
+}

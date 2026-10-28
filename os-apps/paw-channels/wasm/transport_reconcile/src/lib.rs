@@ -143,3 +143,40 @@ fn timestamp_now() -> String {
 fn timestamp_after_secs(secs: i64) -> String {
     (Context::get_time_millis() + secs * 1000).to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_retryable_status, resolve_temper_api_url};
+    use std::collections::BTreeMap;
+    use temper_wasm_sdk::context::Context;
+    use temper_wasm_sdk::json;
+
+    #[test]
+    fn retryability_matches_start_endpoint_contract() {
+        assert!(is_retryable_status(503));
+        assert!(is_retryable_status(429));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+    }
+
+    #[test]
+    fn temper_api_url_ignores_unresolved_secret_placeholders() {
+        let ctx = Context {
+            config: BTreeMap::from([(
+                "temper_api_url".to_string(),
+                "{secret:temper_api_url}".to_string(),
+            )]),
+            trigger_params: json!({}),
+            entity_state: json!({}),
+            tenant: "default".to_string(),
+            entity_type: "TransportConnection".to_string(),
+            entity_id: "transport-discord".to_string(),
+            trigger_action: "Start".to_string(),
+        };
+
+        assert_eq!(
+            resolve_temper_api_url(&ctx, &json!({})),
+            "http://127.0.0.1:3467"
+        );
+    }
+}
