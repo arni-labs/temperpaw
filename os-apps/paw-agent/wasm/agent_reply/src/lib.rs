@@ -503,3 +503,57 @@ fn truncate_body(body: &str) -> String {
         format!("{}...", &body[..LIMIT])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_channel_routes_record_reply_delivered_directly() {
+        assert_eq!(
+            channel_reply_action_url("http://temper", "ch-inline", Some("cli")),
+            "http://temper/tdata/Channels('ch-inline')/Paw.Channel.ReplyDelivered"
+        );
+        assert_eq!(
+            channel_reply_action_url("http://temper", "ch-inline", Some("tui")),
+            "http://temper/tdata/Channels('ch-inline')/Paw.Channel.ReplyDelivered"
+        );
+    }
+
+    #[test]
+    fn webhook_or_unknown_channel_routes_keep_awaited_send_reply() {
+        assert_eq!(
+            channel_reply_action_url("http://temper", "ch-webhook", Some("discord")),
+            "http://temper/tdata/Channels('ch-webhook')/Paw.Channel.SendReply?await_integration=true"
+        );
+        assert_eq!(
+            channel_reply_action_url("http://temper", "ch-legacy", None),
+            "http://temper/tdata/Channels('ch-legacy')/Paw.Channel.SendReply?await_integration=true"
+        );
+    }
+
+    #[test]
+    fn explicit_direct_no_reply_skips_fallback_lookup_for_distinct_agent() {
+        assert!(should_skip_reply_lookup_for_no_route_session(
+            "ss-direct",
+            "aj-direct",
+            "",
+            &json!({"reply_route_source": "direct_no_reply"})
+        ));
+        assert!(!should_skip_reply_lookup_for_no_route_session(
+            "ss-direct",
+            "aj-direct",
+            "",
+            &json!({"reply_route_source": "channel_message"})
+        ));
+        assert!(!should_skip_reply_lookup_for_no_route_session(
+            "ss-direct",
+            "aj-direct",
+            "",
+            &json!({
+                "reply_route_source": "direct_no_reply",
+                "reply_channel_id": "channel",
+            })
+        ));
+    }
+}
