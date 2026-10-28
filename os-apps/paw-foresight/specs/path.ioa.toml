@@ -196,6 +196,13 @@ on_failure = "Fail"
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
 
+[[action]]
+name = "AssignRepairer"
+kind = "input"
+from = ["Solving"]
+params = ["repairer_agent_id"]
+hint = "Bind the freshly spawned repairer agent to this route. System principals only; replaces raw PATCH on the hot DB path."
+
 
 [[action]]
 name = "RequestChallenge"
@@ -212,6 +219,13 @@ on_failure = "Fail"
 
 [action.triggers.config]
 temper_api_url = "{secret:temper_api_url}"
+
+[[action]]
+name = "AssignAdversary"
+kind = "input"
+from = ["Repaired"]
+params = ["adversary_agent_id"]
+hint = "Bind the freshly spawned adversary agent to this route. System principals only; replaces raw PATCH on the hot DB path."
 
 
 [[action]]
@@ -316,6 +330,13 @@ from = ["Canonical", "Tail"]
 to = "Scored"
 params = ["repair_cost"]
 hint = "World update re-derived this path's cost (a resolved EventNode moved the graph). System principals only."
+
+[[action]]
+name = "AppendChallengeFlag"
+kind = "input"
+from = ["Scored", "Canonical", "Tail"]
+params = ["challenge_flags"]
+hint = "Dweller stress-test append of the route's challenge flags using the full rewritten flag JSON. System principals only; replaces raw PATCH."
 
 [[action]]
 name = "Fail"

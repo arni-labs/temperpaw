@@ -396,6 +396,42 @@ fn path_scoring_is_deterministic_wasm_territory() {
 }
 
 #[test]
+fn path_hot_linkage_updates_are_governed_actions_not_raw_patch() {
+    let path = spec_path("path.ioa.toml");
+    let spec = parse_spec(&path);
+
+    let repairer = action(&spec, "AssignRepairer", &path);
+    assert_eq!(
+        action_from(repairer),
+        ["Solving".to_string()].into_iter().collect(),
+        "repairer assignment happens while a route is solving"
+    );
+    assert!(action_params(repairer).contains("repairer_agent_id"));
+
+    let adversary = action(&spec, "AssignAdversary", &path);
+    assert_eq!(
+        action_from(adversary),
+        ["Repaired".to_string()].into_iter().collect(),
+        "adversary assignment happens before challenge"
+    );
+    assert!(action_params(adversary).contains("adversary_agent_id"));
+
+    let append = action(&spec, "AppendChallengeFlag", &path);
+    assert_eq!(
+        action_from(append),
+        [
+            "Scored".to_string(),
+            "Canonical".to_string(),
+            "Tail".to_string()
+        ]
+        .into_iter()
+        .collect(),
+        "dweller stress tests append flags only after route costing/classification"
+    );
+    assert!(action_params(append).contains("challenge_flags"));
+}
+
+#[test]
 fn endpoint_decomposition_bridges_bundles_to_claims() {
     // ADR-004: SubmitForRepair no longer spawns repairers directly — it
     // spawns the decomposer, which splits the bundle into Claims; each

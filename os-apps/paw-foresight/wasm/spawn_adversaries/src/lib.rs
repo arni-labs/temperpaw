@@ -185,6 +185,32 @@ fn create_agent(
         .ok_or_else(|| "Agent create returned no entity_id".to_string())
 }
 
+fn dispatch_action(
+    ctx: &Context,
+    api: &str,
+    headers: &[(String, String)],
+    set: &str,
+    id: &str,
+    action: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let resp = ctx.http_call(
+        "POST",
+        &format!("{api}/tdata/{set}('{id}')/TemperPaw.{action}"),
+        headers,
+        &body.to_string(),
+    )?;
+    if (200..300).contains(&resp.status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{set}('{id}').{action} failed (HTTP {}): {}",
+            resp.status,
+            &resp.body[..resp.body.len().min(200)]
+        ))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn start_session(
     ctx: &Context,
@@ -351,8 +377,8 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             }
         };
 
-        // Create the adversary agent and bind it to the path. A PATCH failure
-        // only loosens Cedar's assigned-adversary check: warn and proceed.
+        // Create the adversary agent and bind it to the path before session
+        // spawn so Path.ChallengeComplete remains assigned-agent guarded.
         let adversary_agent_id = create_agent(
             &ctx,
             &api,
@@ -360,30 +386,15 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             &format!("Adversary-{path_id}"),
             "adversary",
         )?;
-        let patch_body = json!({ "adversary_agent_id": adversary_agent_id });
-        match ctx.http_call(
-            "PATCH",
-            &format!("{api}/tdata/Paths('{path_id}')"),
+        dispatch_action(
+            &ctx,
+            &api,
             &headers,
-            &patch_body.to_string(),
-        ) {
-            Ok(r) if r.status < 400 => {}
-            Ok(r) => ctx.log(
-                "warn",
-                &format!(
-                    "spawn_adversaries: PATCH Paths('{path_id}') adversary_agent_id failed \
-                     (HTTP {}); Cedar's assigned-adversary check won't bind",
-                    r.status
-                ),
-            ),
-            Err(e) => ctx.log(
-                "warn",
-                &format!(
-                    "spawn_adversaries: PATCH Paths('{path_id}') adversary_agent_id failed \
-                     ({e}); Cedar's assigned-adversary check won't bind"
-                ),
-            ),
-        }
+            "Paths",
+            &path_id,
+            "AssignAdversary",
+            &json!({ "adversary_agent_id": adversary_agent_id }),
+        )?;
 
         // Spawn the adversary session.
         let adversary_msg = adversary_prompt(
