@@ -42,6 +42,7 @@
       <EnumType Name="FileVersionStatus">
         <Member Name="Current" Value="0"/>
         <Member Name="Superseded" Value="1"/>
+        <Member Name="Orphaned" Value="2"/>
       </EnumType>
 
       <EnumType Name="ArtifactBatchStatus">
@@ -172,7 +173,7 @@
           <Annotation Term="Paw.Vocab.Relation.DeletePolicy" String="none"/>
         </NavigationProperty>
         <Annotation Term="Paw.Vocab.StateMachine.States">
-          <Collection><String>Current</String><String>Superseded</String></Collection>
+          <Collection><String>Current</String><String>Superseded</String><String>Orphaned</String></Collection>
         </Annotation>
         <Annotation Term="Paw.Vocab.StateMachine.InitialState" String="Current"/>
         <Annotation Term="Paw.Vocab.ShardKey" String="file_id"/>
@@ -437,6 +438,14 @@
           <Collection><String>Current</String></Collection>
         </Annotation>
         <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Superseded"/>
+      </Action>
+      <Action Name="Orphan" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.FS.FileVersion"/>
+        <ReturnType Type="Paw.FS.FileVersion"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Current</String><String>Superseded</String></Collection>
+        </Annotation>
+        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Orphaned"/>
       </Action>
 
       <!-- ArtifactBatch Actions -->

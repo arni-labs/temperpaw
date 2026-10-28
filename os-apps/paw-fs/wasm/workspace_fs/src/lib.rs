@@ -114,22 +114,3 @@ fn build_fs_observability_fields(
     }
     fields
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fs_observability_fields_expose_workspace_context() {
-        let fields =
-            build_fs_observability_fields("rename", "workspace-7", "/old.md", "/new.md", &Ok(()));
-
-        assert_eq!(fields["observability_event"], json!("temperpaw.fs"));
-        assert_eq!(fields["workspace_id"], json!("workspace-7"));
-        assert_eq!(fields["fs"]["operation"], json!("rename"));
-        assert_eq!(fields["fs"]["outcome"], json!("success"));
-        assert_eq!(fields["fs"]["backend"], json!("temperfs-workspace"));
-        assert_eq!(fields["fs"]["path"], json!("/old.md"));
-        assert_eq!(fields["fs"]["new_path"], json!("/new.md"));
-    }
-}

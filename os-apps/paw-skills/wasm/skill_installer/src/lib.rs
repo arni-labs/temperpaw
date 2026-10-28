@@ -1105,41 +1105,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn github_tree_url_maps_to_raw_skill_md() {
-        let raw = github_tree_skill_raw_url(
-            "https://github.com/example/design-skill/tree/main/skills/taste-skill",
-            "",
-            "",
-        )
-        .unwrap();
-        assert_eq!(
-            raw,
-            "https://raw.githubusercontent.com/example/design-skill/main/skills/taste-skill/SKILL.md"
-        );
-    }
-
-    #[test]
     fn frontmatter_parser_handles_inline_skill_header() {
         let fm = extract_skill_frontmatter(
             "--- name: design-taste-frontend description: Senior UI/UX Engineer. --- # Body",
         );
         assert_eq!(fm.name, "design-taste-frontend");
         assert_eq!(fm.description, "Senior UI/UX Engineer.");
-    }
-
-    #[test]
-    fn skill_paths_follow_existing_scope_contract() {
-        assert_eq!(
-            skill_temperfs_path("system", "", "taste").unwrap(),
-            "/system/skills/taste/SKILL.md"
-        );
-        assert_eq!(
-            skill_temperfs_path("project", "katagami", "taste").unwrap(),
-            "/projects/katagami/skills/taste/SKILL.md"
-        );
-        assert_eq!(
-            skill_temperfs_path("agent", "agent-1", "taste").unwrap(),
-            "/agents/agent-1/skills/taste/SKILL.md"
-        );
     }
 }

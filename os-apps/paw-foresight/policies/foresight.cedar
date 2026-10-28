@@ -287,7 +287,7 @@ permit(
 // Adjudicator sessions self-report judged verdicts; the module validates
 // them and alone owns Resolve/FlagForHuman (ADR-004 commitment 2). Mirrors
 // the CheckerVerdict permit: session principals may surface either as
-// agents or through the wasm-runtime relay.
+// agents or through the session self-report permits below.
 permit(
   principal,
   action == Action::"AdjudicationVerdict",
@@ -428,63 +428,118 @@ permit(
    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module)
 };
 
-// ── Session relay (v1 trust model) ─────────────────────────────
-// Entity actions dispatched from inside sessions arrive as the
-// wasm-runtime relay principal, not as the agent itself, so the
-// agent_type- and id-bound permits above cannot see them. Until the
-// dispatch context carries verifiable agent attributes end to end
-// (follow-up: bind RepairComplete/ChallengeComplete to the assigned
-// agent via context attrs), session self-reports are permitted at
-// the relay principal — the same de facto trust model the 0.1 engine
-// ran with. System-only transitions (scoring, classification,
-// publication, forecast lifecycle) remain closed: they are
-// dispatched by app WASM, never by sessions.
+// ── Session self-reports ─────────────────────────────────────
+// A session reports its results through the moves the kernel makes for
+// the caller that started it: a module's answer, a reaction or a timer
+// (`context.via` other than "request"), and the calls a session's tools
+// or this app's modules make (`context.module`). The caller's own direct
+// requests do not pass these permits. The relay principal
+// service:wasm-runtime keeps them until every deployment sends these
+// moves as the caller. System-only transitions (scoring, classification,
+// publication, forecast lifecycle) remain closed: they are dispatched by
+// app WASM, never by sessions.
 
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"SeedComplete", Action::"EndpointsSampled", Action::"DwellersCast", Action::"Fail"],
   resource is World
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 // The endpoint writer self-reports BundleWritten through the relay (ADR-006);
 // the decomposer self-reports DecompositionComplete. SubmitForRepair and
 // ReSteer are NOT here — the diversity gate (system) dispatches them, never a
 // session.
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"BundleWritten", Action::"DecompositionComplete", Action::"Fail"],
   resource is Endpoint
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 // The repairer's drift-constrained amendment channel (ADR-004): AmendText
 // carries the diff; the deformation flag prices it. Settle/Reprice/
 // MarkUnreachable stay system-only — sessions never decide verdicts.
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action == Action::"AmendText",
   resource is Claim
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"RepairComplete", Action::"ChallengeComplete", Action::"Fail"],
   resource is Path
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"SubmitForCheck", Action::"CheckerVerdict", Action::"Reject"],
   resource is Artifact
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"Confirm", Action::"UpdateEdges", Action::"AdjudicationVerdict"],
   resource is EventNode
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};
 
 permit(
-  principal == Agent::"service:wasm-runtime",
+  principal,
   action in [Action::"RecordTraversal", Action::"RecordContradiction"],
   resource is Dweller
-);
+) when {
+  principal == Agent::"service:wasm-runtime" ||
+  (context has via && context.via != "request") ||
+  (context has module &&
+   ["monty_repl", "seed_world", "sample_endpoints", "decompose_endpoint",
+    "spawn_repairers", "spawn_adversaries", "aggregate_costs", "evidence_ingest",
+    "register_forecasts", "render_artifacts", "consistency_gate",
+    "grade_hindcast", "animate_dwellers", "adjudicate_nodes"].contains(context.module))
+};

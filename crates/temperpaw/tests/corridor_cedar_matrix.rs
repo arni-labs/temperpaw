@@ -26,6 +26,14 @@ fn ctx(id: &str, agent_type: &str) -> SecurityContext {
     SecurityContext::from_resolved_identity(id, agent_type, None)
 }
 
+/// A member whose move the kernel makes for them, described by the cause
+/// the kernel records.
+fn made_for_member(cause: serde_json::Value) -> SecurityContext {
+    let mut ctx = ctx("member-1", "human");
+    ctx.cause = Some(serde_json::from_value(cause).expect("a move cause"));
+    ctx
+}
+
 fn attrs(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_json::Value> {
     pairs
         .iter()
@@ -403,5 +411,70 @@ fn legacy_entity_types_are_retired_read_only_except_for_system() {
                 .is_allowed(),
             "system retains {entity} mutation for rollback symmetry"
         );
+    }
+}
+
+#[test]
+fn session_self_reports_ride_moves_the_kernel_makes_for_the_caller() {
+    let engine = engine();
+    let claim = attrs(&[("id", serde_json::json!("c-1"))]);
+    let endpoint = attrs(&[("id", serde_json::json!("e-1"))]);
+    let hop = serde_json::json!({
+        "rule": "Endpoint:Decompose:decompose_endpoint",
+        "action": "Decompose",
+        "entity_type": "Endpoint",
+        "entity_id": "e-1"
+    });
+
+    let request = ctx("member-1", "human");
+    assert!(
+        !engine
+            .authorize(&request, "AmendText", "Claim", &claim)
+            .is_allowed()
+    );
+    assert!(
+        !engine
+            .authorize(&request, "DecompositionComplete", "Endpoint", &endpoint)
+            .is_allowed()
+    );
+
+    let mut tool_call = ctx("member-1", "human");
+    tool_call
+        .context_attrs
+        .insert("module".into(), serde_json::json!("monty_repl"));
+    let mut other_module = ctx("member-1", "human");
+    other_module
+        .context_attrs
+        .insert("module".into(), serde_json::json!("some_other_module"));
+    assert!(
+        !engine
+            .authorize(&other_module, "AmendText", "Claim", &claim)
+            .is_allowed()
+    );
+
+    for made in [
+        made_for_member(serde_json::json!({ "answer": hop, "depth": 1 })),
+        made_for_member(serde_json::json!({ "reaction": hop, "depth": 1 })),
+        made_for_member(serde_json::json!({ "depth": 0, "timer": { "armed_by": "member-1" } })),
+        tool_call,
+    ] {
+        assert!(
+            engine
+                .authorize(&made, "AmendText", "Claim", &claim)
+                .is_allowed()
+        );
+        assert!(
+            engine
+                .authorize(&made, "DecompositionComplete", "Endpoint", &endpoint)
+                .is_allowed()
+        );
+        for verdict in ["Settle", "Reprice", "MarkUnreachable", "RouteSettled"] {
+            assert!(
+                !engine
+                    .authorize(&made, verdict, "Claim", &claim)
+                    .is_allowed(),
+                "sessions must never dispatch Claim.{verdict}"
+            );
+        }
     }
 }

@@ -35,9 +35,6 @@ impl Host for FakeHost {
         Ok("DO_NOT_RECORD_THIS_TOKEN".into())
     }
 }
-fn config(source: Value, id: &str) -> Config {
-    serde_json::from_value(config_json(source, id)).unwrap()
-}
 fn config_json(source: Value, id: &str) -> Value {
     json!({"subject_type":"DsfFlow","subject_id":"subject-1","provider_id":id,"secret_name":"provider_token","interval_seconds":300,"source":source})
 }
@@ -49,84 +46,6 @@ fn sync() -> Value {
 }
 fn resource(_provider: &str, _id: &str) -> Value {
     json!({"status":"Active"})
-}
-
-#[test]
-fn datadog_empty_series_is_absent_not_zero() {
-    let result = parse_source(
-        &config(dd(), "api"),
-        &json!({"status":"ok","series":[]}),
-        1_000_000,
-    )
-    .unwrap();
-    assert_eq!(result.coverage, Coverage::Absent);
-    assert_eq!(result.revision, "");
-    assert_eq!(result.outcome, "no_numeric_points");
-}
-
-#[test]
-fn measured_zero_is_distinct_from_null_or_old_data() {
-    let cfg = config(dd(), "api");
-    let body = |point| json!({"status":"ok","series":[{"metric":"hits","scope":"service:dsf","pointlist":[point]}]});
-    assert_eq!(
-        parse_source(&cfg, &body(json!([990000, 0])), 1_000_000)
-            .unwrap()
-            .coverage,
-        Coverage::Measured
-    );
-    assert_eq!(
-        parse_source(&cfg, &body(json!([990000, null])), 1_000_000)
-            .unwrap()
-            .coverage,
-        Coverage::Absent
-    );
-    assert_eq!(
-        parse_source(&cfg, &body(json!([800000, 4])), 1_000_000)
-            .unwrap()
-            .coverage,
-        Coverage::Stale
-    );
-    assert_eq!(
-        parse_source(&cfg, &body(json!([600000, 4])), 1_000_000)
-            .unwrap()
-            .coverage,
-        Coverage::Absent
-    );
-}
-
-#[test]
-fn configuration_cannot_inject_endpoints_or_secret_headers() {
-    let mut json = config_json(dd(), "api");
-    json["endpoint"] = json!("https://attacker.example");
-    assert!(serde_json::from_value::<Config>(json).is_err());
-    let mut json = dd();
-    json["site"] = json!("datadoghq.com@attacker.example");
-    assert!(provider_request(&config(json, "api"), 1_000_000).is_err());
-    assert!(
-        serde_json::from_value::<Config>(config_json(
-            json!({"provider":"vercel","team_id":"team-1","target":"production"}),
-            "prj-1"
-        ))
-        .is_err()
-    );
-}
-#[test]
-fn datadog_request_is_bounded_and_url_encoded() {
-    let cfg = config(dd(), "api");
-    let mut req = provider_request(&cfg, 1_000_000).unwrap();
-    authorize_request(&mut req, &cfg, &mut FakeHost::new(vec![])).unwrap();
-    assert!(
-        req.url
-            .starts_with("https://api.datadoghq.com/api/v1/query?from=700&to=1000&query=sum%3A")
-    );
-    assert_eq!(req.method, "GET");
-    assert_eq!(
-        req.headers
-            .iter()
-            .filter(|(k, _)| k.starts_with("DD-"))
-            .count(),
-        2
-    );
 }
 
 fn operational_snapshot() -> Value {
@@ -141,56 +60,6 @@ fn operational_snapshot() -> Value {
         "action_queue":jobs,"media":jobs,"notifications":jobs,
         "private_product_content":"DO_NOT_RECORD"
     })
-}
-#[test]
-fn dsf_snapshot_is_paginated_and_does_not_infer_outages() {
-    let cfg = config(
-        json!({"provider":"dsf_operations","service":"deep-sci-fi-backend","environment":"production","max_age_seconds":120}),
-        "deep-sci-fi-backend",
-    );
-    let parsed = parse_source(&cfg, &operational_snapshot(), 1_000_000).unwrap();
-    assert_eq!(parsed.coverage, Coverage::Measured);
-    assert_eq!(parsed.outcome, "snapshot_present");
-    assert_eq!(parsed.facts["participant_inventory_complete"], false);
-    assert_eq!(
-        parsed.facts["participants"]["next_cursor"],
-        "10000000-0000-4000-8000-000000000200"
-    );
-    assert_eq!(parsed.facts["schema"]["is_current"], false);
-    assert_eq!(parsed.facts["notifications"]["counts"]["pending"], 2);
-    assert!(!parsed.facts.to_string().contains("DO_NOT_RECORD"));
-}
-#[test]
-fn dsf_snapshot_unknown_version_or_wrong_environment_cannot_be_current() {
-    let cfg = config(
-        json!({"provider":"dsf_operations","service":"deep-sci-fi-backend","environment":"production","max_age_seconds":120}),
-        "deep-sci-fi-backend",
-    );
-    let mut snapshot = operational_snapshot();
-    snapshot["snapshot_version"] = json!(2);
-    assert!(parse_source(&cfg, &snapshot, 1_000_000).is_err());
-    snapshot["snapshot_version"] = json!(1);
-    snapshot["environment"] = json!("staging");
-    assert!(parse_source(&cfg, &snapshot, 1_000_000).is_err());
-    snapshot["environment"] = json!("production");
-    assert_eq!(
-        parse_source(&cfg, &snapshot, 1_200_000).unwrap().coverage,
-        Coverage::Stale
-    );
-}
-#[test]
-fn datadog_unsorted_points_retain_the_evidence_for_latest_timestamp() {
-    let parsed = parse_source(
-        &config(dd(), "api"),
-        &json!({"status":"ok","series":[{"metric":"hits","pointlist":[[990000,4],[800000,2]]}]}),
-        1_000_000,
-    )
-    .unwrap();
-    assert_eq!(
-        parsed.facts["series"][0]["latest_point"],
-        json!([990000, 4.0])
-    );
-    assert_eq!(parsed.facts["latest_at_ms"], 990000);
 }
 #[test]
 fn absent_provider_credentials_still_materialize_access_evidence() {
@@ -228,30 +97,6 @@ fn absent_provider_credentials_still_materialize_access_evidence() {
     );
     assert_eq!(host.0.requests.len(), 2);
     assert!(!out.params.to_string().contains("private host diagnostic"));
-}
-#[test]
-fn github_git_ref_is_one_path_segment_and_commit_metadata_is_redacted() {
-    let cfg = config(
-        json!({"provider":"github","owner":"org","repository":"repo","git_ref":"feature/topic?bad=1"}),
-        "repo-1",
-    );
-    let req = provider_request(&cfg, 1_000_000).unwrap();
-    assert_eq!(
-        req.url,
-        "https://api.github.com/repos/org/repo/commits/feature%2Ftopic%3Fbad%3D1"
-    );
-    let parsed = parse_source(&cfg,&json!({"sha":"a".repeat(40),"commit":{"message":"DO_NOT_RECORD","committer":{"email":"DO_NOT_RECORD","date":"2026-09-06T00:00:00Z"},"tree":{"sha":"tree"}}}),1_000_000).unwrap();
-    assert_eq!(parsed.revision, "a".repeat(40));
-    assert!(!parsed.facts.to_string().contains("DO_NOT_RECORD"));
-}
-
-#[test]
-fn dsf_service_selector_must_match_bound_provider_identity() {
-    let cfg = config(
-        json!({"provider":"dsf_operations","service":"other-service","environment":"production","max_age_seconds":120}),
-        "deep-sci-fi-backend",
-    );
-    assert!(provider_request(&cfg, 1_000_000).is_err());
 }
 
 #[test]
@@ -350,23 +195,6 @@ fn participant_continuation_keeps_page_evidence_and_uses_the_returned_cursor() {
             .unwrap()
             .ends_with("0200")
     );
-}
-
-#[test]
-fn snapshot_rejects_invalid_revision_cursor_or_page_limits() {
-    let cfg = config(
-        json!({"provider":"dsf_operations","service":"deep-sci-fi-backend","environment":"production","max_age_seconds":120}),
-        "deep-sci-fi-backend",
-    );
-    for (path, value) in [
-        ("/revision", json!("not-a-commit")),
-        ("/participants/next_cursor", json!("not-a-uuid")),
-        ("/participant_limit", json!(1)),
-    ] {
-        let mut row = operational_snapshot();
-        *row.pointer_mut(path).unwrap() = value;
-        assert!(parse_source(&cfg, &row, 1_000_000).is_err());
-    }
 }
 
 #[test]

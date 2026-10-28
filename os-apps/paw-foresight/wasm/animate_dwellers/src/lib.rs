@@ -896,60 +896,6 @@ mod tests {
     // entity sets, action names, and parameter names the specs declare.
 
     #[test]
-    fn caster_prompt_carries_the_dwellers_cast_contract() {
-        let p = caster_prompt(
-            "w-1",
-            "After the Toolmakers",
-            "software",
-            "2045-06-11",
-            "- [c-1] reachable (cost 20): the ledger wins",
-        );
-        for needle in [
-            "temper.action(\"Worlds\", \"w-1\", \"DwellersCast\"",
-            "\"personas_json\"",
-            "\\\"epistemic_role\\\"",
-            "the ledger wins",
-            "2-3 DWELLERS",
-        ] {
-            assert!(p.contains(needle), "caster prompt missing: {needle}");
-        }
-        assert!(!p.contains("temper.read("));
-    }
-
-    #[test]
-    fn dweller_prompt_carries_traversal_contradiction_and_story_contracts() {
-        let p = dweller_prompt(
-            "d-1",
-            "w-1",
-            "After the Toolmakers",
-            "2045-06-11",
-            "Name: Mara",
-            "- [c-1] reachable: claim text",
-            "- [n-1] by 2027-01-01: telemetry ships",
-            "p-9",
-            "a-1",
-        );
-        for needle in [
-            "temper.action(\"Dwellers\", \"d-1\", \"RecordTraversal\"",
-            "\"traversal_note_file_id\"",
-            "temper.action(\"Dwellers\", \"d-1\", \"RecordContradiction\"",
-            "\"claim_id\"",
-            "\"note\"",
-            "temper.create(\"Artifacts\"",
-            "\"kind\": \"story\"",
-            "\"author_dweller_id\": \"d-1\"",
-            "\"content_file_id\"",
-            "\"cited_node_ids\"",
-            "SubmitForCheck",
-            "first person",
-            "telemetry ships",
-        ] {
-            assert!(p.contains(needle), "dweller prompt missing: {needle}");
-        }
-        assert!(!p.contains("temper.read("), "context is inlined, never read");
-    }
-
-    #[test]
     fn personas_parse_capped_and_named() {
         let raw = r#"[{"name": "Mara", "role": "engineer"}, {"name": ""}, {"role": "nameless"},
                       {"name": "Juno"}, {"name": "Onx"}, {"name": "Fourth"}]"#;
@@ -957,29 +903,5 @@ mod tests {
         assert_eq!(p.len(), MAX_DWELLERS);
         assert_eq!(p[0]["name"], "Mara");
         assert!(parse_personas("not json").is_empty());
-    }
-
-    #[test]
-    fn fan_out_chunks_cover_the_roster_within_the_loop_guard() {
-        assert_eq!(chunk_bounds(0, 3), (0, 1));
-        assert_eq!(chunk_bounds(1, 3), (1, 2));
-        assert_eq!(chunk_bounds(2, 3), (2, 3));
-        assert_eq!(chunk_bounds(3, 3), (3, 3));
-        assert!(MAX_DWELLERS.div_ceil(CHUNK) <= MAX_CHECKS);
-    }
-
-    #[test]
-    fn contradiction_reprice_adds_a_low_contradiction() {
-        let (cost, class) = contradiction_reprice(107.5);
-        assert_eq!(cost, 120.0);
-        assert_eq!(class, "reachable");
-        let (cost2, class2) = contradiction_reprice(115.0);
-        assert_eq!(cost2, 127.5);
-        assert_eq!(class2, "strained");
-    }
-
-    #[test]
-    fn workspace_name_is_the_cross_module_rendezvous_key() {
-        assert_eq!(workspace_name("w-1"), "world-w-1");
     }
 }

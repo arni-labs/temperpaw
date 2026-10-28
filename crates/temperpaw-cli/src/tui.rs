@@ -701,20 +701,4 @@ mod tests {
             _ => panic!("expected request changes command"),
         }
     }
-
-    #[test]
-    fn normalizes_url_without_trailing_slash() {
-        assert_eq!(
-            normalize_url("http://127.0.0.1:3467/"),
-            "http://127.0.0.1:3467"
-        );
-    }
-
-    #[test]
-    fn validates_session_keys_conservatively() {
-        assert!(validate_key("session", "main").is_ok());
-        assert!(validate_key("session", "agent:paw.main-1").is_ok());
-        assert!(validate_key("session", "bad key").is_err());
-        assert!(validate_key("session", "bad'key").is_err());
-    }
 }

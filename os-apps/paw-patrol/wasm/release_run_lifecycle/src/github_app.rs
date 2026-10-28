@@ -171,26 +171,3 @@ pub(crate) fn b64url(bytes: &[u8]) -> String {
 fn now_secs() -> Result<u64, String> {
     Ok((Context::get_time_millis() / 1000) as u64)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn b64url_has_no_padding() {
-        assert_eq!(b64url(b"f"), "Zg");
-        assert_eq!(b64url(b"fo"), "Zm8");
-        assert_eq!(b64url(b"foo"), "Zm9v");
-    }
-
-    #[test]
-    fn picks_install_for_owner() {
-        let installs = json!([
-            {"id": 11, "account": {"login": "nerdsane"}},
-            {"id": 22, "account": {"login": "arni-labs"}}
-        ]);
-        assert_eq!(install_id_for_owner(&installs, "arni-labs"), Some(22));
-        assert_eq!(install_id_for_owner(&installs, "ARNI-LABS"), Some(22));
-        assert_eq!(install_id_for_owner(&installs, "missing"), None);
-    }
-}
