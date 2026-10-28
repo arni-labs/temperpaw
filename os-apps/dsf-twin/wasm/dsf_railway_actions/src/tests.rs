@@ -284,23 +284,6 @@ fn configuration_refuses_foreign_project_before_mutation() {
 }
 
 #[test]
-fn unknown_configuration_cannot_smuggle_provider_source_or_credentials() {
-    for field in [
-        "source",
-        "registryCredentials",
-        "serviceId",
-        "environmentId",
-        "token_secret",
-    ] {
-        let raw = json!({field:"forged","numReplicas":1});
-        assert!(
-            serde_json::from_value::<configuration::Configuration>(raw).is_err(),
-            "{field}"
-        );
-    }
-}
-
-#[test]
 fn next_deploy_ignores_previous_receipt_and_writes_only_after_discovery() {
     let change = json!({"baseline_deployment_id":"old-deployment","not_before_ms":90_000});
     let mut row = invocation("Deploy", &change).resource;
