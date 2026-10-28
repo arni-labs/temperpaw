@@ -4018,6 +4018,20 @@ mod tests {
     }
 
     #[test]
+    fn interpret_web_query_entity_result_surfaces_recorded_errors() {
+        let err = interpret_web_query_entity_result(
+            "fetch",
+            &json!({
+                "status": "Failed",
+                "error": "missing exa_api_key",
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(err, "web_fetch: missing exa_api_key");
+    }
+
+    #[test]
     fn web_query_cache_lookup_path_escapes_single_quotes() {
         let path = web_query_cache_lookup_path("fetch", "", "https://example.com/that's-all");
 
@@ -4215,6 +4229,22 @@ mod tests {
                 tool_name: "temper.show_spec".to_string(),
                 kind: BatchableToolPlanKind::DirectGet {
                     path: "/observe/specs/Session".to_string(),
+                    unwrap_value_array: false,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn batchable_tool_plan_uses_tenant_scoped_decisions_path() {
+        let plan = batchable_tool_plan_from_code("temper.get_decisions()");
+
+        assert_eq!(
+            plan,
+            Some(BatchableToolPlan {
+                tool_name: "temper.get_decisions".to_string(),
+                kind: BatchableToolPlanKind::DirectGet {
+                    path: "/api/tenants/{tenant}/decisions?status=pending".to_string(),
                     unwrap_value_array: false,
                 },
             })
