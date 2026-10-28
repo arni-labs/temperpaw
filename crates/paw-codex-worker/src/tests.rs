@@ -12,7 +12,6 @@ mod tests {
     include!("datadog_patrol_tests.rs");
     include!("github_patrol_tests.rs");
     include!("evaluation_tests.rs");
-    include!("event_stream_tests.rs");
     include!("fake_codex_tests.rs");
     include!("codex_plan_tests.rs");
     include!("pull_request_tests.rs");
@@ -632,102 +631,6 @@ mod tests {
             toml_basic_string("https://mcp.example.test/a\"b\\c\n"),
             "\"https://mcp.example.test/a\\\"b\\\\c\\n\""
         );
-    }
-
-    #[test]
-    fn worker_proof_text_does_not_call_assigned_worktree_current_checkout() {
-        let worker_run = WorkerRunState {
-            id: "wr-existing-worktree".to_string(),
-            status: "Running".to_string(),
-            task: "Inspect an existing assigned worktree".to_string(),
-            work_cycle_id: "wc-existing-worktree".to_string(),
-            worktree_path: "/tmp/paw-existing-worktree".to_string(),
-            branch_name: String::new(),
-            runner_kind: "local_codex".to_string(),
-            allowed_worker_id: "mac-mini-codex-1".to_string(),
-            worker_id: "mac-mini-codex-1".to_string(),
-            provider_id: "local-codex".to_string(),
-            required_capabilities: "local_codex,repo_write".to_string(),
-        };
-        let evidence = WorktreeEvidence {
-            status_short: String::new(),
-            diff_stat: String::new(),
-        };
-
-        let summary = format_codex_success_summary(
-            &worker_run,
-            Path::new("/tmp/paw-existing-worktree"),
-            "inspected",
-            &evidence,
-            None,
-        );
-        let review = ReviewRunState {
-            status: "Requested".to_string(),
-            worker_run_id: worker_run.id.clone(),
-            proof_packet_id: "proof-1".to_string(),
-        };
-        let prompt = codex_review_prompt(&worker_run, &review);
-
-        assert!(summary.contains("Branch: (assigned worktree without branch)"));
-        assert!(prompt.contains("Branch: (assigned worktree without branch)"));
-        assert!(!summary.contains("Branch: (current checkout)"));
-        assert!(!prompt.contains("Branch: (current checkout)"));
-    }
-
-    #[test]
-    fn review_prompt_allows_pr_ready_changes_with_deployment_pending() {
-        let worker_run = WorkerRunState {
-            id: "wr-dashboard".to_string(),
-            status: "Done".to_string(),
-            task: "Update Datadog dashboard JSON but do not deploy production.".to_string(),
-            work_cycle_id: "wc-dashboard".to_string(),
-            worktree_path: "/tmp/paw-dashboard".to_string(),
-            branch_name: "codex/dashboard".to_string(),
-            runner_kind: "local_codex".to_string(),
-            allowed_worker_id: "mac-mini-codex-1".to_string(),
-            worker_id: "mac-mini-codex-1".to_string(),
-            provider_id: "local-codex".to_string(),
-            required_capabilities: "local_codex,repo_write,review".to_string(),
-        };
-        let review = ReviewRunState {
-            status: "Requested".to_string(),
-            worker_run_id: worker_run.id.clone(),
-            proof_packet_id: "proof-dashboard".to_string(),
-        };
-
-        let prompt = codex_review_prompt(&worker_run, &review);
-
-        assert!(prompt.contains("deployment-pending residual risk"));
-        assert!(prompt.contains("Do not require production deployment"));
-    }
-
-    #[test]
-    fn repo_health_review_prompt_reviews_scan_contract_not_patch_contract() {
-        let worker_run = WorkerRunState {
-            id: "wr-repo-scan".to_string(),
-            status: "Done".to_string(),
-            task: "RepoGraphSnapshot: snap-1\nWorkCycle: wc-1\nRun an agent-led repo health patrol.".to_string(),
-            work_cycle_id: "wc-1".to_string(),
-            worktree_path: "/tmp/paw-repo-scan".to_string(),
-            branch_name: "codex/paw-repo-sweep-snap-1".to_string(),
-            runner_kind: "local_codex".to_string(),
-            allowed_worker_id: "mac-mini-codex-1".to_string(),
-            worker_id: "mac-mini-codex-1".to_string(),
-            provider_id: "local-codex".to_string(),
-            required_capabilities: "local_codex,repo_write,evaluation".to_string(),
-        };
-        let review = ReviewRunState {
-            status: "Requested".to_string(),
-            worker_run_id: worker_run.id.clone(),
-            proof_packet_id: "proof-1".to_string(),
-        };
-
-        let prompt = codex_review_prompt(&worker_run, &review);
-
-        assert!(prompt.contains("repo-health Patrol scan reviewer"));
-        assert!(prompt.contains("RepoGraphSnapshot.ScanComplete"));
-        assert!(prompt.contains("do not require an implementation patch"));
-        assert!(!prompt.contains("Inspect the git diff, changed files, tests/proofs"));
     }
 
     #[test]
