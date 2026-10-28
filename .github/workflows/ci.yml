@@ -48,18 +48,63 @@ jobs:
           bash scripts/check-wasm-rsa-getrandom.sh
           cargo check --manifest-path os-apps/paw-patrol/wasm/release_run_lifecycle/Cargo.toml --target wasm32-unknown-unknown
 
-  # Heavy validation: every os-app WASM build, full tests, dashboard, executed
-  # smokes. Gates MERGES (push to main/release) and nightly - never PR
-  # iteration. (ARN-429)
-  full:
-    if: github.event_name != 'pull_request'
+  # Every Cargo workspace's tests, on every pull request and push. scripts/ci/rust_tests.py finds the workspaces on
+  # disk: the root one (crates/*) and every os-app module and reference crate, each a workspace of its own. The root
+  # tests load packaged os-app modules, so that job first builds every module the way a release does. Branch protection
+  # requires `tests`, which gathers the three. (Until 28 Oct 2026 only `full` ran Rust tests, after merge, and only for
+  # 13 of 73 workspaces that have tests: 40 of 53 pull requests in the month before landed with none run.)
+  tests-root:
+    name: cargo test (root workspace)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Every os-app module, built and packaged as a release builds it
+        run: |
+          python3 scripts/ci/build_os_app_modules.py
+          bash scripts/verify_route_message_wasm.sh
+      - name: cargo test, the root workspace
+        run: python3 scripts/ci/rust_tests.py root
+
+  tests-others:
+    name: cargo test (other workspaces ${{ matrix.part }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2]
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test, every other workspace in this part
+        run: python3 scripts/ci/rust_tests.py others ${{ matrix.part }}/2
+
+  tests:
+    needs: [tests-root, tests-others]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every cargo test job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null
+
+  # Dashboard build and executed smokes. Runs on merges (push to main/release) and nightly, never on pull requests.
+  # (ARN-429)
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: 22
@@ -71,47 +116,5 @@ jobs:
         run: |
           crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
           crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
-      - name: WASM build (os-apps)
-        run: |
-          set -e
-          for script in \
-            os-apps/paw-agent/wasm/build.sh \
-            os-apps/paw-channels/wasm/build.sh \
-            os-apps/paw-fs/wasm/artifact_batch_apply/build.sh \
-            os-apps/paw-fs/wasm/blob_adapter/build.sh \
-            os-apps/paw-fs/wasm/workspace_fs/build.sh \
-            os-apps/paw-ingest/wasm/build.sh \
-            os-apps/paw-managed-agents/wasm/build.sh \
-            os-apps/paw-media/wasm/build.sh \
-            os-apps/paw-foresight/wasm/build.sh \
-            os-apps/paw-skills/wasm/build.sh \
-            os-apps/paw-research/wasm/build.sh \
-            os-apps/paw-compute/wasm/build.sh \
-            os-apps/paw-patrol/wasm/build.sh \
-            os-apps/dsf-twin/wasm/build.sh; do
-            echo "=== Running $script ==="
-            (cd "$(dirname "$script")" && bash "$(basename "$script")")
-          done
-          bash scripts/verify_route_message_wasm.sh
-      - name: Cargo test
-        run: |
-          cargo test --locked -p temperpaw --quiet
-          cargo test --locked -p paw-codex-worker --quiet
-          cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-channels/wasm/route_message/Cargo.toml --quiet
-          # os-app WASM modules are their own workspaces, so `-p temperpaw` does
-          # not reach them. These five carry the OTS trajectory contract — the
-          # emitter that reads the record, the two writers that produce it, and
-          # the gate that fails when the temper pin gains the JCS fields. A gate
-          # nothing runs is not a gate (ADR-0035 section 17).
-          cargo test --manifest-path os-apps/paw-agent/wasm/emit_ots_trajectory/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-agent/wasm/provider_response_applier/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-agent/wasm/wasm-helpers/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_start/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-compute/wasm/computer_copy_poll/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-agent/wasm/openai-chat-wire/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-agent/wasm/monty_repl/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-media/wasm/openrouter_image_generate/Cargo.toml --quiet
-          cargo test --manifest-path os-apps/paw-agent/wasm/provider_auth_gate/Cargo.toml --quiet
       - name: Dashboard build
         run: cd dashboard && npm run build
