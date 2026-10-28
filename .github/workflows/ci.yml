@@ -10,6 +10,12 @@ on:
   schedule:
     - cron: "0 7 * * *"   # nightly full validation
 
+# A new push to a pull request cancels its older run. Every push to main runs to the end, because it saves the caches
+# pull requests restore.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Fast lane: what a PR waits on. Target <5 min. (ARN-429)
   checks:
