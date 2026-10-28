@@ -1005,7 +1005,7 @@
     "name": "[Temper] WASM Invocation Duration p95 Regression",
     "type": "metric alert",
     "query": "avg(last_30m):p95:temper_wasm_invocation_duration_ms{service:temperpaw,!trigger_action:upgrade} by {trigger_action} * clamp_max(count:temper_wasm_invocation_duration_ms{service:temperpaw,!trigger_action:upgrade} by {trigger_action}.as_count() / 3, 1) > 5000",
-    "message": "WASM invocation p95 is above 5s for at least one trigger action. Check module execution, host calls, epoch drift, and integration timeout fallbacks before optimizing callers.\n\nUpgrade is left out: KatagamiAppInstall.Upgrade runs once per installed app in a kernel roll, and each call waits for that app to restart in its owner's Temper (23 Oct 08:00 to 08:30: 38 calls, slowest 13.8 s). That wait is the restart, not slow module code, and the roll has its own checks.\n\n@slack-temperpaw-alerts",
+    "message": "WASM invocation p95 is above 5s for at least one trigger action. Check module execution, host calls, epoch drift, and integration timeout fallbacks before optimizing callers.\n\nUpgrade is left out: KatagamiAppInstall.Upgrade runs once per installed app in a kernel roll, and each call waits for that app to restart in its owner's Temper (23 Oct 08:00 to 08:30: 38 calls, slowest 13.8 s). That wait is the restart, not slow module code, and the roll has its own checks.\n\nA trigger action with no invocations for an hour resolves (timeout_h 1: its 30-minute window has then been empty for another 30 minutes). Most of these groups run a few times a day, and without it a group that stops keeps its last state and renotifies every 2 hours.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1016,14 +1016,15 @@
         "warning": 2500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] WASM Host HTTP Duration p95 Regression",
     "type": "metric alert",
-    "query": "avg(last_30m):p95:temper_wasm_host_http_duration_ms{service:temperpaw} by {call_kind,status_code_class} * clamp_max(count:temper_wasm_host_http_duration_ms{service:temperpaw} by {call_kind,status_code_class}.as_count() / 3, 1) > 5000",
-    "message": "WASM host HTTP p95 is above 5s. Separate remote dependency latency from guest execution before changing actor or projection code.\n\n@slack-temperpaw-alerts",
+    "query": "avg(last_30m):p95:temper_wasm_host_http_duration_ms{service:temperpaw,!status_code_class:5xx} by {call_kind,status_code_class} * clamp_max(count:temper_wasm_host_http_duration_ms{service:temperpaw,!status_code_class:5xx} by {call_kind,status_code_class}.as_count() / 3, 1) > 5000",
+    "message": "WASM host HTTP p95 is above 5s. Separate remote dependency latency from guest execution before changing actor or projection code.\n\n5xx answers are left out: their time is how long a gateway waited before giving up on a backend that was down, not the latency of a dependency that answered, and [TemperPaw] Sandbox Host HTTP Error Spike counts them. On 28 Oct, 72 webhooks-module POSTs to the on-call tracker app's Tensorlake sandbox each got a 503 after 9.9 s while that app crash-looped (04:50 to 05:25 UTC); the error spike monitor fired and recovered, while this one stayed in Alert.\n\nA group with no data for an hour (timeout_h 1: its 30-minute window has then been empty for another 30 minutes) resolves, since it has no calls left to be slow. Without it Datadog keeps the last state: the 5xx group above renotified every 2 hours until 13:33 UTC with no call after 05:25.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1034,7 +1035,8 @@
         "warning": 2500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
