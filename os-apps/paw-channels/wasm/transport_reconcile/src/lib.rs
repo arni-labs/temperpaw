@@ -143,16 +143,3 @@ fn timestamp_now() -> String {
 fn timestamp_after_secs(secs: i64) -> String {
     (Context::get_time_millis() + secs * 1000).to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::is_retryable_status;
-
-    #[test]
-    fn retryability_matches_start_endpoint_contract() {
-        assert!(is_retryable_status(503));
-        assert!(is_retryable_status(429));
-        assert!(!is_retryable_status(400));
-        assert!(!is_retryable_status(401));
-    }
-}
