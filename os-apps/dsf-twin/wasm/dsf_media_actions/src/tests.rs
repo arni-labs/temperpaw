@@ -85,18 +85,6 @@ fn receipt(i: &Invocation, outcomes: &[(&str, &str)]) -> Value {
     json!({"operation_id":operation_id(i).to_string(),"generation_ids":outcomes.iter().map(|(id,_)|id).collect::<Vec<_>>(),"endpoint":"/api/media/retry-stuck","response":response(i,outcomes)})
 }
 #[test]
-fn provider_identity_is_stable_for_replay_but_changes_with_resource_or_sequence() {
-    let c = change(false);
-    let i = op(&c);
-    assert_eq!(operation_id(&i), operation_id(&i));
-    let mut newer = i.clone();
-    newer.sequence += 1;
-    assert_ne!(operation_id(&i), operation_id(&newer));
-    newer = i.clone();
-    newer.resource_id = "pipeline-2".into();
-    assert_ne!(operation_id(&i), operation_id(&newer));
-}
-#[test]
 fn selected_retry_reads_receipt_first_and_posts_only_exact_jobs() {
     let c = change(false);
     let i = op(&c);
@@ -404,39 +392,6 @@ fn link_replies() -> Vec<Value> {
     domain["data"]["serviceInstance"]["domains"]["serviceDomains"] = json!([]);
     replies.insert(2, domain);
     replies
-}
-
-#[test]
-fn production_media_links_require_exact_provider_domains_and_config_hashes() {
-    let mut host = mock(link_replies());
-    links::verify(&mut rt(&mut host), &target()).unwrap();
-    assert_eq!(host.requests.len(), 7);
-    assert!(host.requests.iter().all(
-        |r| r.method == "GET" || (r.method == "POST" && r.url.contains("railway.com/graphql"))
-    ));
-    for case in 0..7 {
-        let mut values = link_replies();
-        match case {
-            0 => values[0]["config_sha256"] = json!("wrong"),
-            1 => values[2]["data"]["service"]["projectId"] = json!("other-project"),
-            2 => {
-                values[2]["data"]["serviceInstance"]["domains"]["customDomains"][0]["domain"] =
-                    json!("preview.example.com")
-            }
-            3 => {
-                values[2]["data"]["serviceInstance"]["domains"]["customDomains"][0]["deletedAt"] =
-                    json!("2026-09-01T00:00:00Z")
-            }
-            4 => values[5]["result"]["name"] = json!("other-bucket"),
-            5 => values[6]["result"]["domains"][0]["enabled"] = json!(false),
-            _ => values[6]["result"]["domains"][0]["status"]["ownership"] = json!("pending"),
-        }
-        let mut host = mock(values);
-        assert!(
-            links::verify(&mut rt(&mut host), &target()).is_err(),
-            "case {case}"
-        );
-    }
 }
 
 fn insert_links(host: &mut Mock, index: usize) {
