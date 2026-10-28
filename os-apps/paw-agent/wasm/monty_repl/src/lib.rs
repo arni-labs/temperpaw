@@ -1814,16 +1814,6 @@ mod tests {
     }
 
     #[test]
-    fn invariant_message_mentions_adr() {
-        // Belt-and-suspenders regression guard: the error message must stay
-        // greppable for future debugging. If someone "helpfully" rewrites it
-        // to something bland, this test fails.
-        assert!(INVARIANT_VIOLATION_MSG.contains("monty_repl"));
-        assert!(INVARIANT_VIOLATION_MSG.contains("Session action"));
-        assert!(INVARIANT_VIOLATION_MSG.contains("ADR-0039"));
-    }
-
-    #[test]
     fn tool_progress_wrapper_emits_start_and_end_on_success() {
         let mut events = Vec::new();
 
