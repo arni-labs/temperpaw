@@ -14,6 +14,7 @@
       <Term Name="Agent.Hint" Type="Edm.String" AppliesTo="Action Function EntityType"/>
       <Term Name="ShardKey" Type="Edm.String" AppliesTo="EntityType"/>
       <Term Name="AuthZ.CedarPolicy" Type="Edm.String" AppliesTo="EntityType Action Function"/>
+      <Term Name="Relation.DeletePolicy" Type="Edm.String" AppliesTo="NavigationProperty"/>
     </Schema>
 
     <Schema Namespace="Paw.FS" xmlns="http://docs.oasis-open.org/odata/ns/edm">
@@ -41,6 +42,7 @@
       <EnumType Name="FileVersionStatus">
         <Member Name="Current" Value="0"/>
         <Member Name="Superseded" Value="1"/>
+        <Member Name="Orphaned" Value="2"/>
       </EnumType>
 
       <EnumType Name="ArtifactBatchStatus">
@@ -127,8 +129,11 @@
         <NavigationProperty Name="Workspace" Type="Paw.FS.Workspace">
           <ReferentialConstraint Property="WorkspaceId" ReferencedProperty="Id"/>
         </NavigationProperty>
+        <!-- A pointer to the newest version, not ownership: deleting a version
+             leaves it as it is. -->
         <NavigationProperty Name="LastVersion" Type="Paw.FS.FileVersion">
           <ReferentialConstraint Property="LastVersionId" ReferencedProperty="Id"/>
+          <Annotation Term="Paw.Vocab.Relation.DeletePolicy" String="none"/>
         </NavigationProperty>
         <NavigationProperty Name="Versions" Type="Collection(Paw.FS.FileVersion)"/>
         <Annotation Term="Paw.Vocab.StateMachine.States">
@@ -146,7 +151,7 @@
       <EntityType Name="FileVersion">
         <Key><PropertyRef Name="Id"/></Key>
         <Property Name="Id" Type="Edm.Guid" Nullable="false"/>
-        <Property Name="FileId" Type="Edm.Guid" Nullable="false"/>
+        <Property Name="file_id" Type="Edm.Guid" Nullable="false"/>
         <Property Name="Status" Type="Paw.FS.FileVersionStatus" Nullable="false"/>
         <Property Name="VersionNumber" Type="Edm.Int32" Nullable="false"/>
         <Property Name="ContentHash" Type="Edm.String" Nullable="false"/>
@@ -155,17 +160,23 @@
         <Property Name="PreviousVersionId" Type="Edm.Guid"/>
         <Property Name="CreatedBy" Type="Edm.String"/>
         <Property Name="CreatedAt" Type="Edm.DateTimeOffset" Nullable="false"/>
+        <!-- A version belongs to its File: deleting the File deletes its versions.
+             file_id is the field FileVersion stores. -->
         <NavigationProperty Name="File" Type="Paw.FS.File">
-          <ReferentialConstraint Property="FileId" ReferencedProperty="Id"/>
+          <ReferentialConstraint Property="file_id" ReferencedProperty="Id"/>
+          <Annotation Term="Paw.Vocab.Relation.DeletePolicy" String="cascade"/>
         </NavigationProperty>
+        <!-- The version before this one, in the same File. The versions are
+             deleted with their File, so this link needs no delete rule. -->
         <NavigationProperty Name="PreviousVersion" Type="Paw.FS.FileVersion">
           <ReferentialConstraint Property="PreviousVersionId" ReferencedProperty="Id"/>
+          <Annotation Term="Paw.Vocab.Relation.DeletePolicy" String="none"/>
         </NavigationProperty>
         <Annotation Term="Paw.Vocab.StateMachine.States">
-          <Collection><String>Current</String><String>Superseded</String></Collection>
+          <Collection><String>Current</String><String>Superseded</String><String>Orphaned</String></Collection>
         </Annotation>
         <Annotation Term="Paw.Vocab.StateMachine.InitialState" String="Current"/>
-        <Annotation Term="Paw.Vocab.ShardKey" String="FileId"/>
+        <Annotation Term="Paw.Vocab.ShardKey" String="file_id"/>
         <Annotation Term="Paw.Vocab.AuthZ.CedarPolicy" String="policies/file_version.cedar"/>
       </EntityType>
 
@@ -427,6 +438,14 @@
           <Collection><String>Current</String></Collection>
         </Annotation>
         <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Superseded"/>
+      </Action>
+      <Action Name="Orphan" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.FS.FileVersion"/>
+        <ReturnType Type="Paw.FS.FileVersion"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Current</String><String>Superseded</String></Collection>
+        </Annotation>
+        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Orphaned"/>
       </Action>
 
       <!-- ArtifactBatch Actions -->

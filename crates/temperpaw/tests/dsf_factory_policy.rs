@@ -27,6 +27,13 @@ fn allowed(engine: &AuthzEngine, ctx: &SecurityContext, entity: &str, action: &s
 fn service(name: &str) -> SecurityContext {
     AgentContext::for_service(name).security_ctx.unwrap()
 }
+/// A member whose move the kernel makes for them (a module's answer, a
+/// reaction or a timer), described by the cause the kernel records.
+fn made_for_member(cause: Value) -> SecurityContext {
+    let mut ctx = SecurityContext::from_resolved_identity("member", "dsf-factory", None);
+    ctx.cause = Some(serde_json::from_value(cause).expect("a move cause"));
+    ctx
+}
 #[test]
 fn exhausted_verification_recovery_is_an_operator_command_not_a_callback() {
     let engine = policy("");
@@ -368,4 +375,58 @@ fn model_due_checks_and_deferred_callbacks_are_runtime_only() {
             action
         ));
     }
+}
+
+#[test]
+fn moves_the_kernel_makes_for_a_member_land_callbacks_but_their_requests_do_not() {
+    let engine = policy("");
+    let hop = json!({
+        "rule": "DsfVercelProject:Deploy:deploy",
+        "action": "Deploy",
+        "entity_type": "DsfVercelProject",
+        "entity_id": "resource-1"
+    });
+    for cause in [
+        json!({ "answer": hop, "depth": 1 }),
+        json!({ "reaction": hop, "depth": 1 }),
+        json!({ "depth": 0, "timer": { "armed_by": "member" } }),
+    ] {
+        let ctx = made_for_member(cause.clone());
+        assert!(
+            allowed(
+                &engine,
+                &ctx,
+                "DsfVercelProject",
+                "DeployVerificationSucceeded"
+            ),
+            "{cause}"
+        );
+        assert!(
+            allowed(&engine, &ctx, "DsfVercelProject", "RefreshObservations"),
+            "{cause}"
+        );
+        assert!(
+            allowed(&engine, &ctx, "DsfObservation", "RecordMeasured"),
+            "{cause}"
+        );
+    }
+    // A module's host call is not one of those moves: the explicit forbids
+    // hold even under an unrelated permit.
+    let engine = policy("permit(principal, action, resource);");
+    let mut module_call = SecurityContext::from_resolved_identity("member", "dsf-factory", None);
+    module_call
+        .context_attrs
+        .insert("module".into(), json!("dsf_vercel_actions"));
+    assert!(!allowed(
+        &engine,
+        &module_call,
+        "DsfVercelProject",
+        "DeployVerificationSucceeded"
+    ));
+    assert!(!allowed(
+        &engine,
+        &module_call,
+        "DsfObservation",
+        "RecordMeasured"
+    ));
 }

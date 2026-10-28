@@ -219,6 +219,7 @@ fn only_the_verified_operator_may_record_a_jobs_last_session() {
         },
         context_attrs: HashMap::new(),
         correlation_id: "cron-job-runs-test".to_string(),
+        cause: None,
     };
     let operator = SecurityContext::from_resolved_identity("operator", "operator", None);
     let refused = [
