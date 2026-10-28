@@ -172,6 +172,8 @@ mod tests {
             entity_type: "TransportConnection".to_string(),
             entity_id: "transport-discord".to_string(),
             trigger_action: "Start".to_string(),
+            wasm_module: "transport_reconcile".to_string(),
+            http_request: None,
         };
 
         assert_eq!(
