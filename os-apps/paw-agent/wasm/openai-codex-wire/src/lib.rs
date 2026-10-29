@@ -94,9 +94,17 @@ pub fn is_openai_codex_token_expired_error(status: u16, body: &str) -> bool {
     if status != 401 {
         return false;
     }
+    // A revoked or invalidated token goes through the same auth gate as an
+    // expired one, instead of failing the turn as a plain API error.
     let lower = body.to_ascii_lowercase();
     lower.contains("token_expired")
+        || lower.contains("token_invalidated")
+        || lower.contains("token_revoked")
         || lower.contains("authentication token is expired")
+        || lower.contains("authentication token has been invalidated")
+        || lower.contains("invalidated oauth token")
+        || lower.contains("token has been invalidated")
+        || lower.contains("token has been revoked")
         || lower.contains("token is expired")
 }
 
@@ -214,5 +222,21 @@ mod tests {
         assert!(is_openai_codex_token_expired_error(401, body));
         assert!(!is_openai_codex_token_expired_error(500, body));
         assert!(!is_openai_codex_token_expired_error(401, "{}"));
+    }
+
+    #[test]
+    fn codex_revoked_or_invalidated_token_routes_to_auth_recovery() {
+        // The 401 body OpenAI Codex returned in production on 2 and 3 June.
+        let revoked = r#"{"error":{"message":"Encountered invalidated oauth token for user, failing request","type":null,"code":"token_revoked","param":null},"status":401}"#;
+        // The same refusal under the token_invalidated code.
+        let invalidated = r#"{"error":{"message":"Your authentication token has been invalidated.","code":"token_invalidated"}}"#;
+
+        assert!(is_openai_codex_token_expired_error(401, revoked));
+        assert!(is_openai_codex_token_expired_error(401, invalidated));
+        assert!(!is_openai_codex_token_expired_error(403, revoked));
+        assert!(!is_openai_codex_token_expired_error(
+            401,
+            r#"{"error":{"message":"Missing scope","code":"insufficient_scope"}}"#
+        ));
     }
 }
