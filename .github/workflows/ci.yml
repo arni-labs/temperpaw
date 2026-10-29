@@ -22,8 +22,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: WASM artifact packaging regression
         run: bash scripts/test-wasm-build-artifacts.sh
+      - name: Channel continuation regression
+        run: |
+          python3 -m venv "$RUNNER_TEMP/route-message-tests"
+          "$RUNNER_TEMP/route-message-tests/bin/pip" install wasmtime==38.0.0
+          source os-apps/wasm-build-env.sh
+          wasm_path="$(temperpaw_build_wasm "$PWD/os-apps/paw-channels/wasm/route_message" wasm32-wasip1)"
+          "$RUNNER_TEMP/route-message-tests/bin/python" scripts/test-route-message-continuation.py "$wasm_path"
       - name: Release script regressions
         run: python3 scripts/test_railway_release.py
+      - name: Datadog monitors file
+        run: python3 scripts/check_monitors.py
       - name: Cargo fmt
         run: cargo fmt --all -- --check
       - name: Cargo clippy
@@ -89,6 +98,7 @@ jobs:
           cargo test --locked -p temperpaw --quiet
           cargo test --locked -p paw-codex-worker --quiet
           cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet
+          cargo test --manifest-path os-apps/paw-channels/wasm/route_message/Cargo.toml --quiet
           # os-app WASM modules are their own workspaces, so `-p temperpaw` does
           # not reach them. These five carry the OTS trajectory contract — the
           # emitter that reads the record, the two writers that produce it, and

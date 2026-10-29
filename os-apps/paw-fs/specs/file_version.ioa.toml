@@ -5,15 +5,17 @@
 
 [automaton]
 name = "FileVersion"
-states = ["Current", "Superseded"]
+states = ["Current", "Superseded", "Orphaned"]
 initial = "Current"
 
 # ADR-0050 migration TODO: each state below needs either a
 # [[state_timeout]] declaration or a domain-specific justification
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Current"]
-terminal = ["Superseded"]
+# Superseded is a kept version: it stays until its File is deleted, or until
+# Orphan finds its File gone.
+allow_indefinite_states = ["Current", "Superseded"]
+terminal = ["Orphaned"]
 
 # --- State Variables ---
 
@@ -83,6 +85,22 @@ kind = "internal"
 from = ["Current"]
 to = "Superseded"
 hint = "Mark this version as superseded by a newer version."
+
+# Files deleted before FileVersion.File cascaded (#590) left their versions
+# behind. A version moves here only when its File reads as the kernel's
+# tombstone of a deleted File (File has no Deleted state of its own), and the
+# operator may delete only a version here (policies/file_version.cedar): Cedar
+# sees a version's own fields alone, so it cannot ask whether its File still
+# exists, and the kernel's delete has no guard. A File read that fails gives
+# null, and a File id that was never created reads as Created, so neither
+# moves a version.
+[[action]]
+name = "Orphan"
+kind = "input"
+from = ["Current", "Superseded"]
+to = "Orphaned"
+guard = "File[file_id].status == 'Deleted'"
+hint = "Mark a version whose File no longer exists, so the operator can delete it."
 
 # --- Output Actions ---
 
