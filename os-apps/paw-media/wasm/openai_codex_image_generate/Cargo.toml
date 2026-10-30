@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "997e418574fca8fb81b8e2270fba123d8c4dcbbf" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "843b9e3c81ddf9c1ba2c64b662b5b86545e4e3ad" }
 wasm-helpers = { path = "../../../paw-agent/wasm/wasm-helpers" }
 openai-codex-wire = { path = "../../../paw-agent/wasm/openai-codex-wire" }
 base64 = "0.22"
