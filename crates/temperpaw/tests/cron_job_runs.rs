@@ -1,14 +1,17 @@
-//! CronJob runs under the real CronJob spec, an in-process Temper server and the
-//! packaged cron_compute_next module; no Session runs and no provider calls.
+//! CronJob runs under the real CronJob and Session specs, an in-process Temper
+//! server and the packaged cron_compute_next module. A run's Session is
+//! spawned and configured, but no Session module runs and no provider calls.
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use temper_authz::{AuthzDecision, AuthzEngine, Principal, PrincipalKind, SecurityContext};
 use temper_runtime::{ActorSystem, tenant::TenantId};
 use temper_server::{
     registry::SpecRegistry,
     request_context::AgentContext,
+    secrets::{SecretsVault, resolve_secret_templates},
     state::{DispatchCommand, ServerState},
 };
 use temper_wasm::{
@@ -26,17 +29,19 @@ fn tenant() -> TenantId {
     TenantId::from("default".to_owned())
 }
 
-/// A server holding only the CronJob spec, with one job created the way an
-/// OData create makes it: its fields come from the create body, not Configure.
+/// A server holding the CronJob and Session specs, with one job created the
+/// way an OData create makes it: its fields come from the create body, not
+/// Configure.
 async fn server_with_job(fields: Value) -> ServerState {
     let xml = std::fs::read_to_string(app().join("specs/model.csdl.xml")).unwrap();
     let ioa = std::fs::read_to_string(app().join("specs/cron_job.ioa.toml")).unwrap();
+    let session = std::fs::read_to_string(app().join("specs/session.ioa.toml")).unwrap();
     let mut registry = SpecRegistry::new();
     registry.register_tenant(
         "default",
         temper_spec::csdl::parse_csdl(&xml).unwrap(),
         xml,
-        &[("CronJob", ioa.as_str())],
+        &[("CronJob", ioa.as_str()), ("Session", session.as_str())],
     );
     let server = ServerState::from_registry(ActorSystem::new("cron-job-runs"), registry);
     server
@@ -81,9 +86,59 @@ async fn job(server: &ServerState) -> Value {
     serde_json::to_value(&row.state).unwrap()
 }
 
+/// The fields of the Session the job's last run spawned, once its Configure
+/// has applied. The server spawns it after TriggerComplete returns.
+async fn spawned_session(server: &ServerState) -> Value {
+    let session_id = job(server).await["fields"]["last_session_id"]
+        .as_str()
+        .expect("TriggerComplete names the Session it spawns")
+        .to_string();
+    for _ in 0..400 {
+        if server.entity_exists(&tenant(), "Session", &session_id) {
+            let row = server
+                .get_tenant_entity_state(&tenant(), "Session", &session_id)
+                .await
+                .unwrap();
+            let state = serde_json::to_value(&row.state).unwrap();
+            // Configure schedules ProvisionWorkspace even for an empty message.
+            if state["status"] != "Created" {
+                return state["fields"].clone();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("Session {session_id} never applied its Configure");
+}
+
+/// The Trigger move's module config as the server hands it over: the spec's
+/// config with the tenant's `{secret:...}` templates resolved, and any the
+/// tenant does not hold left as written.
+fn trigger_config(tenant_secrets: &[(&str, &str)]) -> BTreeMap<String, String> {
+    let ioa = std::fs::read_to_string(app().join("specs/cron_job.ioa.toml")).unwrap();
+    let spec = temper_spec::automaton::parse_automaton(&ioa).unwrap();
+    let integration = spec
+        .integrations
+        .iter()
+        .find(|integration| integration.name == "cron_compute_next")
+        .expect("the Trigger move runs cron_compute_next");
+    let vault = SecretsVault::new(&[7u8; 32]);
+    for (key, value) in tenant_secrets {
+        vault.cache_secret("default", key, (*value).to_string());
+    }
+    resolve_secret_templates(&integration.config, &vault, "default")
+}
+
 /// One run: Trigger, the packaged module's answer to it, and that answer
 /// applied as TriggerComplete. Returns what TriggerComplete carried.
 async fn run_once(server: &ServerState, run: u32) -> Value {
+    run_once_with_secrets(server, run, &[]).await
+}
+
+async fn run_once_with_secrets(
+    server: &ServerState,
+    run: u32,
+    tenant_secrets: &[(&str, &str)],
+) -> Value {
     act(
         server,
         "Trigger",
@@ -100,7 +155,7 @@ async fn run_once(server: &ServerState, run: u32) -> Value {
         entity_state: job(server).await,
         agent_id: None,
         session_id: None,
-        integration_config: BTreeMap::from([("mode".into(), "trigger".into())]),
+        integration_config: trigger_config(tenant_secrets),
         trace_id: String::new(),
         workflow_root_entity_type: None,
         workflow_root_entity_id: None,
@@ -152,6 +207,36 @@ async fn a_job_without_a_template_gives_every_run_its_own_message() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_whitespace_only_template_preserves_the_saved_message() {
+    assert_whitespace_only_template_preserves_the_saved_message("user_message_template").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_odata_whitespace_only_template_preserves_the_saved_message() {
+    assert_whitespace_only_template_preserves_the_saved_message("UserMessageTemplate").await;
+}
+
+async fn assert_whitespace_only_template_preserves_the_saved_message(template_field: &str) {
+    for message_field in ["user_message", "UserMessage"] {
+        let mut fields = json!({
+            "name": "weekly digest",
+            "schedule": "*/10 * * * *",
+            "model": "gpt-5.5",
+            "provider": "openai_codex",
+        });
+        fields[template_field] = json!(" \t\n");
+        fields[message_field] = json!(MESSAGE);
+        let server = server_with_job(fields).await;
+        for run in 1..=2 {
+            let completed = run_once(&server, run).await;
+            assert_eq!(completed["user_message"], MESSAGE, "run {run}");
+            assert_eq!(job(&server).await["fields"]["user_message"], MESSAGE);
+            assert_eq!(spawned_session(&server).await["user_message"], MESSAGE);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_template_still_writes_each_runs_message() {
     let server = server_with_job(json!({
         "name": "weekly digest",
@@ -168,6 +253,215 @@ async fn a_template_still_writes_each_runs_message() {
         completed["user_message"],
         "Write this week's digest; the last one said: three notes."
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_with_no_model_runs_on_the_tenants_current_default() {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "user_message": MESSAGE,
+    }))
+    .await;
+    run_once_with_secrets(
+        &server,
+        1,
+        &[("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")],
+    )
+    .await;
+    // A Session with no model stops in context_preparer before its first turn.
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "gpt-5.5");
+    assert_eq!(session["provider"], "openai_codex");
+
+    // The run wrote the default back into the job; the next run still follows
+    // the tenant's default when it changes.
+    run_once_with_secrets(
+        &server,
+        2,
+        &[
+            ("llm_model", "claude-sonnet-5-5"),
+            ("llm_provider", "anthropic"),
+        ],
+    )
+    .await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "claude-sonnet-5-5");
+    assert_eq!(session["provider"], "anthropic");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jobs_own_model_stays_its_own_across_runs() {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "user_message": MESSAGE,
+        "model": "claude-sonnet-5-5",
+        "provider": "anthropic",
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    for run in 1..=2 {
+        run_once_with_secrets(&server, run, &defaults).await;
+        let session = spawned_session(&server).await;
+        assert_eq!(session["model"], "claude-sonnet-5-5", "run {run}");
+        assert_eq!(session["provider"], "anthropic", "run {run}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_created_with_odata_property_names_keeps_its_message_and_model() {
+    // The CSDL names CronJob's properties in PascalCase, and an OData create
+    // stores them under those names next to the spec's snake_case fields.
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+        "Model": "claude-sonnet-5-5",
+        "Provider": "anthropic",
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    run_once_with_secrets(&server, 1, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["user_message"], MESSAGE);
+    assert_eq!(session["model"], "claude-sonnet-5-5");
+    assert_eq!(session["provider"], "anthropic");
+
+    // An OData PATCH after that run changes the PascalCase fields only, while
+    // the run wrote its settings into the snake_case ones.
+    server
+        .update_tenant_entity_fields(
+            &tenant(),
+            "CronJob",
+            JOB,
+            json!({"UserMessage": "Write the monthly digest instead.", "Model": "gpt-5.5"}),
+            false,
+        )
+        .await
+        .unwrap();
+    run_once_with_secrets(&server, 2, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["user_message"], "Write the monthly digest instead.");
+    assert_eq!(session["model"], "gpt-5.5");
+    assert_eq!(session["provider"], "anthropic");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_user_message_with_an_empty_string_clears_the_next_runs_message() {
+    assert_clearing_odata_user_message_clears_the_next_runs_message(json!("")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_user_message_with_null_clears_the_next_runs_message() {
+    assert_clearing_odata_user_message_clears_the_next_runs_message(Value::Null).await;
+}
+
+async fn assert_clearing_odata_user_message_clears_the_next_runs_message(cleared: Value) {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    run_once_with_secrets(&server, 1, &defaults).await;
+    assert_eq!(spawned_session(&server).await["user_message"], MESSAGE);
+
+    // OData PATCH clears the authoritative field, leaving the last run's copy.
+    server
+        .update_tenant_entity_fields(
+            &tenant(),
+            "CronJob",
+            JOB,
+            json!({"UserMessage": cleared}),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(job(&server).await["fields"]["user_message"], MESSAGE);
+
+    for run in 2..=3 {
+        let completed = run_once_with_secrets(&server, run, &defaults).await;
+        assert_eq!(
+            completed["user_message"], "",
+            "cleared with {cleared}, run {run}"
+        );
+        assert_eq!(job(&server).await["fields"]["user_message"], "");
+        assert_eq!(spawned_session(&server).await["user_message"], "");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_model_settings_with_empty_strings_uses_tenant_defaults() {
+    assert_clearing_odata_model_settings_uses_tenant_defaults(json!("")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_odata_model_settings_with_null_uses_tenant_defaults() {
+    assert_clearing_odata_model_settings_uses_tenant_defaults(Value::Null).await;
+}
+
+async fn assert_clearing_odata_model_settings_uses_tenant_defaults(cleared: Value) {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "UserMessage": MESSAGE,
+        "Model": "claude-sonnet-5-5",
+        "Provider": "anthropic",
+    }))
+    .await;
+    let defaults = [("llm_model", "gpt-5.5"), ("llm_provider", "openai_codex")];
+    run_once_with_secrets(&server, 1, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "claude-sonnet-5-5");
+    assert_eq!(session["provider"], "anthropic");
+
+    // OData PATCH merges the cleared authoritative fields, leaving the
+    // previous run's snake_case copies in place.
+    server
+        .update_tenant_entity_fields(
+            &tenant(),
+            "CronJob",
+            JOB,
+            json!({"Model": cleared, "Provider": cleared}),
+            false,
+        )
+        .await
+        .unwrap();
+    let fields = job(&server).await["fields"].clone();
+    assert_eq!(fields["model"], "claude-sonnet-5-5");
+    assert_eq!(fields["provider"], "anthropic");
+    run_once_with_secrets(&server, 2, &defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "gpt-5.5", "cleared with {cleared}");
+    assert_eq!(
+        session["provider"], "openai_codex",
+        "cleared with {cleared}"
+    );
+
+    // Clearing also restores following later changes to tenant defaults.
+    let changed_defaults = [("llm_model", "gpt-6.1-sol"), ("llm_provider", "openai")];
+    run_once_with_secrets(&server, 3, &changed_defaults).await;
+    let session = spawned_session(&server).await;
+    assert_eq!(session["model"], "gpt-6.1-sol", "cleared with {cleared}");
+    assert_eq!(session["provider"], "openai", "cleared with {cleared}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_with_no_model_anywhere_still_completes_its_run() {
+    let server = server_with_job(json!({
+        "name": "weekly digest",
+        "schedule": "*/10 * * * *",
+        "user_message": MESSAGE,
+    }))
+    .await;
+    // A failed Trigger stops the job's schedule, so a run with nothing to
+    // resolve completes with no model and its Session reports why.
+    let completed = run_once(&server, 1).await;
+    assert_eq!(completed["model"], "");
+    assert_eq!(completed["provider"], "");
+    assert_eq!(completed["user_message"], MESSAGE);
 }
 
 #[tokio::test(flavor = "multi_thread")]
