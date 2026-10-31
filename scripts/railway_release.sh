@@ -295,11 +295,17 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
 against_before() { # $1 deployment id
   local want got failed after key was now guest_now served
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
-  # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
-  want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
+  # The logged count is extra evidence: fewer routes than the deployment before ended with is a miss, a missing line is
+  # not, when a probe reaches a route. Both counts are of the same stored routes, read by each binary: the one before
+  # is its last rebuild (read again now, so a route installed after the snapshot counts on both sides; the snapshot's
+  # count when its logs are gone). A route installed after the old deployment's last rebuild adds one to the new
+  # count only, so more routes is reported, not a miss: the probes check that each named route answers as before.
+  want="$(route_count "$(jq -r '.deployment_id // empty' "$STATE_DIR/before.json")" || true)"
+  [ -n "$want" ] || want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
-  echo "route_count: ${got:-none} (before: ${want:-none})"
-  [ -z "$got" ] || [ -z "$want" ] || [ "$got" = "$want" ] || misses+=("route_count ${got}, before ${want}")
+  echo "route_count: ${got:-none} (the deployment before ended with ${want:-none})"
+  [ -z "$got" ] || [ -z "$want" ] || [ "$got" -ge "$want" ] ||
+    misses+=("route_count ${got}, fewer than the ${want} the deployment before ended with")
   failed="$(ask_failures "$1")"
   [ "${failed:-0}" = 0 ] || misses+=("${failed} route actor ask(s) failed during a rebuild")
   after="$(probe)"

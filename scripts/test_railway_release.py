@@ -212,7 +212,7 @@ curl() {
         mock = r'''
 wait_healthy() { :; }
 ask_failures() { echo 0; }
-route_count() { printf '%s' "$LOGGED"; }
+route_count() { if [ "$1" = dep ]; then printf '%s' "$LOGGED"; else printf '%s' "$BEFORE_LOGGED"; fi; }
 probe() { printf '%s' "$AFTER"; }
 curl() {
   case "${*: -1}" in
@@ -223,23 +223,32 @@ curl() {
 '''
         judge = 'POST operator /katagami/judge'
         status = 'GET operator /paw/setup/status'
-        for logged, before_count, answers, table, misses in [
-            ('11', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '', {judge: '401', status: '200'}, 'loaded', []),
-            ('10', '11', {judge: '401', status: '200'}, 'loaded', ['route_count 10, before 11']),
+        # (new deployment's count, old deployment's last count read now, snapshot's count, answers, table, misses)
+        for logged, before_logged, before_count, answers, table, misses in [
+            ('11', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '', '', {judge: '401', status: '200'}, 'loaded', []),
+            ('10', '11', '11', {judge: '401', status: '200'}, 'loaded',
+             ['route_count 10, fewer than the 11 the deployment before ended with']),
+            # A route installed after the snapshot: the old deployment's last rebuild counts it too.
+            ('14', '14', '13', {judge: '401', status: '200'}, 'loaded', []),
+            # A route installed after the old deployment's last rebuild: only the new count has it.
+            ('14', '13', '13', {judge: '401', status: '200'}, 'loaded', []),
+            # The old deployment's logs are gone: the snapshot's count stands in.
+            ('10', '', '11', {judge: '401', status: '200'}, 'loaded',
+             ['route_count 10, fewer than the 11 the deployment before ended with']),
             # Only a built-in path answers, or the route path answers 404: nothing shows the table serves.
-            ('', '11', {judge: '404', status: '200'}, 'loaded',
+            ('', '11', '11', {judge: '404', status: '200'}, 'loaded',
              ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
-            ('', '11', {judge: '401', status: '200'}, 'empty',
+            ('', '11', '11', {judge: '401', status: '200'}, 'empty',
              ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
         ]:
-            with self.subTest(logged=logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
-                before = {'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
+            with self.subTest(logged=logged, before_logged=before_logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
+                before = {'deployment_id': 'old', 'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
                 Path(tmp, 'before.json').write_text(__import__('json').dumps(before))
                 command = ('set -euo pipefail\n' + functions + mock +
                            '\nmisses=()\nagainst_before dep\nprintf "MISS %s\\n" "${misses[@]+"${misses[@]}"}"\n')
-                env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, TABLE=table, TABLE_PATH='/katagami/judge',
+                env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, BEFORE_LOGGED=before_logged, TABLE=table, TABLE_PATH='/katagami/judge',
                            AFTER=__import__('json').dumps(answers), PROBE_ROUTES=judge + '\n' + status,
                            BASE_URL='https://example.test', TEMPER_API_KEY='test')
                 result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
