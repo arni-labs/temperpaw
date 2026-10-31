@@ -479,8 +479,8 @@ refuse() { # $1 why nothing deploys; it becomes the release record's miss
 # A deploy never moves the Temper backwards. The release (EXPECTED_SHA) is live already when the commit that serves (the
 # snapshot's /paw/version) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
 # (already=false) only when it contains the commit that serves, and on production only when main contains it. Anything
-# else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Going back on
-# purpose is the roll_back step, which does not run this.
+# else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Only the Factory's
+# stage and go_live run this; going back on purpose (roll_back, or a run started by hand) does not.
 forward() {
   local served status
   served="$(jq -r '.sha // empty' "$STATE_DIR/before.json")"

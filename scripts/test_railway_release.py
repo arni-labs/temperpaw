@@ -160,16 +160,17 @@ gh() { # gh api repos/<owner>/<repo>/compare/<base>...<head> --jq .status
         def runs(step_id, step, mode, already):
             block = workflow.split('        id: ' + step_id + '\n', 1)[1].split('        run:', 1)[0]
             expr = block.split('        if: ', 1)[1].split('\n', 1)[0].strip()
-            expr = expr.replace(mode_expr, repr(mode)).replace('inputs.step', repr(step))
+            expr = expr.replace(mode_expr, repr(mode)).replace('inputs.mode', repr(mode)).replace('inputs.step', repr(step))
             expr = expr.replace('steps.forward.outputs.already', repr(already))
             return eval(expr.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
 
         for step, mode, already, forward, deploy, check in [
             ('go_live', 'deploy', 'true', True, False, False),
             ('stage', 'deploy', 'false', True, True, True),
-            ('', 'deploy', 'false', True, True, True),
-            # Going back on purpose never asks whether it moves forward.
+            # Going back on purpose never asks whether it moves forward: roll_back, or a run started by hand
+            # (staging went back from a broken pin this way on 31 Oct).
             ('roll_back', 'deploy', '', False, True, True),
+            ('', 'deploy', '', False, True, True),
             ('check_staging', 'check', '', False, False, True),
         ]:
             with self.subTest(step=step, mode=mode, already=already):

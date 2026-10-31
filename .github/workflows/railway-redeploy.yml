@@ -18,7 +18,8 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # A deploy never moves the Temper backwards (railway_release.sh forward, after the snapshot). When the commit that serves
 # already contains the release's commit, the release is live: nothing deploys or restarts, and the result is
 # already_live. A release deploys only when its commit contains the commit that serves, and on production only a commit
-# main contains. roll_back goes back on purpose and skips this.
+# main contains. This holds for the Factory's deploy steps (stage, go_live), which may carry an older release than
+# what serves. Going back on purpose skips it: roll_back on production, or a run started by hand with no step.
 #
 # GitHub environments "staging" and "production" name their own Railway environment and service and operator key:
 # variables RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, TEMPERPAW_BASE_URL, PROBE_ROUTES (one "<GET|POST> <anon|operator|
@@ -223,10 +224,11 @@ jobs:
         run: bash scripts/railway_release.sh snapshot
 
       # Never backwards: a release the serving commit already contains is live, and nothing deploys or restarts; one
-      # that does not contain the serving commit deploys nothing. roll_back goes back on purpose and skips this.
+      # that does not contain the serving commit deploys nothing. Only the Factory's stage and go_live ask; roll_back and a
+      # run started by hand go back on purpose.
       - name: Is it live already
         id: forward
-        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && inputs.step != 'roll_back'
+        if: (inputs.step == 'stage' || inputs.step == 'go_live') && inputs.mode == 'deploy'
         run: |
           set -euo pipefail
           bash scripts/railway_release.sh forward | tee -a "${GITHUB_OUTPUT}"
