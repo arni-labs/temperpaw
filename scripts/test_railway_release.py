@@ -21,18 +21,23 @@ class RailwayReleaseTests(unittest.TestCase):
         script = textwrap.dedent(workflow.split('        run: |\n', 1)[1].split('\n      - uses:', 1)[0])
         script = re.sub(r'\$\{\{.*?\}\}', 'false', script)
         script = 'gh() { echo "$RESOLVED_SHA"; }\n' + script
-        for step, commit, resolved, expected, ok in [
-            ('stage', SHA, SHA, '', True),
-            ('check_staging', SHA, SHA, '', True),
-            ('go_live', SHA, SHA, '', True),
-            ('stage', SHA, 'b' * 40, '', False),
-            ('check_staging', SHA, 'b' * 40, '', False),
-            ('go_live', SHA, 'b' * 40, '', False),
-            ('stage', '', SHA, '', False),
-            ('stage', 'a' * 7, SHA, '', False),
-            ('roll_back', 'b' * 40, SHA, '', True),
-            ('', '', SHA, '', True),
-            ('', '', SHA, 'b' * 40, False),
+        # A forward step whose commit is not the image's own names it as PINNED_COMMIT: the step after checkout deploys
+        # it only when the image's temper revs carry it (test_pinned_commit_must_be_carried), before anything deploys.
+        carried = workflow.index('run: bash scripts/temper_pin.sh carried')
+        self.assertIn("if: env.PINNED_COMMIT != ''", workflow[:carried].rsplit('- name:', 1)[1])
+        self.assertLess(carried, workflow.index('run: bash scripts/railway_release.sh deploy'))
+        for step, commit, resolved, expected, ok, pinned in [
+            ('stage', SHA, SHA, '', True, ''),
+            ('check_staging', SHA, SHA, '', True, ''),
+            ('go_live', SHA, SHA, '', True, ''),
+            ('stage', SHA, 'b' * 40, '', True, SHA),
+            ('check_staging', SHA, 'b' * 40, '', True, SHA),
+            ('go_live', SHA, 'b' * 40, '', True, SHA),
+            ('stage', '', SHA, '', False, ''),
+            ('stage', 'a' * 7, SHA, '', False, ''),
+            ('roll_back', 'b' * 40, SHA, '', True, ''),
+            ('', '', SHA, '', True, ''),
+            ('', '', SHA, 'b' * 40, False, ''),
         ]:
             with self.subTest(step=step, commit=commit, resolved=resolved, expected=expected), tempfile.TemporaryDirectory() as tmp:
                 env = dict(os.environ, IMAGE_TAG='sha-' + resolved[:7],
@@ -48,9 +53,58 @@ class RailwayReleaseTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, ok, result.stderr)
                 output = Path(tmp + '/env')
                 if ok:
-                    self.assertIn('EXPECTED_SHA=' + resolved, output.read_text())
+                    exported = output.read_text()
+                    self.assertIn('EXPECTED_SHA=' + resolved, exported)
+                    if pinned:
+                        self.assertIn('PINNED_COMMIT=' + pinned, exported)
+                    else:
+                        self.assertNotIn('PINNED_COMMIT', exported)
                 else:
                     self.assertFalse(output.exists(), 'rejected release must not export a deployment SHA')
+
+    def test_pinned_commit_must_be_carried(self):
+        # A release commit that is not the image's own (a kernel change, staged through its temper pin) deploys only
+        # when every temper rev at the image's commit is that commit or one after it.
+        pinned, older, other = 'c' * 40, 'd' * 40, 'e' * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            origin, work, tools = Path(tmp, 'origin'), Path(tmp, 'work'), Path(tmp, 'bin')
+            for d in (origin, work, tools):
+                d.mkdir()
+
+            def git(cwd, *args):
+                return subprocess.run(['git', '-C', str(cwd), '-c', 'user.name=test', '-c', 'user.email=test', *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            git(origin, 'init', '-q')
+            git(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true')
+            images = {}
+            for name, dependency in [('pins', f'temper = {{ git = "https://github.com/arni-labs/temper.git", rev = "{pinned}" }}'),
+                                     ('none', 'serde = "1"')]:
+                Path(origin, 'Cargo.toml').write_text('[dependencies]\n' + dependency + '\n')
+                git(origin, 'add', 'Cargo.toml')
+                git(origin, 'commit', '-q', '-m', name)
+                images[name] = git(origin, 'rev-parse', 'HEAD')
+            git(work, 'init', '-q')
+            git(work, 'remote', 'add', 'origin', origin.as_uri())
+            # arni-labs/temper's compare as GitHub answers it: a rev that is the commit is identical, one after it ahead.
+            gh = Path(tools, 'gh')
+            gh.write_text('#!/bin/sh\ncase "$2" in\n'
+                          f'  */compare/{pinned}...{pinned}) echo identical ;;\n'
+                          f'  */compare/{older}...{pinned}) echo ahead ;;\n'
+                          '  *) echo diverged ;;\nesac\n')
+            gh.chmod(0o755)
+            for image, commit, ok in [
+                (images['pins'], pinned, True),
+                (images['pins'], older, True),
+                (images['pins'], other, False),
+                (images['none'], pinned, False),
+            ]:
+                with self.subTest(image=image, commit=commit):
+                    env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}', GITHUB_REPOSITORY='test/repo',
+                               COMMIT=commit, IMAGE_COMMIT=image, READ_TOKEN='test')
+                    result = subprocess.run(['bash', str(ROOT / 'scripts/temper_pin.sh'), 'carried'], cwd=work, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
 
     def test_packaging_failure_recovery_and_result(self):
         workflow = (ROOT / '.github/workflows/railway-redeploy.yml').read_text()
