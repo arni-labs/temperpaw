@@ -167,3 +167,45 @@ impl From<PostgresEventStore> for PawStorage {
         Self::Postgres(store)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn secret_upserts_replace_values_and_always_change_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TursoEventStore::new(
+            &format!("file:{}", dir.path().join("secrets.db").display()),
+            None,
+        )
+        .await
+        .unwrap();
+        let storage = PawStorage::from(store.clone());
+        let mut previous_version = None;
+
+        for ciphertext in [b"first".as_slice(), b"second", b"second"] {
+            storage
+                .upsert_secret("tenant-a", "key", ciphertext, b"nonce")
+                .await
+                .unwrap();
+            assert_eq!(
+                storage.load_secrets_for_tenant("tenant-a").await.unwrap(),
+                vec![("key".into(), ciphertext.to_vec(), b"nonce".to_vec())]
+            );
+            let versions = store.list_secret_versions("tenant-a").await.unwrap();
+            assert_eq!(versions.len(), 1);
+            let version = versions[0].1.clone().expect("write has a version");
+            assert!(!version.is_empty());
+            assert_ne!(Some(&version), previous_version.as_ref());
+            previous_version = Some(version);
+        }
+        assert!(
+            storage
+                .load_secrets_for_tenant("tenant-b")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
