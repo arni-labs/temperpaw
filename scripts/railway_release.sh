@@ -3,6 +3,7 @@
 # .github/workflows/railway-redeploy.yml runs it; a person can run it the same way with the same environment.
 #
 #   scripts/railway_release.sh snapshot          what runs now: its deployment, image, routes and probe answers
+#   scripts/railway_release.sh forward           whether EXPECTED_SHA is live already, or goes on top of what serves
 #   scripts/railway_release.sh deploy <sha-tag>  point the service at ghcr.io/arni-labs/temperpaw:<tag>, wait for SUCCESS
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
@@ -27,7 +28,8 @@
 #                    scripts/additive_migrations.txt (through a TCP proxy opened for that and removed). Otherwise the
 #                    way back stops and says which rows a person must remove. A kernel that ignores unknown migrations
 #                    needs neither: the rows stay.
-#   GH_TOKEN         reads the kernel pin and its migrations from GitHub
+#   GH_TOKEN         reads the kernel pin and its migrations, and which commit contains which, from GitHub
+#   DEPLOY_ENV       production: forward takes only a commit main contains
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -464,6 +466,45 @@ report_misses() { # exits 1 when there are any
   fi
 }
 
+# GitHub's comparison of two commits: identical; ahead when the second contains the first; behind when the first
+# contains the second; diverged when neither contains the other.
+compared() { # $1 base, $2 head (a commit or main)
+  gh api "repos/arni-labs/temperpaw/compare/$1...$2" --jq .status
+}
+
+refuse() { # $1 why nothing deploys; it becomes the release record's miss
+  echo "$1: no deploy" | tee -a "$STATE_DIR/errors.txt" >&2
+}
+
+# A deploy never moves the Temper backwards. The release (EXPECTED_SHA) is live already when the commit that serves (the
+# snapshot's /paw/version) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
+# (already=false) only when it contains the commit that serves, and on production only when main contains it. Anything
+# else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Only the Factory's
+# stage and go_live run this; going back on purpose (roll_back, or a run started by hand) does not.
+forward() {
+  local served status
+  served="$(jq -r '.sha // empty' "$STATE_DIR/before.json")"
+  status="$(compared "$served" "$EXPECTED_SHA")" || { refuse "GitHub could not compare ${EXPECTED_SHA} with ${served:-nothing}, which serves"; return 1; }
+  case "$status" in
+    identical | behind)
+      echo "already=true"
+      echo "already live: ${served} serves, and it contains ${EXPECTED_SHA}" >&2
+      return 0
+      ;;
+    ahead) ;;
+    *) refuse "${EXPECTED_SHA} does not contain ${served}, which serves (GitHub: ${status:-no answer}), so it would drop changes that serve"; return 1 ;;
+  esac
+  if [ "${DEPLOY_ENV:-}" = production ]; then
+    status="$(compared "$EXPECTED_SHA" main)" || { refuse "GitHub could not compare ${EXPECTED_SHA} with main"; return 1; }
+    case "$status" in
+      identical | ahead) ;;
+      *) refuse "main does not contain ${EXPECTED_SHA}: only a commit on main goes to production"; return 1 ;;
+    esac
+  fi
+  echo "already=false"
+  echo "${EXPECTED_SHA} goes on top of ${served}" >&2
+}
+
 case "${1:-}" in
   snapshot)
     live="$(live_deployment)"
@@ -501,6 +542,11 @@ case "${1:-}" in
     guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
+    ;;
+
+  forward)
+    [[ "${EXPECTED_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "forward needs EXPECTED_SHA, a full commit" >&2; exit 64; }
+    forward
     ;;
 
   deploy)
@@ -591,7 +637,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "usage: railway_release.sh snapshot|deploy <sha-tag>|check|rollback" >&2
+    echo "usage: railway_release.sh snapshot|forward|deploy <sha-tag>|check|rollback" >&2
     exit 64
     ;;
 esac
