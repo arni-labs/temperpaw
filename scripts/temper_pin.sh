@@ -105,12 +105,13 @@ main_pins() {
   all_carry "$1" FETCH_HEAD && git rev-parse FETCH_HEAD
 }
 
-# The workflow runs on commit $1 for its pull request: "pending" until one has started and every one has finished,
-# "green" when every one passed, otherwise the first that did not, as "<name> <conclusion>: <link>". A run that ended
-# in any other way (failed, cancelled, timed out) is red: its checks never passed on this head.
+# The newest run of each workflow on commit $1 for its pull request (a pull request closed and reopened runs them
+# again on the same head): "pending" until one has started and every one has finished, "green" when every one passed,
+# otherwise the first that did not, as "<name> <conclusion>: <link>". A run that ended in any other way (failed,
+# cancelled, timed out) is red: its checks never passed on this head.
 ci_runs() {
   gh api "repos/$REPO/actions/runs?head_sha=$1&event=pull_request&per_page=100" --jq '
-    .workflow_runs as $runs
+    (.workflow_runs | group_by(.workflow_id) | map(max_by(.id))) as $runs
     | ($runs | map(select(.conclusion | IN("success", "skipped", "neutral") | not))) as $red
     | if ($runs | length) == 0 or ($runs | any(.status != "completed")) then "pending"
       elif ($red | length) == 0 then "green"
