@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline regressions: execute the workflow validator and cleanup in Bash."""
+"""Offline regressions: execute the release checks, workflow validator and cleanup in Bash."""
+import json
 import os
 from pathlib import Path
 import re
@@ -173,13 +174,13 @@ gql() {
     def test_guest_baseline_needs_a_good_read(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
         functions = ''
-        for name in ('guest', 'guest_baseline'):
+        for name in ('guest', 'guest_counts', 'guest_baseline'):
             functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
         # curl answers with the scenario's body, then the status line -w adds.
         mock = r'''
 curl() {
   case "$SCENARIO" in
-    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[1,2]}]}}\n200' ;;
+    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[{"id":"a"},{"id":"b"}]}]}}\n200' ;;
     empty) printf '\n200' ;;
     html) printf '<html>bad gateway</html>\n502' ;;
     refused) printf '\n000'; return 7 ;;
@@ -193,15 +194,66 @@ curl() {
             ('refused', 'https://example.test/guest', False, '000 false no JSON body'),
             ('empty', '', True, ''),
         ]:
-            with self.subTest(scenario=scenario, url=url):
+            with self.subTest(scenario=scenario, url=url), tempfile.TemporaryDirectory() as tmp:
                 command = 'set -euo pipefail\n' + functions + mock + '\nwas="$(guest_baseline)" || exit 7\nprintf "%s" "$was"\n'
-                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url)
+                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url, STATE_DIR=tmp)
                 result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
                 if ok:
                     self.assertEqual(result.stdout, read)
                 else:
                     self.assertIn('the guest read answered ' + read + ': no baseline, so no deploy', result.stderr)
+
+    def test_guest_records_during_soak(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('guest', 'guest_counts', 'guest_lost', 'guest_baseline', 'against_before', 'report_misses'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        check = 'case check in\n  check)\n' + script.split('\n  check)\n', 1)[1].split('\n  rollback)', 1)[0] + '\nesac\n'
+        mock = r'''
+wait_healthy() { :; }
+route_count() { echo 11; }
+ask_failures() { echo 0; }
+probe() { echo '{}'; }
+live_deployment() { echo '{"id":"dep"}'; }
+memory_gb() { echo 0.1; }
+curl() { cat "$STATE_DIR/guest-body.json"; printf '\n200'; }
+sleep() { cp "$STATE_DIR/after-soak.json" "$STATE_DIR/guest-body.json"; echo SOAK_FINISHED; }
+'''
+        for scenario, ids, before_more, after_more, miss in [
+            ('added', ['a', 'b', 'c'], False, False, ''),
+            ('removed', ['a'], False, False, 'the guest read has find 1, before 2'),
+            ('replaced', ['a', 'c'], False, False, 'the guest read lost 1 find: b'),
+            ('paged_before', ['b', 'c'], True, False, ''),
+            ('paged_after', ['b', 'c'], False, True, ''),
+            ('paged_removed', ['a'], True, True, 'the guest read has find 1, before 2'),
+            ('thing_removed', None, False, False, 'the guest read has no find any more'),
+        ]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                def body(record_ids, more):
+                    things = [] if record_ids is None else [
+                        {'thing': 'find', 'records': [{'id': value} for value in record_ids], 'more': more}]
+                    return json.dumps({'ok': True, 'data': {'records': things}})
+
+                Path(tmp, 'guest-body.json').write_text(body(['a', 'b'], before_more))
+                Path(tmp, 'after-soak.json').write_text(body(ids, after_more))
+                Path(tmp, 'new.json').write_text('{"deployment_id":"dep"}')
+                snapshot = r'''
+was="$(guest_baseline)"
+jq -n --arg guest "$was" '{route_count:"11",probes:{},guest:$guest}' >"$STATE_DIR/before.json"
+'''
+                env = dict(os.environ, STATE_DIR=tmp, GUEST_CHECK_URL='https://example.test/guest',
+                           SOAK_SECONDS='0', EXPECTED_SHA='', MEMORY_LIMIT_GB='', DRILL='',
+                           DD_API_KEY='', DD_APP_KEY='', DD_ENV='')
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + functions + mock + snapshot + check],
+                                        env=env, capture_output=True, text=True)
+                self.assertIn('SOAK_FINISHED', result.stdout, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 1 if miss else 0, result.stdout + result.stderr)
+                if miss:
+                    self.assertIn(miss, Path(tmp, 'misses.txt').read_text())
+                else:
+                    self.assertIn('every check passed', result.stdout)
+                    self.assertFalse(Path(tmp, 'misses.txt').exists())
 
     def test_route_table_read_from_probes_when_the_log_line_is_missing(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()

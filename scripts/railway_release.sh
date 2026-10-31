@@ -13,7 +13,8 @@
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
 #                    after the deploy must equal the answer before it. An operator probe on a route's path also shows
 #                    the route table serves when Railway drops the deployment's "route table rebuilt" log line
-#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok with the same counts
+#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok and have lost nothing:
+#                    counts may grow; ids from before must remain when both reads returned the whole thing.
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
 #   EXPECTED_SHA     the full commit /paw/version must report
 #   SOAK_SECONDS     how long the new deployment runs before memory is read (default 300)
@@ -174,23 +175,48 @@ probe() {
   printf '%s' "$out"
 }
 
-# The guest read: "<status> <ok> <thing count, ...>".
+# The guest read as {status, ok, things: {<thing>: {whole, ids}}}. A page limit makes whole false.
 guest() {
   [ -n "${GUEST_CHECK_URL:-}" ] || return 0
   local body code read
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
-  # jq given an empty body prints nothing and succeeds, so an empty answer is named here rather than read as "".
-  read="$(sed '$d' <<<"$body" | jq -r --arg c "$code" \
-    '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
+  # An empty or unreadable body cannot provide a baseline.
+  read="$(sed '$d' <<<"$body" | jq -c --arg c "$code" \
+    '{status: $c, ok: (.ok // false), things: ([(.data.records // [])[] | select(type == "object")
+      | {key: .thing, value: {whole: (.more != true), ids: ([(.records // [])[] | .id] | sort)}}] | from_entries)}' \
     2>/dev/null || true)"
-  printf '%s' "${read:-${code:-000} false no JSON body}"
+  if [ -n "$read" ]; then
+    printf '%s' "$read"
+  else
+    jq -nc --arg c "${code:-000}" '{status: $c, ok: false, things: {}, error: "no JSON body"}'
+  fi
+}
+
+# One guest read (a file) as a compact count summary; + marks a page limit.
+guest_counts() {
+  jq -r 'if .error then "\(.status) false \(.error)" else "\(.status) \(.ok) \([.things | to_entries[] | "\(.key) \(.value.ids | length)\(if .value.whole then "" else "+" end)"] | join(", "))" end' "$1"
+}
+
+# A paginated window compares counts only: additions can push old ids out of it.
+guest_lost() {
+  jq -rn --slurpfile was "$1" --slurpfile now "$2" '$was[0] as $was | $now[0] as $now |
+    if $now.status != "200" or $now.ok != true then "the guest read answered \($now.status) \($now.ok)"
+    else $was.things | to_entries[] | .key as $thing | .value as $w | $now.things[$thing] as $n
+      | if $n == null then "the guest read has no \($thing) any more"
+        elif ($n.ids | length) < ($w.ids | length) then "the guest read has \($thing) \($n.ids | length), before \($w.ids | length)"
+        elif $w.whole and $n.whole and (($w.ids - $n.ids) | length) > 0
+        then "the guest read lost \(($w.ids - $n.ids) | length) \($thing): \(($w.ids - $n.ids)[:3] | join(", "))"
+        else empty end
+    end'
 }
 
 # The snapshot's guest read: a check after the deploy compares with it, so anything but a good read stops the release.
 guest_baseline() {
   local was
-  was="$(guest)"
+  [ -n "${GUEST_CHECK_URL:-}" ] || return 0
+  guest >"$STATE_DIR/guest-before.json"
+  was="$(guest_counts "$STATE_DIR/guest-before.json")"
   case "${GUEST_CHECK_URL:+set}:$was" in
     : | "set:200 true "*) printf '%s' "$was" ;;
     *) echo "the guest read answered ${was}: no baseline, so no deploy" >&2; return 1 ;;
@@ -291,9 +317,9 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
     jq -r '[.series[]?.pointlist[]?[1] | select(. != null)] | max // empty'
 }
 
-# Everything that must equal the snapshot, for a deployment that now serves. Appends misses to the array named misses.
+# Compare a serving deployment with the snapshot; guest records may grow. Appends to the array named misses.
 against_before() { # $1 deployment id
-  local want got failed after key was now guest_now served
+  local want got failed after key was now guest_now served lost
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
   # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
   want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
@@ -318,11 +344,14 @@ against_before() { # $1 deployment id
     [ "$now" = "$was" ] || misses+=("${key} answered ${now}, before ${was}")
   done < <(jq -r 'keys[]' <<<"$after")
   if [ -n "${GUEST_CHECK_URL:-}" ]; then
-    guest_now="$(guest)"
-    was="$(jq -r .guest "$STATE_DIR/before.json")"
-    echo "guest read: ${guest_now} (before: ${was})"
-    case "$guest_now" in "200 true "*) ;; *) misses+=("the guest read answered ${guest_now}") ;; esac
-    [ "$guest_now" = "$was" ] || misses+=("the guest read changed: ${guest_now}, before ${was}")
+    guest >"$STATE_DIR/guest-now.json"
+    guest_now="$(guest_counts "$STATE_DIR/guest-now.json")"
+    echo "guest read: ${guest_now} (before: $(guest_counts "$STATE_DIR/guest-before.json"))"
+    lost="$(guest_lost "$STATE_DIR/guest-before.json" "$STATE_DIR/guest-now.json")"
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      misses+=("$key")
+    done <<<"$lost"
   fi
   jq -n --arg id "$1" --arg routes "${got:-}" --argjson probes "$after" --arg guest "${guest_now:-}" \
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
