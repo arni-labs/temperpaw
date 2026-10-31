@@ -1,246 +1,108 @@
-# temper-pin-bump (ARN-438): keep temperpaw's kernel pin current.
-#
-# temperpaw pins the temper kernel by git rev in two manifests (crates/temperpaw
-# and crates/paw-codex-worker). Bumping that pin IS temper's primary deploy leg:
-# a new kernel reaches production by riding a temperpaw release, not by deploying
-# temper directly. This workflow watches temper's main and, when it moves ahead
-# of the pin, opens ONE PR that bumps both manifests and refreshes Cargo.lock.
-#
-# The PR then rides temperpaw's normal gates (fmt/clippy/check/test --locked, the
-# review panel, proof) - CI building and testing against the new kernel IS the
-# verification. No cross-repo event plumbing: a scheduled diff check, nothing more.
-#
-# temper is PUBLIC (anonymous reads work), so STACK_TOKEN is NOT about read access.
-# It is required because the PR must be CREATED by a real PAT: a PR opened with the
-# Actions GITHUB_TOKEN does not trigger pull_request workflows, so the bump's own
-# gates would silently never fire. The branch is pushed with the same PAT to keep
-# one author identity.
 name: temper-pin-bump
+run-name: ${{ inputs.release_id && format('temper pin {0} {1} {2}', inputs.release_id, inputs.step, inputs.step_token) || format('temper pin {0}', inputs.commit) }}
+
+# The staging step of a kernel change: a commit on arni-labs/temper main reaches the main Temper by riding this
+# repository's pin. One run does it all (scripts/temper_pin.sh says how):
+#   pin      moves every temper rev here to the commit in one pull request on bot/temper-pin-<12>, merges it once its
+#            checks are green (a version update takes no review), and names the main commit that pins it. When main's
+#            revs already carry the commit it opens nothing. A red check fails the job naming the pull request,
+#            which the caller sends to the change's maker to fix on that branch; the outcome annotation's `fix` is it.
+#   image    waits for docker.yml's push run on that main commit (its image, sha-<7>).
+#   staging  deploys that image to staging and checks it (railway-redeploy.yml), whose outcome names the staged commit.
+#
+# A caller passes the six inputs of every release step (release_id, step, step_token, pr, commit, ref); commit is the
+# temper commit. The pull request is opened and merged with the GitHub App's token (FACTORY_APP_ID, FACTORY_APP_PRIVATE_KEY):
+# a pull request opened or merged with the workflow's own token starts no workflow here, so its checks and its image
+# would never run.
+
 on:
-  schedule:
-    - cron: "0 9 * * *"   # daily (09:00 UTC), after the nightly shadow sweep
   workflow_dispatch:
+    inputs:
+      release_id:
+        description: "The release, when a release line starts this run"
+        required: false
+        default: ""
+      step:
+        description: "The release step (stage)"
+        required: false
+        default: ""
+      step_token:
+        description: "The release's token for this attempt at the step"
+        required: false
+        default: ""
+      pr:
+        description: "The change's pull request address (on arni-labs/temper)"
+        required: false
+        default: ""
+      commit:
+        description: "The arni-labs/temper commit to pin: a whole sha on temper main"
+        required: true
+      ref:
+        description: "Unused: the image is the pin's own"
+        required: false
+        default: ""
+
 permissions:
-  contents: read   # the branch push + PR use STACK_TOKEN, not GITHUB_TOKEN
-concurrency:
-  # serialize a manual dispatch against the cron (and against a slow prior run) so
-  # two bumps never race on the same branch/PR.
-  group: temper-pin-bump
-  cancel-in-progress: false
+  contents: read
+
 jobs:
-  bump:
+  pin:
     runs-on: ubuntu-latest
-    env:
-      STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
-      TEMPER_REPO: arni-labs/temper
-      BOT_IDENTITY: rita-aga   # the identity that authors bump commits + PRs
+    # Pins land one at a time: each starts from the main the one before left, so two never conflict on the same lines,
+    # and one whose commit a pin before it already carries opens nothing.
+    concurrency:
+      group: temper-pin
+      cancel-in-progress: false
+    outputs:
+      commit: ${{ steps.pin.outputs.commit }}
     steps:
-      - name: Guard the token
-        run: |
-          if [ -z "${STACK_TOKEN:-}" ]; then
-            echo "::error::STACK_TOKEN unavailable - a bump PR opened with GITHUB_TOKEN would never trigger its own gates"; exit 1; fi
-      - name: Checkout temperpaw
-        uses: actions/checkout@v6.0.2
+      - name: The App's token
+        id: app
+        uses: actions/create-github-app-token@v2.2.2
         with:
-          token: ${{ secrets.STACK_TOKEN }}   # push + PR as the PAT so the PR triggers its gates
-          fetch-depth: 1                       # shallow: we only need HEAD to branch from
-      - name: Compute the drift
-        id: drift
+          app-id: ${{ vars.FACTORY_APP_ID }}
+          private-key: ${{ secrets.FACTORY_APP_PRIVATE_KEY }}
+      # Main as it is when this job starts, not when the run was asked for: a pin before this one may have landed.
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+      - name: Pin the commit and land the pull request
+        id: pin
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # public compare API - GITHUB_TOKEN is enough
-        run: |
-          set -euo pipefail
-          # temper main HEAD is public - anonymous ls-remote is enough.
-          NEW=$(git ls-remote "https://github.com/${TEMPER_REPO}.git" main | cut -f1)
-          case "$NEW" in *[!0-9a-f]*|"") echo "::error::bad temper HEAD '$NEW'"; exit 1 ;; esac
-          if [ "${#NEW}" -ne 40 ]; then echo "::error::temper HEAD not a full sha: '$NEW'"; exit 1; fi
+          COMMIT: ${{ inputs.commit }}
+          CHANGE_PR: ${{ inputs.pr }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: bash scripts/temper_pin.sh pin
 
-          # Each manifest must actually CARRY a temper.git pin - otherwise the
-          # uniformity check below would pass vacuously on a manifest with zero
-          # matches (e.g. paw-codex-worker silently losing its pin).
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
-            if [ "$c" -eq 0 ]; then echo "::error::$f carries no temper.git dependency pin"; exit 1; fi
-          done
-
-          # Read the current pin ONLY from the temper.git dependency lines, across
-          # BOTH manifests, and require it to be uniform - a rev scoped to any other
-          # git dep must not poison it, and a half-drifted paw-codex-worker pin must
-          # fail loudly rather than half-bump.
-          REVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
-          n=$(printf '%s\n' "$REVS" | grep -c . || true)
-          if [ "$n" -ne 1 ]; then
-            echo "::error::temper pin is not uniform across the temper.git deps in both manifests: ${REVS:-none}"; exit 1; fi
-          CUR="$REVS"
-          echo "current pin: $CUR"
-          echo "temper main: $NEW"
-
-          if [ "$NEW" = "$CUR" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "pin already at main - nothing to bump."
-            exit 0
-          fi
-
-          # Forward-only: bump only when temper main is strictly AHEAD of the pin.
-          # If main was reverted/force-pushed behind (or diverged), do not "bump"
-          # backward. The compare API is public - GITHUB_TOKEN suffices.
-          STATUS=$(gh api "repos/${TEMPER_REPO}/compare/${CUR}...${NEW}" -q .status 2>/dev/null || echo "unknown")
-          if [ "$STATUS" != "ahead" ]; then
-            echo "::warning::temper main is '$STATUS' relative to the pin, not 'ahead' - not bumping (forward-only)."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          {
-            echo "new=$NEW"
-            echo "cur=$CUR"
-            echo "changed=true"
-          } >> "$GITHUB_OUTPUT"
-      - name: Up to date
-        if: steps.drift.outputs.changed == 'false'
-        run: echo "temper pin already current (or main not ahead) - nothing to bump."
-      - name: Rust toolchain
-        if: steps.drift.outputs.changed == 'true'   # only when we will actually bump + refresh the lock
-        uses: dtolnay/rust-toolchain@stable
-      - name: Skip if a bump PR for this rev already exists
-        id: dedupe
-        if: steps.drift.outputs.changed == 'true'
+  image:
+    needs: pin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - name: Wait for its image
+        id: image
         env:
-          GH_TOKEN: ${{ secrets.STACK_TOKEN }}
-          NEW: ${{ steps.drift.outputs.new }}
-        run: |
-          set -euo pipefail
-          BRANCH="bot/temper-pin-${NEW:0:12}"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          # Key the skip on PR existence, NOT branch existence: a prior run whose
-          # `gh pr create` FAILED leaves a stranded branch with no PR, and keying on
-          # the branch would skip forever. Any PR for this head - open (in flight)
-          # or closed (a human rejected this rev) - means "handled, do not re-open";
-          # a merged bump is unreachable here because the pin would already match.
-          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json number -q 'length')
-          if [ "$count" -gt 0 ]; then
-            echo "a PR already exists for $BRANCH - handled; skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Bump the pin and open the PR
-        if: steps.drift.outputs.changed == 'true' && steps.dedupe.outputs.skip == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.STACK_TOKEN }}
-          NEW: ${{ steps.drift.outputs.new }}
-          CUR: ${{ steps.drift.outputs.cur }}
-          BRANCH: ${{ steps.dedupe.outputs.branch }}
-        run: |
-          set -euo pipefail
-          git config user.name "$BOT_IDENTITY"
-          git config user.email "rita.aga.js@gmail.com"
-          git checkout -b "$BRANCH"
+          COMMIT: ${{ needs.pin.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/temper_pin.sh image
 
-          # 1. bump the rev ONLY on the temper.git dependency lines of both manifests
-          #    (line-scoped so no other dep sharing the sha could be touched).
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            sed -i "/arni-labs\/temper\.git/s/${CUR}/${NEW}/g" "$f"
-          done
-          # after bump: each manifest still carries a temper.git pin AND every
-          # temper.git dep in BOTH manifests is exactly NEW.
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
-            if [ "$c" -eq 0 ]; then echo "::error::$f lost its temper.git pin during the bump"; exit 1; fi
-          done
-          NREVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
-          if [ "$NREVS" != "$NEW" ]; then
-            echo "::error::after bump the temper pin is not uniformly $NEW: ${NREVS:-none}"; exit 1; fi
-
-          # 2. refresh Cargo.lock properly (the new kernel may pull new transitive
-          #    deps a pure sed would miss and break --locked). Derive the crate list
-          #    from the temper.git dependency KEYS in the manifests - no hardcoded
-          #    list to drift when temper adds/removes a pinned crate.
-          PKGS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | sed -E 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/' | sort -u)
-          PKG_ARGS=""
-          for c in $PKGS; do PKG_ARGS="$PKG_ARGS -p $c"; done
-          cargo update $PKG_ARGS
-
-          if git diff --quiet; then echo "::error::no changes after bump - aborting"; exit 1; fi
-          git add crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml Cargo.lock
-
-          SHORT_CUR="${CUR:0:12}"; SHORT_NEW="${NEW:0:12}"
-          # Build the commit message and PR body from QUOTED heredocs (no shell
-          # expansion, no backtick surprises), then substitute placeholders.
-          cat > /tmp/commit-msg.txt <<'MSG'
-          chore(deps): bump temper pin to __NEW__
-
-          Bumps the temper kernel pin from __CUR__ to __NEW__ in both manifests and
-          refreshes Cargo.lock. Automated by .github/workflows/temper-pin-bump.yml
-          (ARN-438). CI building and testing --locked against the new kernel is the
-          verification.
-          MSG
-          sed -i "s/__NEW__/$SHORT_NEW/g; s/__CUR__/$SHORT_CUR/g" /tmp/commit-msg.txt
-          git commit -F /tmp/commit-msg.txt
-          # Plain --force (not --force-with-lease): this is a shallow, fresh checkout
-          # with no remote-tracking ref for BRANCH, so a lease has nothing to compare
-          # against and would be rejected. The PR-existence dedupe already proved no
-          # PR owns this rev-specific bot branch, so a stranded branch from a prior
-          # failed pr-create is ours to overwrite.
-          git push --force origin "$BRANCH"
-
-          # PR body references ARN-438 (whose docs/efforts/ chain lives on main, so
-          # the planning gate resolves the effort) and carries the decisions
-          # section the decision-log gate requires.
-          cat > /tmp/pr-body.md <<'BODY'
-          Automated temper kernel pin bump (ARN-438).
-
-          Bumps the temper git rev from `__CUR__` to `__NEW__` in
-          `crates/temperpaw/Cargo.toml` and `crates/paw-codex-worker/Cargo.toml`,
-          and refreshes `Cargo.lock`. This is temper's primary deploy leg: the new
-          kernel reaches production by riding this temperpaw PR through the normal
-          gates. CI compiling and testing `--locked` against the new kernel is the
-          verification.
-
-          Compare: https://github.com/__REPO__/compare/__FULLCUR__...__FULLNEW__
-
-          ## Decisions & Tradeoffs
-
-          No decisions - a mechanical pin bump. The automation's design and its
-          decision log live in the ARN-438 effort.
-          BODY
-          sed -i "s#__REPO__#$TEMPER_REPO#g; s/__FULLCUR__/$CUR/g; s/__FULLNEW__/$NEW/g; s/__CUR__/$SHORT_CUR/g; s/__NEW__/$SHORT_NEW/g" /tmp/pr-body.md
-          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
-            --title "chore(deps): bump temper pin to $SHORT_NEW" \
-            --body-file /tmp/pr-body.md
-
-          # Supersede OLDER open bump PRs so successive temper advances don't stack.
-          # Close only a candidate that (a) we authored (rita-aga), (b) targets a
-          # DIFFERENT rev, and (c) is BEHIND NEW - i.e. NEW is `ahead` of the
-          # candidate's rev on temper. NEVER close a NEWER bump (a mid-cron manual
-          # dispatch may have opened one); the branch name's 12-hex is the target
-          # temper rev, compared via the temper compare API. Fail loudly: a close
-          # error, or more than one bump PR left open, is a real problem - not `|| true`.
-          close_failures=0
-          candidates=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
-            --json number,headRefName,author \
-            -q ".[] | select(.headRefName | startswith(\"bot/temper-pin-\")) | select(.headRefName != \"$BRANCH\") | select(.author.login == \"$BOT_IDENTITY\") | [.number, .headRefName] | @tsv")
-          while IFS=$'\t' read -r num headref; do
-            [ -z "${num:-}" ] && continue
-            candrev="${headref#bot/temper-pin-}"
-            status=$(gh api "repos/${TEMPER_REPO}/compare/${candrev}...${NEW}" -q .status 2>/dev/null || echo "unknown")
-            if [ "$status" = "ahead" ]; then
-              if gh pr close "$num" --repo "$GITHUB_REPOSITORY" --delete-branch \
-                   --comment "Superseded by the newer temper pin bump to ${SHORT_NEW}."; then
-                echo "superseded older bump PR #$num ($candrev)"
-              else
-                echo "::error::failed to close superseded bump PR #$num"; close_failures=$((close_failures + 1))
-              fi
-            else
-              echo "::warning::leaving bump PR #$num ($candrev) open - compare vs ${SHORT_NEW} is '$status', not an older rev"
-            fi
-          done <<< "$candidates"
-          remaining=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json headRefName \
-            -q "[.[] | select(.headRefName | startswith(\"bot/temper-pin-\"))] | length")
-          if [ "$close_failures" -gt 0 ]; then
-            echo "::error::${close_failures} superseded-PR close(s) failed"; exit 1; fi
-          if [ "$remaining" -gt 1 ]; then
-            echo "::error::${remaining} open temper-pin bump PRs remain (expected 1) - a newer/racing bump needs manual resolution"; exit 1; fi
+  staging:
+    needs: [pin, image]
+    uses: ./.github/workflows/railway-redeploy.yml
+    secrets: inherit
+    with:
+      release_id: ${{ inputs.release_id }}
+      step: stage
+      step_token: ${{ inputs.step_token }}
+      pr: ${{ inputs.pr }}
+      commit: ${{ inputs.commit }}
+      ref: ${{ needs.image.outputs.tag }}
+      environment: staging
