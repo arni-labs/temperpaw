@@ -5,9 +5,9 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # it against what ran just before, and goes back to that image on any miss (scripts/railway_release.sh). The checks:
 # /healthz and /readyz, /paw/version naming the tag's commit, the default tenant's route_count from the new boot log
 # against the old one, each probe (the control routes and the sign-in answers) against the answer it gave before, and
-# the guest read against what it held before (nothing lost; new records are fine). Memory is read after a soak
-# (Railway's figure, and the build's own gauges in Datadog where the environment sends them) and reported; it gates
-# only where MEMORY_LIMIT_GB is set.
+# the guest read for lost records (counts may grow; complete reads also keep every id from before). Memory is read
+# after a soak (Railway's figure, and the build's own gauges in Datadog where the environment sends them) and reported;
+# it gates only where MEMORY_LIMIT_GB is set.
 # A deployment that never takes over (Railway keeps the old one serving until /readyz answers) is stopped, and nothing
 # restarts; one that took over and then missed a check is replaced by the image that ran before. When the newer kernel
 # added storage migrations the older one does not know, their _sqlx_migrations rows are removed first if every one is
@@ -20,7 +20,9 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # variables RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, TEMPERPAW_BASE_URL, PROBE_ROUTES (one "<GET|POST> <anon|operator|
 # forged-customer|forged-admin|bogus> <path>" per line), GUEST_CHECK_URL, MEMORY_LIMIT_GB (a gate; without it memory is
 # reported only) and DD_ENV; secret TEMPER_API_KEY. An environment's own value wins over the repository's.
-# RAILWAY_TOKEN (an account or team token), RAILWAY_PROJECT_ID and the Datadog keys are the repository's.
+# RAILWAY_TOKEN is the environment's own project token when the environment has one (railway_release.sh sends it as
+# Project-Access-Token), else the repository's account or workspace token. RAILWAY_PROJECT_ID and the Datadog keys are
+# the repository's.
 #
 # Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
 # rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
@@ -119,6 +121,8 @@ jobs:
       IMAGE_TAG: ${{ inputs.image_tag || inputs.ref }}
       DEPLOY_ENV: ${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
       EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
+      FACTORY_STEP: ${{ inputs.step }}
+      FACTORY_COMMIT: ${{ inputs.commit }}
       RUN_ARTIFACT_BATCH_E2E: ${{ inputs.run_artifact_batch_e2e }}
       BASE_URL: ${{ vars.TEMPERPAW_BASE_URL }}
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
@@ -167,6 +171,15 @@ jobs:
           # The full commit /paw/version must report; the tag's short sha must name exactly one commit here.
           full="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${short}" --jq .sha)"
           [[ "${full}" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_sha cannot be verified for ${IMAGE_TAG}: no such commit" >&2; exit 64; }
+          # Forward steps must ship the Factory's release commit. Rollback deliberately names an older image.
+          case "${FACTORY_STEP}" in
+            stage|check_staging|go_live)
+              if ! [[ "${FACTORY_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || [ "${full}" != "${FACTORY_COMMIT}" ]; then
+                echo "resolved image commit ${full} does not match Factory commit ${FACTORY_COMMIT} (a full SHA is required)" >&2
+                exit 64
+              fi
+              ;;
+          esac
           echo "EXPECTED_SHA=${full}" >> "${GITHUB_ENV}"
           echo "STATE_DIR=${RUNNER_TEMP}/release" >> "${GITHUB_ENV}"
           if [ -n "${ROLLBACK_TAG}" ] && ! [[ "${ROLLBACK_TAG}" =~ ^sha-[0-9a-f]{7,40}$ ]]; then
@@ -220,6 +233,7 @@ jobs:
           bash scripts/railway_release.sh check
 
       - name: Build packaged ArtifactBatch WASM for hash proof
+        id: package
         if: inputs.run_artifact_batch_e2e == 'true' && steps.check.outcome == 'success'
         run: |
           set -euo pipefail
@@ -238,7 +252,7 @@ jobs:
 
       - name: Go back to the image that ran before
         id: rollback
-        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.e2e.outcome == 'failure')
+        if: always() && (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && (steps.deploy.outcome == 'failure' || steps.check.outcome == 'failure' || steps.package.outcome == 'failure' || steps.e2e.outcome == 'failure')
         run: bash scripts/railway_release.sh rollback
 
       - name: The release record
@@ -247,6 +261,7 @@ jobs:
         env:
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -257,10 +272,10 @@ jobs:
           set -uo pipefail
           # What the release captain copies onto the Factory's Release (this run writes nothing there).
           if [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = check ]; then
-            result=$([ "${CHECK_OUTCOME}" = success ] && echo checked || echo check-failed)
+            result=$([ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ] && echo checked || echo check-failed)
           elif [ "${ROLLBACK_OUTCOME}" = success ]; then result=rolled_back
           elif [ "${ROLLBACK_OUTCOME}" = failure ]; then result=rollback_failed
-          elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
+          elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
           else result=failed; fi
           read_json() { [ -f "${STATE_DIR:-/nonexistent}/$1.json" ] && jq -c . "${STATE_DIR}/$1.json" || echo null; }
           record="$(jq -n --arg result "$result" --arg environment "${DEPLOY_ENV}" --arg image_tag "${IMAGE_TAG}" \

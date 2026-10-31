@@ -4,9 +4,8 @@
 //! OpenRouter's image API (`POST /api/v1/images`) with an API key held as a
 //! Temper secret, stores the image in PawFS, and records
 //! MediaGenerationRequest.RecordResult. No subscription auth gate: the key is
-//! the credential. The default model is xAI's Grok Imagine; Katagami's
-//! art-style transfer test also names GPT Image, Nano Banana and Seedream
-//! (ALLOWED_MODELS).
+//! the credential. The default model is xAI's Grok Imagine; a caller may name
+//! any OpenRouter image model.
 
 use base64::{Engine as _, engine::general_purpose};
 use serde_json::{Value, json};
@@ -174,21 +173,11 @@ fn validate_request(fields: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// OpenRouter models a request may name. Every picture is paid from the
-/// tenant's OpenRouter credit, so a caller cannot pick an arbitrary (or
-/// arbitrarily expensive) model: only the newest model of each family
-/// Katagami's art-style transfer test draws with (Rita, 2026-10-02: Grok
-/// Imagine, GPT Image, Nano Banana and Seedream, ids from OpenRouter's image
-/// model list on 2026-10-02), or the operator's configured default.
-const ALLOWED_MODELS: &[&str] = &[
-    DEFAULT_MODEL,
-    "openai/gpt-image-2.5-sunburst",
-    "google/gemini-3.1-flash-image",
-    "bytedance-seed/seedream-5-0-pro",
-];
-
-/// The configured default (else Grok Imagine), or a requested "vendor/model"
-/// when it is allowed.
+/// The requested model, or the configured default (else Grok Imagine) when the
+/// request names none. Who may spend the tenant's OpenRouter credit is the
+/// policy's call (media_generation.cedar forbids members and contributor
+/// agents); which model draws is the caller's. OpenRouter refuses an id it
+/// does not know, and that refusal is recorded as the request's error.
 fn openrouter_model(fields: &Value, ctx: &Context) -> Result<String, String> {
     let configured =
         config_value(ctx, "default_model").unwrap_or_else(|| DEFAULT_MODEL.to_string());
@@ -199,15 +188,16 @@ fn openrouter_model(fields: &Value, ctx: &Context) -> Result<String, String> {
 }
 
 fn choose_model(asked: &str, configured: &str) -> Result<String, String> {
-    if !asked.contains('/') || asked == configured {
+    let asked = asked.trim();
+    if asked.is_empty() {
         return Ok(configured.to_string());
     }
-    if ALLOWED_MODELS.contains(&asked) {
-        return Ok(asked.to_string());
+    if !asked.contains('/') {
+        return Err(format!(
+            "OpenRouter model ids are \"vendor/model\" (for example {DEFAULT_MODEL}); got {asked}"
+        ));
     }
-    Err(format!(
-        "OpenRouter model {asked} is not allowed here; use {configured} (or leave model empty)"
-    ))
+    Ok(asked.to_string())
 }
 
 /// Only what every OpenRouter image model takes: model, prompt and one image.
@@ -828,41 +818,31 @@ mod tests {
     }
 
     #[test]
-    fn only_allowed_models_are_used() {
+    fn the_asked_model_draws_and_an_empty_one_takes_the_default() {
         assert_eq!(choose_model("", DEFAULT_MODEL).unwrap(), DEFAULT_MODEL);
         assert_eq!(
-            choose_model("gpt-image-2", DEFAULT_MODEL).unwrap(),
-            DEFAULT_MODEL
+            choose_model("  ", "vendor/configured").unwrap(),
+            "vendor/configured"
         );
         assert_eq!(
             choose_model(DEFAULT_MODEL, "vendor/configured").unwrap(),
             DEFAULT_MODEL
         );
-        assert_eq!(
-            choose_model("vendor/configured", "vendor/configured").unwrap(),
-            "vendor/configured"
-        );
-        assert!(choose_model("openai/some-expensive-model", DEFAULT_MODEL).is_err());
-    }
-
-    #[test]
-    fn the_four_transfer_test_models_are_drawn_and_no_others() {
         for model in [
             "x-ai/grok-imagine-image-2.0",
             "openai/gpt-image-2.5-sunburst",
-            "google/gemini-3.1-flash-image",
-            "bytedance-seed/seedream-5-0-pro",
-        ] {
-            assert_eq!(choose_model(model, DEFAULT_MODEL).as_deref(), Ok(model));
-        }
-        // Another tier of the same families is still refused before a paid call.
-        for model in [
             "openai/gpt-image-2.5-flare",
             "google/gemini-3-pro-image",
             "bytedance-seed/seedream-5-0-flash",
         ] {
-            assert!(choose_model(model, DEFAULT_MODEL).is_err(), "{model}");
+            assert_eq!(choose_model(model, DEFAULT_MODEL).as_deref(), Ok(model));
         }
+    }
+
+    #[test]
+    fn a_name_without_a_vendor_is_an_error_not_the_default() {
+        let err = choose_model("gpt-image-2", DEFAULT_MODEL).unwrap_err();
+        assert!(err.contains("gpt-image-2"), "{err}");
     }
 
     #[test]

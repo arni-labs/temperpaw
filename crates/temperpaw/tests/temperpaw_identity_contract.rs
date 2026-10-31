@@ -8,7 +8,17 @@ const LEGACY_IDENTITY_TERMS: [&str; 8] = [
     "OPENPAW", "OpenPAW", "OpenPaw", "Open Paw", "openpaw", "open paw", "open_paw", "open-paw",
 ];
 
-const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 28] = [
+const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 19] = [
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "Check the Railway service openpaw before the app.",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
+    (
+        "crates/temperpaw/tests/datadog_observability_contract.rs",
+        "service:openpaw status:error",
+        "test fixture: a Katagami monitor that names the Railway service is not TemperPaw's",
+    ),
     (
         "crates/temperpaw/tests/datadog_observability_contract.rs",
         "\"openpaw.\"",
@@ -16,63 +26,8 @@ const LEGACY_IDENTITY_ALLOWLIST: [(&str, &str, &str); 28] = [
     ),
     (
         "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"legacy_openpaw_monitor\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
         "\"legacy_openpaw_dashboard\"",
         "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"slack-openpaw-alerts\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "crates/temperpaw/tests/datadog_observability_contract.rs",
-        "\"service:openpaw\"",
-        "test-only assertions for Datadog legacy cleanup paths",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "LEGACY_OPENPAW_MONITOR_TERMS",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"OpenPaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"OpenPAW\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"openpaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"service:openpaw\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "\"slack-openpaw-alerts\"",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "legacy_openpaw_monitor",
-        "Datadog monitor deploy must find and delete live legacy monitors",
-    ),
-    (
-        "scripts/deploy_monitors.py",
-        "legacy OpenPaw identity",
-        "Datadog monitor deploy must document legacy cleanup matching",
     ),
     (
         "scripts/deploy_pipelines.py",

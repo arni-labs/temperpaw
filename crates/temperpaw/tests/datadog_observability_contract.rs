@@ -55,6 +55,18 @@ fn collect_cargo_manifests(root: &Path, relative_dir: &Path, files: &mut Vec<Pat
     }
 }
 
+/// The Temper rev the server builds against: temper-platform's pin in crates/temperpaw/Cargo.toml.
+fn server_temper_rev(manifest: &str) -> &str {
+    manifest
+        .lines()
+        .find(|line| {
+            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
+        })
+        .and_then(|line| line.split("rev = \"").nth(1))
+        .and_then(|rest| rest.get(..40))
+        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev")
+}
+
 #[test]
 fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     let manifest = load_text("crates/temperpaw/Cargo.toml");
@@ -62,14 +74,7 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
     // The kernel pin moves with every bump (temper-pin-bump.yml), so the contract
     // is one arni-labs rev across the server crates, resolved in Cargo.lock, and
     // none of the known-bad revs below; it does not name the current rev.
-    let expected_rev = manifest
-        .lines()
-        .find(|line| {
-            line.starts_with("temper-platform = ") && line.contains("arni-labs/temper.git")
-        })
-        .and_then(|line| line.split("rev = \"").nth(1))
-        .and_then(|rest| rest.get(..40))
-        .expect("crates/temperpaw/Cargo.toml must pin temper-platform to an arni-labs/temper rev");
+    let expected_rev = server_temper_rev(&manifest);
     let pre_llmobs_opt_out_rev = "510a0d9bc9517f7819d66849446cdf6aff2d5295";
     let observe_wait_only_rev = "6ccc483af87abbf6d9b060d0e6a6def3adfe6718";
     let host_boundary_rev = "7b170cf71246e01c337e81062b54ea8c597b9293";
@@ -128,7 +133,12 @@ fn temper_dependency_pin_uses_budgeted_wasm_host_call_revision() {
 #[test]
 fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
     let root = repo_root();
-    let expected_rev = "aead3d22c769382523430c7f769a1aea8486d360";
+    // The server's own pin, read from its manifest, so the two cannot drift apart while this passes.
+    let server_manifest = load_text("crates/temperpaw/Cargo.toml");
+    let expected_rev = server_temper_rev(&server_manifest);
+    let expected_lock_source = format!(
+        "source = \"git+https://github.com/arni-labs/temper.git?rev={expected_rev}#{expected_rev}\""
+    );
     let expected_dependency = format!(
         "temper-wasm-sdk = {{ git = \"https://github.com/arni-labs/temper.git\", rev = \"{expected_rev}\""
     );
@@ -148,7 +158,7 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         sdk_manifests += 1;
         assert!(
             manifest.contains(&expected_dependency),
-            "{} must pin temper-wasm-sdk to the same Temper rev as the server so guest modules do not drift away from WASM host-call and observability contracts",
+            "{} must pin temper-wasm-sdk to the server's Temper rev {expected_rev} (crates/temperpaw/Cargo.toml) so guest modules do not drift away from WASM host-call and observability contracts",
             manifest_path.display()
         );
         assert!(
@@ -162,11 +172,16 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         if absolute_lock_path.exists() {
             let lockfile = fs::read_to_string(&absolute_lock_path)
                 .unwrap_or_else(|err| panic!("failed to read {}: {err}", lock_path.display()));
-            if lockfile.contains("name = \"temper-wasm-sdk\"") {
+            if let Some(sdk_source) = lockfile
+                .split("[[package]]")
+                .find(|package| package.contains("name = \"temper-wasm-sdk\""))
+                .and_then(|package| package.lines().find(|line| line.starts_with("source = ")))
+            {
                 sdk_lockfiles += 1;
-                assert!(
-                    lockfile.contains(expected_rev),
-                    "{} must resolve temper-wasm-sdk to the same Temper runtime rev as the server",
+                assert_eq!(
+                    sdk_source,
+                    expected_lock_source,
+                    "{} must resolve temper-wasm-sdk to the server's Temper rev",
                     lock_path.display()
                 );
                 assert!(
@@ -397,7 +412,7 @@ fn monitors_cover_session_trace_llmobs_and_postgres_dbm_health() {
         "[Temper] Profiler Upload Failures",
         "trace-analytics alert",
         "@observability_event:temperpaw.agent.session -trace_id:*",
-        "@module_name:provider_caller",
+        "@gen_ai.system:*",
         "postgresql.queries.count",
         "type:sql",
         "@db.system:postgresql",
@@ -572,7 +587,6 @@ fn datadog_covers_temperfs_blob_and_document_services() {
         "observability_event:temperpaw.fs",
         "fs.outcome:error",
         "temper_blob_native_transport_duration_ms",
-        "temper_blob_transport_wait_duration_ms",
         "temper_session_large_content_externalized_total",
     ] {
         assert!(
@@ -1399,26 +1413,64 @@ fn managed_session_events_expose_queryable_bridge_context() {
     }
 }
 
+/// Reconcile deletes only monitors TemperPaw owns: the team tag or a name from the file. On 24 Oct 2026 a dry run
+/// found that matching words in a monitor's text would have deleted seven of Katagami's own monitors, whose
+/// runbooks name the Railway service. A Datadog UI save turns "metric alert" into "query alert", and that must
+/// not make a deploy delete and recreate the monitor.
 #[test]
-fn datadog_monitor_deploy_reconciles_untagged_legacy_monitors() {
-    let script = std::fs::read_to_string(repo_root().join("scripts/deploy_monitors.py"))
-        .expect("deploy_monitors.py should be readable");
-
-    for required in [
-        "legacy_openpaw_monitor",
-        "team:temperpaw",
-        "slack-openpaw-alerts",
-        "service:openpaw",
-        "is_temperpaw_owned_monitor",
-        "datadog_request(",
-        "\"DELETE\"",
-        "Delete orphan monitor",
-    ] {
-        assert!(
-            script.contains(required),
-            "Datadog monitor deploy must include untagged legacy reconciliation clause `{required}`"
-        );
-    }
+fn datadog_monitor_deploy_owns_only_tagged_or_file_named_monitors() {
+    const PROBE: &str = r#"
+import importlib.util, json, sys, types
+sys.modules["requests"] = types.SimpleNamespace(Response=object, HTTPError=Exception)
+spec = importlib.util.spec_from_file_location("deploy_monitors", sys.argv[1])
+deploy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deploy)
+monitors = json.loads(sys.argv[2])
+print(json.dumps({
+    "owned": [deploy.is_temperpaw_owned_monitor(m, {"[Temper] In The File"}) for m in monitors],
+    "same_type": [deploy.same_monitor_type(*pair) for pair in json.loads(sys.argv[3])],
+}))
+"#;
+    let monitors = serde_json::json!([
+        {
+            "name": "[Katagami] Temper is unreachable",
+            "message": "Check the Railway service openpaw before the app.",
+            "query": "logs(\"service:openpaw status:error\").last(\"5m\") > 0",
+            "tags": ["katagami"]
+        },
+        {"name": "[Temper] Retired Monitor", "message": "", "query": "", "tags": ["team:temperpaw"]},
+        {"name": "[Temper] In The File", "message": "", "query": "", "tags": []}
+    ]);
+    let type_pairs = serde_json::json!([
+        ["query alert", "metric alert"],
+        ["metric alert", "query alert"],
+        ["log alert", "log alert"],
+        ["log alert", "metric alert"]
+    ]);
+    let output = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(PROBE)
+        .arg(repo_root().join("scripts/deploy_monitors.py"))
+        .arg(monitors.to_string())
+        .arg(type_pairs.to_string())
+        .output()
+        .expect("python3 should run deploy_monitors.py");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        answer["owned"],
+        serde_json::json!([false, true, true]),
+        "only the team tag or a name from the file makes a monitor TemperPaw's"
+    );
+    assert_eq!(
+        answer["same_type"],
+        serde_json::json!([true, true, true, false]),
+        "metric alert and query alert are one type; other types still differ"
+    );
 }
 
 #[test]
@@ -1450,7 +1502,7 @@ fn deploy_configures_postgres_dbm_agent_when_datadog_is_enabled() {
 
     for required in [
         "datadog-postgres-agent",
-        "datadog/agent:7",
+        "datadog/agent:7.84.5",
         "dbm: true",
         "PGHOST=${{Postgres.PGHOST}}",
         "PGPASSWORD=${{Postgres.PGPASSWORD}}",
@@ -1635,7 +1687,7 @@ fn setup_api_can_ensure_railway_datadog_runtime_agent_without_exposing_tokens() 
         "ensure_datadog_runtime_agent",
         "serviceCreate",
         "ServiceSourceInput",
-        "datadog/agent:7",
+        "datadog/agent:7.84.5",
         "datadog-runtime-agent",
         "railway_datadog_runtime_agent_service_id",
         "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT",
@@ -1945,7 +1997,8 @@ fn wasm_guest_observability_live_proof_is_temper_native_and_datadog_backed() {
 
     assert!(
         probe_manifest.contains("temper-wasm-sdk")
-            && probe_manifest.contains("aead3d22c769382523430c7f769a1aea8486d360"),
+            && probe_manifest
+                .contains(server_temper_rev(&load_text("crates/temperpaw/Cargo.toml"))),
         "proof WASM must build against the same guest SDK runtime rev as production modules"
     );
 }
