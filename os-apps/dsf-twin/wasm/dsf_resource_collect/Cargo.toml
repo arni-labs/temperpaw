@@ -16,4 +16,4 @@ serde_json = "1"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }

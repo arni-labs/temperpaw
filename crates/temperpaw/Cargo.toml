@@ -12,16 +12,16 @@ path = "src/main.rs"
 
 [dependencies]
 # Temper platform engine
-temper-platform = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-observe = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-server = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd", features = ["observe"] }
-temper-runtime = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-jit = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-authz = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-store-postgres = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
-temper-store-turso = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
+temper-platform = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-observe = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-server = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd", features = ["observe"] }
+temper-runtime = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-jit = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-authz = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-store-postgres = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
+temper-store-turso = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
 # CSDL parsing for the targeted platform-identity spec registration (see identity_bootstrap.rs)
-temper-spec = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
+temper-spec = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
 
 # Paw transport (local)
 paw-transport = { path = "../paw-transport" }
@@ -84,7 +84,7 @@ cliclack = "0.3"
 
 [dev-dependencies]
 dsf-resource-collect = { path = "../../os-apps/dsf-twin/wasm/dsf_resource_collect" }
-temper-wasm = { git = "https://github.com/arni-labs/temper.git", rev = "0cc98031e5d404621761337a754567b5c7d9e2cd" }
+temper-wasm = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
 tempfile = "3"
 toml = "0.8"
 tower = "0.5"
