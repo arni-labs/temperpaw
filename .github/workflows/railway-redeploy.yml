@@ -15,6 +15,11 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 #
 # mode "check" deploys nothing: it runs the same checks against what runs now.
 #
+# A deploy never moves the Temper backwards (railway_release.sh forward, after the snapshot). When the commit that serves
+# already contains the release's commit, the release is live: nothing deploys or restarts, and the result is
+# already_live. A release deploys only when its commit contains the commit that serves, and on production only a commit
+# main contains. roll_back goes back on purpose and skips this.
+#
 # GitHub environments "staging" and "production" name their own Railway environment and service and operator key:
 # variables RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, TEMPERPAW_BASE_URL, PROBE_ROUTES (one "<GET|POST> <anon|operator|
 # forged-customer|forged-admin|bogus> <path>" per line), GUEST_CHECK_URL, MEMORY_LIMIT_GB (a gate; without it memory is
@@ -24,11 +29,12 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # the repository's.
 #
 # Each run ends with a release record (job outputs "result" and "record", and the run summary): the result (verified,
-# rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's address and
-# every check. The release captain copies it onto the Factory's Release; this workflow writes nothing there. When the
-# Factory starts a run it passes the six inputs of every Factory step (release_id, step, step_token, pr, commit, ref):
-# the run is named "factory <release_id> <step> <step_token>", ref names the image when image_tag is empty, go_live and
-# roll_back run on production, and the conclusion is the outcome (the job output and annotation "outcome" add the reason).
+# already_live, rolled_back, rollback_failed, failed, checked), the image and the one before it, the commit, the run's
+# address and every check. The release captain copies it onto the Factory's Release; this workflow writes nothing
+# there. When the Factory starts a run it passes the six inputs of every Factory step (release_id, step, step_token, pr,
+# commit, ref): the run is named "factory <release_id> <step> <step_token>", ref names the image when image_tag is
+# empty, go_live and roll_back run on production, and the conclusion is the outcome (the job output and annotation
+# "outcome" add the reason).
 
 on:
   workflow_dispatch:
@@ -216,13 +222,23 @@ jobs:
       - name: What runs now
         run: bash scripts/railway_release.sh snapshot
 
+      # Never backwards: a release the serving commit already contains is live, and nothing deploys or restarts; one
+      # that does not contain the serving commit deploys nothing. roll_back goes back on purpose and skips this.
+      - name: Is it live already
+        id: forward
+        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && inputs.step != 'roll_back'
+        run: |
+          set -euo pipefail
+          bash scripts/railway_release.sh forward | tee -a "${GITHUB_OUTPUT}"
+
       - name: Deploy the image
         id: deploy
-        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy'
+        if: (inputs.step == 'check_staging' && 'check' || inputs.mode) == 'deploy' && steps.forward.outputs.already != 'true'
         run: bash scripts/railway_release.sh deploy "${IMAGE_TAG}"
 
       - name: Check what runs against what ran before
         id: check
+        if: steps.forward.outputs.already != 'true'
         env:
           DRILL: ${{ inputs.drill && 'yes' || '' }}
         run: |
@@ -263,6 +279,7 @@ jobs:
           PACKAGE_OUTCOME: ${{ steps.package.outcome }}
           E2E_OUTCOME: ${{ steps.e2e.outcome }}
           ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+          ALREADY: ${{ steps.forward.outputs.already }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           FACTORY_RELEASE: ${{ inputs.release_id }}
           FACTORY_STEP: ${{ inputs.step }}
@@ -272,6 +289,7 @@ jobs:
           # What the release captain copies onto the Factory's Release (this run writes nothing there).
           if [ "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }}" = check ]; then
             result=$([ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ] && echo checked || echo check-failed)
+          elif [ "${ALREADY}" = true ]; then result=already_live
           elif [ "${ROLLBACK_OUTCOME}" = success ]; then result=rolled_back
           elif [ "${ROLLBACK_OUTCOME}" = failure ]; then result=rollback_failed
           elif [ "${DEPLOY_OUTCOME}" = success ] && [ "${CHECK_OUTCOME}" = success ] && [ "${PACKAGE_OUTCOME}" != failure ] && [ "${E2E_OUTCOME}" != failure ]; then result=verified
@@ -282,15 +300,18 @@ jobs:
             --arg misses "$(cat "${STATE_DIR:-/nonexistent}/misses.txt" 2>/dev/null || cat "${STATE_DIR:-/nonexistent}/errors.txt" 2>/dev/null || true)" \
             --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
             --argjson checked "$(read_json checked)" --argjson rolled_back "$(read_json rolled-back)" \
-            '{result: $result, environment: $environment, ref: $image_tag, previous_ref: ($before.image_tag // null), image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
+            '{result: $result, environment: $environment, ref: (if $result == "already_live" then $before.image_tag else $image_tag end),
+              previous_ref: ($before.image_tag // null), image_tag: $image_tag, previous_image_tag: ($before.image_tag // null),
               commit: $commit, run_url: $run_url, misses: ($misses | split("\n") | map(select(length > 0))),
               before: $before, new: $new, checked: $checked, rolled_back: $rolled_back}')"
           echo "${record}" | jq .
           echo "result=${result}" >> "${GITHUB_OUTPUT}"
-          # The Factory's outcome: ok only when the release is verified (or a check run passed); failed with the first miss.
+          # The Factory's outcome: ok only when the release is verified, live already, or a check run passed; failed with
+          # the first miss. A release live already names the image that serves as its ref.
           outcome="$(jq -c --arg r "${FACTORY_RELEASE}" --arg s "${FACTORY_STEP}" --arg t "${FACTORY_TOKEN}" \
-            '{release: $r, step: $s, token: $t, result: (if .result == "verified" or .result == "checked" then "ok" else "failed" end),
-              reason: (if .result == "verified" or .result == "checked" then "\(.ref) \(.result) on \(.environment)"
+            '{release: $r, step: $s, token: $t, result: (if .result == "verified" or .result == "checked" or .result == "already_live" then "ok" else "failed" end),
+              reason: (if .result == "already_live" then "already live: \(.before.sha) serves on \(.environment), and it contains \(.commit)"
+                       elif .result == "verified" or .result == "checked" then "\(.ref) \(.result) on \(.environment)"
                        else "\(.result): \(.misses[0] // "a step failed before the checks")" end),
               ref, previous_ref, commit, run: .run_url}' <<<"${record}")"
           echo "outcome=${outcome}" >> "${GITHUB_OUTPUT}"
