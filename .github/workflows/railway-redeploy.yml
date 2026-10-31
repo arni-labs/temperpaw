@@ -29,8 +29,31 @@ run-name: ${{ inputs.release_id && format('factory {0} {1} {2}', inputs.release_
 # Factory starts a run it passes the six inputs of every Factory step (release_id, step, step_token, pr, commit, ref):
 # the run is named "factory <release_id> <step> <step_token>", ref names the image when image_tag is empty, go_live and
 # roll_back run on production, and the conclusion is the outcome (the job output and annotation "outcome" add the reason).
+# A forward step ships the release's commit: the image's own commit, or a temper commit that every temper rev at the
+# image's commit carries (a kernel change, staged by temper-pin-bump.yml, which calls this workflow). A verified stage
+# names that commit as the outcome's `staged`. A roll_back also takes the change's temper pin off main (job unpin,
+# scripts/temper_pin.sh revert), so the next image does not carry it again.
 
 on:
+  # The same inputs, for a workflow that stages its own image (temper-pin-bump.yml).
+  workflow_call:
+    inputs:
+      release_id: { type: string, required: false, default: "" }
+      step: { type: string, required: false, default: "" }
+      step_token: { type: string, required: false, default: "" }
+      pr: { type: string, required: false, default: "" }
+      commit: { type: string, required: false, default: "" }
+      ref: { type: string, required: false, default: "" }
+      environment: { type: string, required: false, default: staging }
+      image_tag: { type: string, required: false, default: "" }
+      mode: { type: string, required: false, default: deploy }
+      rollback_tag: { type: string, required: false, default: "" }
+      drill: { type: boolean, required: false, default: false }
+      expected_sha: { type: string, required: false, default: "" }
+      poll_attempts: { type: string, required: false, default: "60" }
+      poll_seconds: { type: string, required: false, default: "15" }
+      soak_seconds: { type: string, required: false, default: "300" }
+      run_artifact_batch_e2e: { type: string, required: false, default: "false" }
   workflow_dispatch:
     inputs:
       release_id:
@@ -103,13 +126,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: deploy-temperpaw-${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
-  cancel-in-progress: false
-
 jobs:
   redeploy:
     runs-on: ubuntu-latest
+    # On the job, not the workflow: a caller's run holds the group only while it deploys.
+    concurrency:
+      group: deploy-temperpaw-${{ (inputs.step == 'go_live' || inputs.step == 'roll_back') && 'production' || inputs.environment }}
+      cancel-in-progress: false
     outputs:
       result: ${{ steps.record.outputs.result }}
       record: ${{ steps.record.outputs.record }}
@@ -170,13 +193,15 @@ jobs:
           # The full commit /paw/version must report; the tag's short sha must name exactly one commit here.
           full="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${short}" --jq .sha)"
           [[ "${full}" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_sha cannot be verified for ${IMAGE_TAG}: no such commit" >&2; exit 64; }
-          # Forward steps must ship the Factory's release commit. Rollback deliberately names an older image.
+          # Forward steps must ship the release's commit: the image's own, or a temper commit its temper revs carry,
+          # which the step after checkout reads. Rollback deliberately names an older image.
           case "${FACTORY_STEP}" in
             stage|check_staging|go_live)
-              if ! [[ "${FACTORY_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || [ "${full}" != "${FACTORY_COMMIT}" ]; then
-                echo "resolved image commit ${full} does not match Factory commit ${FACTORY_COMMIT} (a full SHA is required)" >&2
+              if ! [[ "${FACTORY_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "the release commit ${FACTORY_COMMIT} is not a full SHA" >&2
                 exit 64
               fi
+              [ "${full}" = "${FACTORY_COMMIT}" ] || echo "PINNED_COMMIT=${FACTORY_COMMIT}" >> "${GITHUB_ENV}"
               ;;
           esac
           echo "EXPECTED_SHA=${full}" >> "${GITHUB_ENV}"
@@ -212,6 +237,14 @@ jobs:
           echo "${{ (inputs.step == 'check_staging' && 'check' || inputs.mode) }} ${IMAGE_TAG} (${full}) on ${DEPLOY_ENV} at ${BASE_URL}"
 
       - uses: actions/checkout@v6.0.2
+
+      - name: The image pins the release's temper commit
+        if: env.PINNED_COMMIT != ''
+        env:
+          COMMIT: ${{ env.PINNED_COMMIT }}
+          IMAGE_COMMIT: ${{ env.EXPECTED_SHA }}
+          READ_TOKEN: ${{ github.token }}
+        run: bash scripts/temper_pin.sh carried
 
       - name: What runs now
         run: bash scripts/railway_release.sh snapshot
@@ -288,10 +321,12 @@ jobs:
           echo "${record}" | jq .
           echo "result=${result}" >> "${GITHUB_OUTPUT}"
           # The Factory's outcome: ok only when the release is verified (or a check run passed); failed with the first miss.
-          outcome="$(jq -c --arg r "${FACTORY_RELEASE}" --arg s "${FACTORY_STEP}" --arg t "${FACTORY_TOKEN}" \
+          # staged: the release commit a verified stage put on staging (for a kernel change, the temper commit it pins).
+          outcome="$(jq -c --arg r "${FACTORY_RELEASE}" --arg s "${FACTORY_STEP}" --arg t "${FACTORY_TOKEN}" --arg c "${FACTORY_COMMIT}" \
             '{release: $r, step: $s, token: $t, result: (if .result == "verified" or .result == "checked" then "ok" else "failed" end),
               reason: (if .result == "verified" or .result == "checked" then "\(.ref) \(.result) on \(.environment)"
                        else "\(.result): \(.misses[0] // "a step failed before the checks")" end),
+              staged: (if $s == "stage" and .result == "verified" and $c != "" then $c else null end),
               ref, previous_ref, commit, run: .run_url}' <<<"${record}")"
           echo "outcome=${outcome}" >> "${GITHUB_OUTPUT}"
           echo "::notice title=outcome::${outcome}"
@@ -304,3 +339,30 @@ jobs:
             echo "${record}" | jq .
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  # A roll_back takes the change's temper pin off main too: the merged pin pull request of a kernel change, or a change
+  # here that moved a temper rev, is reverted in a pull request merged once its checks are green. The image goes back
+  # in the job above; without this, the next image built from main would carry the rolled-back pin again. Running it
+  # twice is a pass. It needs the GitHub App's token for the same reason the pin does (temper-pin-bump.yml).
+  unpin:
+    if: inputs.step == 'roll_back'
+    runs-on: ubuntu-latest
+    steps:
+      - name: The App's token
+        id: app
+        uses: actions/create-github-app-token@v2.2.2
+        with:
+          app-id: ${{ vars.FACTORY_APP_ID }}
+          private-key: ${{ secrets.FACTORY_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+      - name: Revert the change's temper pin
+        env:
+          COMMIT: ${{ inputs.commit }}
+          CHANGE_PR: ${{ inputs.pr }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        run: bash scripts/temper_pin.sh revert
