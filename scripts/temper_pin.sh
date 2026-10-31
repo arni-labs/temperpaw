@@ -105,13 +105,20 @@ main_pins() {
   all_carry "$1" FETCH_HEAD && git rev-parse FETCH_HEAD
 }
 
-# Whether every workflow run on commit $1 for its pull request has finished.
-ci_done() {
-  [ "$(gh api "repos/$REPO/actions/runs?head_sha=$1&event=pull_request&per_page=100" --jq '.workflow_runs | length > 0 and all(.status == "completed")')" = true ]
+# The workflow runs on commit $1 for its pull request: "pending" until one has started and every one has finished,
+# "green" when every one passed, otherwise the first that did not, as "<name> <conclusion>: <link>". A run that ended
+# in any other way (failed, cancelled, timed out) is red: its checks never passed on this head.
+ci_runs() {
+  gh api "repos/$REPO/actions/runs?head_sha=$1&event=pull_request&per_page=100" --jq '
+    .workflow_runs as $runs
+    | ($runs | map(select(.conclusion | IN("success", "skipped", "neutral") | not))) as $red
+    | if ($runs | length) == 0 or ($runs | any(.status != "completed")) then "pending"
+      elif ($red | length) == 0 then "green"
+      else $red[0] | "\(.name) \(.conclusion): \(.html_url)" end'
 }
 
 # Lands pull request $1: it is merged, with the App's token so the merge's push starts docker.yml, once every workflow
-# run on its head has finished with nothing red and GitHub calls it mergeable. GitHub's own auto-merge is not used: it
+# run on its head has passed and GitHub calls it mergeable. GitHub's own auto-merge is not used: it
 # waits only for the required checks, and only `checks` is required, so a pin that fails cargo test would land. The
 # pull request is brought up to date with main while it is behind (main requires that). Writes the merge commit as
 # `commit`. $2 is "pin" for a pin, whose failure goes to its change's maker, or "revert".
@@ -148,7 +155,14 @@ land() {
         gh api -X PUT "repos/$REPO/pulls/$n/update-branch" -f expected_head_sha="$tip" >/dev/null || true
         ;;
       CLEAN | UNSTABLE | HAS_HOOKS)
-        if ci_done "$tip"; then gh pr merge "$n" -R "$REPO" --squash --match-head-commit "$tip" || true; fi
+        # The runs are read after the checks above, so a run that failed since they were read stops the merge too. A
+        # push since then cancels the runs on the old head, which then says nothing about the new one.
+        red="$(ci_runs "$tip")"
+        case "$red" in
+          pending) ;;
+          green) gh pr merge "$n" -R "$REPO" --squash --match-head-commit "$tip" || true ;;
+          *) [ "$(pull "$n" | jq -r .headRefOid)" != "$tip" ] || broken "$kind" "$url" "is red" "At ${tip:0:12}: $red." ;;
+        esac
         ;;
     esac
     sleep "$POLL"
@@ -303,20 +317,25 @@ revert() {
   if [ -z "$n_back" ]; then
     url_back="$(jq -r '[.[] | select(.state == "CLOSED")][0].url // empty' <<<"$prs")"
     [ -z "$url_back" ] || fail "the revert of $url, $url_back, was closed without merging"
-    # A squash merge reverts as it is; a merge commit reverts against main, its first parent.
-    mainline=()
-    [ "$(git cat-file -p "$sha" | grep -c '^parent ')" -eq 1 ] || mainline=(-m 1)
-    if ! git revert --no-commit "${mainline[@]}" "$sha"; then
-      fail "reverting $url conflicts with main (main's temper revs are $(revs | tr '\n' ' ')): $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+    if git ls-remote --exit-code --heads origin "$back" >/dev/null; then
+      # A run before this one pushed the revert and stopped before its pull request: the branch is used as it stands.
+      echo "$back exists with no pull request: opening one from it"
+    else
+      # A squash merge reverts as it is; a merge commit reverts against main, its first parent.
+      mainline=()
+      [ "$(git cat-file -p "$sha" | grep -c '^parent ')" -eq 1 ] || mainline=(-m 1)
+      if ! git revert --no-commit "${mainline[@]}" "$sha"; then
+        fail "reverting $url conflicts with main (main's temper revs are $(revs | tr '\n' ' ')): $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+      fi
+      if git diff --cached --quiet; then
+        echo "main no longer carries $url: nothing to revert"
+        return
+      fi
+      as_app
+      git switch -q -c "$back"
+      git commit -q -m "Revert the temper pin of #$n" -m "Its change was rolled back. Reverts $sha."
+      git push -q origin "HEAD:refs/heads/$back"
     fi
-    if git diff --cached --quiet; then
-      echo "main no longer carries $url: nothing to revert"
-      return
-    fi
-    as_app
-    git switch -q -c "$back"
-    git commit -q -m "Revert the temper pin of #$n" -m "Its change was rolled back. Reverts $sha."
-    git push -q origin "HEAD:refs/heads/$back"
     gh pr create -R "$REPO" --base main --head "$back" --title "Revert the temper pin of #$n" \
       --body "Its change was rolled back, and its image with it. This takes the pin it moved off main, so the next image does not carry it again. Reverts $url ($sha)."
     n_back="$(jq -r '[.[] | select(.state == "OPEN")][0].number' <<<"$(on_branch "$back")")"
