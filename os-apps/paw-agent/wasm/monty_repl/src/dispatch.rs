@@ -2565,13 +2565,31 @@ fn publish_or_update_app_via_git(
         fetch_genesis_latest_hash(ctx, &app_url, &headers, owner, name).unwrap_or_default();
     let git_header_key = format!("http.{}/.extraHeader", registry_url.trim_end_matches('/'));
     let git_tenant_header = format!("X-Tenant-Id: {registry_tenant}");
+    // The clone is a read: a repository that is not public answers it only with a credential. The
+    // header goes to the sandbox as a file (never in the command, which the sandbox provider keeps
+    // as the process's arguments), which the command reads into the clone's environment and removes.
+    let read_header_file = match genesis_read_authorization(ctx, registry_url) {
+        Some(authorization) => {
+            let file = format!(
+                "/tmp/.paw-genesis-read-{}",
+                wasm_helpers::sandbox::unique_run_id(ctx)?
+            );
+            wasm_helpers::sandbox::sandbox_file_write(ctx, &handle, &file, &authorization)?;
+            file
+        }
+        None => String::new(),
+    };
     let command = format!(
         "set -euo pipefail\n\
          source_dir={}\n\
+         read_header_file={}\n\
+         read_header=\"\"\n\
+         if [ -n \"$read_header_file\" ]; then read_header=$(cat \"$read_header_file\" 2>/dev/null || true); rm -f \"$read_header_file\"; fi\n\
+         genesis_read() {{ if [ -n \"$read_header\" ]; then GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0={} GIT_CONFIG_VALUE_0=\"$read_header\" git \"$@\"; else git \"$@\"; fi; }}\n\
          publish_dir=$(mktemp -d)\n\
          cleanup() {{ rm -rf \"$publish_dir\"; }}\n\
          trap cleanup EXIT\n\
-         if ! git -c {}={} -c protocol.version=0 clone {} \"$publish_dir\" >/dev/null 2>&1; then\n\
+         if ! genesis_read -c {}={} -c protocol.version=0 clone {} \"$publish_dir\" >/dev/null 2>&1; then\n\
            git init -b main \"$publish_dir\" >/dev/null 2>&1 || (git init \"$publish_dir\" >/dev/null && git -C \"$publish_dir\" checkout -B main >/dev/null)\n\
            git -C \"$publish_dir\" remote add origin {}\n\
          fi\n\
@@ -2595,6 +2613,8 @@ fn publish_or_update_app_via_git(
          fi\n\
          git rev-parse HEAD",
         shell_quote(path),
+        shell_quote(&read_header_file),
+        shell_quote(&git_header_key),
         shell_quote(&git_header_key),
         shell_quote(&git_tenant_header),
         shell_quote(&remote),
@@ -2609,7 +2629,12 @@ fn publish_or_update_app_via_git(
         shell_quote(&existing_latest_hash),
         shell_quote(&remote),
     );
-    let result = wasm_helpers::sandbox::sandbox_exec(ctx, &handle, &command, workdir)?;
+    let exec = wasm_helpers::sandbox::sandbox_exec(ctx, &handle, &command, workdir);
+    if !read_header_file.is_empty() && exec.is_err() {
+        // The command may never have run to remove it.
+        let _ = wasm_helpers::sandbox::sandbox_file_delete(ctx, &handle, &read_header_file);
+    }
+    let result = exec?;
     if result.exit_code != 0 {
         return Err(format!(
             "Genesis app publish failed with exit {}: {}{}{}",
@@ -2877,6 +2902,26 @@ fn genesis_registry_tenant(input: &serde_json::Map<String, Value>) -> String {
         .unwrap_or("default")
         .trim()
         .to_string()
+}
+
+/// The `Authorization` header for a git read from Genesis: the tenant secret `genesis_read_token`
+/// (a GitToken with the read-only scope `repo:read-all`) as HTTP Basic, the token as the user name,
+/// the way git presents a GitToken (Genesis's git routes are never handed a Bearer). None when the
+/// secret is absent, and a public repository reads with the tenant header alone. It goes only to the
+/// registry this deployment is configured with, never to a `registry_url` named in tool input: that
+/// address can come from anything the agent read, and the token would be handed to whatever host it names.
+fn genesis_read_authorization(ctx: &Context, registry_url: &str) -> Option<String> {
+    use base64::Engine;
+    if genesis_registry_url(ctx, None).ok().as_deref() != Some(registry_url) {
+        return None;
+    }
+    let token = ctx.get_secret("genesis_read_token").ok()?;
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{token}:"));
+    Some(format!("Authorization: Basic {basic}"))
 }
 
 fn genesis_registry_headers(registry_tenant: &str) -> Vec<(String, String)> {

@@ -109,7 +109,12 @@ fn paw_agent_publishes_apps_through_canonical_genesis_actions() {
         "http.{}/.extraHeader",
         "X-Tenant-Id: {registry_tenant}",
         "git config protocol.version 0",
-        "git -c {}={} -c protocol.version=0 clone",
+        "genesis_read -c {}={} -c protocol.version=0 clone",
+        // A repository that is not public answers a clone only with a credential: the read token
+        // reaches the clone's environment from a sandbox file, never the command text.
+        "ctx.get_secret(\"genesis_read_token\")",
+        "GIT_CONFIG_KEY_0={} GIT_CONFIG_VALUE_0=\\\"$read_header\\\" git",
+        "rm -f \\\"$read_header_file\\\"",
         "tar --exclude=.git --exclude=target",
         "--force-with-lease=refs/heads/main:$existing_hash",
     ] {

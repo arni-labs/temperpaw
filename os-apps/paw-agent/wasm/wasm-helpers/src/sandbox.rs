@@ -977,7 +977,7 @@ fn bearer_headers_json(api_key: &str) -> Vec<(String, String)> {
 /// counter 0) — and a long-running exec can overlap another dispatch for the
 /// same entity. So uniqueness comes from a per-dispatch random u64 instead; the
 /// entity id is kept only as a readable label. (ARN-401)
-fn unique_run_id(ctx: &Context) -> Result<String, String> {
+pub fn unique_run_id(ctx: &Context) -> Result<String, String> {
     Ok(capture_run_id(&ctx.entity_id, random_u64()?))
 }
 
