@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use sqlx::postgres::PgPoolOptions;
+use temper_runtime::persistence::{SecretPrecondition, SecretWrite};
 use temper_server::StorageStack;
 use temper_server::platform_store::PlatformStore;
 use temper_store_postgres::PostgresEventStore;
@@ -88,16 +89,22 @@ impl PawStorage {
         ciphertext: &[u8],
         nonce: &[u8],
     ) -> Result<(), String> {
-        match self {
-            Self::Turso(store) => store
-                .upsert_secret(tenant, key_name, ciphertext, nonce)
-                .await
-                .map_err(|e| e.to_string()),
-            Self::Postgres(store) => store
-                .upsert_secret(tenant, key_name, ciphertext, nonce)
-                .await
-                .map_err(|e| e.to_string()),
-        }
+        // Each write gives the row a fresh version id, the way the server's own secret writes do
+        // (temper #114), so a reader of version ids can never test guesses of the value against them.
+        let version_id = temper_runtime::scheduler::sim_uuid().simple().to_string();
+        let write = SecretWrite {
+            tenant,
+            key_name,
+            ciphertext,
+            nonce,
+            version_id: &version_id,
+            precondition: SecretPrecondition::Any,
+        };
+        let written = match self {
+            Self::Turso(store) => store.write_secret(&write).await,
+            Self::Postgres(store) => store.write_secret(&write).await,
+        };
+        written.map(|_| ()).map_err(|e| e.to_string())
     }
 
     pub(crate) async fn delete_secret(&self, tenant: &str, key_name: &str) -> Result<bool, String> {
@@ -158,5 +165,47 @@ impl From<TursoEventStore> for PawStorage {
 impl From<PostgresEventStore> for PawStorage {
     fn from(store: PostgresEventStore) -> Self {
         Self::Postgres(store)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn secret_upserts_replace_values_and_always_change_the_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TursoEventStore::new(
+            &format!("file:{}", dir.path().join("secrets.db").display()),
+            None,
+        )
+        .await
+        .unwrap();
+        let storage = PawStorage::from(store.clone());
+        let mut previous_version = None;
+
+        for ciphertext in [b"first".as_slice(), b"second", b"second"] {
+            storage
+                .upsert_secret("tenant-a", "key", ciphertext, b"nonce")
+                .await
+                .unwrap();
+            assert_eq!(
+                storage.load_secrets_for_tenant("tenant-a").await.unwrap(),
+                vec![("key".into(), ciphertext.to_vec(), b"nonce".to_vec())]
+            );
+            let versions = store.list_secret_versions("tenant-a").await.unwrap();
+            assert_eq!(versions.len(), 1);
+            let version = versions[0].1.clone().expect("write has a version");
+            assert!(!version.is_empty());
+            assert_ne!(Some(&version), previous_version.as_ref());
+            previous_version = Some(version);
+        }
+        assert!(
+            storage
+                .load_secrets_for_tenant("tenant-b")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
