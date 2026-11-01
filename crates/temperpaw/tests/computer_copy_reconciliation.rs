@@ -147,6 +147,7 @@ async fn packaged_reconciliation_reads_the_recorded_name_and_emits_a_valid_nativ
         workflow_root_entity_id: None,
         workflow_run_id: None,
         http_request: None,
+        trigger_principal: None,
     };
     // All network responses are local in-memory fixtures. An unexpected POST
     // gets an error; no provider connection or real credential is available.

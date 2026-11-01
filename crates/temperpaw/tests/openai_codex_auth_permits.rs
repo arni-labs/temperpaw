@@ -38,6 +38,7 @@ fn admin() -> SecurityContext {
         context_attrs: HashMap::new(),
         correlation_id: "openai-codex-auth-permits".to_string(),
         cause: None,
+        credential: None,
     }
 }
 

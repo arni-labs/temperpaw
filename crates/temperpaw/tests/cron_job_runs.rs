@@ -161,6 +161,7 @@ async fn run_once_with_secrets(
         workflow_root_entity_id: None,
         workflow_run_id: None,
         http_request: None,
+        trigger_principal: None,
     };
     let bytes = std::fs::read(app().join("wasm/cron_compute_next/cron_compute_next.wasm"))
         .unwrap_or_else(|error| panic!("Build paw-agent WASMs before this proof: {error}"));
@@ -514,6 +515,7 @@ fn only_the_verified_operator_may_record_a_jobs_last_session() {
         context_attrs: HashMap::new(),
         correlation_id: "cron-job-runs-test".to_string(),
         cause: None,
+        credential: None,
     };
     let operator = SecurityContext::from_resolved_identity("operator", "operator", None);
     let refused = [
