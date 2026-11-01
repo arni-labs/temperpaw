@@ -1,8 +1,12 @@
 // Project Management — Label Cedar Policies
 //
-// Label had a schema and no state machine until its spec moved into specs/
-// (the installer reads only specs/), so no policy was ever needed. Any agent
-// makes and uses labels; supervisors, humans and Admin archive them.
+// The installer reads both the root and specs/: this entity already had a
+// state machine, but no permit, so only System could move it.
+// Accepted policy decision: https://github.com/arni-labs/temperpaw/pull/660
+// (Change, and the reason for each). Contributors may maintain shared work;
+// retiring shared records and changing a sprint's lifecycle belong to its
+// operators: supervisors, humans and dashboard Admin.
+// Archive retires a categorization shared by the whole issue team.
 
 permit(
   principal,

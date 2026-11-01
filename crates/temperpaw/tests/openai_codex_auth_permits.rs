@@ -82,6 +82,10 @@ fn the_setup_routes_callers_may_move_the_sign_in() {
             SecurityContext::from_resolved_identity("paw-runtime", "system", None),
         ),
         (
+            "a supervisor",
+            SecurityContext::from_resolved_identity("lead-1", "supervisor", None),
+        ),
+        (
             "a person",
             SecurityContext::from_resolved_identity("person-1", "human", None),
         ),

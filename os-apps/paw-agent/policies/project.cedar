@@ -5,6 +5,13 @@ permit(
   resource is Project
 );
 
+// Browser sign-in supplies a typed Admin with no agent_type.
+permit(
+  principal is Admin,
+  action in [Action::"Pause", Action::"Resume", Action::"Complete", Action::"Archive"],
+  resource is Project
+);
+
 permit(
   principal,
   action in [Action::"Pause", Action::"Resume", Action::"Complete", Action::"Archive"],

@@ -425,7 +425,43 @@
       </Action>
 
       <!-- Cycle Actions -->
-      <Action Name="CycleStart" IsBound="true">
+      <Action Name="SetProject" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
+        <Parameter Name="project_id" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Cycle"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Planning</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="AddIssueToCycle" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
+        <Parameter Name="IssueId" Type="Edm.Guid" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Cycle"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Planning</String><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="MarkIssueComplete" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
+        <Parameter Name="IssueId" Type="Edm.Guid" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Cycle"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="RemoveIssueFromCycle" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
+        <Parameter Name="IssueId" Type="Edm.Guid" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Cycle"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Planning</String><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="Start" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
         <ReturnType Type="Paw.PM.Cycle"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
@@ -434,7 +470,7 @@
         <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Active"/>
       </Action>
 
-      <Action Name="CycleComplete" IsBound="true">
+      <Action Name="Complete" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
         <ReturnType Type="Paw.PM.Cycle"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
@@ -444,7 +480,30 @@
       </Action>
 
       <!-- Comment Actions -->
-      <Action Name="CommentEdit" IsBound="true">
+      <Action Name="Create" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Comment"/>
+        <Parameter Name="issue_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="body" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="author_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="agent_type" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="session_id" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Comment"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="React" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Comment"/>
+        <Parameter Name="emoji" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reactor_id" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Comment"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Active</String><String>Edited</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="Edit" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Comment"/>
         <Parameter Name="body" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="Paw.PM.Comment"/>
@@ -454,7 +513,7 @@
         <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Edited"/>
       </Action>
 
-      <Action Name="CommentDelete" IsBound="true">
+      <Action Name="Delete" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Comment"/>
         <ReturnType Type="Paw.PM.Comment"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
@@ -464,7 +523,26 @@
       </Action>
 
       <!-- Label Actions -->
-      <Action Name="LabelArchive" IsBound="true">
+      <Action Name="Create" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Label"/>
+        <Parameter Name="name" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="color" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="description" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="Paw.PM.Label"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="IncrementUsage" IsBound="true">
+        <Parameter Name="bindingParameter" Type="Paw.PM.Label"/>
+        <ReturnType Type="Paw.PM.Label"/>
+        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
+          <Collection><String>Active</String></Collection>
+        </Annotation>
+      </Action>
+
+      <Action Name="Archive" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Label"/>
         <ReturnType Type="Paw.PM.Label"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
