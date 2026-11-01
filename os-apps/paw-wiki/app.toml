@@ -1,4 +1,0 @@
-name = "paw-wiki"
-description = "Reusable LLM Wiki pattern — scope-scoped knowledge plane for storing synthesized, interlinked knowledge articles. Provides WikiSource, WikiPage, and WikiJob entities with WASM-driven session spawning."
-version = "0.1.0"
-dependencies = ["paw-agent", "paw-fs"]

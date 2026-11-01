@@ -1,6 +1,6 @@
 # Feature map
 
-Surface enumeration (os-apps/ has 18 apps; the startup surface bootstraps: paw-fs, paw-agent, paw-channels, paw-foresight, paw-media, paw-ingest, paw-pm, paw-compute, paw-patrol, paw-research, paw-skills):
+Surface enumeration (os-apps/ has 14 apps; the startup surface bootstraps: paw-fs, paw-agent, paw-channels, paw-foresight, paw-media, paw-ingest, paw-pm, paw-compute, paw-patrol, paw-research, paw-skills):
 
 | Feature | File | Drive when you changed |
 |---|---|---|
@@ -20,4 +20,4 @@ Surface enumeration (os-apps/ has 18 apps; the startup surface bootstraps: paw-f
 - paw-skills - install flow partly covered by genesis-install.md; native skill-package install deserves its own file
 - paw-ingest - webhook ingress; drive needs signed webhook fixtures
 - paw-pm, paw-compute - bootstrapped but thin surfaces today; map when driven
-- paw-ai, paw-autoreason, paw-consilium, paw-harness, paw-heal, paw-managed-agents, paw-wiki - not in the startup surface; map when enabled
+- paw-ai, paw-harness, paw-managed-agents - not in the startup surface; map when enabled
