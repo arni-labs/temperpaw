@@ -84,6 +84,7 @@ cliclack = "0.3"
 
 [dev-dependencies]
 dsf-resource-collect = { path = "../../os-apps/dsf-twin/wasm/dsf_resource_collect" }
+temper-verify = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
 temper-wasm = { git = "https://github.com/arni-labs/temper.git", rev = "f7f5261a6658f0b27a4db7473e5a12b02931ccbd" }
 tempfile = "3"
 toml = "0.8"

@@ -6872,6 +6872,7 @@ dependencies = [
  "temper-spec",
  "temper-store-postgres",
  "temper-store-turso",
+ "temper-verify",
  "temper-wasm",
  "tempfile",
  "tikv-jemalloc-ctl",

@@ -114,11 +114,15 @@ target_action = "Supersede"
 kind = "field"
 id_field = "last_version_id"
 
+# Every FileVersion.Create sends this, so it is taken in every place a File
+# can be in while it still has versions, and it leaves the File where it is:
+# Lock can land between StreamUpdated and this reaction, and a FileVersion
+# made directly finds its File still Created. From Ready alone the joint walk
+# dropped the reaction for a Created File.
 [[action]]
 name = "RecordVersion"
 kind = "internal"
-from = ["Ready"]
-to = "Ready"
+from = ["Created", "Ready", "Locked"]
 params = ["last_version_id"]
 hint = "Record the newest FileVersion entity after a successful version create cascade."
 
