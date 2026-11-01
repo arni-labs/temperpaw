@@ -103,7 +103,7 @@ jobs:
       - name: Rust toolchain
         if: steps.drift.outputs.changed == 'true'   # only when we will actually bump + refresh the lock
         uses: dtolnay/rust-toolchain@stable
-      - name: Skip if a bump PR for this rev already exists
+      - name: Skip if a bump PR is open or this rev was already handled
         id: dedupe
         if: steps.drift.outputs.changed == 'true'
         env:
@@ -113,13 +113,21 @@ jobs:
           set -euo pipefail
           BRANCH="bot/temper-pin-${NEW:0:12}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          # One bump at a time, whichever temper rev it pins: a second PR would move
+          # the same pins from the same base, so the two could not both merge. Temper
+          # main moving on while a bump is in flight must not open another.
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 --json headRefName \
+            -q '[.[] | select(.headRefName | startswith("bot/temper-pin-"))] | length')
           # Key the skip on PR existence, NOT branch existence: a prior run whose
           # `gh pr create` FAILED leaves a stranded branch with no PR, and keying on
           # the branch would skip forever. Any PR for this head - open (in flight)
           # or closed (a human rejected this rev) - means "handled, do not re-open";
           # a merged bump is unreachable here because the pin would already match.
           count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state all --json number -q 'length')
-          if [ "$count" -gt 0 ]; then
+          if [ "$open" -gt 0 ]; then
+            echo "a temper pin bump PR is already open - skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$count" -gt 0 ]; then
             echo "a PR already exists for $BRANCH - handled; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
