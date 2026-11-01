@@ -425,9 +425,8 @@
         <Parameter Name="last_version_id" Type="Edm.Guid" Nullable="false"/>
         <ReturnType Type="Paw.FS.File"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Ready</String></Collection>
+          <Collection><String>Created</String><String>Ready</String><String>Locked</String></Collection>
         </Annotation>
-        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Ready"/>
       </Action>
 
       <!-- FileVersion Actions -->
@@ -435,7 +434,7 @@
         <Parameter Name="bindingParameter" Type="Paw.FS.FileVersion"/>
         <ReturnType Type="Paw.FS.FileVersion"/>
         <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Current</String></Collection>
+          <Collection><String>Current</String><String>Superseded</String></Collection>
         </Annotation>
         <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Superseded"/>
       </Action>

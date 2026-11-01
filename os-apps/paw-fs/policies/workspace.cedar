@@ -27,10 +27,3 @@ permit(
                Action::"FsOperationFailed"],
     resource is Workspace
 );
-
-// Agents can manage directories (addchild, create, rename)
-permit(
-    principal is Agent,
-    action in [Action::"read", Action::"list", Action::"Create", Action::"create", Action::"AddChild", Action::"RemoveChild", Action::"DirectoryRename", Action::"DirectoryArchive"],
-    resource is Directory
-);
