@@ -497,7 +497,6 @@ fn csdl_serves_all_corridor_entity_sets() {
         "Projections",
         "ForesightModels",
         "Observations",
-        "Directions",
     ] {
         assert!(
             csdl.contains(&format!("EntitySet Name=\"{set}\"")),

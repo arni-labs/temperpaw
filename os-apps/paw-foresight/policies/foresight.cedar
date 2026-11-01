@@ -1,7 +1,8 @@
 // Foresight — Cedar Authorization Policies (corridor engine, 0.2)
 //
-// Legacy 0.1 retirement (ADR-003): the five old entity types persist in
-// installed stores as inert residue. Reads stay open everywhere; mutation is
+// Legacy 0.1 retirement (ADR-003): the four old entity types left persist in
+// installed stores as inert residue. Direction went from this app: the name is
+// katagami-commons's, and two apps may not own one entity set (temper #314). Reads stay open everywhere; mutation is
 // system-principals-only so an image rollback (which restores the old
 // bundle's WASM) keeps old system flows functional while sessions, agents,
 // and humans can no longer drive the retired machinery.
@@ -24,11 +25,6 @@ permit(
 permit(
   principal,
   action in [Action::"read", Action::"list"],
-  resource is Direction
-);
-permit(
-  principal,
-  action in [Action::"read", Action::"list"],
   resource is DirectionFeedback
 );
 
@@ -37,8 +33,6 @@ when { principal.agent_type == "system" };
 permit(principal, action, resource is Projection)
 when { principal.agent_type == "system" };
 permit(principal, action, resource is Observation)
-when { principal.agent_type == "system" };
-permit(principal, action, resource is Direction)
 when { principal.agent_type == "system" };
 permit(principal, action, resource is DirectionFeedback)
 when { principal.agent_type == "system" };
