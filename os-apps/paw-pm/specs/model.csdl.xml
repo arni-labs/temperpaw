@@ -51,14 +51,6 @@
         <Member Name="Supervisor" Value="4"/>
       </EnumType>
 
-      <EnumType Name="ProjectStatus">
-        <Member Name="Planning" Value="0"/>
-        <Member Name="Active" Value="1"/>
-        <Member Name="Paused" Value="2"/>
-        <Member Name="Completed" Value="3"/>
-        <Member Name="Archived" Value="4"/>
-      </EnumType>
-
       <EnumType Name="CycleStatus">
         <Member Name="Planning" Value="0"/>
         <Member Name="Active" Value="1"/>
@@ -99,7 +91,7 @@
         <Property Name="ImplementationNotes" Type="Edm.String"/>
         <Property Name="ParentIssueId" Type="Edm.Guid"/>
         <Property Name="SubIssueCount" Type="Edm.Int32" DefaultValue="0"/>
-        <Property Name="ProjectId" Type="Edm.Guid"/>
+        <Property Name="ProjectId" Type="Edm.String"/>
         <Property Name="CycleId" Type="Edm.Guid"/>
         <Property Name="ReviewCycles" Type="Edm.Int32" DefaultValue="0"/>
         <Property Name="CommentCount" Type="Edm.Int32" DefaultValue="0"/>
@@ -109,9 +101,6 @@
         <Property Name="PlannedAt" Type="Edm.DateTimeOffset"/>
         <Property Name="CompletedAt" Type="Edm.DateTimeOffset"/>
         <Property Name="CancelledAt" Type="Edm.DateTimeOffset"/>
-        <NavigationProperty Name="Project" Type="Paw.PM.Project">
-          <ReferentialConstraint Property="ProjectId" ReferencedProperty="Id"/>
-        </NavigationProperty>
         <NavigationProperty Name="Cycle" Type="Paw.PM.Cycle">
           <ReferentialConstraint Property="CycleId" ReferencedProperty="Id"/>
         </NavigationProperty>
@@ -134,44 +123,17 @@
         <Annotation Term="Paw.Vocab.Agent.Hint" String="Work item with plan-then-execute lifecycle. Planner drafts approach, supervisor approves, implementer executes."/>
       </EntityType>
 
-      <EntityType Name="Project">
-        <Key><PropertyRef Name="Id"/></Key>
-        <Property Name="Id" Type="Edm.Guid" Nullable="false"/>
-        <Property Name="Name" Type="Edm.String" Nullable="false"/>
-        <Property Name="Description" Type="Edm.String"/>
-        <Property Name="Status" Type="Paw.PM.ProjectStatus" Nullable="false"/>
-        <Property Name="IssueCount" Type="Edm.Int32" DefaultValue="0"/>
-        <Property Name="CycleCount" Type="Edm.Int32" DefaultValue="0"/>
-        <Property Name="MemberCount" Type="Edm.Int32" DefaultValue="0"/>
-        <Property Name="CreatedAt" Type="Edm.DateTimeOffset" Nullable="false"/>
-        <Property Name="UpdatedAt" Type="Edm.DateTimeOffset" Nullable="false"/>
-        <Property Name="CompletedAt" Type="Edm.DateTimeOffset"/>
-        <NavigationProperty Name="Issues" Type="Collection(Paw.PM.Issue)"/>
-        <NavigationProperty Name="Cycles" Type="Collection(Paw.PM.Cycle)"/>
-        <Annotation Term="Paw.Vocab.StateMachine.States">
-          <Collection>
-            <String>Planning</String><String>Active</String><String>Paused</String>
-            <String>Completed</String><String>Archived</String>
-          </Collection>
-        </Annotation>
-        <Annotation Term="Paw.Vocab.StateMachine.InitialState" String="Planning"/>
-        <Annotation Term="Paw.Vocab.ShardKey" String="Id"/>
-      </EntityType>
-
       <EntityType Name="Cycle">
         <Key><PropertyRef Name="Id"/></Key>
         <Property Name="Id" Type="Edm.Guid" Nullable="false"/>
         <Property Name="Name" Type="Edm.String" Nullable="false"/>
         <Property Name="Status" Type="Paw.PM.CycleStatus" Nullable="false"/>
-        <Property Name="ProjectId" Type="Edm.Guid"/>
+        <Property Name="ProjectId" Type="Edm.String"/>
         <Property Name="IssueCount" Type="Edm.Int32" DefaultValue="0"/>
         <Property Name="CompletedCount" Type="Edm.Int32" DefaultValue="0"/>
         <Property Name="StartDate" Type="Edm.DateTimeOffset"/>
         <Property Name="EndDate" Type="Edm.DateTimeOffset"/>
         <Property Name="CreatedAt" Type="Edm.DateTimeOffset" Nullable="false"/>
-        <NavigationProperty Name="Project" Type="Paw.PM.Project">
-          <ReferentialConstraint Property="ProjectId" ReferencedProperty="Id"/>
-        </NavigationProperty>
         <Annotation Term="Paw.Vocab.StateMachine.States">
           <Collection>
             <String>Planning</String><String>Active</String><String>Completed</String>
@@ -462,52 +424,6 @@
         </Annotation>
       </Action>
 
-      <!-- Project Actions -->
-      <Action Name="ProjectSetDescription" IsBound="true">
-        <Parameter Name="bindingParameter" Type="Paw.PM.Project"/>
-        <Parameter Name="description" Type="Edm.String" Nullable="false"/>
-        <ReturnType Type="Paw.PM.Project"/>
-        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Planning</String><String>Active</String><String>Paused</String></Collection>
-        </Annotation>
-      </Action>
-
-      <Action Name="ProjectActivate" IsBound="true">
-        <Parameter Name="bindingParameter" Type="Paw.PM.Project"/>
-        <ReturnType Type="Paw.PM.Project"/>
-        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Planning</String></Collection>
-        </Annotation>
-        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Active"/>
-      </Action>
-
-      <Action Name="ProjectAddIssue" IsBound="true">
-        <Parameter Name="bindingParameter" Type="Paw.PM.Project"/>
-        <Parameter Name="IssueId" Type="Edm.Guid" Nullable="false"/>
-        <ReturnType Type="Paw.PM.Project"/>
-        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Active</String></Collection>
-        </Annotation>
-      </Action>
-
-      <Action Name="ProjectComplete" IsBound="true">
-        <Parameter Name="bindingParameter" Type="Paw.PM.Project"/>
-        <ReturnType Type="Paw.PM.Project"/>
-        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Active</String></Collection>
-        </Annotation>
-        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Completed"/>
-      </Action>
-
-      <Action Name="ProjectArchive" IsBound="true">
-        <Parameter Name="bindingParameter" Type="Paw.PM.Project"/>
-        <ReturnType Type="Paw.PM.Project"/>
-        <Annotation Term="Paw.Vocab.StateMachine.ValidFromStates">
-          <Collection><String>Completed</String></Collection>
-        </Annotation>
-        <Annotation Term="Paw.Vocab.StateMachine.TargetState" String="Archived"/>
-      </Action>
-
       <!-- Cycle Actions -->
       <Action Name="CycleStart" IsBound="true">
         <Parameter Name="bindingParameter" Type="Paw.PM.Cycle"/>
@@ -563,17 +479,10 @@
         <EntitySet Name="Issues" EntityType="Paw.PM.Issue">
           <NavigationPropertyBinding Path="ParentIssue" Target="Issues"/>
           <NavigationPropertyBinding Path="SubIssues" Target="Issues"/>
-          <NavigationPropertyBinding Path="Project" Target="Projects"/>
           <NavigationPropertyBinding Path="Cycle" Target="Cycles"/>
           <NavigationPropertyBinding Path="Comments" Target="Comments"/>
         </EntitySet>
-        <EntitySet Name="Projects" EntityType="Paw.PM.Project">
-          <NavigationPropertyBinding Path="Issues" Target="Issues"/>
-          <NavigationPropertyBinding Path="Cycles" Target="Cycles"/>
-        </EntitySet>
-        <EntitySet Name="Cycles" EntityType="Paw.PM.Cycle">
-          <NavigationPropertyBinding Path="Project" Target="Projects"/>
-        </EntitySet>
+        <EntitySet Name="Cycles" EntityType="Paw.PM.Cycle"/>
         <EntitySet Name="Comments" EntityType="Paw.PM.Comment">
           <NavigationPropertyBinding Path="Issue" Target="Issues"/>
         </EntitySet>
