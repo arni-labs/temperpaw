@@ -2,18 +2,19 @@
 #
 # A Project groups agents, scopes skills, and declares which apps it uses.
 # Not tied to code/repos — any coordinated effort (code, research, content).
-# See ADR-0018.
+# See ADR-0018. paw-pm's issues and cycles point here by ProjectId; paw-pm
+# has no Project of its own.
 
 [automaton]
 name = "Project"
-states = ["Active", "Paused", "Archived"]
+states = ["Active", "Paused", "Completed", "Archived"]
 initial = "Active"
 
 # ADR-0050 migration TODO: each state below needs either a
 # [[state_timeout]] declaration or a domain-specific justification
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Active", "Paused"]
+allow_indefinite_states = ["Active", "Paused", "Completed"]
 
 # Identity
 [[state]]
@@ -51,7 +52,7 @@ hint = "Set up the project with a name, description, owner, and declared apps."
 [[action]]
 name = "Update"
 kind = "input"
-from = ["Active"]
+from = ["Active", "Paused"]
 params = ["description", "app_ids"]
 hint = "Update project description or declared apps."
 
@@ -70,8 +71,15 @@ to = "Active"
 hint = "Resume a paused project."
 
 [[action]]
+name = "Complete"
+kind = "input"
+from = ["Active"]
+to = "Completed"
+hint = "Mark the project's work done. It stays readable until archived."
+
+[[action]]
 name = "Archive"
 kind = "input"
-from = ["Active", "Paused"]
+from = ["Active", "Paused", "Completed"]
 to = "Archived"
 hint = "Archive the project. All associated entities remain but project is closed."
