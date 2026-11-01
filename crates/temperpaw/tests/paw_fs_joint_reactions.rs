@@ -24,7 +24,10 @@ fn paw_fs_reactions_are_never_dropped() {
             );
         }
     }
-    assert!(automata.len() >= 6, "paw-fs has File, FileVersion, Directory, Workspace, ...");
+    assert!(
+        automata.len() >= 6,
+        "paw-fs has File, FileVersion, Directory, Workspace, ..."
+    );
 
     let progress = Progress::default();
     let bound = Bound {
@@ -58,5 +61,9 @@ fn paw_fs_reactions_are_never_dropped() {
             )),
         }
     }
-    assert!(problems.is_empty(), "dropped reactions:\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "dropped reactions:\n{}",
+        problems.join("\n")
+    );
 }
