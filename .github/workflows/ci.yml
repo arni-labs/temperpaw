@@ -25,6 +25,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install Z3 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libz3-dev
       - uses: Swatinem/rust-cache@v2
       - name: WASM artifact packaging regression
         run: bash scripts/test-wasm-build-artifacts.sh
@@ -67,6 +71,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install Z3 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libz3-dev
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
