@@ -50,7 +50,7 @@ fn cache_set(cache: &mut HashMap<String, String>, key: &str, value: &str) {
     save_cache(cache);
 }
 
-pub async fn run_deploy(config: Config, with_datadog: bool) -> Result<()> {
+pub async fn run_deploy(config: Config) -> Result<()> {
     cliclack::intro("Temper Paw Deploy")?;
 
     let mut cache = load_cache();
@@ -130,19 +130,6 @@ pub async fn run_deploy(config: Config, with_datadog: bool) -> Result<()> {
     ];
     set_args.extend(variables);
     run_interactive("railway", &as_str_slice(&set_args))?;
-
-    if with_datadog {
-        let _ = run_interactive(
-            "railway",
-            &[
-                "add",
-                "--service",
-                "otel-collector",
-                "--image",
-                "otel/opentelemetry-collector-contrib:latest",
-            ],
-        );
-    }
 
     cliclack::log::step("Deploying TemperPaw...")?;
     deploy_prebuilt_image()?;

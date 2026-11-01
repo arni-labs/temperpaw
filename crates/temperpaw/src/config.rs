@@ -172,8 +172,6 @@ pub struct Config {
     /// Railway environment ID (captured during deploy).
     pub railway_environment_id: Option<String>,
 
-    /// Railway otel-collector service ID (captured during deploy).
-    pub railway_otel_service_id: Option<String>,
 
     /// Railway Datadog runtime Agent service ID (captured during deploy).
     pub railway_datadog_runtime_agent_service_id: Option<String>,
@@ -291,7 +289,6 @@ impl Config {
             railway_token: optional_env("RAILWAY_TOKEN"),
             railway_project_id: optional_env("RAILWAY_PROJECT_ID"),
             railway_environment_id: optional_env("RAILWAY_ENVIRONMENT_ID"),
-            railway_otel_service_id: optional_env("RAILWAY_OTEL_SERVICE_ID"),
             railway_datadog_runtime_agent_service_id: optional_env(
                 "RAILWAY_DATADOG_RUNTIME_AGENT_SERVICE_ID",
             ),

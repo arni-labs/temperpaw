@@ -111,7 +111,6 @@ fn allowed_secret_keys() -> HashSet<&'static str> {
         // not dashboard secrets. They're set by `temperpaw deploy` and changed in Railway.
         "railway_project_id",
         "railway_environment_id",
-        "railway_otel_service_id",
         "railway_datadog_runtime_agent_service_id",
         "railway_service_id",
     ]
@@ -1838,7 +1837,6 @@ struct RailwayStatus {
     project_id: Option<String>,
     environment_id: Option<String>,
     service_id: Option<String>,
-    otel_service_id: Option<String>,
     datadog_runtime_agent_service_id: Option<String>,
 }
 
@@ -1850,8 +1848,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
     let project_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_project_id"));
     let environment_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_environment_id"));
     let service_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_service_id"));
-    let otel_service_id =
-        vault.and_then(|v| v.get_secret(&state.tenant, "railway_otel_service_id"));
     let datadog_runtime_agent_service_id =
         vault.and_then(|v| v.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id"));
     let configured = has_token && project_id.is_some() && environment_id.is_some();
@@ -1862,7 +1858,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
         project_id,
         environment_id,
         service_id,
-        otel_service_id,
         datadog_runtime_agent_service_id,
     })
 }
@@ -1877,8 +1872,6 @@ struct SetRailwayVarRequest {
 /// Allowlist of (service, key) pairs that can be set via this endpoint.
 fn allowed_railway_vars() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("otel-collector", "DD_API_KEY"),
-        ("otel-collector", "DD_SITE"),
         ("datadog-runtime-agent", "DD_API_KEY"),
         ("datadog-runtime-agent", "DD_SITE"),
     ]
@@ -1928,9 +1921,8 @@ async fn set_railway_var(
             .into_response();
     };
 
-    // Resolve service ID — for otel-collector, read from vault
+    // Resolve the service ID from the vault
     let service_id = match req.service.as_str() {
-        "otel-collector" => vault.get_secret(&state.tenant, "railway_otel_service_id"),
         "datadog-runtime-agent" => {
             vault.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id")
         }
