@@ -41,6 +41,7 @@ fn dashboard_admin() -> SecurityContext {
         context_attrs: HashMap::new(),
         correlation_id: "project-pm-contract".into(),
         cause: None,
+        credential: None,
     }
 }
 

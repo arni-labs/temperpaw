@@ -175,6 +175,7 @@ async fn run_module(
         workflow_root_entity_id: None,
         workflow_run_id: None,
         http_request: None,
+        trigger_principal: None,
     };
     let bytes = std::fs::read(app().join("wasm/openai_codex_auth/openai_codex_auth.wasm"))
         .unwrap_or_else(|error| panic!("Build paw-agent WASMs before this proof: {error}"));
