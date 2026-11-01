@@ -15,7 +15,6 @@ fn session_link_is_a_reusable_temperpaw_child_session_monitor() {
     let root = repo_root();
     let spec_path = root.join("os-apps/paw-agent/specs/session_link.ioa.toml");
     let spec = read(&spec_path);
-    let wiki_builder = read(root.join("os-apps/paw-wiki/wasm/build_session_message/src/lib.rs"));
 
     for needle in [
         "name = \"SessionLink\"",
@@ -50,53 +49,6 @@ fn session_link_is_a_reusable_temperpaw_child_session_monitor() {
         spec.contains("\"schedule('CheckChild', 30)\""),
         "SessionLink pending child checks should avoid 10s write-amplifying polling"
     );
-
-    assert!(
-        wiki_builder.contains("/tdata/SessionLinks")
-            && wiki_builder.contains("ParentEntitySet")
-            && wiki_builder.contains("ChildSessionId")
-            && wiki_builder.contains("OnFailureAction")
-            && wiki_builder.contains("\"MaxChecks\": \"80\""),
-        "WikiJob should use the reusable SessionLink monitor instead of bespoke child-session polling"
-    );
-
-    assert!(
-        wiki_builder.contains("dispatch_wiki_job_failure")
-            && wiki_builder.contains("SessionLink setup failed"),
-        "WikiJob should fail visibly if child-session monitoring cannot be established"
-    );
-}
-
-#[test]
-fn wiki_build_session_message_emits_step_metrics_for_spawn_path() {
-    let root = repo_root();
-    let wiki_builder = read(root.join("os-apps/paw-wiki/wasm/build_session_message/src/lib.rs"));
-
-    assert!(
-        wiki_builder.contains("temper_wiki_build_session_message_step_duration_ms"),
-        "WikiJob child-session spawn should emit an app-specific step-duration histogram"
-    );
-    assert!(
-        wiki_builder.contains("emit_build_session_step_duration")
-            && wiki_builder.contains("Context::get_time_millis"),
-        "WikiJob child-session spawn should measure each stateful OData boundary"
-    );
-
-    for needle in [
-        "\"ensure_workspace\"",
-        "\"create_session\"",
-        "\"configure_session\"",
-        "\"session_spawned\"",
-        "\"create_session_link\"",
-        "\"configure_session_link\"",
-        "\"total\"",
-        "\"result\": result",
-    ] {
-        assert!(
-            wiki_builder.contains(needle),
-            "WikiJob build_session_message metrics should include {needle}"
-        );
-    }
 }
 
 #[test]
@@ -106,14 +58,12 @@ fn runtime_model_provider_selection_has_no_hardcoded_llm_fallbacks() {
         "os-apps/paw-agent/specs/session.ioa.toml",
         "os-apps/paw-agent/specs/agent.ioa.toml",
         "os-apps/paw-agent/specs/cron_job.ioa.toml",
-        "os-apps/paw-wiki/specs/wiki_job.ioa.toml",
         "os-apps/paw-managed-agents/specs/managed_agent.ioa.toml",
         "os-apps/paw-agent/wasm/context_preparer/src/lib.rs",
         "os-apps/paw-agent/wasm/provider_caller/src/lib.rs",
         "os-apps/paw-agent/wasm/provider_response_applier/src/lib.rs",
         "os-apps/paw-agent/wasm/context_compactor/src/lib.rs",
         "os-apps/paw-agent/wasm/monty_repl/src/entity_ops.rs",
-        "os-apps/paw-wiki/wasm/build_session_message/src/lib.rs",
         "os-apps/paw-channels/wasm/route_message/src/lib.rs",
         "os-apps/paw-managed-agents/wasm/common.rs",
         "os-apps/paw-managed-agents/wasm/session_orchestrator/src/lib.rs",

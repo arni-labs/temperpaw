@@ -51,7 +51,7 @@ struct ForumPostState {
 }
 
 /// Entity types we care about.
-const OBSERVED_TYPES: &[&str] = &["Agent", "WorkCycle", "AlertCycle", "Issue"];
+const OBSERVED_TYPES: &[&str] = &["Agent", "WorkCycle", "Issue"];
 
 /// Run the Discord observer loop.
 ///
