@@ -2,7 +2,7 @@ name = "paw-agent"
 description = "Core agent lifecycle — souls, skills, sessions, memory, teams"
 version = "0.1.0"
 startup_install = "core"
-dependencies = ["temperpaw/paw-fs@737c0ac23d95b8d412cb4f632c2926b720835eef"]
+dependencies = ["temperpaw/paw-fs@8d7b4bdefd41d785555c0e5cbfb3e38cb1fbd3d0"]
 
 [[wasm_modules]]
 name = "workspace_provisioner"
