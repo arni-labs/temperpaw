@@ -79,10 +79,14 @@ last_version_id = "Id"
 kind = "field"
 id_field = "file_id"
 
+# StreamUpdated supersedes the File's last_version_id, which RecordVersion
+# moves only after the new version exists: two writes close together both
+# supersede the same version. A second Supersede of a Superseded version is
+# a no-op; from Current alone the joint walk dropped it.
 [[action]]
 name = "Supersede"
 kind = "internal"
-from = ["Current"]
+from = ["Current", "Superseded"]
 to = "Superseded"
 hint = "Mark this version as superseded by a newer version."
 
