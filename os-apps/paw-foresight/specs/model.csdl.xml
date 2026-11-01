@@ -55,29 +55,6 @@
         <Property Name="FadeReason" Type="Edm.String"/>
       </EntityType>
 
-      <EntityType Name="Direction">
-        <Key><PropertyRef Name="Id"/></Key>
-        <Property Name="Id" Type="Edm.String" Nullable="false"/>
-        <Property Name="Status" Type="Edm.String"/>
-        <Property Name="Title" Type="Edm.String"/>
-        <Property Name="ProposerAgentId" Type="Edm.String"/>
-        <Property Name="ProjectionId" Type="Edm.String"/>
-        <Property Name="Reasoning" Type="Edm.String"/>
-        <Property Name="Grounding" Type="Edm.String"/>
-        <Property Name="ObservationIds" Type="Edm.String"/>
-        <Property Name="CounterfactualSummary" Type="Edm.String"/>
-        <Property Name="ConfirmationCount" Type="Edm.Int64"/>
-        <Property Name="ReviewCount" Type="Edm.Int64"/>
-        <Property Name="CrossModelAgreement" Type="Edm.Boolean"/>
-        <Property Name="BranchName" Type="Edm.String"/>
-        <Property Name="PrUrl" Type="Edm.String"/>
-        <Property Name="ArtifactFileId" Type="Edm.String"/>
-        <Property Name="ParentDirectionId" Type="Edm.String"/>
-        <Property Name="StepAt" Type="Edm.String"/>
-        <Property Name="ArchiveReason" Type="Edm.String"/>
-        <Property Name="ErrorMessage" Type="Edm.String"/>
-      </EntityType>
-
       <EntityType Name="DirectionFeedback">
         <Key><PropertyRef Name="Id"/></Key>
         <Property Name="Id" Type="Edm.String" Nullable="false"/>
@@ -211,55 +188,6 @@
         <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Observation"/>
         <Parameter Name="fade_reason" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Foresight.Observation"/>
-      </Action>
-
-      <!-- Bound Actions: Direction -->
-      <Action Name="Propose" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <Parameter Name="title" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="proposer_agent_id" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="projection_id" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="reasoning" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="grounding" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="observation_ids" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="counterfactual_summary" Type="Edm.String" Nullable="true"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="SubmitForReview" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="RecordReview" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="RecordConfirmation" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="MarkCrossModelAgreement" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="BeginImplementation" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <Parameter Name="branch_name" Type="Edm.String" Nullable="true"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="ImplementationComplete" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <Parameter Name="pr_url" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="artifact_file_id" Type="Edm.String" Nullable="true"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="Select" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
-      </Action>
-      <Action Name="Archive" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Foresight.Direction"/>
-        <Parameter Name="archive_reason" Type="Edm.String" Nullable="true"/>
-        <ReturnType Type="TemperPaw.Foresight.Direction"/>
       </Action>
 
       <!-- Bound Actions: DirectionFeedback -->
@@ -941,7 +869,6 @@
         <EntitySet Name="ForesightModels" EntityType="TemperPaw.Foresight.ForesightModel"/>
         <EntitySet Name="Projections" EntityType="TemperPaw.Foresight.Projection"/>
         <EntitySet Name="Observations" EntityType="TemperPaw.Foresight.Observation"/>
-        <EntitySet Name="Directions" EntityType="TemperPaw.Foresight.Direction"/>
         <EntitySet Name="DirectionFeedbacks" EntityType="TemperPaw.Foresight.DirectionFeedback"/>
         <EntitySet Name="Worlds" EntityType="TemperPaw.Foresight.World"/>
         <EntitySet Name="EventNodes" EntityType="TemperPaw.Foresight.EventNode"/>
