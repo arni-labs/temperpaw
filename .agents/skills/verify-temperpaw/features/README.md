@@ -1,6 +1,6 @@
 # Feature map
 
-Surface enumeration (os-apps/ has 18 apps; the startup surface bootstraps: paw-fs, paw-agent, paw-channels, paw-foresight, paw-media, paw-ingest, paw-pm, paw-compute, paw-patrol, paw-research, paw-skills):
+Surface enumeration (os-apps/ has 14 apps; the startup surface bootstraps: paw-fs, paw-agent, paw-channels, paw-foresight, paw-media, paw-ingest, paw-pm, paw-compute, paw-patrol, paw-research, paw-skills):
 
 | Feature | File | Drive when you changed |
 |---|---|---|
