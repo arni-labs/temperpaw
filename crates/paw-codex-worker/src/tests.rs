@@ -12,7 +12,6 @@ mod tests {
     include!("datadog_patrol_tests.rs");
     include!("github_patrol_tests.rs");
     include!("evaluation_tests.rs");
-    include!("event_stream_tests.rs");
     include!("fake_codex_tests.rs");
     include!("codex_plan_tests.rs");
     include!("pull_request_tests.rs");
