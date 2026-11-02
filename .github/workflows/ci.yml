@@ -10,8 +10,8 @@ on:
   schedule:
     - cron: "0 7 * * *"   # nightly full validation
 
-# A new push to a pull request cancels its older run. Every push to main runs to the end, because it saves the caches
-# pull requests restore.
+# A new push to a pull request cancels its older run. Every push to main runs to the end, because its result decides
+# whether revert-on-red acts.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
@@ -52,13 +52,15 @@ jobs:
           bash scripts/check-wasm-rsa-getrandom.sh
           cargo check --manifest-path os-apps/paw-patrol/wasm/release_run_lifecycle/Cargo.toml --target wasm32-unknown-unknown
 
-  # Every Cargo workspace's tests, on every pull request and push. scripts/ci/rust_tests.py finds the workspaces on
+  # Every Cargo workspace's tests, on every push to main and nightly; a pull request runs only `checks` above, so one
+  # tree is not tested twice and revert-on-red answers a failing push. scripts/ci/rust_tests.py finds the workspaces on
   # disk: the root one (crates/*) and every os-app module and reference crate, each a workspace of its own. The root
   # tests load packaged os-app modules, so that job first builds every module the way a release does. Branch protection
   # requires `tests`, which gathers the three. (Until 28 Oct 2026 only `full` ran Rust tests, after merge, and only for
   # 13 of 73 workspaces that have tests: 40 of 53 pull requests in the month before landed with none run.)
   tests-root:
     name: cargo test (root workspace)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -102,6 +104,7 @@ jobs:
 
   tests-others:
     name: cargo test (other workspaces ${{ matrix.part }}/2)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -116,7 +119,7 @@ jobs:
 
   tests:
     needs: [tests-root, tests-others]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Every cargo test job passed
