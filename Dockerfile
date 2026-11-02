@@ -48,7 +48,8 @@ RUN --mount=type=cache,id=wasm-target,target=/cache/target \
     && cd /app/os-apps/paw-compute/wasm && bash build.sh \
     && cd /app/os-apps/paw-patrol/wasm && bash build.sh \
     && cd /app/os-apps/dsf-twin/wasm && bash build.sh \
-    && du -sm /cache/target /usr/local/cargo/registry /usr/local/cargo/git
+    && du -sm /cache/target /usr/local/cargo/registry /usr/local/cargo/git \
+    && find /app/os-apps -type d -name target -prune -exec rm -rf {} +
 RUN bash scripts/verify_route_message_wasm.sh /app/os-apps/paw-channels/wasm/route_message/route_message.wasm
 
 FROM debian:bookworm-slim
