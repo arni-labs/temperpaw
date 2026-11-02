@@ -172,7 +172,6 @@ pub struct Config {
     /// Railway environment ID (captured during deploy).
     pub railway_environment_id: Option<String>,
 
-
     /// Railway Datadog runtime Agent service ID (captured during deploy).
     pub railway_datadog_runtime_agent_service_id: Option<String>,
 
