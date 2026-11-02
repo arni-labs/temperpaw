@@ -15,4 +15,4 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 chain-proof-ready = { path = "../../../paw-patrol/wasm/chain_proof_ready", features = ["library"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "950f332a0bed72c94a75e7e26a5a5cad6915a245" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "c99b4b53396d57cbd60277971075376c6ed7615e" }
