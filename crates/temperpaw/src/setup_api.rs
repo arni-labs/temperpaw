@@ -4088,6 +4088,7 @@ mod tests {
             role: None,
             acting_for: None,
             agent_type: None,
+            label: None,
             attributes: Default::default(),
         };
         let operator = SecurityContext::from_resolved_identity("operator-1", "operator", None);

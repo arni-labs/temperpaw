@@ -510,6 +510,7 @@ fn only_the_verified_operator_may_record_a_jobs_last_session() {
             role: None,
             acting_for: None,
             agent_type: None,
+            label: None,
             attributes: HashMap::new(),
         },
         context_attrs: HashMap::new(),
