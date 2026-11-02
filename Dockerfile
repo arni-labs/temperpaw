@@ -19,9 +19,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 # The one os-app the server links crates of (crates/temperpaw/Cargo.toml's dsf-resource-collect and its siblings).
 COPY os-apps/dsf-twin/wasm ./os-apps/dsf-twin/wasm
+# Each stage has its own registry and git mounts: the stages run at once, and cargo's lock lives in
+# CARGO_HOME outside the mounts, so sharing them lets two cargos write one checkout.
 RUN --mount=type=cache,id=server-target,target=/cache/target \
-    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=server-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=server-git,target=/usr/local/cargo/git \
     cargo build -p temperpaw --release --bin temperpaw-server --target-dir /cache/target \
     && cp /cache/target/release/temperpaw-server /app/temperpaw-server
 
@@ -29,8 +31,8 @@ FROM rust-base AS wasm-build
 COPY os-apps ./os-apps
 COPY scripts/verify_route_message_wasm.sh ./scripts/verify_route_message_wasm.sh
 RUN --mount=type=cache,id=wasm-target,target=/cache/target \
-    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=wasm-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=wasm-git,target=/usr/local/cargo/git \
     export CARGO_TARGET_DIR=/cache/target \
     && cd /app/os-apps/paw-agent/wasm && bash build.sh \
     && cd /app/os-apps/paw-channels/wasm && bash build.sh \

@@ -86,8 +86,10 @@ jobs:
             {
               "docker-cargo/server-target": { "target": "/cache/target", "id": "server-target" },
               "docker-cargo/wasm-target": { "target": "/cache/target", "id": "wasm-target" },
-              "docker-cargo/registry": { "target": "/usr/local/cargo/registry", "id": "cargo-registry" },
-              "docker-cargo/git": { "target": "/usr/local/cargo/git", "id": "cargo-git" }
+              "docker-cargo/server-registry": { "target": "/usr/local/cargo/registry", "id": "server-registry" },
+              "docker-cargo/server-git": { "target": "/usr/local/cargo/git", "id": "server-git" },
+              "docker-cargo/wasm-registry": { "target": "/usr/local/cargo/registry", "id": "wasm-registry" },
+              "docker-cargo/wasm-git": { "target": "/usr/local/cargo/git", "id": "wasm-git" }
             }
           skip-extraction: ${{ steps.cargo-caches.outputs.cache-hit }}
 
