@@ -111,7 +111,6 @@ fn allowed_secret_keys() -> HashSet<&'static str> {
         // not dashboard secrets. They're set by `temperpaw deploy` and changed in Railway.
         "railway_project_id",
         "railway_environment_id",
-        "railway_otel_service_id",
         "railway_datadog_runtime_agent_service_id",
         "railway_service_id",
     ]
@@ -1838,7 +1837,6 @@ struct RailwayStatus {
     project_id: Option<String>,
     environment_id: Option<String>,
     service_id: Option<String>,
-    otel_service_id: Option<String>,
     datadog_runtime_agent_service_id: Option<String>,
 }
 
@@ -1850,8 +1848,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
     let project_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_project_id"));
     let environment_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_environment_id"));
     let service_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_service_id"));
-    let otel_service_id =
-        vault.and_then(|v| v.get_secret(&state.tenant, "railway_otel_service_id"));
     let datadog_runtime_agent_service_id =
         vault.and_then(|v| v.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id"));
     let configured = has_token && project_id.is_some() && environment_id.is_some();
@@ -1862,7 +1858,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
         project_id,
         environment_id,
         service_id,
-        otel_service_id,
         datadog_runtime_agent_service_id,
     })
 }
@@ -1877,8 +1872,6 @@ struct SetRailwayVarRequest {
 /// Allowlist of (service, key) pairs that can be set via this endpoint.
 fn allowed_railway_vars() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("otel-collector", "DD_API_KEY"),
-        ("otel-collector", "DD_SITE"),
         ("datadog-runtime-agent", "DD_API_KEY"),
         ("datadog-runtime-agent", "DD_SITE"),
     ]
@@ -1928,9 +1921,8 @@ async fn set_railway_var(
             .into_response();
     };
 
-    // Resolve service ID — for otel-collector, read from vault
+    // Resolve the service ID from the vault
     let service_id = match req.service.as_str() {
-        "otel-collector" => vault.get_secret(&state.tenant, "railway_otel_service_id"),
         "datadog-runtime-agent" => {
             vault.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id")
         }
@@ -2099,7 +2091,13 @@ async fn ensure_datadog_runtime_agent(State(state): State<SetupApiState>) -> imp
             .await?;
         }
 
-        let app_vars = datadog_enhanced_app_railway_vars(&dd_key, &dd_site, &state.build_sha);
+        let current_otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+        let app_vars = datadog_enhanced_app_railway_vars(
+            &dd_key,
+            &dd_site,
+            &state.build_sha,
+            current_otlp_endpoint.as_deref(),
+        );
         for (name, value) in &app_vars {
             railway_upsert_variable(&client, &token, &project, &env, &app_svc, name, value).await?;
         }
@@ -2534,10 +2532,22 @@ fn datadog_runtime_agent_railway_vars(
     ]
 }
 
+/// Whether this service already sends OTLP somewhere it chose. Startup fills in
+/// the localhost default when none is set, so that one counts as no choice.
+fn otlp_endpoint_is_chosen(endpoint: Option<&str>) -> bool {
+    endpoint.is_some_and(|endpoint| {
+        let endpoint = endpoint.trim();
+        !endpoint.is_empty()
+            && !endpoint.contains("://localhost")
+            && !endpoint.contains("://127.0.0.1")
+    })
+}
+
 fn datadog_enhanced_app_railway_vars(
     dd_api_key: &str,
     dd_site: &str,
     build_sha: &str,
+    current_otlp_endpoint: Option<&str>,
 ) -> Vec<(&'static str, String)> {
     let version = if build_sha.trim().is_empty() {
         "unknown".to_string()
@@ -2546,7 +2556,7 @@ fn datadog_enhanced_app_railway_vars(
     };
     let otel_resource_attributes = datadog_app_otel_resource_attributes(&version);
 
-    vec![
+    let mut vars = vec![
         ("DD_API_KEY", dd_api_key.to_string()),
         ("DD_SITE", dd_site.to_string()),
         ("DD_SERVICE", "temperpaw".to_string()),
@@ -2561,18 +2571,24 @@ fn datadog_enhanced_app_railway_vars(
         ),
         ("DD_LLMOBS_ENABLED", "true".to_string()),
         ("DD_LLMOBS_API_ENABLED", "true".to_string()),
+        ("OTEL_ENABLED", "true".to_string()),
         ("OTEL_RESOURCE_ATTRIBUTES", otel_resource_attributes),
-        (
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            format!("http://{DATADOG_RUNTIME_AGENT_HOST}:4318"),
-        ),
         ("DD_AGENT_HOST", DATADOG_RUNTIME_AGENT_HOST.to_string()),
         ("DD_TRACE_AGENT_PORT", "8126".to_string()),
         (
             "DD_TRACE_AGENT_URL",
             format!("http://{DATADOG_RUNTIME_AGENT_HOST}:8126"),
         ),
-    ]
+    ];
+    // Ensuring the agent exists must not take a service off another OTLP route,
+    // such as a collector that needs its own ingest header.
+    if !otlp_endpoint_is_chosen(current_otlp_endpoint) {
+        vars.push((
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            format!("http://{DATADOG_RUNTIME_AGENT_HOST}:4318"),
+        ));
+    }
+    vars
 }
 
 fn datadog_app_otel_resource_attributes(version: &str) -> String {
@@ -3937,7 +3953,8 @@ mod tests {
             "Datadog Agent DD_TAGS uses whitespace-separated list values"
         );
 
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha");
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let app_tags = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "DD_TAGS").then_some(value.as_str()))
@@ -3951,7 +3968,8 @@ mod tests {
 
     #[test]
     fn datadog_enhanced_app_vars_disable_otel_llmobs_auto_conversion() {
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha");
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let resource_attributes = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "OTEL_RESOURCE_ATTRIBUTES").then_some(value))
@@ -3961,6 +3979,82 @@ mod tests {
             resource_attributes,
             "service.name=temperpaw,service.version=build-sha,deployment.environment=prod,dd_llmobs_enabled=false"
         );
+    }
+
+    /// A deploy with no Datadog key saves OTEL_ENABLED=false, and startup then
+    /// drops the endpoint, so adding Datadog later has to turn export back on.
+    #[test]
+    fn ensuring_the_agent_turns_export_on() {
+        const EXPECTED_ENDPOINT: &str = "TEMPERPAW_TEST_EXPECTED_OTLP_ENDPOINT";
+        if let Ok(endpoint) = std::env::var(EXPECTED_ENDPOINT) {
+            let config = crate::config::Config::from_env().expect("startup config");
+            assert!(config.otel_enabled, "Datadog setup must re-enable export");
+            assert_eq!(config.otel_endpoint, endpoint);
+            return;
+        }
+
+        for current_endpoint in [None, Some("https://collector.example.com")] {
+            // Railway upserts the setup variables over the no-key deploy's
+            // persisted off switch before restarting the app.
+            let mut persisted =
+                std::collections::HashMap::from([("OTEL_ENABLED", "false".to_string())]);
+            if let Some(endpoint) = current_endpoint {
+                persisted.insert("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string());
+            }
+            persisted.extend(datadog_enhanced_app_railway_vars(
+                "api-key",
+                "datadoghq.com",
+                "build-sha",
+                current_endpoint,
+            ));
+
+            // Read the actual startup config in a fresh process, without
+            // changing the environment of other tests or loading a local .env.
+            let workdir = tempfile::tempdir().expect("isolated startup directory");
+            std::fs::write(workdir.path().join(".env"), "").expect("empty local env");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "setup_api::tests::ensuring_the_agent_turns_export_on",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .envs(std::env::vars_os().filter(|(name, _)| {
+                    name == "LD_LIBRARY_PATH" || name == "DYLD_FALLBACK_LIBRARY_PATH"
+                }))
+                .envs(persisted)
+                .env(
+                    EXPECTED_ENDPOINT,
+                    current_endpoint
+                        .unwrap_or("http://datadog-runtime-agent.railway.internal:4318"),
+                )
+                .current_dir(workdir.path())
+                .output()
+                .expect("restart with the updated Railway variables");
+            assert!(
+                output.status.success(),
+                "startup failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    fn ensuring_the_agent_leaves_a_chosen_otlp_route_alone() {
+        let endpoint_set = |current: Option<&str>| {
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", current)
+                .iter()
+                .find_map(|(name, value)| {
+                    (*name == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| value.clone())
+                })
+        };
+        let agent = Some("http://datadog-runtime-agent.railway.internal:4318".to_string());
+
+        assert_eq!(endpoint_set(None), agent);
+        assert_eq!(endpoint_set(Some("")), agent);
+        assert_eq!(endpoint_set(Some("http://localhost:4318")), agent);
+        assert_eq!(endpoint_set(Some("https://collector.example.com")), None);
     }
 
     /// The sign-in's module saves its tokens through this server's own

@@ -1623,13 +1623,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             vault,
             &storage,
             &tenant,
-            "railway_otel_service_id",
-            config.railway_otel_service_id
-        );
-        seed_secret!(
-            vault,
-            &storage,
-            &tenant,
             "railway_datadog_runtime_agent_service_id",
             config.railway_datadog_runtime_agent_service_id
         );

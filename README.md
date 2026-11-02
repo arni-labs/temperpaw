@@ -126,14 +126,14 @@ cargo build -p temperpaw-cli --release
 
 Provisions Turso, Cloudflare R2, and Railway interactively — no `.env` file needed. The deploy flow prompts for all credentials.
 
-An OTEL collector is always deployed alongside TemperPaw. If `DD_API_KEY` is set in your environment, traces, metrics, and logs flow to Datadog automatically:
+If you enable Datadog during deploy, traces, metrics, and logs flow to Datadog through a `datadog-runtime-agent` service:
 
 ```bash
 export DD_API_KEY=your-datadog-api-key
 ./target/release/temperpaw deploy
 ```
 
-If you don't have a Datadog key yet, deploy without it — the collector runs in debug mode. Add `DD_API_KEY` to the otel-collector service in Railway later and it activates automatically on restart.
+If you don't have a Datadog key yet, deploy without it: telemetry export stays off (`OTEL_ENABLED=false`) and nothing else changes. Rerun `temperpaw deploy` with a key later to turn it on.
 
 ### Diagnose
 
