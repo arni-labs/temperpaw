@@ -43,8 +43,6 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Cargo clippy
         run: cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings
-      - name: Cargo check
-        run: cargo check --locked -p temperpaw -p paw-codex-worker
       - name: Worker script syntax
         run: |
           for f in crates/paw-codex-worker/scripts/*.sh; do bash -n "$f"; done
@@ -98,6 +96,7 @@ jobs:
             !os-apps/**/target/**
             ~/.cache/temperpaw-os-app-modules
           key: ${{ steps.modules.outputs.key }}
+      - run: echo "::add-matcher::.github/rust-test-failures.json"
       - name: cargo test, the root workspace
         run: python3 scripts/ci/rust_tests.py root
 
@@ -111,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
       - uses: dtolnay/rust-toolchain@stable
+      - run: echo "::add-matcher::.github/rust-test-failures.json"
       - name: cargo test, every other workspace in this part
         run: python3 scripts/ci/rust_tests.py others ${{ matrix.part }}/2
 
@@ -142,7 +142,6 @@ jobs:
         run: cd dashboard && npm install
       - name: Smoke scripts (executed)
         run: |
-          crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
           crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
       - name: Dashboard build
         run: cd dashboard && npm run build

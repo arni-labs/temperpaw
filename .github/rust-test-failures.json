@@ -1,0 +1,7 @@
+{"problemMatcher":[
+ {"owner":"rust-test-panic","pattern":[
+  {"regexp":"^\\s*thread '(.+?)'(?: \\(\\d+\\))? panicked at (.+):(\\d+):(\\d+):$","code":1,"file":2,"line":3,"column":4},
+  {"regexp":"^\\s*(.+)$","message":1}]},
+ {"owner":"rust-test-sides","pattern":[
+  {"regexp":"^\\s*((?:left|right): .*)$","message":1}]}
+]}
