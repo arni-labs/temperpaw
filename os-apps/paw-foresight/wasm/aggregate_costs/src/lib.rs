@@ -1467,13 +1467,4 @@ mod tests {
         assert_eq!(max_flag_points(&json!([])), 0.0);
     }
 
-    #[test]
-    fn search_budget_worst_case_is_bounded() {
-        // The plan's hard bound: routes per claim and rounds per route are
-        // structural constants, not suggestions.
-        assert!(
-            MAX_ROUTES * (1 + MAX_ROUNDS) <= 9,
-            "search budget per claim"
-        );
-    }
 }

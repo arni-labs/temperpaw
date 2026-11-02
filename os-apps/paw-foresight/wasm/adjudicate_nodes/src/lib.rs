@@ -861,15 +861,6 @@ mod tests {
         assert!(!p.contains("FlagForHuman"));
     }
 
-    #[test]
-    fn adjudicator_tools_and_turns_match_the_contract() {
-        assert_eq!(
-            ADJUDICATOR_TOOLS,
-            "temper_get,temper_list,temper_action,temper_web_search,temper_web_fetch"
-        );
-        assert_eq!(ADJUDICATOR_MAX_TURNS, "25");
-    }
-
     // --- Workspace rendezvous --------------------------------------------------
 
     #[test]

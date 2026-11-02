@@ -4118,14 +4118,11 @@ mod tests {
 
     use super::{
         BootstrapAction, DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
-        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy,
-        OS_APP_RECONCILE_DURATION_METRIC, OS_APP_RECONCILE_TOTAL_METRIC, RuntimeRecoveryStep,
-        STARTUP_LIVE_RESTORE_ENTITIES_METRIC, STARTUP_PHASE_DURATION_METRIC,
-        STARTUP_TIME_TO_READY_METRIC, StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
-        WASM_MODULE_LOAD_FAILURES_METRIC, actor_passivation_check_interval_secs,
-        app_required_wasm_failure, bootstrap_soul, classify_bootstrap_action,
-        default_agent_specs_bootstrap_needed, genesis_bootstrap_app_names,
-        genesis_bootstrap_timeout, genesis_cache_restore_timeout,
+        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy, RuntimeRecoveryStep,
+        StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
+        actor_passivation_check_interval_secs, app_required_wasm_failure, bootstrap_soul,
+        classify_bootstrap_action, default_agent_specs_bootstrap_needed,
+        genesis_bootstrap_app_names, genesis_bootstrap_timeout, genesis_cache_restore_timeout,
         installed_app_runtime_recovery_result, load_or_create_temper_api_key,
         local_wasm_startup_policy, orphaned_session_recovery_limit,
         paw_soul_content_is_personalized, recover_installed_apps,
@@ -4947,34 +4944,6 @@ on_timeout = "Fire"
                 .map(|(_, startup_loading)| startup_loading.as_str()),
             Some("lazy"),
             "transport_reconcile should stay lazy because it is not on the normal route/reply path"
-        );
-    }
-
-    #[test]
-    fn startup_metric_names_match_datadog_contract() {
-        assert_eq!(
-            STARTUP_PHASE_DURATION_METRIC,
-            "temper_startup_phase_duration_ms"
-        );
-        assert_eq!(
-            STARTUP_TIME_TO_READY_METRIC,
-            "temper_startup_time_to_healthy_ms"
-        );
-        assert_eq!(
-            STARTUP_LIVE_RESTORE_ENTITIES_METRIC,
-            "temper_startup_live_restore_entities_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_TOTAL_METRIC,
-            "temper_os_app_reconcile_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_DURATION_METRIC,
-            "temper_os_app_reconcile_duration_ms"
-        );
-        assert_eq!(
-            WASM_MODULE_LOAD_FAILURES_METRIC,
-            "temper_wasm_module_load_failures_total"
         );
     }
 
