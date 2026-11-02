@@ -18,7 +18,8 @@ FROM rust-base AS server-build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 # The one os-app the server links crates of (crates/temperpaw/Cargo.toml's dsf-resource-collect and its siblings).
-COPY os-apps/dsf-twin/wasm ./os-apps/dsf-twin/wasm
+# The server depends on crates in os-apps by path; they come along whichever those are.
+COPY os-apps ./os-apps
 # Each stage has its own registry and git mounts: the stages run at once, and cargo's lock lives in
 # CARGO_HOME outside the mounts, so sharing them lets two cargos write one checkout.
 RUN --mount=type=cache,id=server-target,target=/cache/target \
