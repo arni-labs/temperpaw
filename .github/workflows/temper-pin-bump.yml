@@ -162,15 +162,20 @@ jobs:
           if [ "$NREVS" != "$NEW" ]; then
             echo "::error::after bump the temper pin is not uniformly $NEW: ${NREVS:-none}"; exit 1; fi
 
-          # 2. refresh Cargo.lock properly (the new kernel may pull new transitive
-          #    deps a pure sed would miss and break --locked). Derive the crate list
-          #    from the temper.git dependency KEYS in the manifests - no hardcoded
-          #    list to drift when temper adds/removes a pinned crate.
-          PKGS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | sed -E 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/' | sort -u)
-          PKG_ARGS=""
-          for c in $PKGS; do PKG_ARGS="$PKG_ARGS -p $c"; done
-          cargo update $PKG_ARGS
+          # 2. refresh every lockfile (the new kernel may pull new transitive deps a
+          #    pure sed would miss and break --locked). The package list is what each
+          #    lock actually holds: every package whose source is the temper git repo.
+          #    A manifest dependency key is not always the package name, and a lock
+          #    needs no list kept in step with temper's crates.
+          for lock in $(git ls-files | grep -E '(^|/)Cargo\.lock$'); do
+            PKG_ARGS=""
+            for c in $(awk '/^name = /{n=$3; gsub(/"/,"",n)} /^source = "git\+https:\/\/github\.com\/arni-labs\/temper\.git/{print n}' "$lock" | sort -u); do
+              PKG_ARGS="$PKG_ARGS -p $c"
+            done
+            [ -z "$PKG_ARGS" ] && continue
+            echo "cargo update in $(dirname "$lock"):$PKG_ARGS"
+            (cd "$(dirname "$lock")" && cargo update $PKG_ARGS)
+          done
 
           if git diff --quiet; then echo "::error::no changes after bump - aborting"; exit 1; fi
           git add -u
