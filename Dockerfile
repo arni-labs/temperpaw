@@ -17,7 +17,6 @@ WORKDIR /app
 FROM rust-base AS server-build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-# The one os-app the server links crates of (crates/temperpaw/Cargo.toml's dsf-resource-collect and its siblings).
 # The server depends on crates in os-apps by path; they come along whichever those are.
 COPY os-apps ./os-apps
 # Each stage has its own registry and git mounts: the stages run at once, and cargo's lock lives in
