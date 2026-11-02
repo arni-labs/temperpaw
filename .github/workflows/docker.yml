@@ -63,11 +63,41 @@ jobs:
             org.opencontainers.image.title=TemperPaw
             org.opencontainers.image.description=TemperPaw - Agent daemon built on Temper platform
 
+      # The Dockerfile's layers and its cargo cache mounts live between runs. Layers: a commit that leaves the server's
+      # sources alone reuses its layer whole, and the same for the os-app modules and the dashboard. Mounts: a commit
+      # that changes them recompiles its crates, not their dependencies. The key changes when a lock file does, so the
+      # 10 GB Actions cache gets one new copy per lock change rather than one per commit; a new key starts from the latest.
+      - uses: docker/setup-buildx-action@v3
+        id: buildx
+
+      - name: Cargo caches
+        id: cargo-caches
+        uses: actions/cache@v4
+        with:
+          path: docker-cargo
+          key: docker-cargo-${{ hashFiles('Cargo.lock', 'os-apps/**/Cargo.lock') }}
+          restore-keys: docker-cargo-
+
+      - name: Put the cargo caches in the build's mounts
+        uses: reproducible-containers/buildkit-cache-dance@2925f5cfd92896e0f5a155899ff2ed2922b575c6 # v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "docker-cargo/server-target": { "target": "/cache/target", "id": "server-target" },
+              "docker-cargo/wasm-target": { "target": "/cache/target", "id": "wasm-target" },
+              "docker-cargo/registry": { "target": "/usr/local/cargo/registry", "id": "cargo-registry" },
+              "docker-cargo/git": { "target": "/usr/local/cargo/git", "id": "cargo-git" }
+            }
+          skip-extraction: ${{ steps.cargo-caches.outputs.cache-hit }}
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          cache-from: type=gha,scope=docker
+          cache-to: type=gha,scope=docker,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
