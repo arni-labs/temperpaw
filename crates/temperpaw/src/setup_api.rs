@@ -2571,6 +2571,7 @@ fn datadog_enhanced_app_railway_vars(
         ),
         ("DD_LLMOBS_ENABLED", "true".to_string()),
         ("DD_LLMOBS_API_ENABLED", "true".to_string()),
+        ("OTEL_ENABLED", "true".to_string()),
         ("OTEL_RESOURCE_ATTRIBUTES", otel_resource_attributes),
         ("DD_AGENT_HOST", DATADOG_RUNTIME_AGENT_HOST.to_string()),
         ("DD_TRACE_AGENT_PORT", "8126".to_string()),
@@ -3952,7 +3953,8 @@ mod tests {
             "Datadog Agent DD_TAGS uses whitespace-separated list values"
         );
 
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let app_tags = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "DD_TAGS").then_some(value.as_str()))
@@ -3966,7 +3968,8 @@ mod tests {
 
     #[test]
     fn datadog_enhanced_app_vars_disable_otel_llmobs_auto_conversion() {
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let resource_attributes = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "OTEL_RESOURCE_ATTRIBUTES").then_some(value))
@@ -3975,6 +3978,20 @@ mod tests {
         assert_eq!(
             resource_attributes,
             "service.name=temperpaw,service.version=build-sha,deployment.environment=prod,dd_llmobs_enabled=false"
+        );
+    }
+
+    /// A deploy with no Datadog key saves OTEL_ENABLED=false, and startup then
+    /// drops the endpoint, so adding Datadog later has to turn export back on.
+    #[test]
+    fn ensuring_the_agent_turns_export_on() {
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
+        assert!(
+            app_vars
+                .iter()
+                .any(|(name, value)| *name == "OTEL_ENABLED" && value == "true"),
+            "{app_vars:?}"
         );
     }
 
