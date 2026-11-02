@@ -3985,14 +3985,59 @@ mod tests {
     /// drops the endpoint, so adding Datadog later has to turn export back on.
     #[test]
     fn ensuring_the_agent_turns_export_on() {
-        let app_vars =
-            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
-        assert!(
-            app_vars
-                .iter()
-                .any(|(name, value)| *name == "OTEL_ENABLED" && value == "true"),
-            "{app_vars:?}"
-        );
+        const EXPECTED_ENDPOINT: &str = "TEMPERPAW_TEST_EXPECTED_OTLP_ENDPOINT";
+        if let Ok(endpoint) = std::env::var(EXPECTED_ENDPOINT) {
+            let config = crate::config::Config::from_env().expect("startup config");
+            assert!(config.otel_enabled, "Datadog setup must re-enable export");
+            assert_eq!(config.otel_endpoint, endpoint);
+            return;
+        }
+
+        for current_endpoint in [None, Some("https://collector.example.com")] {
+            // Railway upserts the setup variables over the no-key deploy's
+            // persisted off switch before restarting the app.
+            let mut persisted =
+                std::collections::HashMap::from([("OTEL_ENABLED", "false".to_string())]);
+            if let Some(endpoint) = current_endpoint {
+                persisted.insert("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string());
+            }
+            persisted.extend(datadog_enhanced_app_railway_vars(
+                "api-key",
+                "datadoghq.com",
+                "build-sha",
+                current_endpoint,
+            ));
+
+            // Read the actual startup config in a fresh process, without
+            // changing the environment of other tests or loading a local .env.
+            let workdir = tempfile::tempdir().expect("isolated startup directory");
+            std::fs::write(workdir.path().join(".env"), "").expect("empty local env");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "setup_api::tests::ensuring_the_agent_turns_export_on",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .envs(std::env::vars_os().filter(|(name, _)| {
+                    name == "LD_LIBRARY_PATH" || name == "DYLD_FALLBACK_LIBRARY_PATH"
+                }))
+                .envs(persisted)
+                .env(
+                    EXPECTED_ENDPOINT,
+                    current_endpoint
+                        .unwrap_or("http://datadog-runtime-agent.railway.internal:4318"),
+                )
+                .current_dir(workdir.path())
+                .output()
+                .expect("restart with the updated Railway variables");
+            assert!(
+                output.status.success(),
+                "startup failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
     }
 
     #[test]
