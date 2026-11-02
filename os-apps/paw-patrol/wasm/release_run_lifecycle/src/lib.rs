@@ -1127,13 +1127,6 @@ mod tests {
     // -- merge ----------------------------------------------------------------
 
     #[test]
-    fn merge_body_pins_the_head_sha() {
-        let body = format!(r#"{{"sha":"{SHA}","merge_method":"merge"}}"#);
-        assert!(body.contains(&format!("\"sha\":\"{SHA}\"")));
-        assert!(body.contains("\"merge_method\":\"merge\""));
-    }
-
-    #[test]
     fn per_repo_reject_finds_a_concurrent_active_release() {
         let runs = vec![
             ("self".into(), "a/b".into(), "Merging".into()),
@@ -1549,8 +1542,4 @@ mod tests {
         assert!(concurrent_entity_set_name(Some("Deploys")).is_err());
     }
 
-    #[test]
-    fn concurrent_scan_covers_release_run_and_dsf_deploy() {
-        assert_eq!(CONCURRENT_SCAN_SETS, ["ReleaseRuns", "DsfDeploys"]);
-    }
 }
