@@ -1,10 +1,17 @@
 # temper-pin-bump (ARN-438): keep temperpaw's kernel pin current.
 #
-# temperpaw pins the temper kernel by git rev in two manifests (crates/temperpaw
-# and crates/paw-codex-worker). Bumping that pin IS temper's primary deploy leg:
-# a new kernel reaches production by riding a temperpaw release, not by deploying
-# temper directly. This workflow watches temper's main and, when it moves ahead
-# of the pin, opens ONE PR that bumps both manifests and refreshes Cargo.lock.
+# temperpaw pins the temper kernel by git rev in many places: the server crates,
+# every os-app WASM manifest, and all their Cargo.lock files. Bumping that pin IS
+# temper's primary deploy leg: a new kernel reaches production by riding a
+# temperpaw release, not by deploying temper directly. This workflow takes the
+# temper rev to bump to and opens ONE PR that moves EVERY temper git rev in the
+# repo to it and refreshes Cargo.lock.
+#
+# WHICH REV: the one the line has staged and checked for the temper change, passed
+# in as the `rev` input. NOT temper main's head. Main can be ahead of what the line
+# checked, and a bump to an unchecked kernel would ship code nobody verified (and
+# would deadlock the temper change's go-live, which waits on main carrying the
+# staged rev). So there is no schedule and no main lookup.
 #
 # The PR then rides temperpaw's normal gates (fmt/clippy/check/test --locked, the
 # review panel, proof) - CI building and testing against the new kernel IS the
@@ -17,9 +24,12 @@
 # one author identity.
 name: temper-pin-bump
 on:
-  schedule:
-    - cron: "0 9 * * *"   # daily (09:00 UTC), after the nightly shadow sweep
   workflow_dispatch:
+    inputs:
+      rev:
+        description: "Full 40-hex temper commit the line staged and checked (not main's head)"
+        required: true
+        type: string
 permissions:
   contents: read   # the branch push + PR use STACK_TOKEN, not GITHUB_TOKEN
 concurrency:
@@ -48,46 +58,40 @@ jobs:
         id: drift
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # public compare API - GITHUB_TOKEN is enough
+          STAGED_REV: ${{ inputs.rev }}
         run: |
           set -euo pipefail
-          # temper main HEAD is public - anonymous ls-remote is enough.
-          NEW=$(git ls-remote "https://github.com/${TEMPER_REPO}.git" main | cut -f1)
-          case "$NEW" in *[!0-9a-f]*|"") echo "::error::bad temper HEAD '$NEW'"; exit 1 ;; esac
-          if [ "${#NEW}" -ne 40 ]; then echo "::error::temper HEAD not a full sha: '$NEW'"; exit 1; fi
+          # The staged rev comes from the dispatcher; it must be a full sha that
+          # exists in temper (public, anonymous reads work).
+          NEW="$STAGED_REV"
+          if ! printf '%s' "$NEW" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::rev must be a full 40-hex temper sha: '$NEW'"; exit 1; fi
+          gh api "repos/${TEMPER_REPO}/commits/${NEW}" -q .sha >/dev/null \
+            || { echo "::error::$NEW is not a commit in ${TEMPER_REPO}"; exit 1; }
 
-          # Each manifest must actually CARRY a temper.git pin - otherwise the
-          # uniformity check below would pass vacuously on a manifest with zero
-          # matches (e.g. paw-codex-worker silently losing its pin).
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
-            if [ "$c" -eq 0 ]; then echo "::error::$f carries no temper.git dependency pin"; exit 1; fi
-          done
-
-          # Read the current pin ONLY from the temper.git dependency lines, across
-          # BOTH manifests, and require it to be uniform - a rev scoped to any other
-          # git dep must not poison it, and a half-drifted paw-codex-worker pin must
-          # fail loudly rather than half-bump.
-          REVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
+          # Read the current pin from EVERY tracked file that names a temper.git rev
+          # (manifests and lockfiles, any crate) and require it to be uniform: a
+          # half-drifted pin must fail loudly rather than half-bump.
+          REVS=$(git grep -hE 'arni-labs/temper\.git' -- '*Cargo.toml' '*Cargo.lock' \
+            | grep -oE 'rev(=| = ")[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}' | sort -u)
           n=$(printf '%s\n' "$REVS" | grep -c . || true)
           if [ "$n" -ne 1 ]; then
-            echo "::error::temper pin is not uniform across the temper.git deps in both manifests: ${REVS:-none}"; exit 1; fi
+            echo "::error::temper pin is not uniform across the repo: ${REVS:-none}"; exit 1; fi
           CUR="$REVS"
           echo "current pin: $CUR"
-          echo "temper main: $NEW"
+          echo "staged rev:  $NEW"
 
           if [ "$NEW" = "$CUR" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "pin already at main - nothing to bump."
+            echo "pin already at the staged rev - nothing to bump."
             exit 0
           fi
 
-          # Forward-only: bump only when temper main is strictly AHEAD of the pin.
-          # If main was reverted/force-pushed behind (or diverged), do not "bump"
-          # backward. The compare API is public - GITHUB_TOKEN suffices.
+          # Forward-only: bump only when the staged rev is strictly AHEAD of the pin;
+          # never move the pin backward or sideways. The compare API is public - GITHUB_TOKEN suffices.
           STATUS=$(gh api "repos/${TEMPER_REPO}/compare/${CUR}...${NEW}" -q .status 2>/dev/null || echo "unknown")
           if [ "$STATUS" != "ahead" ]; then
-            echo "::warning::temper main is '$STATUS' relative to the pin, not 'ahead' - not bumping (forward-only)."
+            echo "::warning::staged rev is '$STATUS' relative to the pin, not 'ahead' - not bumping (forward-only)."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -146,19 +150,15 @@ jobs:
           git config user.email "rita.aga.js@gmail.com"
           git checkout -b "$BRANCH"
 
-          # 1. bump the rev ONLY on the temper.git dependency lines of both manifests
-          #    (line-scoped so no other dep sharing the sha could be touched).
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            sed -i "/arni-labs\/temper\.git/s/${CUR}/${NEW}/g" "$f"
-          done
-          # after bump: each manifest still carries a temper.git pin AND every
-          # temper.git dep in BOTH manifests is exactly NEW.
-          for f in crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml; do
-            c=$(grep -cE 'arni-labs/temper\.git' "$f" || true)
-            if [ "$c" -eq 0 ]; then echo "::error::$f lost its temper.git pin during the bump"; exit 1; fi
-          done
-          NREVS=$(grep -hE 'arni-labs/temper\.git' crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml \
-            | grep -oE 'rev = "[0-9a-f]{40}"' | grep -oE '[0-9a-f]{40}' | sort -u)
+          # 1. move EVERY occurrence of the current temper rev in tracked files to
+          #    the new one: server crates, all os-app WASM manifests, every lockfile.
+          #    The rev is a full sha, so a plain replace cannot touch another dep.
+          #    (git grep, not grep -r: it reliably reads the lockfiles too.)
+          git grep -lF "$CUR" | xargs sed -i "s/${CUR}/${NEW}/g"
+          if git grep -qF "$CUR"; then
+            echo "::error::old temper rev $CUR still present after the bump:"; git grep -lF "$CUR"; exit 1; fi
+          NREVS=$(git grep -hE 'arni-labs/temper\.git' -- '*Cargo.toml' '*Cargo.lock' \
+            | grep -oE 'rev(=| = ")[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}' | sort -u)
           if [ "$NREVS" != "$NEW" ]; then
             echo "::error::after bump the temper pin is not uniformly $NEW: ${NREVS:-none}"; exit 1; fi
 
@@ -173,7 +173,7 @@ jobs:
           cargo update $PKG_ARGS
 
           if git diff --quiet; then echo "::error::no changes after bump - aborting"; exit 1; fi
-          git add crates/temperpaw/Cargo.toml crates/paw-codex-worker/Cargo.toml Cargo.lock
+          git add -u
 
           SHORT_CUR="${CUR:0:12}"; SHORT_NEW="${NEW:0:12}"
           # Build the commit message and PR body from QUOTED heredocs (no shell
@@ -181,8 +181,8 @@ jobs:
           cat > /tmp/commit-msg.txt <<'MSG'
           chore(deps): bump temper pin to __NEW__
 
-          Bumps the temper kernel pin from __CUR__ to __NEW__ in both manifests and
-          refreshes Cargo.lock. Automated by .github/workflows/temper-pin-bump.yml
+          Moves every temper git rev (server crates, os-app WASM manifests, lockfiles)
+          from __CUR__ to the line-staged __NEW__ and refreshes Cargo.lock. Automated by .github/workflows/temper-pin-bump.yml
           (ARN-438). CI building and testing --locked against the new kernel is the
           verification.
           MSG
@@ -201,9 +201,9 @@ jobs:
           cat > /tmp/pr-body.md <<'BODY'
           Automated temper kernel pin bump (ARN-438).
 
-          Bumps the temper git rev from `__CUR__` to `__NEW__` in
-          `crates/temperpaw/Cargo.toml` and `crates/paw-codex-worker/Cargo.toml`,
-          and refreshes `Cargo.lock`. This is temper's primary deploy leg: the new
+          Bumps the temper git rev from `__CUR__` to `__NEW__`, the
+          rev the line staged and checked, everywhere it appears (server crates,
+          os-app WASM manifests, all lockfiles), and refreshes `Cargo.lock`. This is temper's primary deploy leg: the new
           kernel reaches production by riding this temperpaw PR through the normal
           gates. CI compiling and testing `--locked` against the new kernel is the
           verification.
