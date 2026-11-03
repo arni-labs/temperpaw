@@ -7,7 +7,6 @@
   const FALLBACK: OsAppEntry[] = [
     { name: 'paw-agent', description: 'Core agent lifecycle — souls, skills, sessions, memory, teams', entity_types: ['Agent', 'Soul', 'Skill', 'Session', 'Memory', 'Team'], version: '0.1.0', app_guide: null },
     { name: 'paw-harness', description: 'Development workflow governance — project harnesses and work cycles', entity_types: ['ProjectHarness', 'WorkCycle'], version: '0.1.0', app_guide: null },
-    { name: 'paw-heal', description: 'Self-healing monitoring with Datadog integration', entity_types: ['Monitor', 'AlertCycle'], version: '0.1.0', app_guide: null },
     { name: 'paw-foresight', description: 'Product direction engine — projections, observations, entropy-based simulation', entity_types: ['Direction', 'Projection', 'ProductModel'], version: '0.1.0', app_guide: null },
     { name: 'paw-pm', description: 'Project management — issues, projects, cycles, labels, comments', entity_types: ['Issue', 'Project', 'Cycle', 'Label', 'Comment'], version: '0.1.0', app_guide: null },
     { name: 'paw-channels', description: 'Multi-channel agent communication — Slack, web, API routes', entity_types: ['Channel', 'AgentRoute'], version: '0.1.0', app_guide: null },

@@ -64,7 +64,7 @@ async fn run_evaluation_command_list(
     commands: Vec<String>,
 ) -> Result<EvaluationOutcome> {
     let workdir = ensure_worktree(config, worker_run).await?;
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut results = Vec::new();
     let mut passed = true;
     let mut failure_classification = "passed";

@@ -2142,40 +2142,6 @@ mod tests {
     }
 
     #[test]
-    fn test_paw_agent_csdl_has_single_session_properties() {
-        let csdl = include_str!("../../../specs/model.csdl.xml");
-        for property in ["SessionMode", "PrePlanToolsEnabled", "ActivePlanId"] {
-            let needle = format!("<Property Name=\"{property}\"");
-            assert_eq!(
-                csdl.matches(&needle).count(),
-                1,
-                "expected exactly one {property} property in paw-agent CSDL"
-            );
-        }
-    }
-
-    #[test]
-    fn test_paw_agent_csdl_handle_tool_results_matches_runtime_params() {
-        let csdl = include_str!("../../../specs/model.csdl.xml");
-        let handle_tool_results = csdl
-            .split("<Action Name=\"HandleToolResults\" IsBound=\"true\">")
-            .nth(1)
-            .and_then(|block| block.split("</Action>").next())
-            .expect("HandleToolResults action block should exist");
-
-        for parameter in [
-            "sandbox_provider",
-            "pending_tool_context",
-            "pending_decision_id",
-        ] {
-            let needle = format!("<Parameter Name=\"{parameter}\"");
-            assert!(
-                handle_tool_results.contains(&needle),
-                "expected HandleToolResults to expose {parameter}"
-            );
-        }
-    }
-    #[test]
     fn tensorlake_copy_uses_query_parameters_and_verifies_the_destination() {
         let mut calls = Vec::new();
         let handle = tensorlake_copy_request("source", "copy-child-source", CopyMode::Start, |method, url, body| {

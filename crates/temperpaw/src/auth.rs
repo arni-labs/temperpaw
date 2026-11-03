@@ -180,6 +180,7 @@ pub async fn middleware(
             role: None,
             acting_for: None,
             agent_type: None,
+            label: None,
             attributes: Default::default(),
         };
         request
@@ -247,6 +248,7 @@ pub async fn middleware(
             role: None,
             acting_for: None,
             agent_type: header_value(request.headers(), "x-temper-agent-type"),
+            label: None,
             attributes: Default::default(),
         };
         ensure_tenant_header(request.headers_mut(), state.tenant());
@@ -1178,6 +1180,7 @@ mod tests {
             role: None,
             acting_for: None,
             agent_type: None,
+            label: None,
             attributes: Default::default(),
         };
         server
