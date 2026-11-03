@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline regressions: execute the workflow validator and cleanup in Bash."""
+"""Offline regressions: execute the release checks, workflow validator and cleanup in Bash."""
+import json
 import os
 from pathlib import Path
 import re
@@ -87,8 +88,120 @@ class RailwayReleaseTests(unittest.TestCase):
                 result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected)
-                # These are precisely the two results the Factory maps to ok.
+                # Of these results, the Factory maps these two to ok (already_live, the third, is tested below).
                 self.assertEqual(result.stdout in ('verified', 'checked'), package_outcome != 'failure' and e2e != 'failure')
+
+    def test_a_deploy_never_moves_the_temper_backwards(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('compared', 'refuse', 'forward'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        # A stand-in gh answers GitHub's compare from a small history: main runs c1 to c5 (its head), branch b forked
+        # at c2 and branch d at c4. GitHub knows no other commit.
+        commits = {'c1': '1' * 40, 'c2': '2' * 40, 'c3': '3' * 40, 'c4': '4' * 40, 'c5': '5' * 40,
+                   'b': 'b' * 40, 'd': 'd' * 40, 'unknown': 'f' * 40}
+        parents = {'c2': 'c1', 'c3': 'c2', 'c4': 'c3', 'c5': 'c4', 'b': 'c2', 'd': 'c4'}
+        mock = ('parent() {\n  case "$1" in\n' +
+                ''.join(f'    {commits[c]}) echo {commits[p]} ;;\n' for c, p in parents.items()) +
+                '  esac\n}\n' + r'''
+has() { # whether commit $1 contains commit $2
+  local c="$1"
+  while [ -n "$c" ]; do [ "$c" = "$2" ] && return 0; c="$(parent "$c")"; done
+  return 1
+}
+gh() { # gh api repos/<owner>/<repo>/compare/<base>...<head> --jq .status
+  [ "$1 $3 $4" = "api --jq .status" ] || { echo "unexpected gh $*" >&2; return 1; }
+  local spec="${2##*/compare/}" base head
+  base="${spec%%...*}"; head="${spec##*...}"
+  [ "$head" != main ] || head="$MAIN_HEAD"
+  { has "$base" "$ROOT_COMMIT" && has "$head" "$ROOT_COMMIT"; } || { echo 'gh: Not Found (HTTP 404)' >&2; return 1; }
+  if [ "$base" = "$head" ]; then echo identical
+  elif has "$head" "$base"; then echo ahead
+  elif has "$base" "$head"; then echo behind
+  else echo diverged; fi
+}
+''')
+        for deploy_env, served, release, already, refusal in [
+            # An older release, or the build that serves: live already, and nothing deploys.
+            ('production', 'c4', 'c2', 'true', None),
+            ('production', 'c4', 'c4', 'true', None),
+            # A release that contains what serves goes on top of it.
+            ('production', 'c2', 'c5', 'false', None),
+            ('staging', 'c2', 'd', 'false', None),
+            # Production takes only a commit main contains.
+            ('production', 'c2', 'd', None, 'main does not contain ' + 'd' * 40),
+            # A branch that forked before the commit that serves would drop it (GitHub: diverged).
+            ('staging', 'c4', 'b', None, 'b' * 40 + ' does not contain ' + '4' * 40),
+            ('production', 'c4', 'b', None, 'b' * 40 + ' does not contain ' + '4' * 40),
+            ('staging', 'unknown', 'c5', None, 'GitHub could not compare'),
+        ]:
+            with self.subTest(env=deploy_env, served=served, release=release), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, 'before.json').write_text(json.dumps({'image_tag': 'sha-' + commits[served][:7], 'sha': commits[served]}))
+                env = dict(os.environ, STATE_DIR=tmp, DEPLOY_ENV=deploy_env, EXPECTED_SHA=commits[release],
+                           MAIN_HEAD=commits['c5'], ROOT_COMMIT=commits['c1'])
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + functions + mock + '\nforward\n'],
+                                        env=env, capture_output=True, text=True)
+                errors = Path(tmp, 'errors.txt')
+                if refusal is None:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), 'already=' + already)
+                    self.assertFalse(errors.exists(), result.stderr)
+                else:
+                    # A refusal fails the step, prints no already= for the deploy to read, and is the record's miss.
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn(refusal, errors.read_text())
+                    self.assertTrue(errors.read_text().endswith(': no deploy\n'), errors.read_text())
+
+    def test_a_release_live_already_deploys_nothing_and_is_ok(self):
+        workflow = (ROOT / '.github/workflows/railway-redeploy.yml').read_text()
+        mode_expr = "(inputs.step == 'check_staging' && 'check' || inputs.mode)"
+
+        def runs(step_id, step, mode, already):
+            block = workflow.split('        id: ' + step_id + '\n', 1)[1].split('        run:', 1)[0]
+            expr = block.split('        if: ', 1)[1].split('\n', 1)[0].strip()
+            expr = expr.replace(mode_expr, repr(mode)).replace('inputs.mode', repr(mode)).replace('inputs.step', repr(step))
+            expr = expr.replace('steps.forward.outputs.already', repr(already))
+            return eval(expr.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}})
+
+        for step, mode, already, forward, deploy, check in [
+            ('go_live', 'deploy', 'true', True, False, False),
+            ('stage', 'deploy', 'false', True, True, True),
+            # Going back on purpose never asks whether it moves forward: roll_back, or a run started by hand
+            # (staging went back from a broken pin this way on 31 Oct).
+            ('roll_back', 'deploy', '', False, True, True),
+            ('', 'deploy', '', False, True, True),
+            ('check_staging', 'check', '', False, False, True),
+        ]:
+            with self.subTest(step=step, mode=mode, already=already):
+                self.assertEqual(bool(runs('forward', step, mode, already)), forward)
+                self.assertEqual(bool(runs('deploy', step, mode, already)), deploy)
+                self.assertEqual(bool(runs('check', step, mode, already)), check)
+
+        # The record step as it runs: live already is ok and names what serves; a refusal fails with its reason.
+        body = textwrap.dedent(workflow.split('        id: record\n', 1)[1].split('        run: |\n', 1)[1])
+        body = re.sub(r'\$\{\{.*?\}\}', 'deploy', body)
+        refusal = 'b' * 40 + ' does not contain ' + '4' * 40 + ', which serves (GitHub: diverged), so it would drop changes that serve: no deploy'
+        for already, commit, errors, result, ok, ref, reason in [
+            ('true', '2' * 40, '', 'already_live', 'ok', 'sha-4444444',
+             'already live: ' + '4' * 40 + ' serves on production, and it contains ' + '2' * 40),
+            ('', 'b' * 40, refusal + '\n', 'failed', 'failed', 'sha-bbbbbbb', 'failed: ' + refusal),
+        ]:
+            with self.subTest(already=already), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, 'before.json').write_text(json.dumps({'deployment_id': 'old', 'image_tag': 'sha-4444444', 'sha': '4' * 40}))
+                if errors:
+                    Path(tmp, 'errors.txt').write_text(errors)
+                env = dict(os.environ, STATE_DIR=tmp, GITHUB_OUTPUT=tmp + '/out', GITHUB_STEP_SUMMARY=tmp + '/summary',
+                           ALREADY=already, DEPLOY_OUTCOME='skipped', CHECK_OUTCOME='skipped', PACKAGE_OUTCOME='skipped',
+                           E2E_OUTCOME='skipped', ROLLBACK_OUTCOME='skipped', RUN_URL='https://example.test/run',
+                           FACTORY_RELEASE='release', FACTORY_STEP='go_live', FACTORY_TOKEN='token',
+                           DEPLOY_ENV='production', IMAGE_TAG='sha-' + commit[:7], EXPECTED_SHA=commit)
+                run = subprocess.run(['bash', '-c', body], env=env, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                out = dict(line.split('=', 1) for line in Path(tmp, 'out').read_text().splitlines())
+                self.assertEqual(out['result'], result)
+                outcome = json.loads(out['outcome'])
+                self.assertEqual((outcome['result'], outcome['ref'], outcome['reason']), (ok, ref, reason))
 
     def test_migration_lookup_failure_stops_before_deletion(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
@@ -173,13 +286,13 @@ gql() {
     def test_guest_baseline_needs_a_good_read(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
         functions = ''
-        for name in ('guest', 'guest_baseline'):
+        for name in ('guest', 'guest_counts', 'guest_baseline'):
             functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
         # curl answers with the scenario's body, then the status line -w adds.
         mock = r'''
 curl() {
   case "$SCENARIO" in
-    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[1,2]}]}}\n200' ;;
+    good) printf '{"ok":true,"data":{"records":[{"thing":"find","records":[{"id":"a"},{"id":"b"}]}]}}\n200' ;;
     empty) printf '\n200' ;;
     html) printf '<html>bad gateway</html>\n502' ;;
     refused) printf '\n000'; return 7 ;;
@@ -193,15 +306,66 @@ curl() {
             ('refused', 'https://example.test/guest', False, '000 false no JSON body'),
             ('empty', '', True, ''),
         ]:
-            with self.subTest(scenario=scenario, url=url):
+            with self.subTest(scenario=scenario, url=url), tempfile.TemporaryDirectory() as tmp:
                 command = 'set -euo pipefail\n' + functions + mock + '\nwas="$(guest_baseline)" || exit 7\nprintf "%s" "$was"\n'
-                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url)
+                env = dict(os.environ, SCENARIO=scenario, GUEST_CHECK_URL=url, STATE_DIR=tmp)
                 result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0 if ok else 7, result.stderr)
                 if ok:
                     self.assertEqual(result.stdout, read)
                 else:
                     self.assertIn('the guest read answered ' + read + ': no baseline, so no deploy', result.stderr)
+
+    def test_guest_records_during_soak(self):
+        script = (ROOT / 'scripts/railway_release.sh').read_text()
+        functions = ''
+        for name in ('guest', 'guest_counts', 'guest_lost', 'guest_baseline', 'against_before', 'report_misses'):
+            functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        check = 'case check in\n  check)\n' + script.split('\n  check)\n', 1)[1].split('\n  rollback)', 1)[0] + '\nesac\n'
+        mock = r'''
+wait_healthy() { :; }
+route_count() { echo 11; }
+ask_failures() { echo 0; }
+probe() { echo '{}'; }
+live_deployment() { echo '{"id":"dep"}'; }
+memory_gb() { echo 0.1; }
+curl() { cat "$STATE_DIR/guest-body.json"; printf '\n200'; }
+sleep() { cp "$STATE_DIR/after-soak.json" "$STATE_DIR/guest-body.json"; echo SOAK_FINISHED; }
+'''
+        for scenario, ids, before_more, after_more, miss in [
+            ('added', ['a', 'b', 'c'], False, False, ''),
+            ('removed', ['a'], False, False, 'the guest read has find 1, before 2'),
+            ('replaced', ['a', 'c'], False, False, 'the guest read lost 1 find: b'),
+            ('paged_before', ['b', 'c'], True, False, ''),
+            ('paged_after', ['b', 'c'], False, True, ''),
+            ('paged_removed', ['a'], True, True, 'the guest read has find 1, before 2'),
+            ('thing_removed', None, False, False, 'the guest read has no find any more'),
+        ]:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+                def body(record_ids, more):
+                    things = [] if record_ids is None else [
+                        {'thing': 'find', 'records': [{'id': value} for value in record_ids], 'more': more}]
+                    return json.dumps({'ok': True, 'data': {'records': things}})
+
+                Path(tmp, 'guest-body.json').write_text(body(['a', 'b'], before_more))
+                Path(tmp, 'after-soak.json').write_text(body(ids, after_more))
+                Path(tmp, 'new.json').write_text('{"deployment_id":"dep"}')
+                snapshot = r'''
+was="$(guest_baseline)"
+jq -n --arg guest "$was" '{route_count:"11",probes:{},guest:$guest}' >"$STATE_DIR/before.json"
+'''
+                env = dict(os.environ, STATE_DIR=tmp, GUEST_CHECK_URL='https://example.test/guest',
+                           SOAK_SECONDS='0', EXPECTED_SHA='', MEMORY_LIMIT_GB='', DRILL='',
+                           DD_API_KEY='', DD_APP_KEY='', DD_ENV='')
+                result = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + functions + mock + snapshot + check],
+                                        env=env, capture_output=True, text=True)
+                self.assertIn('SOAK_FINISHED', result.stdout, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 1 if miss else 0, result.stdout + result.stderr)
+                if miss:
+                    self.assertIn(miss, Path(tmp, 'misses.txt').read_text())
+                else:
+                    self.assertIn('every check passed', result.stdout)
+                    self.assertFalse(Path(tmp, 'misses.txt').exists())
 
     def test_route_table_read_from_probes_when_the_log_line_is_missing(self):
         script = (ROOT / 'scripts/railway_release.sh').read_text()
@@ -212,7 +376,7 @@ curl() {
         mock = r'''
 wait_healthy() { :; }
 ask_failures() { echo 0; }
-route_count() { printf '%s' "$LOGGED"; }
+route_count() { if [ "$1" = dep ]; then printf '%s' "$LOGGED"; else printf '%s' "$BEFORE_LOGGED"; fi; }
 probe() { printf '%s' "$AFTER"; }
 curl() {
   case "${*: -1}" in
@@ -223,23 +387,32 @@ curl() {
 '''
         judge = 'POST operator /katagami/judge'
         status = 'GET operator /paw/setup/status'
-        for logged, before_count, answers, table, misses in [
-            ('11', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '', {judge: '401', status: '200'}, 'loaded', []),
-            ('10', '11', {judge: '401', status: '200'}, 'loaded', ['route_count 10, before 11']),
+        # (new deployment's count, old deployment's last count read now, snapshot's count, answers, table, misses)
+        for logged, before_logged, before_count, answers, table, misses in [
+            ('11', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
+            ('', '', '', {judge: '401', status: '200'}, 'loaded', []),
+            ('10', '11', '11', {judge: '401', status: '200'}, 'loaded',
+             ['route_count 10, fewer than the 11 the deployment before ended with']),
+            # A route installed after the snapshot: the old deployment's last rebuild counts it too.
+            ('14', '14', '13', {judge: '401', status: '200'}, 'loaded', []),
+            # A route installed after the old deployment's last rebuild: only the new count has it.
+            ('14', '13', '13', {judge: '401', status: '200'}, 'loaded', []),
+            # The old deployment's logs are gone: the snapshot's count stands in.
+            ('10', '', '11', {judge: '401', status: '200'}, 'loaded',
+             ['route_count 10, fewer than the 11 the deployment before ended with']),
             # Only a built-in path answers, or the route path answers 404: nothing shows the table serves.
-            ('', '11', {judge: '404', status: '200'}, 'loaded',
+            ('', '11', '11', {judge: '404', status: '200'}, 'loaded',
              ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
-            ('', '11', {judge: '401', status: '200'}, 'empty',
+            ('', '11', '11', {judge: '401', status: '200'}, 'empty',
              ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
         ]:
-            with self.subTest(logged=logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
-                before = {'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
+            with self.subTest(logged=logged, before_logged=before_logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
+                before = {'deployment_id': 'old', 'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
                 Path(tmp, 'before.json').write_text(__import__('json').dumps(before))
                 command = ('set -euo pipefail\n' + functions + mock +
                            '\nmisses=()\nagainst_before dep\nprintf "MISS %s\\n" "${misses[@]+"${misses[@]}"}"\n')
-                env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, TABLE=table, TABLE_PATH='/katagami/judge',
+                env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, BEFORE_LOGGED=before_logged, TABLE=table, TABLE_PATH='/katagami/judge',
                            AFTER=__import__('json').dumps(answers), PROBE_ROUTES=judge + '\n' + status,
                            BASE_URL='https://example.test', TEMPER_API_KEY='test')
                 result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)

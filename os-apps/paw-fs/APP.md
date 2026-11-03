@@ -29,9 +29,10 @@ Single file with content lifecycle. Content stored externally; `StreamUpdated` f
 ### FileVersion
 Immutable record of a specific file version. Each upload spawns a fresh `FileVersion` entity and links it back to the previous immutable version before superseding it.
 
-- **States**: Current -> Superseded
-- **Key actions**: `Create` (file_id, version_number, content_hash, mime_type, size_bytes, previous_version_id, created_by), `Supersede`
+- **States**: Current -> Superseded; Current or Superseded -> Orphaned
+- **Key actions**: `Create` (file_id, version_number, content_hash, mime_type, size_bytes, previous_version_id, created_by), `Supersede`, `Orphan`
 - **Deletes**: a version belongs to its File, so deleting a File deletes its versions (`Relation.DeletePolicy` cascade on `FileVersion.File`). This needs a Temper kernel that reads that annotation; on an older kernel the File delete is refused while it has versions.
+- **Versions left behind**: File deletes from before that cascade left their versions in place. The platform operator may read and list versions, and send `Orphan`, which moves a version to Orphaned only when its File reads as the kernel's record of a deleted File. The operator may delete only an Orphaned version. Cedar sees a version's own fields alone, so the File check lives on the move.
 
 ## Setup
 

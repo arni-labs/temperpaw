@@ -16,12 +16,6 @@ Core work item with separated planning and execution phases.
   - Hierarchy: `SetParent`, `AddSubIssue`
 - **Invariants**: Priority required from Todo onward, planner required for Planning, plan required from Planned onward, assignee required from InProgress onward
 
-### Project
-Groups issues into a logical project.
-
-- **States**: Planning -> Active <-> Paused -> Completed -> Archived
-- **Key actions**: `SetDescription`, `Activate` (requires description), `AddIssue`, `AddCycle`, `AddMember`, `Pause`, `Resume`, `Complete`
-
 ### Cycle
 Time-boxed sprint within a project.
 
@@ -42,4 +36,4 @@ Discussion comment on an issue, traceable to agent session.
 
 ## Setup
 
-No dependencies. Create a Project, add Issues, organize into Cycles. Cedar policies enforce role separation between planners, approvers, and implementers.
+No dependencies. Projects are paw-agent's (`TemperPaw.Project`, ADR-0018): an Issue or Cycle names one by `ProjectId`. Add Issues and organize them into Cycles. Cedar policies enforce role separation between planners, approvers, and implementers.

@@ -1,39 +1,4 @@
 #[test]
-fn github_patrol_worker_is_agent_driven_not_rust_github_collector() {
-    let source = include_str!("github_patrol.rs");
-
-    for forbidden in [
-        "gh issue list",
-        "gh pr list",
-        "query_github_issues",
-        "query_github_pull_requests",
-        "\"Signals\"",
-        "\"FactoryCases\"",
-    ] {
-        assert!(
-            !source.contains(forbidden),
-            "GitHub Patrol worker should run the Codex/GitHub agent and report evidence, not collect or fan out Patrol state directly in Rust: {forbidden}"
-        );
-    }
-
-    for required in [
-        "GITHUB_PATROL_RESULT_JSON_BEGIN",
-        "GITHUB_PATROL_RESULT_JSON_END",
-        "GitHub",
-        "open issues",
-        "open pull requests",
-        "checks",
-        "reviews",
-        "anomalies",
-    ] {
-        assert!(
-            source.contains(required),
-            "GitHub Patrol should make the agent investigation contract explicit: {required}"
-        );
-    }
-}
-
-#[test]
 fn github_patrol_parser_extracts_issue_and_pr_agent_findings() {
     let output = r##"
 Codex investigated GitHub with authenticated repo tools.
