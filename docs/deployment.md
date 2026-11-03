@@ -44,4 +44,4 @@ without any database reset.
 
 ## Optional Datadog
 
-Deploy the collector config in `scripts/otel-collector-railway.yaml` as a second Railway service and point `OTEL_EXPORTER_OTLP_ENDPOINT` at the collector's internal hostname.
+Telemetry goes to Datadog through the `datadog-runtime-agent` Railway service (see `DEPLOYMENT.md`). Without a Datadog key, set `OTEL_ENABLED=false`.

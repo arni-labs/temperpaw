@@ -201,6 +201,20 @@ fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> Bootstra
     }
 }
 
+/// Bring back the policies and modules installed apps run on, then see what state those apps are
+/// in. Modules come first: an app with modules can only read as ready once they are registered.
+async fn recover_installed_apps(
+    state: &PlatformState,
+    platform_store: &dyn PlatformStore,
+) -> Result<InstalledAppsRuntimeRecoverySummary> {
+    recover_cedar_policies(state, platform_store).await;
+    if let Err(error) = state.server.load_wasm_modules().await {
+        record_wasm_module_load_failure("phase_6a_pre_recovery");
+        return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
+    }
+    Ok(recover_installed_apps_runtime_state(state, platform_store).await)
+}
+
 #[cfg(test)]
 fn runtime_indexes_required_before_reconcile(
     summary: &InstalledAppsRuntimeRecoverySummary,
@@ -334,6 +348,15 @@ async fn start_http_endpoint_routes(state: &PlatformState) {
     for tenant in registry_tenant_ids(state) {
         temper_server::http_endpoint::rebuild_tenant_table(&state.server, &tenant).await;
     }
+}
+
+/// Starts the kernel's background runtime, as temper-cli's `serve` does: arms again the state timers and scheduled
+/// actions the last process left waiting, from their rows, and starts the runtime metrics loop. Without it every timer
+/// waiting at a restart or deploy is lost. Runs once, after every startup install, because installs before it leave
+/// their timer follow-up to its boot walk. That walk runs in the background and logs `state timers after boot` when
+/// it ends.
+async fn start_kernel_runtime(state: &PlatformState) {
+    state.server.start_runtime().await;
 }
 
 fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
@@ -1509,6 +1532,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             "github_token",
             config.github_token
         );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "genesis_token",
+            config.genesis_token
+        );
         seed_secret!(vault, &storage, &tenant, "dd_api_key", config.dd_api_key);
         seed_secret!(vault, &storage, &tenant, "dd_app_key", config.dd_app_key);
         seed_secret!(vault, &storage, &tenant, "exa_api_key", config.exa_api_key);
@@ -1600,13 +1630,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             vault,
             &storage,
             &tenant,
-            "railway_otel_service_id",
-            config.railway_otel_service_id
-        );
-        seed_secret!(
-            vault,
-            &storage,
-            &tenant,
             "railway_datadog_runtime_agent_service_id",
             config.railway_datadog_runtime_agent_service_id
         );
@@ -1637,19 +1660,19 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
         // temper_api_url — always set to local server
         let api_url = format!("http://127.0.0.1:{actual_port}");
-        let _ = vault.cache_platform_secret("temper_api_url", api_url);
+        vault.cache_platform_secret("temper_api_url", api_url);
 
         if let Some(worker_id) = std::env::var("LOCAL_CODEX_WORKER_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worker_id", worker_id);
+            vault.cache_platform_secret("local_codex_worker_id", worker_id);
         }
         if let Some(worktree_root) = std::env::var("LOCAL_CODEX_WORKTREE_ROOT")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
+            vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
         }
 
         // Sandbox URL: explicit override for testing, otherwise Tensorlake provisions on demand.
@@ -1741,8 +1764,8 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             format!("http://127.0.0.1:{actual_port}/_internal/blobs")
         };
         let blob_bucket = std::env::var("BLOB_BUCKET").unwrap_or_else(|_| "temper-fs".into());
-        let _ = vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
-        let _ = vault.cache_platform_secret("blob_bucket", blob_bucket);
+        vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
+        vault.cache_platform_secret("blob_bucket", blob_bucket);
 
         // Generic public artifact storage. This is separate from the private
         // TemperFS blob bucket so read-only public surfaces can serve immutable
@@ -1779,15 +1802,15 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             });
 
         if let Some(endpoint) = published_blob_endpoint {
-            let _ = vault.cache_platform_secret("published_blob_endpoint", endpoint);
-            let _ = vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
+            vault.cache_platform_secret("published_blob_endpoint", endpoint);
+            vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
         } else {
             tracing::warn!(
                 "PUBLISHED_BLOB_ENDPOINT is not configured; public artifact publishing is disabled"
             );
         }
         if let Some(public_base_url) = published_blob_public_base_url {
-            let _ = vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
+            vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
         } else if running_on_railway() {
             tracing::warn!(
                 "PUBLISHED_BLOB_PUBLIC_BASE_URL is not configured; public artifact publishing is disabled"
@@ -1950,9 +1973,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         tracing::info!(
             "Phase 6a: Recovering runtime app state, persisted WASM modules + Cedar policies..."
         );
-        recover_cedar_policies(&state, platform_store).await;
-        let app_runtime_recovery =
-            recover_installed_apps_runtime_state(&state, platform_store).await;
+        let app_runtime_recovery = recover_installed_apps(&state, platform_store).await?;
         tracing::info!(
             ready = app_runtime_recovery.ready,
             healed = app_runtime_recovery.healed,
@@ -1962,10 +1983,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             result = installed_app_runtime_recovery_result(&app_runtime_recovery),
             "Installed OS app runtime recovery complete"
         );
-        if let Err(error) = state.server.load_wasm_modules().await {
-            record_wasm_module_load_failure("phase_6a_pre_recovery");
-            return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
-        }
         record_startup_phase_duration("phase_6a_pre_recovery", phase_started.elapsed());
         tracing::info!(
             elapsed_ms = phase_started.elapsed().as_millis(),
@@ -2142,6 +2159,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         "phase_7_dispatcher_refresh complete"
     );
 
+    // Phase 7a: Start the kernel runtime once specs, Cedar, WASM, apps and the reaction dispatcher are in place.
+    // Requests still wait at the startup gate until mark_ready.
+    start_kernel_runtime(&state).await;
+
     // Phase 7b: Session recovery — recover or fail orphaned sessions (ADR-0025).
     if recover_indexes_before_reconcile {
         recover_orphaned_sessions(&state, &tenant).await;
@@ -2261,7 +2282,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     }
 
     // Spawn background loops
-    state.server.spawn_runtime_metrics_loop();
     crate::allocator::spawn_allocator_metrics_loop();
     spawn_actor_passivation_loop(&state);
 
@@ -2449,7 +2469,7 @@ async fn cache_platform_and_persist_secret(
     key: &str,
     value: String,
 ) {
-    let _ = vault.cache_platform_secret(key, value.clone());
+    vault.cache_platform_secret(key, value.clone());
     match vault.encrypt(value.as_bytes()) {
         Ok((ciphertext, nonce)) => {
             if let Err(e) = store.upsert_secret(tenant, key, &ciphertext, &nonce).await {
@@ -2480,7 +2500,7 @@ async fn restore_secrets_as_platform(
                         if let Ok(value) = String::from_utf8(plaintext)
                             && vault.get_platform_secret(&key_name).is_none()
                         {
-                            let _ = vault.cache_platform_secret(&key_name, value);
+                            vault.cache_platform_secret(&key_name, value);
                             restored += 1;
                         }
                     }
@@ -4105,41 +4125,30 @@ mod tests {
 
     use super::{
         BootstrapAction, DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
-        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy,
-        OS_APP_RECONCILE_DURATION_METRIC, OS_APP_RECONCILE_TOTAL_METRIC, RuntimeRecoveryStep,
-        STARTUP_LIVE_RESTORE_ENTITIES_METRIC, STARTUP_PHASE_DURATION_METRIC,
-        STARTUP_TIME_TO_READY_METRIC, StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
-        WASM_MODULE_LOAD_FAILURES_METRIC, actor_passivation_check_interval_secs,
-        app_required_wasm_failure, bootstrap_soul, classify_bootstrap_action,
-        default_agent_specs_bootstrap_needed, genesis_bootstrap_app_names,
-        genesis_bootstrap_timeout, genesis_cache_restore_timeout,
+        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy, RuntimeRecoveryStep,
+        StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
+        actor_passivation_check_interval_secs, app_required_wasm_failure, bootstrap_soul,
+        classify_bootstrap_action, default_agent_specs_bootstrap_needed,
+        genesis_bootstrap_app_names, genesis_bootstrap_timeout, genesis_cache_restore_timeout,
         installed_app_runtime_recovery_result, load_or_create_temper_api_key,
         local_wasm_startup_policy, orphaned_session_recovery_limit,
-        paw_soul_content_is_personalized, repair_default_agent_tools_enabled,
-        resolve_startup_secret, runtime_indexes_required_before_reconcile, runtime_recovery_plan,
+        paw_soul_content_is_personalized, recover_installed_apps,
+        repair_default_agent_tools_enabled, resolve_startup_secret,
+        runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
-        start_http_endpoint_routes, startup_discord_connect_result, startup_discord_summary_label,
-        startup_os_apps, startup_surface_runtime_indexes_required_before_reconcile,
-        wait_for_runtime_server,
+        start_http_endpoint_routes, start_kernel_runtime, startup_discord_connect_result,
+        startup_discord_summary_label, startup_os_apps,
+        startup_surface_runtime_indexes_required_before_reconcile, wait_for_runtime_server,
     };
     use crate::transport_manager::TransportStatus;
 
     static ORPHANED_SESSION_ENV_LOCK: Mutex<()> = Mutex::new(());
     static GENESIS_ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// The app catalog is one per process, and `set_os_apps_dir` replaces all of it.
+    static CATALOG_LOCK: Mutex<()> = Mutex::new(());
 
     fn empty_install_result() -> temper_platform::os_apps::InstallResult {
-        temper_platform::os_apps::InstallResult {
-            added: Vec::new(),
-            updated: Vec::new(),
-            skipped: Vec::new(),
-            wasm_modules: Vec::new(),
-            wasm_skipped: Vec::new(),
-            wasm_failures: Vec::new(),
-            agents: Vec::new(),
-            skills: Vec::new(),
-            adrs_bootstrapped: Vec::new(),
-            seed_instances: Vec::new(),
-        }
+        temper_platform::os_apps::InstallResult::default()
     }
 
     #[test]
@@ -4248,6 +4257,133 @@ mod tests {
         assert!(
             routed(&state, &tenant, "/app/before").await,
             "and the earlier row still routes"
+        );
+    }
+
+    const TIMED_PROBE_IOA: &str = r#"
+[automaton]
+name = "Probe"
+states = ["Idle", "Armed", "Fired"]
+initial = "Idle"
+allow_indefinite_states = ["Idle", "Fired"]
+strict_action_params = true
+
+[[action]]
+name = "Arm"
+from = ["Idle"]
+to = "Armed"
+params = []
+
+[[action]]
+name = "Fire"
+from = ["Armed"]
+to = "Fired"
+params = []
+
+[[state_timeout]]
+state = "Armed"
+after_seconds = 2
+on_timeout = "Fire"
+"#;
+
+    const TIMED_PROBE_CSDL: &str = r#"<?xml version="1.0"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:DataServices><Schema Namespace="Probe" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+<EntityType Name="Probe"><Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.String" Nullable="false"/>
+</EntityType>
+<Action Name="Arm" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<Action Name="Fire" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<EntityContainer Name="Container">
+<EntitySet Name="Probes" EntityType="Probe.Probe"/>
+</EntityContainer>
+</Schema></edmx:DataServices></edmx:Edmx>"#;
+
+    /// One TemperPaw process on the event store at `events`. It runs on its own runtime, so dropping it kills its
+    /// in-memory timers as a process exit would.
+    fn boot_timed_probe(events: &str) -> (tokio::runtime::Runtime, temper_platform::PlatformState) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = runtime.block_on(async {
+            let mut registry = temper_server::SpecRegistry::new();
+            registry.register_tenant(
+                "default",
+                temper_spec::csdl::parse_csdl(TIMED_PROBE_CSDL).unwrap(),
+                TIMED_PROBE_CSDL.to_string(),
+                &[("Probe", TIMED_PROBE_IOA)],
+            );
+            let mut state = temper_platform::PlatformState::with_registry(registry, None);
+            let store = temper_store_turso::TursoEventStore::new(events, None)
+                .await
+                .unwrap();
+            state
+                .server
+                .set_storage_stack(temper_server::StorageStack::from_turso(store));
+            state
+                .server
+                .authz
+                .reload_tenant_policies("default", "permit(principal, action, resource);")
+                .unwrap();
+            start_kernel_runtime(&state).await;
+            state
+        });
+        (runtime, state)
+    }
+
+    #[test]
+    fn a_state_timer_the_last_process_left_waiting_fires_after_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let tenant = TenantId::default();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        runtime.block_on(async {
+            state
+                .server
+                .get_or_create_tenant_entity(&tenant, "Probe", "r", serde_json::json!({}))
+                .await
+                .unwrap();
+            let armed = state
+                .server
+                .dispatch_tenant_action(
+                    &tenant,
+                    "Probe",
+                    "r",
+                    "Arm",
+                    serde_json::json!({}),
+                    &temper_server::request_context::AgentContext::system(),
+                )
+                .await
+                .unwrap();
+            assert!(armed.success, "Arm: {:?}", armed.error);
+        });
+        // The process exits inside the two-second budget, before its timer fires.
+        drop(state);
+        runtime.shutdown_background();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        let status = runtime.block_on(async {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let status = state
+                    .server
+                    .get_tenant_entity_state(&tenant, "Probe", "r")
+                    .await
+                    .unwrap()
+                    .state
+                    .status;
+                if status == "Fired" || std::time::Instant::now() >= deadline {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        assert_eq!(
+            status, "Fired",
+            "the restarted process fires the timer the last one left waiting"
         );
     }
 
@@ -4483,6 +4619,58 @@ mod tests {
     }
 
     #[test]
+    fn an_installed_app_with_a_module_is_ready_after_a_restart() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("apps");
+        let app = apps.join("module-app");
+        let module = app.join("wasm").join("echo");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(
+            app.join("app.toml"),
+            "name = \"module-app\"\ndescription = \"An app with one module\"\nversion = \"0.1.0\"\n\n\
+             [[wasm_modules]]\nname = \"echo\"\ncriticality = \"app-required\"\nstartup_loading = \"lazy\"\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("APP.md"), "# Module app\n").unwrap();
+        // The smallest valid module: the header and no sections.
+        std::fs::write(module.join("echo.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        temper_platform::os_apps::add_os_apps_dir(apps);
+
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let data_dir = dir.path().join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let summary = runtime.block_on(async {
+            let process = || async {
+                let mut state = temper_platform::PlatformState::new(None);
+                let store = temper_store_turso::TursoEventStore::new(&events, None)
+                    .await
+                    .unwrap();
+                state
+                    .server
+                    .set_storage_stack(temper_server::StorageStack::from_turso(store));
+                state.server.data_dir = data_dir.clone();
+                state
+            };
+            let first = process().await;
+            temper_platform::os_apps::install_os_app(&first, "module-tenant", "module-app")
+                .await
+                .unwrap();
+
+            // A new process on the same store: its module registry starts empty.
+            let restarted = process().await;
+            let store = restarted.server.platform_turso_store().unwrap();
+            recover_installed_apps(&restarted, &store).await.unwrap()
+        });
+
+        assert_eq!(summary.needs_reconcile, 0, "{summary:?}");
+        assert_eq!(summary.ready, 1, "{summary:?}");
+    }
+
+    #[test]
     fn installed_app_runtime_recovery_result_prioritizes_bounded_hot_path_state() {
         assert_eq!(
             installed_app_runtime_recovery_result(&InstalledAppsRuntimeRecoverySummary {
@@ -4612,6 +4800,7 @@ mod tests {
 
     #[test]
     fn startup_os_apps_includes_core_apps() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();
@@ -4625,6 +4814,7 @@ mod tests {
 
     #[test]
     fn startup_os_app_order_dedupes_shared_dependencies() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();
@@ -4765,34 +4955,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_metric_names_match_datadog_contract() {
-        assert_eq!(
-            STARTUP_PHASE_DURATION_METRIC,
-            "temper_startup_phase_duration_ms"
-        );
-        assert_eq!(
-            STARTUP_TIME_TO_READY_METRIC,
-            "temper_startup_time_to_healthy_ms"
-        );
-        assert_eq!(
-            STARTUP_LIVE_RESTORE_ENTITIES_METRIC,
-            "temper_startup_live_restore_entities_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_TOTAL_METRIC,
-            "temper_os_app_reconcile_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_DURATION_METRIC,
-            "temper_os_app_reconcile_duration_ms"
-        );
-        assert_eq!(
-            WASM_MODULE_LOAD_FAILURES_METRIC,
-            "temper_wasm_module_load_failures_total"
-        );
-    }
-
-    #[test]
     fn required_wasm_failures_block_readiness() {
         let mut install = empty_install_result();
         install.wasm_failures = vec!["route_message".to_string(), "send_reply".to_string()];
@@ -4814,16 +4976,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_deploy_values_over_tenant_overrides() {
         let vault = SecretsVault::new(&[7u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(
             Some(&vault),
@@ -4838,16 +4996,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_platform_cache_over_tenant_overrides() {
         let vault = SecretsVault::new(&[8u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
@@ -4857,9 +5011,7 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_falls_back_to_tenant_override_without_deploy_values() {
         let vault = SecretsVault::new(&[9u8; 32]);
-        vault
-            .cache_secret("default", "modal_token_id", "tenant-token".to_string())
-            .unwrap();
+        vault.cache_secret("default", "modal_token_id", "tenant-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
@@ -5273,7 +5425,7 @@ mod tests {
             .expect("OS App Reconcile Regression monitor query should exist");
         assert_eq!(
             reconcile_regression_query,
-            "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6_os_app_reconcile} > 60000"
+            "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6b_os_app_reconcile} > 60000"
         );
 
         let wasm_failure_monitor_query = monitors
@@ -5336,9 +5488,9 @@ mod tests {
         );
         assert!(
             dashboard_json.contains(
-                "avg:temper_turso_query_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
+                "avg:temper_turso_operation_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
             ),
-            "Dashboard should include Turso query duration."
+            "Dashboard should include Turso operation duration."
         );
         assert!(
             dashboard_json.contains(

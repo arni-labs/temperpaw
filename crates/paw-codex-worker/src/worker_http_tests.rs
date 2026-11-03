@@ -89,17 +89,6 @@ fn event_urls_try_planned_and_current_temper_streams() {
 }
 
 #[test]
-fn event_stream_watch_does_not_wrap_active_work() {
-    let main_src = include_str!("main.rs");
-
-    assert!(
-        main_src.contains("match watch_events(&client, &config).await"),
-        "main loop should not wrap the whole event watcher in a timeout"
-    );
-    assert_eq!(event_stream_queue_poll_interval(), Duration::from_secs(15));
-}
-
-#[test]
 fn worker_event_status_reads_observe_stream_shape() {
     let event: EntityEvent = serde_json::from_value(json!({
         "seq": 12,

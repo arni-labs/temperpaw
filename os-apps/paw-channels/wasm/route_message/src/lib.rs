@@ -1,9 +1,9 @@
 use session_tree_lib::SessionTree;
 use temper_wasm_sdk::prelude::*;
 use wasm_helpers::{
-    bounded_reads, create_content_file_ref, create_session_entry, is_session_entries_ref,
-    runtime_headers, runtime_headers_for_workspace, session_id_from_entries_ref,
-    timestamp_millis_string,
+    bounded_reads, create_content_file_ref, create_initial_session_entries, create_session_entry,
+    is_session_entries_ref, runtime_headers, runtime_headers_for_workspace,
+    session_id_from_entries_ref, timestamp_millis_string,
 };
 
 const DEFAULT_TOOLS_ENABLED: &str = "temper_create,temper_get,temper_list,temper_action,temper_patch,temper_submit_specs,temper_show_spec,temper_specs,temper_upload_wasm,temper_get_trajectories,temper_get_insights,temper_get_decisions,temper_poll_decision,temper_approve_decision,temper_deny_decision,temper_submit_policy,temper_list_policies,temper_get_policy,temper_update_policy,temper_delete_policy,temper_search_apps,temper_install_app,temper_publish_app,temper_update_app,temper_list_apps,temper_spawn_session,temper_list_sessions,temper_abort_session,temper_steer_session,temper_save_memory,temper_recall_memory,temper_write,temper_read,temper_run_coding_agent,temper_get_secret,temper_datadog_query,temper_railway,temper_vercel,temper_web_search,temper_web_fetch,temper_image_generate,read,write,edit,bash";
@@ -54,6 +54,17 @@ extern "C" fn host_http_call(
     _headers_len: i32,
     _body_ptr: i32,
     _body_len: i32,
+    _result_buf_ptr: i32,
+    _result_buf_len: i32,
+) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+extern "C" fn host_http_call_batch(
+    _requests_ptr: i32,
+    _requests_len: i32,
     _result_buf_ptr: i32,
     _result_buf_len: i32,
 ) -> i32 {
@@ -1458,7 +1469,18 @@ fn append_user_message_to_session_entries(
 ) -> Result<String, String> {
     let session_id = session_id_from_entries_ref(session_file_id)
         .ok_or("session entries reference missing Session id")?;
-    let latest = latest_session_entry(ctx, temper_api_url, tenant, session_id, session_leaf_id)?;
+    let latest = match unwritten_first_turn(fields, session_id, session_leaf_id) {
+        Some(first_message) => Some(write_unwritten_first_turn(
+            ctx,
+            temper_api_url,
+            tenant,
+            fields,
+            session_id,
+            session_leaf_id,
+            first_message,
+        )?),
+        None => latest_session_entry(ctx, temper_api_url, tenant, session_id, session_leaf_id)?,
+    };
     // Trust the database, not the entity field. The Session.session_leaf_id
     // field can drift past the actual db tip when an upstream writer
     // advances the field but its SessionEntry POST didn't durably land
@@ -1509,6 +1531,64 @@ fn append_user_message_to_session_entries(
         estimate_tokens(user_message),
     )?;
     Ok(created.entry_id)
+}
+
+/// The prior Session's first message when its first turn never wrote its
+/// SessionEntries, else None. A first turn writes them when its provider
+/// response is applied, so one that failed before then (on an expired
+/// provider login, say) leaves `session_entries_materialized` "false", its
+/// leaf at the virtual `u-<session>-0` and no entries. Continuing from that
+/// leaf would find no parent and start the thread over.
+fn unwritten_first_turn<'a>(
+    fields: &'a Value,
+    session_id: &str,
+    session_leaf_id: &str,
+) -> Option<&'a str> {
+    let unwritten = str_field(
+        fields,
+        &["session_entries_materialized", "SessionEntriesMaterialized"],
+    )
+    .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"));
+    if !unwritten || session_leaf_id != format!("u-{session_id}-0") {
+        return None;
+    }
+    str_field(fields, &["user_message", "UserMessage"]).filter(|message| !message.trim().is_empty())
+}
+
+/// Writes the header and first user message a continuation builds on, unless
+/// they landed after all. Returns the user entry's id and sequence.
+fn write_unwritten_first_turn(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    fields: &Value,
+    session_id: &str,
+    session_leaf_id: &str,
+    first_message: &str,
+) -> Result<(String, i64), String> {
+    let leaf_url = session_entry_lookup_url(temper_api_url, session_id, session_leaf_id);
+    if let Some(written) = list_entities(ctx, &leaf_url, tenant)?
+        .first()
+        .and_then(session_entry_identity)
+    {
+        return Ok(written);
+    }
+    let (_header, user) = create_initial_session_entries(
+        ctx,
+        temper_api_url,
+        tenant,
+        fields,
+        session_id,
+        first_message,
+    )?;
+    ctx.log(
+        "info",
+        &format!(
+            "append_user_message: wrote the unwritten first turn of SessionId={session_id} before continuing it"
+        ),
+    );
+    // create_initial_session_entries writes the user entry at sequence 1.
+    Ok((user.entry_id, 1))
 }
 
 fn latest_session_entry(
@@ -2025,6 +2105,50 @@ fn nested_i64_field(value: &Value, keys: &[&str]) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Continuing a first turn that never wrote its entries ------------
+
+    #[test]
+    fn a_continuation_writes_the_first_turn_a_failed_session_left_unwritten() {
+        let prior = json!({
+            "user_message": "What changed in last night's deploy?",
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(
+            unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+            Some("What changed in last night's deploy?")
+        );
+        let odata_spelling = json!({
+            "UserMessage": "What changed?",
+            "SessionEntriesMaterialized": "FALSE",
+        });
+        assert_eq!(
+            unwritten_first_turn(&odata_spelling, "ss-1", "u-ss-1-0"),
+            Some("What changed?")
+        );
+    }
+
+    #[test]
+    fn a_continuation_writes_no_first_turn_unless_the_session_says_it_never_did() {
+        let message = "What changed in last night's deploy?";
+        for prior in [
+            json!({"user_message": message, "session_entries_materialized": "true"}),
+            json!({"user_message": message, "session_entries_materialized": ""}),
+            json!({"user_message": message}),
+            json!({"user_message": " ", "session_entries_materialized": "false"}),
+        ] {
+            assert_eq!(
+                unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+                None,
+                "{prior}"
+            );
+        }
+        let past_first_turn = json!({
+            "user_message": message,
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(unwritten_first_turn(&past_first_turn, "ss-1", "a-3"), None);
+    }
 
     // --- Stale-session wake-up (ADR-0039) -------------------------------
 

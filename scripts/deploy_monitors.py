@@ -5,10 +5,11 @@ Reads dd-monitors/temperpaw-monitors.json and creates or updates each monitor
 via the Datadog REST API. Idempotent: finds existing monitors by name.
 
 With --reconcile, also deletes TemperPaw-owned monitors that are NOT in the JSON
-file. Ownership is detected by current team tags, desired monitor names, and
-legacy OpenPaw identity in names, queries, messages, or notification routes.
-This is the source-of-truth guarantee declared in ADR-0052: file-first, Datadog
-state reconciles to match.
+file. A monitor is TemperPaw's when it carries the team:temperpaw tag or has a
+name from the file; nothing else marks ownership. Words in a monitor's text do
+not: Katagami's own monitors name the Railway service in their runbooks, and
+matching that text would delete them. This is the source-of-truth guarantee
+declared in ADR-0052: file-first, Datadog state reconciles to match.
 
 Requires DD_API_KEY and DD_APP_KEY in env (or .env file).
 """
@@ -26,13 +27,16 @@ except ImportError:
     sys.exit("requests is required: pip install requests")
 
 TEAM_TAG = "team:temperpaw"
-LEGACY_OPENPAW_MONITOR_TERMS = (
-    "OpenPaw",
-    "OpenPAW",
-    "openpaw",
-    "service:openpaw",
-    "slack-openpaw-alerts",
-)
+
+
+# Datadog treats these two as one kind of monitor: a PUT with either keeps the live type, and saving a monitor in
+# the Datadog UI turns "metric alert" into "query alert". Recreating a monitor over that difference would only
+# give it a new id and drop its history.
+METRIC_MONITOR_TYPES = {"metric alert", "query alert"}
+
+
+def same_monitor_type(live_type: str | None, file_type: str | None) -> bool:
+    return live_type == file_type or {live_type, file_type} <= METRIC_MONITOR_TYPES
 
 
 def load_env():
@@ -47,39 +51,17 @@ def load_env():
             os.environ.setdefault(key.strip(), value.strip())
 
 
-def monitor_search_text(monitor: dict) -> str:
-    return "\n".join(
-        [
-            str(monitor.get("name", "")),
-            str(monitor.get("message", "")),
-            str(monitor.get("query", "")),
-            json.dumps(monitor.get("tags", []), sort_keys=True),
-            json.dumps(monitor.get("notifications", []), sort_keys=True),
-        ]
-    )
-
-
-def legacy_openpaw_monitor(monitor: dict) -> bool:
-    text = monitor_search_text(monitor)
-    return any(term in text for term in LEGACY_OPENPAW_MONITOR_TERMS)
-
-
 def is_temperpaw_owned_monitor(monitor: dict, desired_names: set[str]) -> bool:
     tags = set(monitor.get("tags") or [])
-    return (
-        monitor.get("name") in desired_names
-        or TEAM_TAG in tags
-        or legacy_openpaw_monitor(monitor)
-    )
+    return monitor.get("name") in desired_names or TEAM_TAG in tags
 
 
-def monitor_preference_score(monitor: dict, desired_names: set[str]) -> tuple[int, int, int]:
-    """Prefer current TemperPaw monitors when legacy copies share a name."""
+def monitor_preference_score(monitor: dict, desired_names: set[str]) -> tuple[int, int]:
+    """Prefer the team-tagged monitor when copies share a name."""
     tags = set(monitor.get("tags") or [])
     return (
         int(TEAM_TAG in tags),
         int(monitor.get("name") in desired_names),
-        int(not legacy_openpaw_monitor(monitor)),
     )
 
 
@@ -177,6 +159,12 @@ def main():
         / "temperpaw-monitors.json"
     )
     monitors = json.loads(monitors_path.read_text())
+    # Imported here, where scripts/ is on the path: tests load this module from elsewhere for its helpers.
+    from check_monitors import problems
+
+    file_problems = problems(monitors)
+    if file_problems:
+        sys.exit("Monitor file checks failed:\n\n" + "\n".join(file_problems))
     desired_names = {m["name"] for m in monitors}
 
     base_url = f"https://api.{site}/api/v1"
@@ -224,7 +212,7 @@ def main():
         if name in existing_by_name:
             existing = existing_by_name[name]
             monitor_id = existing["id"]
-            if existing.get("type") != monitor.get("type"):
+            if not same_monitor_type(existing.get("type"), monitor.get("type")):
                 if args.dry_run:
                     print(
                         f"[dry-run] Would recreate: {name} "
