@@ -27,7 +27,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let parent_session_id =
             entity_field_str(&ctx.entity_state, &["parent_session_id", "ParentSessionId"])
                 .unwrap_or("");
-        let reply_text = build_reply_text(&ctx.entity_state, status);
+        let reply_text = build_reply_text(&ctx.trigger_params, &fields, status);
         let reply_attachments_json = entity_field_str(
             &fields,
             &["reply_attachments_json", "ReplyAttachmentsJson"],
@@ -267,40 +267,18 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     0
 }
 
-fn build_reply_text(entity_state: &Value, status: &str) -> String {
-    if let Some(events) = entity_state.get("events").and_then(Value::as_array) {
-        for event in events.iter().rev() {
-            if let Some(result) = event
-                .get("params")
-                .and_then(|params| entity_field_str(params, &["result", "Result"]))
-                .filter(|value| !value.is_empty())
-            {
-                return result.to_string();
-            }
-            if let Some(error) = event
-                .get("params")
-                .and_then(|params| {
-                    entity_field_str(params, &["error_message", "ErrorMessage", "error"])
-                })
-                .filter(|value| !value.is_empty())
-            {
-                return error.to_string();
-            }
+/// What the move that ended the session said comes first, so a failure after an earlier result reports the failure;
+/// what the session kept comes next.
+fn build_reply_text(ended_with: &Value, fields: &Value, status: &str) -> String {
+    for said in [ended_with, fields] {
+        if let Some(result) = entity_field_str(said, &["result", "Result"]).filter(|v| !v.is_empty()) {
+            return result.to_string();
         }
-    }
-
-    let fields = entity_state
-        .get("fields")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    if let Some(result) = entity_field_str(&fields, &["result", "Result"]).filter(|v| !v.is_empty())
-    {
-        return result.to_string();
-    }
-    if let Some(error) = entity_field_str(&fields, &["error_message", "ErrorMessage", "error"])
-        .filter(|v| !v.is_empty())
-    {
-        return error.to_string();
+        if let Some(error) = entity_field_str(said, &["error_message", "ErrorMessage", "error"])
+            .filter(|v| !v.is_empty())
+        {
+            return error.to_string();
+        }
     }
     match status {
         "Cancelled" => "Agent was cancelled before it could produce a reply.".to_string(),
@@ -509,51 +487,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inline_channel_routes_record_reply_delivered_directly() {
+    fn a_reply_says_what_the_last_move_said_before_what_the_session_kept() {
+        let kept = json!({"result": "the earlier answer", "error_message": ""});
         assert_eq!(
-            channel_reply_action_url("http://temper", "ch-inline", Some("cli")),
-            "http://temper/tdata/Channels('ch-inline')/Paw.Channel.ReplyDelivered"
+            build_reply_text(&json!({"error_message": "the provider stopped"}), &kept, "Failed"),
+            "the provider stopped"
         );
         assert_eq!(
-            channel_reply_action_url("http://temper", "ch-inline", Some("tui")),
-            "http://temper/tdata/Channels('ch-inline')/Paw.Channel.ReplyDelivered"
+            build_reply_text(&json!({"result": "the answer"}), &kept, "Completed"),
+            "the answer"
         );
-    }
-
-    #[test]
-    fn webhook_or_unknown_channel_routes_keep_awaited_send_reply() {
+        assert_eq!(build_reply_text(&json!({}), &kept, "Completed"), "the earlier answer");
         assert_eq!(
-            channel_reply_action_url("http://temper", "ch-webhook", Some("discord")),
-            "http://temper/tdata/Channels('ch-webhook')/Paw.Channel.SendReply?await_integration=true"
+            build_reply_text(&json!({}), &json!({}), "Completed"),
+            "Agent completed without returning any reply text."
         );
-        assert_eq!(
-            channel_reply_action_url("http://temper", "ch-legacy", None),
-            "http://temper/tdata/Channels('ch-legacy')/Paw.Channel.SendReply?await_integration=true"
-        );
-    }
-
-    #[test]
-    fn explicit_direct_no_reply_skips_fallback_lookup_for_distinct_agent() {
-        assert!(should_skip_reply_lookup_for_no_route_session(
-            "ss-direct",
-            "aj-direct",
-            "",
-            &json!({"reply_route_source": "direct_no_reply"})
-        ));
-        assert!(!should_skip_reply_lookup_for_no_route_session(
-            "ss-direct",
-            "aj-direct",
-            "",
-            &json!({"reply_route_source": "channel_message"})
-        ));
-        assert!(!should_skip_reply_lookup_for_no_route_session(
-            "ss-direct",
-            "aj-direct",
-            "",
-            &json!({
-                "reply_route_source": "direct_no_reply",
-                "reply_channel_id": "channel",
-            })
-        ));
     }
 }

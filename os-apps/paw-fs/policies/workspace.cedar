@@ -7,15 +7,6 @@ permit(
     resource is Workspace
 );
 
-// Workspace members can read and use their workspace
-permit(
-    principal is Agent,
-    action in [Action::"IncrementUsage", Action::"DecrementUsage", Action::"UpdateQuota"],
-    resource is Workspace
-) when {
-    resource.id == principal.workspaceid
-};
-
 permit(
     principal is Agent,
     action == Action::"IncrementUsage",
@@ -43,12 +34,3 @@ permit(
     action in [Action::"read", Action::"list", Action::"Create", Action::"create", Action::"AddChild", Action::"RemoveChild", Action::"DirectoryRename", Action::"DirectoryArchive"],
     resource is Directory
 );
-
-// Only workspace admins can freeze, thaw, or archive
-permit(
-    principal is Agent,
-    action in [Action::"Freeze", Action::"Thaw", Action::"WorkspaceArchive"],
-    resource is Workspace
-) when {
-    principal in Group::"WorkspaceAdmins" && resource.id == principal.workspaceid
-};

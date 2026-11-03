@@ -33,7 +33,7 @@ The API silently drops unknown fields. Use these exact names.
 ## Self-Reporting Completion
 
 ```python
-temper.action("Endpoints", "<endpoint_id>", "SubmitForRepair", {
+temper.action("Endpoints", "<endpoint_id>", "BundleWritten", {
     "bundle_file_id": "<file-id-from-temper.write>",
     "summary": "<one line>",
     "author_agent_id": "<your_agent_id>"
@@ -41,7 +41,7 @@ temper.action("Endpoints", "<endpoint_id>", "SubmitForRepair", {
 temper.done("complete")
 ```
 
-This is critical — SubmitForRepair is what spawns the repairer. An unwritten or unreported bundle is a dead endpoint.
+This is critical — BundleWritten is what the diversity gate waits for before it starts repair (you do not start repair yourself). An unwritten or unreported bundle is a dead endpoint.
 
 ## Principles
 

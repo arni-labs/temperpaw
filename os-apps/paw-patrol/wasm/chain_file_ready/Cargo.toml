@@ -1,0 +1,12 @@
+[package]
+name = "chain-file-ready"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "d1970395ea681173dacb2d1d0f83078ee0dd13f6" }

@@ -111,7 +111,7 @@
   {
     "name": "[Temper] OS App Reconcile Regression",
     "type": "metric alert",
-    "query": "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6_os_app_reconcile} > 60000",
+    "query": "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6b_os_app_reconcile} > 60000",
     "message": "TemperPaw OS app reconcile exceeds 60s during startup.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
@@ -239,37 +239,22 @@
   {
     "name": "[Temper] Abnormal State Timeout Firing",
     "type": "metric alert",
-    "query": "sum(last_15m):sum:temper_state_timeout_fired_total{service:temperpaw} by {entity_type,state}.as_count() > 25",
-    "message": "State timeout firing unusually often for one or more (entity_type, state) combos. Likely causes: after_seconds too tight, or sessions are genuinely stuck.\n\n@slack-temperpaw-alerts",
+    "query": "sum(last_15m):default_zero(sum:temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue} by {entity_type}.as_count()) + default_zero(sum:temper_scheduler_overdue_on_replay_total{service:temperpaw} by {entity_type}.as_count()) > 0",
+    "message": "A record of this entity type sat in a timed state past its own deadline. The kernel found its state_timeout already overdue: when an actor hydrated into a state whose timer was no longer live (ADR-0056), or when the scheduler replayed timers after a restart (ADR-0049). A timer that fires on time never counts, whether it is a poll (a run computer's Making poll every 2 s, its Ready check every 60 s), a scheduled step or a deadline, so this stays quiet under normal load: in the 30 days to 24 Oct 2026 it would have alerted twice (13:08 and 13:27 UTC on 24 Oct), both KatagamiRunComputer records left Ready while POST /katagami/pass/computer answered 503.\n\nSince 27 Oct 2026 21:58 UTC (temperpaw 883fc833, Temper 4e1b4db, temper #187) the hydration counter also counts timers that fire on time. When a record took an action that does not reset its timer during the wait, the timer's own task follows the record at the deadline (follow_moved_record), keeps the committed clock and re-arms with no budget left, and that is recorded as overdue. Nothing in the metric tells this from a lost timer: its tags are tenant, entity_type, state and elapsed_bucket, and the replay counter has never reported. In the 24 h to 16:00 UTC on 28 Oct, the five DSF Active groups counted 4,643 overdue against 4,657 firings and run computer Making 396 against 409: on-time firings, not stuck records. Overdue close to temper_state_timeout_fired_total for the same entity_type and state, over thousands of firings, points to this miscount. It does not prove any one record is fine: a lost timer that fires after recovery also adds one to both counts, so check the records. The fix is in the kernel (a follow by the timer's own task at its deadline is not overdue). Do not exclude entity types here: a list of names would also hide their real lost timers.\n\nCheck: the Temper kernel dashboard's hydration re-arm and overdue-on-replay widgets for the entity_type and state, then the records of that type in that state. One or two means records whose timers were lost; a wave right after a deploy means replay lag.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while the kernel finds an overdue timer for that entity type. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 60 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
-      "severity:high"
+      "severity:high",
+      "adr:0049",
+      "adr:0056"
     ],
     "options": {
       "thresholds": {
-        "critical": 25,
-        "warning": 10
+        "critical": 0
       },
       "notify_no_data": false,
-      "renotify_interval": 60
-    }
-  },
-  {
-    "name": "[Temper] Excessive Overdue Timers on Replay",
-    "type": "metric alert",
-    "query": "sum(last_30m):default_zero(sum:temper_scheduler_overdue_on_replay_total{service:temperpaw}.as_count()) > 100",
-    "message": "Many scheduled-action timers missed their deadline across a server restart window. Review deploy cadence or investigate replay lag.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 100,
-        "warning": 30
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
+      "require_full_window": false,
+      "renotify_interval": 60,
+      "timeout_h": 1
     }
   },
   {
@@ -329,7 +314,7 @@
     "name": "[Temper] Mailbox Near Capacity",
     "type": "metric alert",
     "query": "avg(last_5m):avg:temper_actor_mailbox_utilization{service:temperpaw} by {entity_type} > 0.8",
-    "message": "One or more entity-type mailboxes are averaging above 80% capacity. Head-of-line blocking risk \u2014 tune admission caps (ADR-0051).\n\n@slack-temperpaw-alerts",
+    "message": "One or more entity-type mailboxes are averaging above 80% capacity. Head-of-line blocking risk \u2014 tune admission caps (ADR-0051).\n\nA group resolves after an hour without data (timeout_h 1, against a 5-minute window): a group reports only while that entity type has live actors. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 60 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -340,7 +325,8 @@
         "warning": 0.6
       },
       "notify_no_data": false,
-      "renotify_interval": 60
+      "renotify_interval": 60,
+      "timeout_h": 1
     }
   },
   {
@@ -399,20 +385,21 @@
   },
   {
     "name": "[Temper] Blob Transport Wait Spike",
-    "type": "metric alert",
-    "query": "avg(last_15m):avg:temper_blob_transport_wait_duration_ms{service:temperpaw} by {backend,http_method} > 2000",
-    "message": "Remote TemperFS blob transport wait exceeds 2s. Check R2/S3 reachability, blob_adapter structured logs, and affected `workspace_id` / `file_id` / `content_hash` facets before treating this as an agent or LLM problem.\n\n@slack-temperpaw-alerts",
+    "type": "query alert",
+    "query": "avg(last_15m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {backend,operation} * clamp_max(count:temper_blob_native_transport_duration_ms{service:temperpaw} by {backend,operation}.as_count() / 2, 1) > 3000",
+    "message": "Native blob transport (S3/R2) p95 is above 3s (warning at 2s) for a backend and operation. A group with fewer than two requests in an interval counts at half its p95, so one slow request does not alert. Normal p95 is ~250-500ms. Check object-store reachability, blob_adapter structured logs, and affected `workspace_id` / `file_id` / `content_hash` facets before treating this as an agent or LLM problem.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that backend and operation carry blob requests. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 60 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
     ],
     "options": {
       "thresholds": {
-        "critical": 2000,
-        "warning": 1000
+        "critical": 3000,
+        "warning": 2000
       },
       "notify_no_data": false,
-      "renotify_interval": 60
+      "renotify_interval": 60,
+      "timeout_h": 1
     }
   },
   {
@@ -438,7 +425,7 @@
     "name": "[Temper] Admission Queue Depth Sustained High",
     "type": "metric alert",
     "query": "avg(last_15m):avg:temper_admission_queue_depth{service:temperpaw} by {entity_type,action} > 50",
-    "message": "One or more admission queues are holding more than 50 waiters on average for 15 minutes. Tune the cap via PATCH /_admin/admission/{tenant}/{entity_type} or investigate sustained overload.\n\n@slack-temperpaw-alerts",
+    "message": "One or more admission queues are holding more than 50 waiters on average for 15 minutes. Tune the cap via PATCH /_admin/admission/{tenant}/{entity_type} or investigate sustained overload.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that entity type and action have an admission queue. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -449,22 +436,23 @@
         "warning": 20
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
-    "name": "[Temper] Dispatch Retry Attempts p95 Elevated",
-    "type": "metric alert",
-    "query": "avg(last_10m):p95:temper_dispatch_ask_attempts{service:temperpaw} > 2",
-    "message": "p95 dispatch attempts exceeds 2 \u2014 system-wide transient contention is costing retry budget. Check mailbox saturation and actor cold-start latency before it escalates to exhausted.\n\n@slack-temperpaw-alerts",
+    "name": "[Temper] Dispatch Retry Attempts Elevated",
+    "type": "query alert",
+    "query": "avg(last_10m):avg:temper_dispatch_ask_attempts{service:temperpaw} > 1.1",
+    "message": "Dispatches are retrying: on average each one took more than 1.1 attempts over 10 minutes (1.0 means none retried), so transient contention is costing retry budget. Check mailbox saturation and actor cold-start latency before it escalates to exhausted.\n\nThis reads the average, not p95. The average is the histogram's exact sum over count. A percentile of this OpenTelemetry histogram is spread across its first bucket (0 to 5) by the Datadog Agent, so since the Agent's upgrade to 7.84.5 on 22 Oct 17:23 UTC p95 read 4.98 while every dispatch took exactly 1 attempt (max 1.00). The old p95 > 2 meant at least 5% of dispatches took 3 or more attempts, which is an average of at least 1.1.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:low"
     ],
     "options": {
       "thresholds": {
-        "critical": 2,
-        "warning": 1.5
+        "critical": 1.1,
+        "warning": 1.05
       },
       "notify_no_data": false,
       "renotify_interval": 240
@@ -474,7 +462,7 @@
     "name": "[Temper] Actor Registry Lock Contention (cold-start p95)",
     "type": "metric alert",
     "query": "avg(last_15m):p95:temper_actor_registry_lock_wait_ms{service:temperpaw,cold_start:true} by {entity_type} > 500",
-    "message": "Cold-start registry lock p95 exceeds 500ms for one or more entity types. Direct signal for temper#146 investigation \u2014 capture a CPU profile via /_admin/profile/cpu during the next burst and check for mutex contention.\n\n@slack-temperpaw-alerts",
+    "message": "Cold-start registry lock p95 exceeds 500ms for one or more entity types. Direct signal for temper#146 investigation \u2014 capture a CPU profile via /_admin/profile/cpu during the next burst and check for mutex contention.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while actors of that entity type cold-start. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -485,14 +473,15 @@
         "warning": 100
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Cold-Start Duration Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p99:temper_actor_cold_start_duration_ms{service:temperpaw} by {entity_type} > 5000",
-    "message": "Actor cold-start p99 exceeds 5s \u2014 freshly spawned actors are not ready to serve within the P1 retry budget. Root cause of the 2026-04-18 File dispatch exhaustions if this alerts. See temper#146.\n\n@slack-temperpaw-alerts",
+    "message": "Actor cold-start p99 exceeds 5s \u2014 freshly spawned actors are not ready to serve within the P1 retry budget. Root cause of the 2026-04-18 File dispatch exhaustions if this alerts. See temper#146.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while actors of that entity type cold-start. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 60 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:high"
@@ -503,7 +492,8 @@
         "warning": 2000
       },
       "notify_no_data": false,
-      "renotify_interval": 60
+      "renotify_interval": 60,
+      "timeout_h": 1
     }
   },
   {
@@ -547,7 +537,7 @@
     "name": "[Temper] Event Store Append p99 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p99:temper_event_store_append_wait_ms{service:temperpaw} by {backend} > 1000",
-    "message": "Event-store append p99 exceeds 1s. If this fires on the same replica as an Actor Cold-Start Duration spike, writer-lock or fsync serialization is the bottleneck.\n\n@slack-temperpaw-alerts",
+    "message": "Event-store append p99 exceeds 1s. If this fires on the same replica as an Actor Cold-Start Duration spike, writer-lock or fsync serialization is the bottleneck.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that backend appends events. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -558,7 +548,8 @@
         "warning": 300
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
@@ -744,25 +735,6 @@
     }
   },
   {
-    "name": "[Temper] Hydration Re-arm Overdue Spike",
-    "type": "metric alert",
-    "query": "sum(last_10m):default_zero(sum:temper_state_timeout_armed_on_hydration_total{service:temperpaw,elapsed_bucket:overdue}.as_count()) > 20",
-    "message": "Hydration re-arm (ADR-0056 Sub-Decision 1) fired `on_timeout` immediately on more than 20 entities in 10 min. A modest burst is normal on deploy (actors hydrating into stale states), but a sustained spike indicates a wave of orphaned entities. Check `temper_state_timeout_fired_total{action:TimeoutFail}` for the downstream TimeoutFails, and inspect the affected entity_type tags.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium",
-      "adr:0056"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 20,
-        "warning": 5
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
-    }
-  },
-  {
     "name": "[Temper] Turso Write Retry Exhaustion",
     "type": "metric alert",
     "query": "sum(last_15m):default_zero(sum:temper_turso_write_retries_total{service:temperpaw,outcome:exhausted}.as_count()) >= 1",
@@ -855,8 +827,8 @@
   {
     "name": "[TemperPaw] LLM Latency Regression",
     "type": "trace-analytics alert",
-    "query": "trace-analytics(\"service:temperpaw @module_name:provider_caller\").rollup(\"pc95\", \"@duration\").last(\"15m\") > 30000000000",
-    "message": "Provider-caller WASM p95 duration is above 30s. Open the session trace, then inspect the LLM Observability span with `gen_ai.system`, `gen_ai.request.model`, token usage, retries, and upstream provider status.\n\n@slack-temperpaw-alerts",
+    "query": "trace-analytics(\"service:temperpaw @gen_ai.system:*\").rollup(\"pc95\", \"@duration\").last(\"15m\") > 150000000000",
+    "message": "LLM call p95 duration is above 150s over the last 15 minutes (warning at 120s). Normal p95 is ~100s; the slowest calls are usually image generation (wasm:openrouter_image_generate).\n\nOpen the session trace and inspect the LLM span: `gen_ai.system`, `gen_ai.request.model`, token usage, retries, and upstream provider status (OpenRouter / Anthropic / OpenAI).\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium",
@@ -864,8 +836,8 @@
     ],
     "options": {
       "thresholds": {
-        "critical": 30000000000,
-        "warning": 15000000000
+        "critical": 150000000000,
+        "warning": 120000000000
       },
       "notify_no_data": false,
       "renotify_interval": 60
@@ -873,8 +845,8 @@
   },
   {
     "name": "[TemperPaw] Postgres DBM Query Latency Regression",
-    "type": "metric alert",
-    "query": "avg(last_15m):avg:postgresql.queries.time{service:temperpaw,database_instance:temperpaw-postgres} > 30000000",
+    "type": "query alert",
+    "query": "avg(last_15m):sum:postgresql.queries.time{service:temperpaw,database_instance:temperpaw-postgres}.as_count() / sum:postgresql.queries.count{service:temperpaw,database_instance:temperpaw-postgres}.as_count() > 30000000",
     "message": "Postgres DBM query time is elevated above 30ms for service:temperpaw. Datadog reports `postgresql.queries.time` in nanoseconds. Use Datadog DBM (`source:postgres service:temperpaw`) to group by `query_signature`, inspect waits/explain plans, then pivot back to the APM trace and session_id.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
@@ -885,7 +857,7 @@
     "options": {
       "thresholds": {
         "critical": 30000000,
-        "warning": 15000000
+        "warning": 20000000
       },
       "notify_no_data": false,
       "on_missing_data": "resolve",
@@ -916,7 +888,7 @@
     "name": "[TemperPaw] Entity Event Budget Exhausted",
     "type": "metric alert",
     "query": "sum(last_10m):default_zero(sum:temper_entity_event_budget_exhausted_total{service:temperpaw} by {entity_type,entity_id,workspace_id}.as_count()) > 0",
-    "message": "An entity hit Temper's hard 10,000-event budget. Group by `entity_type`, `entity_id`, and `workspace_id`; for PawFS, Workspace hits should be exceptional now that agent file I/O bypasses Workspace-bound filesystem actions. Inspect logs for `Event budget exhausted (10000 max)` and confirm the caller is not using legacy Workspace filesystem actions.\n\n@slack-temperpaw-alerts",
+    "message": "An entity hit Temper's hard 10,000-event budget. Group by `entity_type`, `entity_id`, and `workspace_id`; for PawFS, Workspace hits should be exceptional now that agent file I/O bypasses Workspace-bound filesystem actions. Inspect logs for `Event budget exhausted (10000 max)` and confirm the caller is not using legacy Workspace filesystem actions.\n\nA group resolves after an hour without data (timeout_h 1, against a 10-minute window): a group reports only while that one entity hits its event budget, so each group is one entity that reports once and then never again. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 60 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:high",
@@ -929,7 +901,8 @@
       },
       "notify_no_data": false,
       "on_missing_data": "default",
-      "renotify_interval": 60
+      "renotify_interval": 60,
+      "timeout_h": 1
     }
   },
   {
@@ -1017,7 +990,7 @@
   },
   {
     "name": "[TemperPaw] APM HTTP Duration p95 Regression",
-    "type": "metric alert",
+    "type": "query alert",
     "query": "avg(last_15m):p95:trace.http.server.request{service:temperpaw,!resource_name:get_/observe/events/stream,!resource_name:get_/tdata/_events} > 2",
     "message": "APM HTTP p95 duration excluding long-lived stream endpoints exceeded 2 seconds. Use this as the standard service latency gate; use Temper dispatch/blob/session/projection monitors to find the cause.\n\n@slack-temperpaw-alerts",
     "tags": [
@@ -1039,8 +1012,8 @@
   {
     "name": "[Temper] WASM Invocation Duration p95 Regression",
     "type": "metric alert",
-    "query": "avg(last_15m):p95:temper_wasm_invocation_duration_ms{service:temperpaw} by {trigger_action} > 5000",
-    "message": "WASM invocation p95 is above 5s for at least one trigger action. Check module execution, host calls, epoch drift, and integration timeout fallbacks before optimizing callers.\n\n@slack-temperpaw-alerts",
+    "query": "avg(last_30m):p95:temper_wasm_invocation_duration_ms{service:temperpaw,!trigger_action:upgrade} by {trigger_action} * clamp_max(count:temper_wasm_invocation_duration_ms{service:temperpaw,!trigger_action:upgrade} by {trigger_action}.as_count() / 3, 1) > 5000",
+    "message": "WASM invocation p95 is above 5s for at least one trigger action. Check module execution, host calls, epoch drift, and integration timeout fallbacks before optimizing callers.\n\nUpgrade is left out: KatagamiAppInstall.Upgrade runs once per installed app in a kernel roll, and each call waits for that app to restart in its owner's Temper (23 Oct 08:00 to 08:30: 38 calls, slowest 13.8 s). That wait is the restart, not slow module code, and the roll has its own checks.\n\nA trigger action with no invocations for an hour resolves (timeout_h 1: its 30-minute window has then been empty for another 30 minutes). Most of these groups run a few times a day, and without it a group that stops keeps its last state and renotifies every 2 hours.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1048,17 +1021,18 @@
     "options": {
       "thresholds": {
         "critical": 5000,
-        "warning": 1500
+        "warning": 2500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] WASM Host HTTP Duration p95 Regression",
     "type": "metric alert",
-    "query": "avg(last_15m):p95:temper_wasm_host_http_duration_ms{service:temperpaw} by {call_kind,status_code_class} > 5000",
-    "message": "WASM host HTTP p95 is above 5s. Separate remote dependency latency from guest execution before changing actor or projection code.\n\n@slack-temperpaw-alerts",
+    "query": "avg(last_30m):p95:temper_wasm_host_http_duration_ms{service:temperpaw,!status_code_class:5xx} by {call_kind,status_code_class} * clamp_max(count:temper_wasm_host_http_duration_ms{service:temperpaw,!status_code_class:5xx} by {call_kind,status_code_class}.as_count() / 3, 1) > 5000",
+    "message": "WASM host HTTP p95 is above 5s. Separate remote dependency latency from guest execution before changing actor or projection code.\n\n5xx answers are left out: their time is how long a gateway waited before giving up on a backend that was down, not the latency of a dependency that answered, and [TemperPaw] Sandbox Host HTTP Error Spike counts them. On 28 Oct, 72 webhooks-module POSTs to the on-call tracker app's Tensorlake sandbox each got a 503 after 9.9 s while that app crash-looped (04:50 to 05:25 UTC); the error spike monitor fired and recovered, while this one stayed in Alert.\n\nA group with no data for an hour (timeout_h 1: its 30-minute window has then been empty for another 30 minutes) resolves, since it has no calls left to be slow. Without it Datadog keeps the last state: the 5xx group above renotified every 2 hours until 13:33 UTC with no call after 05:25.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1066,35 +1040,37 @@
     "options": {
       "thresholds": {
         "critical": 5000,
-        "warning": 1500
+        "warning": 2500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Native Blob Transport Duration Spike",
-    "type": "metric alert",
-    "query": "avg(last_15m):avg:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} > 1000",
-    "message": "Native BlobStore transport duration exceeds 1s. Check operation/backend/status breakdown, R2/S3 or local filesystem health, and whether File `$value` requests are waiting on durable blob writes.\n\n@slack-temperpaw-alerts",
+    "type": "query alert",
+    "query": "avg(last_15m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} * clamp_max(count:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class}.as_count() / 2, 1) > 2000",
+    "message": "Native BlobStore transport p95 is above 2s (warning at 1s) over 15 minutes for an operation, backend, outcome and status. A group with fewer than two requests in an interval counts at half its p95, so one slow request does not alert. Check operation/backend/status breakdown, R2/S3 or local filesystem health, and whether File `$value` requests are waiting on durable blob writes.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that operation, backend, outcome and status occur, and the error outcomes are rare. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
     ],
     "options": {
       "thresholds": {
-        "critical": 1000,
-        "warning": 300
+        "critical": 2000,
+        "warning": 1000
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Blob I/O Wait p95 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p95:temper_blob_io_wait_duration_ms{service:temperpaw} by {operation} > 1000",
-    "message": "Blob I/O wait p95 is above 1s. Check whether large session content, file reads, or overflow field writes are moving critical-path work through the blob layer.\n\n@slack-temperpaw-alerts",
+    "message": "Blob I/O wait p95 is above 1s. Check whether large session content, file reads, or overflow field writes are moving critical-path work through the blob layer.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that operation waits on blob I/O. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1105,32 +1081,15 @@
         "warning": 300
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Native Blob Transport p95 Regression",
-    "type": "metric alert",
-    "query": "avg(last_15m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} > 750",
-    "message": "Native BlobStore transport p95 is above 750ms. This is the measured File `$value` residual split between durable blob transport and actor/event work; pivot by operation/backend/status before changing data-plane architecture.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 750,
-        "warning": 300
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
-    }
-  },
-  {
-    "name": "[Temper] Blob Transport Wait p95 Regression",
-    "type": "metric alert",
-    "query": "avg(last_15m):p95:temper_blob_transport_wait_duration_ms{service:temperpaw} by {backend,http_method} > 1500",
-    "message": "Remote blob transport wait p95 is above 1.5s. Check backend/object-store health and whether the control plane is depending on remote blob round trips.\n\n@slack-temperpaw-alerts",
+    "type": "query alert",
+    "query": "avg(last_30m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class} * clamp_max(count:temper_blob_native_transport_duration_ms{service:temperpaw} by {operation,backend,outcome,status_code_class}.as_count() / 2, 1) > 1500",
+    "message": "Native BlobStore transport p95 is above 1.5s (warning at 1s) over 30 minutes for an operation, backend, outcome and status. A group with fewer than two requests in an interval counts at half its p95, so one slow request does not alert. This is the measured File `$value` residual split between durable blob transport and actor/event work; pivot by operation/backend/status before changing data-plane architecture.\n\nA group resolves after an hour without data (timeout_h 1, against a 30-minute window): a group reports only while that operation, backend, outcome and status occur, and the error outcomes are rare. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1138,17 +1097,37 @@
     "options": {
       "thresholds": {
         "critical": 1500,
-        "warning": 500
+        "warning": 1000
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
+    }
+  },
+  {
+    "name": "[Temper] Blob Transport Wait p95 Regression",
+    "type": "query alert",
+    "query": "avg(last_15m):p95:temper_blob_native_transport_duration_ms{service:temperpaw} by {backend,operation} > 2000",
+    "message": "Native blob transport (S3/R2) p95 is above 2s (warning at 1s). Normal p95 is ~250-500ms. Check backend/object-store health and whether the control plane is depending on remote blob round trips.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that backend and operation carry blob requests. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
+    "tags": [
+      "team:temperpaw",
+      "severity:medium"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 2000,
+        "warning": 1000
+      },
+      "notify_no_data": false,
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Monty REPL Wait p95 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p95:temper_monty_repl_wait_duration_ms{service:temperpaw} by {max_concurrency} > 1000",
-    "message": "Monty REPL wait p95 is above 1s. This points to tool execution queueing or too-low process concurrency, not necessarily actor runtime latency.\n\n@slack-temperpaw-alerts",
+    "message": "Monty REPL wait p95 is above 1s. This points to tool execution queueing or too-low process concurrency, not necessarily actor runtime latency.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while REPL tool calls run under that concurrency setting. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1159,7 +1138,8 @@
         "warning": 300
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
@@ -1184,7 +1164,7 @@
     "name": "[Temper] Session Phase Duration p95 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p95:temper_session_phase_duration_ms{service:temperpaw} by {phase,result} > 5000",
-    "message": "At least one session phase has p95 duration above 5s. Use the phase/result tags to separate prompt/context/provider/tool-call work from runtime dispatch latency.\n\n@slack-temperpaw-alerts",
+    "message": "At least one session phase has p95 duration above 5s. Use the phase/result tags to separate prompt/context/provider/tool-call work from runtime dispatch latency.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while sessions run that phase with that result, and the failed results are rare. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1195,7 +1175,8 @@
         "warning": 2000
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
@@ -1236,8 +1217,8 @@
   {
     "name": "[Temper] Query Projection Queue Wait p95 Regression",
     "type": "metric alert",
-    "query": "avg(last_15m):p95:temper_query_projection_update_queue_wait_ms{service:temperpaw,source:background_dispatch} by {entity_type,operation} > 1000",
-    "message": "Background projection updates are waiting too long before execution. This points to queue pressure, executor starvation, or projection write contention.\n\n@slack-temperpaw-alerts",
+    "query": "avg(last_15m):p95:temper_query_projection_update_queue_wait_ms{service:temperpaw,source:queued_dispatch} by {entity_type,operation} > 1000",
+    "message": "Queued projection updates (source:queued_dispatch) are waiting too long before execution: p95 above 1s (warning at 250ms). This points to queue pressure, executor starvation, or projection write contention.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while queued projection updates run for that entity type and operation. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1248,14 +1229,15 @@
         "warning": 250
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Query Projection E2E p99 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p99:temper_query_projection_update_end_to_end_duration_ms{service:temperpaw} by {entity_type,operation,source} > 2000",
-    "message": "End-to-end query projection maintenance is above the latency budget. Compare queue wait, write duration, and Postgres transaction widgets to locate the bottleneck.\n\n@slack-temperpaw-alerts",
+    "message": "End-to-end query projection maintenance is above the latency budget. Compare queue wait, write duration, and Postgres transaction widgets to locate the bottleneck.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while projection updates run for that entity type, operation and source. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1266,7 +1248,8 @@
         "warning": 500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
@@ -1324,7 +1307,7 @@
     "name": "[Temper] Postgres Pool Acquire p95 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p95:temper_postgres_pool_acquire_duration_ms{service:temperpaw} by {operation} > 500",
-    "message": "Postgres pool acquisition is consuming the latency budget. Check connection pool saturation, DBM wait events, and deployment concurrency before tuning query code.\n\n@slack-temperpaw-alerts",
+    "message": "Postgres pool acquisition is consuming the latency budget. Check connection pool saturation, DBM wait events, and deployment concurrency before tuning query code.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that operation acquires Postgres connections. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1335,14 +1318,15 @@
         "warning": 100
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
     "name": "[Temper] Postgres Transaction p99 Regression",
     "type": "metric alert",
     "query": "avg(last_15m):p99:temper_postgres_transaction_duration_ms{service:temperpaw} by {operation} > 2000",
-    "message": "Postgres transaction duration is above the p99 budget. Use DBM plan samples, app-side begin/commit timers, and projection write metrics to separate lock, network, and query execution causes.\n\n@slack-temperpaw-alerts",
+    "message": "Postgres transaction duration is above the p99 budget. Use DBM plan samples, app-side begin/commit timers, and projection write metrics to separate lock, network, and query execution causes.\n\nA group resolves after an hour without data (timeout_h 1, against a 15-minute window): a group reports only while that operation runs Postgres transactions. One that goes quiet, because that stopped or a deploy restarted the process, has nothing left to alert on, and without timeout_h Datadog keeps its last state and renotifies every 120 minutes.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
@@ -1353,7 +1337,8 @@
         "warning": 500
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "timeout_h": 1
     }
   },
   {
@@ -1376,19 +1361,20 @@
   {
     "name": "[Temper] Trace Sampler Delegated Volume Spike",
     "type": "metric alert",
-    "query": "sum(last_15m):default_zero(sum:temper_trace_sampler_decisions_total{service:temperpaw,rule:delegate}.as_count()) > 100000",
-    "message": "Trace sampler delegated more than 100k non-reduced spans in 15 minutes. Check whether a new high-fanout path lacks a reduced-prefix rule before relying on raw trace volume for diagnosis.\n\n@slack-temperpaw-alerts",
+    "query": "sum(last_1h):default_zero(sum:temper_trace_sampler_decisions_total{service:temperpaw,rule:delegate}.as_count()) > 2000000",
+    "message": "Trace sampler delegated more than 2M non-reduced spans in an hour (warning at 1.2M). The busiest hour in the 7 days to 24 Oct 2026 was 525,026. Check whether a new high-fanout path lacks a reduced-prefix rule before relying on raw trace volume for diagnosis.\n\n@slack-temperpaw-alerts",
     "tags": [
       "team:temperpaw",
       "severity:medium"
     ],
     "options": {
       "thresholds": {
-        "critical": 100000,
-        "warning": 50000
+        "critical": 2000000,
+        "warning": 1200000
       },
       "notify_no_data": false,
-      "renotify_interval": 120
+      "renotify_interval": 120,
+      "require_full_window": true
     }
   },
   {

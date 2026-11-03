@@ -8,26 +8,21 @@ The DSF Harness is a reference app that enforces a 3-level gate system for the D
 
 ### DsfWorkCycle
 
-A merged harness + work cycle entity. First you configure the repository contract (repo URL, tech stack, conventions), then activate it, then create work cycles within it by dispatching `CreateWorkCycle`.
+One unit of work through the harness gates. The repository contract (repo URL, tech stack, conventions) lives on the project harness, which a work cycle references by `project_harness_id`; a new work cycle starts in `Planning` and is configured there.
 
-**Harness fields:** `RepoUrl`, `TechStack`, `Conventions`, `LastActivatedAt`
-
-**Work cycle fields:** `TaskSummary`, `PlannerId`, `PlanSummary`, `TestSummary`, `PrUrl`, `ApproverId`, `ErrorMessage`, `SandboxUrl`, `ReviewNotes`
+**Work cycle fields:** `project_harness_id`, `task_summary`, `planner_id`, `plan_summary`, `test_summary`, `pr_url`, `approver_id`, `error_message`, `sandbox_url`, `review_notes`
 
 **Gate booleans:** `HasPlan`, `MigrationsOk`, `TypecheckOk`, `UnitTestsOk`, `DstOk`, `PolicyGatesOk`, `E2eOk`, `TestsPassed`
 
 ## States
 
 ```
-Created → Configured → Active → Planning → Planned → InProgress → Testing → Reviewing → Complete
-                                    ↓          ↓          ↓           ↓          ↓
-                                  Failed     Failed     Failed      Failed     Failed
+Planning → Planned → InProgress → Testing → Reviewing → Complete
+    ↓          ↓          ↓           ↓          ↓
+  Failed     Failed     Failed      Failed     Failed
 ```
 
-- **Created** — Entity exists but has no repository metadata.
-- **Configured** — Repository URL, tech stack, and conventions are set.
-- **Active** — Harness is live and ready to accept work cycles.
-- **Planning** — A work cycle has been started; waiting for a plan.
+- **Planning** — A work cycle has been started and configured; waiting for a plan.
 - **Planned** — Plan written; ready to begin implementation.
 - **InProgress** — Implementation underway; agents report gate results via `Report*` actions.
 - **Testing** — Level-1 gates passed (migrations, typecheck, unit tests); running level-2 checks.
@@ -53,40 +48,28 @@ The `gate_verifier` WASM integration runs verification commands in a sandbox and
 
 ## Usage
 
-### 1. Create and configure the harness
+### 1. Start and configure a work cycle
 
 ```
 POST /tdata/DsfWorkCycles
-  → creates entity in "Created" state
+  → creates the work cycle in "Planning"
 
 POST /tdata/DsfWorkCycles('{id}')/DSF.Harness.Configure
-  { "repo_url": "https://github.com/arni-labs/deep-sci-fi.git",
-    "tech_stack": "Next.js + FastAPI + PostgreSQL",
-    "conventions": "..." }
-  → transitions to "Configured"
-
-POST /tdata/DsfWorkCycles('{id}')/DSF.Harness.Activate
-  → transitions to "Active"
+  { "project_harness_id": "{harness id}",
+    "planner_id": "agent-ren",
+    "task_summary": "Add user profile page",
+    "sandbox_url": "https://sandbox.example.com" }
+  → stays in "Planning"
 ```
 
-### 2. Start a work cycle
+### 2. Plan and implement
 
 ```
-POST /tdata/DsfWorkCycles('{id}')/DSF.Harness.CreateWorkCycle
-  { "task_summary": "Add user profile page",
-    "planner_id": "agent-ren" }
-  → transitions to "Planning"
+POST .../WritePlan    { "plan_summary": "..." }  → Planned
+POST .../StartWork                               → InProgress
 ```
 
-### 3. Plan and implement
-
-```
-POST .../WritePlan    { "plan_summary": "...", "planner_id": "agent-ren" }  → Planned
-POST .../StartWork                                                          → InProgress
-POST .../UpdateSandbox { "sandbox_url": "https://sandbox.example.com" }     → (stays InProgress)
-```
-
-### 4. Report gates and advance
+### 3. Report gates and advance
 
 Agents report gate results as self-loop actions in InProgress:
 
@@ -100,7 +83,7 @@ POST .../ReportPolicyGates   → sets policy_gates_ok = true
 POST .../PassTests           → Reviewing (requires dst_ok, policy_gates_ok)
 ```
 
-### 5. Review and complete
+### 4. Review and complete
 
 ```
 POST .../Approve  { "approver_id": "human-sesh", "pr_url": "https://..." }  → Complete
@@ -108,7 +91,7 @@ POST .../Approve  { "approver_id": "human-sesh", "pr_url": "https://..." }  → 
 POST .../RequestChanges { "review_notes": "Fix the migration" }              → Planning (resets tests_passed)
 ```
 
-### 6. Failure
+### 5. Failure
 
 Any stage can fail:
 

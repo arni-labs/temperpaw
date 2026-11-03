@@ -13,7 +13,11 @@ build:
 	cargo build -p temperpaw --release
 
 wasm:
-	cargo build --workspace --target wasm32-unknown-unknown
+	@for script in os-apps/*/wasm/build.sh os-apps/*/wasm/*/build.sh; do \
+		[ -f "$$script" ] || continue; \
+		echo "==> $$script"; \
+		(cd "$$(dirname "$$script")" && bash ./build.sh) || exit 1; \
+	done
 
 dashboard:
 	cd dashboard && npm run dev

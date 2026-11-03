@@ -14,7 +14,13 @@ async fn run_repo_sweep(
     );
 
     let prompt = repo_health_agent_prompt(snapshot_id, worker_run);
-    let output = run_codex_exec_command(config, &workdir, prompt, "run local Codex repo-health patrol").await?;
+    let output = run_codex_exec_command(
+        config,
+        &workdir,
+        prompt,
+        "run local Codex repo-health patrol",
+    )
+    .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = if stderr.trim().is_empty() {
@@ -187,14 +193,9 @@ async fn run_codex_implementation(
         },
     };
     ensure_no_forbidden_done_paths(&evidence.status_short)?;
-    let pull_request = publish_pull_request_if_needed(
-        config,
-        worker_run,
-        workdir,
-        &evidence,
-        pull_request_mode,
-    )
-    .await?;
+    let pull_request =
+        publish_pull_request_if_needed(config, worker_run, workdir, &evidence, pull_request_mode)
+            .await?;
     Ok(format_codex_success_summary(
         worker_run,
         workdir,
@@ -374,8 +375,13 @@ async fn run_codex_exec_command(
     prompt: String,
     context_label: &str,
 ) -> Result<Output> {
-    run_codex_exec_command_with_args(config, workdir, codex_exec_args(workdir, &prompt), context_label)
-        .await
+    run_codex_exec_command_with_args(
+        config,
+        workdir,
+        codex_exec_args(workdir, &prompt),
+        context_label,
+    )
+    .await
 }
 
 async fn run_codex_exec_command_with_args(
@@ -386,11 +392,27 @@ async fn run_codex_exec_command_with_args(
 ) -> Result<Output> {
     let mut command = Command::new(&config.codex_bin);
     command
-        .args(args)
+        .args(&args)
         .current_dir(workdir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if args
+        .iter()
+        .any(|arg| arg == "forced_login_method=\"chatgpt\"")
+    {
+        for name in [
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "WORKER_TOKEN",
+            "DSF_FACTORY_AGENT_TOKEN",
+        ] {
+            command.env_remove(name);
+        }
+        command.env("TEMPER_API_KEY", required_env("DSF_FACTORY_AGENT_TOKEN")?);
+    }
     configure_process_group(&mut command);
 
     let mut child = command

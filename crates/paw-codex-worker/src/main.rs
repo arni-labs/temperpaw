@@ -55,6 +55,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    validate_dsf_worker_binding(&config)?;
     info!(
         worker_id = %config.worker_id,
         temper_url = %config.temper_url,
@@ -69,6 +70,7 @@ async fn main() -> Result<()> {
     }
 
     if config.poll_on_start {
+        reconcile_dsf_model_sources(&client, &config).await?;
         recover_boot_running_runs(&client, &config).await?;
         claim_boot_queued_runs(&client, &config).await?;
         claim_boot_requested_review_runs(&client, &config).await?;
@@ -81,6 +83,7 @@ async fn main() -> Result<()> {
             debug!(%error, "failed to report WorkerAgent heartbeat");
         }
         if config.poll_on_start {
+            reconcile_dsf_model_sources(&client, &config).await?;
             recover_boot_running_runs(&client, &config).await?;
             claim_boot_queued_runs(&client, &config).await?;
             claim_boot_requested_review_runs(&client, &config).await?;
@@ -102,6 +105,8 @@ include!("event_loop.rs");
 include!("temper_api.rs");
 include!("datadog_patrol.rs");
 include!("github_patrol.rs");
+include!("dsf_model_patrol.rs");
+include!("dsf_model_investigation.rs");
 include!("daily_brief.rs");
 include!("cli.rs");
 include!("doctor_report.rs");

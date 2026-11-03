@@ -13,6 +13,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Validating", "Routing", "Processing"]
+terminal = ["Processed", "Rejected"]
 
 [[state]]
 name = "route_key"
@@ -76,7 +77,6 @@ from = ["Created"]
 to = "Validating"
 params = ["raw_payload", "raw_headers", "route_key"]
 hint = "Accept a webhook payload and begin validation."
-effect = [{ type = "trigger", name = "validate_webhook" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -98,7 +98,6 @@ from = ["Validating"]
 to = "Routing"
 params = ["source_type", "hmac_verified", "normalized_payload"]
 hint = "Payload validated and source identified. Begin routing."
-effect = [{ type = "trigger", name = "route_webhook" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -120,7 +119,6 @@ from = ["Routing"]
 to = "Processing"
 params = ["target_entity_type", "target_entity_id", "target_action", "webhook_route_id"]
 hint = "Route resolved. Begin processing the webhook against the target entity."
-effect = [{ type = "trigger", name = "process_webhook" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -165,13 +163,3 @@ from = ["Processing"]
 to = "Rejected"
 params = ["validation_error"]
 hint = "Target entity action dispatch failed."
-
-[[invariant]]
-name = "ProcessedIsFinal"
-when = ["Processed"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "RejectedIsFinal"
-when = ["Rejected"]
-assert = "no_further_transitions"

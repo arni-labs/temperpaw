@@ -1,0 +1,30 @@
+# StandingDecision (ARN-430, stage 3 S0)
+# A global ruling injected into every panel prompt - the entity form of
+# today's standing-decisions.md. Active while it applies; Retired when it no
+# longer does.
+[automaton]
+name = "StandingDecision"
+states = ["Active", "Retired"]
+initial = "Active"
+
+allow_indefinite_states = ["Active", "Retired"]
+
+[[state]]
+name = "text"
+type = "string"
+initial = ""
+
+[[action]]
+name = "Adopt"
+kind = "input"
+from = ["Active"]
+to = "Active"
+params = ["text"]
+hint = "Adopt or update the standing decision text injected into every panel prompt."
+
+[[action]]
+name = "Retire"
+kind = "input"
+from = ["Active"]
+to = "Retired"
+hint = "Retire a standing decision that no longer applies."

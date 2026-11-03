@@ -24,6 +24,7 @@ initial = "Solving"
 # timeout re-spawns rather than leaving the route orphaned. Scored/Canonical/
 # Tail persist for the world's life and are re-scored on update (Rescore).
 allow_indefinite_states = ["Scored", "Canonical", "Tail"]
+terminal = ["Rejected", "Pruned", "Failed"]
 
 # Self-heal timeouts. Budgets sit above a healthy session's wall-clock so a
 # live route is never double-spawned; on restart the hydration re-arm
@@ -147,7 +148,6 @@ from = ["Solving"]
 to = "Solving"
 params = []
 hint = "Repairer session died or the server restarted; re-spawn for this route. System principals only."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
 
 [[action.triggers]]
 name = "spawn_repairers"
@@ -168,7 +168,6 @@ from = ["Challenged"]
 to = "Challenged"
 params = []
 hint = "Costing did not run after the challenge; re-trigger it. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -187,7 +186,6 @@ from = ["Solving"]
 to = "Repaired"
 params = ["repair_log_file_id", "required_node_ids", "cost_flags"]
 hint = "Repairer self-reports the backward route with its flags. Triggers the prune gate: routes already too expensive are cut before any adversary session is spent (ADR-004)."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -205,7 +203,6 @@ kind = "input"
 from = ["Repaired"]
 params = []
 hint = "Prune gate passed: spawn the adversary. System principals only."
-effect = [{ type = "trigger", name = "spawn_adversaries" }]
 
 [[action.triggers]]
 name = "spawn_adversaries"
@@ -224,7 +221,6 @@ from = ["Repaired"]
 to = "Pruned"
 params = ["classification_note"]
 hint = "Repairer-phase cost already exceeds what the claim's best route allows; cut before adversary spend. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -243,7 +239,6 @@ from = ["Challenged"]
 to = "Solving"
 params = ["revision_brief", "round_count"]
 hint = "An adversary objection was expensive and the round budget allows a revision: the repairer answers the specific objections on this same route. System principals only."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
 
 [[action.triggers]]
 name = "spawn_repairers"
@@ -262,7 +257,6 @@ from = ["Repaired"]
 to = "Challenged"
 params = ["challenge_log_file_id", "challenge_flags"]
 hint = "Adversary self-reports its attack flags. Triggers deterministic costing over the union of both sides' flags."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -281,7 +275,6 @@ from = ["Challenged"]
 to = "Scored"
 params = ["repair_cost"]
 hint = "Deterministic cost from aggregate_costs. System principals only (Cedar). Triggers the world-wide classification check."
-effect = [{ type = "trigger", name = "aggregate_costs_classify" }]
 
 [[action.triggers]]
 name = "aggregate_costs_classify"
@@ -331,20 +324,3 @@ from = ["Solving", "Repaired", "Challenged"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error during repair or challenge."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "RejectedIsFinal"
-when = ["Rejected"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "PrunedIsFinal"
-when = ["Pruned"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

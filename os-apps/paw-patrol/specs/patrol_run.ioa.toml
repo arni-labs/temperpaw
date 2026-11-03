@@ -80,6 +80,51 @@ name = "integration"
 type = "string"
 initial = ""
 
+[[state]]
+name = "investigation_key"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observation_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "source_evidence"
+type = "string"
+initial = ""
+
+[[state]]
+name = "task"
+type = "string"
+initial = ""
+
+[[state]]
+name = "branch_name"
+type = "string"
+initial = ""
+
+[[state]]
+name = "worktree_path"
+type = "string"
+initial = ""
+
+[[state]]
+name = "allowed_worker_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "provider_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "runner_kind"
+type = "string"
+initial = ""
+
 [[action]]
 name = "Configure"
 kind = "input"
@@ -93,7 +138,6 @@ name = "Start"
 kind = "input"
 from = ["Created"]
 to = "Queued"
-effect = [{ type = "trigger", name = "patrol_run_started" }]
 hint = "Start a Risk Patrol run by queueing a capable worker."
 
 [[action.triggers]]
@@ -121,7 +165,6 @@ kind = "input"
 from = ["Running"]
 to = "EvidenceReady"
 params = ["evidence_json", "observability_finding_ids", "signal_ids", "factory_case_ids", "work_cycle_ids"]
-effect = [{ type = "trigger", name = "patrol_evidence_recorded" }]
 hint = "Record Datadog Patrol evidence and the created Patrol entities."
 
 [[action.triggers]]
@@ -171,10 +214,118 @@ hint = "Record a failed PatrolRun."
 state = "Queued"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { error_message = "PatrolRun stayed Queued for 24h without a worker.", integration = "patrol_run_timeout" }
+args = { error_message = "'PatrolRun stayed Queued for 24h without a worker.'", integration = "'patrol_run_timeout'" }
 
 [[state_timeout]]
 state = "Running"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { error_message = "PatrolRun ran for 6h without evidence.", integration = "patrol_run_timeout" }
+args = { error_message = "'PatrolRun ran for 6h without evidence.'", integration = "'patrol_run_timeout'" }
+
+# A model investigation uses native reactions and does not create a WorkCycle.
+[[action]]
+name = "RequestModelInvestigation"
+kind = "input"
+from = ["Created"]
+to = "Queued"
+params = ["investigation_key", "observation_id", "source_evidence", "worker_run_id", "task", "branch_name", "worktree_path", "allowed_worker_id", "provider_id", "runner_kind", "requested_by"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "investigation_key"
+field = "Id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "source_evidence"
+
+[[action.triggers]]
+name = "model_investigation_queues_worker"
+kind = "entity"
+principal = "dsf-factory-runtime"
+target_entity = "WorkerRun"
+target_action = "ConfigureModelInvestigation"
+
+[action.triggers.resolve_target]
+id_field = "worker_run_id"
+kind = "create_if_missing"
+
+[action.triggers.args]
+patrol_run_id = "Id"
+task = "task"
+branch_name = "branch_name"
+worktree_path = "worktree_path"
+allowed_worker_id = "allowed_worker_id"
+provider_id = "provider_id"
+runner_kind = "runner_kind"
+
+[[action]]
+name = "StartModelInvestigation"
+kind = "input"
+from = ["Queued"]
+to = "Running"
+params = ["expected_worker_run_id"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_worker_run_id"
+field = "worker_run_id"
+
+[[action]]
+name = "CompleteModelInvestigation"
+kind = "input"
+from = ["Queued", "Running"]
+to = "Complete"
+params = ["expected_worker_run_id", "summary", "evidence_json"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_worker_run_id"
+field = "worker_run_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "evidence_json"
+
+[[action]]
+name = "FailModelInvestigation"
+kind = "input"
+from = ["Queued", "Running"]
+to = "Failed"
+params = ["expected_worker_run_id", "error_message"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_worker_run_id"
+field = "worker_run_id"
+
+[[action]]
+name = "ReconcileModelWorker"
+kind = "input"
+from = ["Queued"]
+to = "Queued"
+params = []
+
+[[action.triggers]]
+name = "model_investigation_reconciles_worker"
+kind = "entity"
+principal = "dsf-factory-runtime"
+target_entity = "WorkerRun"
+target_action = "ConfigureModelInvestigation"
+
+[action.triggers.resolve_target]
+id_field = "worker_run_id"
+kind = "create_if_missing"
+
+[action.triggers.args]
+patrol_run_id = "Id"
+task = "task"
+branch_name = "branch_name"
+worktree_path = "worktree_path"
+allowed_worker_id = "allowed_worker_id"
+provider_id = "provider_id"
+runner_kind = "runner_kind"

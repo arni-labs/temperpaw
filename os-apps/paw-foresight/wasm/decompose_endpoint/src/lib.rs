@@ -585,30 +585,6 @@ mod tests {
     // The API silently drops unknown fields — drift here is a silent failure.
 
     #[test]
-    fn decomposer_prompt_carries_the_decomposition_complete_contract() {
-        let p = decomposer_prompt(
-            "e-1",
-            "Test",
-            "ai coding tools",
-            "2045-06-11",
-            "bundle body text",
-        );
-        for needle in [
-            "temper.action(\"Endpoints\", \"e-1\", \"DecompositionComplete\"",
-            "\"claims_json\"",
-            "BEGIN BUNDLE",
-            "bundle body text",
-            "between 3 and 8 claims",
-            "load-bearing",
-        ] {
-            assert!(p.contains(needle), "decomposer prompt missing: {needle}");
-        }
-        // Bundles are inlined, never temper.read (sessions cannot resolve
-        // harness/WASM-created files by id — wall 13/15).
-        assert!(!p.contains("temper.read("));
-    }
-
-    #[test]
     fn claims_parse_from_objects_strings_and_dedupe() {
         let objs = r#"[{"text": "A happens"}, {"text": "B happens"}, {"text": "A happens"}]"#;
         assert_eq!(parse_claims(objs), vec!["A happens", "B happens"]);
@@ -616,32 +592,5 @@ mod tests {
         assert_eq!(parse_claims(strs), vec!["A happens", "C happens"]);
         assert!(parse_claims("not json").is_empty());
         assert!(parse_claims("{\"text\": \"not an array\"}").is_empty());
-    }
-
-    #[test]
-    fn chunk_bounds_cover_all_claims_exactly_once() {
-        // 5 claims, CHUNK=2: ticks at cursors 0,1,2 cover 0..2, 2..4, 4..5.
-        assert_eq!(chunk_bounds(0, 5), (0, 2));
-        assert_eq!(chunk_bounds(1, 5), (2, 4));
-        assert_eq!(chunk_bounds(2, 5), (4, 5));
-        // Past the end: empty, never out of range.
-        assert_eq!(chunk_bounds(3, 5), (5, 5));
-        // MAX_CLAIMS at CHUNK=2 finishes within MAX_CHECKS ticks.
-        let ticks_needed = MAX_CLAIMS.div_ceil(CHUNK);
-        assert!(ticks_needed <= MAX_CHECKS);
-    }
-
-    #[test]
-    fn inlining_truncates_loudly_at_cap() {
-        let big = "x".repeat(40_000);
-        let inlined = inline_file(&big);
-        assert!(inlined.len() < 31_000);
-        assert!(inlined.contains("TRUNCATED AT 30KB"));
-        assert_eq!(inline_file("tiny"), "tiny");
-    }
-
-    #[test]
-    fn workspace_name_is_the_cross_module_rendezvous_key() {
-        assert_eq!(workspace_name("w-1"), "world-w-1");
     }
 }

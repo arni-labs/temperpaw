@@ -1,0 +1,3270 @@
+{
+  "callback_shapes": {
+    "shape_1": {
+      "expected_refresh_sequence": "counter",
+      "error_message": "string",
+      "collected_observation_id": "string",
+      "collected_source_event_id": "string",
+      "collected_query": "string",
+      "collected_window_start": "string",
+      "collected_window_end": "string",
+      "collected_sample_kind": "string",
+      "collected_outcome": "string",
+      "collected_summary": "string",
+      "collected_evidence_ref": "string",
+      "collected_observed_at_ms": "counter",
+      "collected_expected_resource_sequence": "counter",
+      "collected_observed_configuration": "string",
+      "collected_observed_revision": "string"
+    },
+    "shape_2": {
+      "expected_refresh_sequence": "counter",
+      "error_message": "string",
+      "collected_observation_id": "string",
+      "collected_source_event_id": "string",
+      "collected_query": "string",
+      "collected_window_start": "string",
+      "collected_window_end": "string",
+      "collected_sample_kind": "string",
+      "collected_outcome": "string",
+      "collected_summary": "string",
+      "collected_evidence_ref": "string",
+      "collected_observed_at_ms": "counter",
+      "collected_expected_resource_sequence": "counter"
+    },
+    "shape_3": {
+      "error_message": "string",
+      "expected_refresh_sequence": "counter"
+    },
+    "shape_4": {
+      "operation_key": "string",
+      "validation_evidence_ref": "string",
+      "intended_revision": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_5": {
+      "operation_key": "string",
+      "ask_id": "string",
+      "error_message": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_6": {
+      "operation_key": "string",
+      "error_message": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_7": {
+      "operation_key": "string",
+      "provider_execution_id": "string",
+      "provider_evidence_ref": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_8": {
+      "operation_key": "string",
+      "absence_evidence_ref": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_9": {
+      "operation_key": "string",
+      "verified_resource_id": "string",
+      "verified_revision": "string",
+      "provider_evidence_ref": "string",
+      "flow_evidence_ref": "string",
+      "telemetry_evidence_ref": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_10": {
+      "operation_key": "string",
+      "validation_evidence_ref": "string",
+      "intended_configuration": "string",
+      "expected_operation_sequence": "counter"
+    },
+    "shape_11": {
+      "operation_key": "string",
+      "verified_resource_id": "string",
+      "verified_configuration": "string",
+      "provider_evidence_ref": "string",
+      "flow_evidence_ref": "string",
+      "telemetry_evidence_ref": "string",
+      "expected_operation_sequence": "counter"
+    }
+  },
+  "resources": {
+    "DsfRailwayServiceInstance": {
+      "entity_set": "DsfRailwayServiceInstances",
+      "register": [
+        {
+          "name": "project_id",
+          "type": "string"
+        },
+        {
+          "name": "service_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "ProjectId": "Edm.String",
+        "ServiceId": "Edm.String",
+        "EnvironmentId": "Edm.String",
+        "Name": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "RollbackExecutionId": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "DeployVerified": "Edm.Boolean",
+        "ApplyConfigurationVerified": "Edm.Boolean",
+        "RollbackVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "Deploy": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_revision"
+          ]
+        },
+        "DeployStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "DeployResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployObserved"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfiguration": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration"
+          ]
+        },
+        "ApplyConfigurationStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfigurationResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": []
+        },
+        "Rollback": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "rollback_execution_id",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_revision",
+            "rollback_execution_id"
+          ]
+        },
+        "RollbackStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "RollbackResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "Deploy": "deploy_verified",
+        "ApplyConfiguration": "apply_configuration_verified",
+        "Rollback": "rollback_verified"
+      },
+      "modules": {
+        "dsf_railway_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_railway_deploy_validate": {
+          "action": "DeployValidate",
+          "params": [],
+          "callbacks": {
+            "DeployValidationSucceeded": "shape_4",
+            "DeployValidationBlocked": "shape_5",
+            "DeployValidationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_deploy_execute": {
+          "action": "DeployExecute",
+          "params": [],
+          "callbacks": {
+            "DeployExecutionSucceeded": "shape_7",
+            "DeployExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_railway_deploy_observe": {
+          "action": "DeployReconcile",
+          "params": [],
+          "callbacks": {
+            "DeployProviderFound": "shape_7",
+            "DeployProviderAbsent": "shape_8",
+            "DeployObservationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_deploy_verify": {
+          "action": "DeployVerify",
+          "params": [],
+          "callbacks": {
+            "DeployVerificationSucceeded": "shape_9",
+            "DeployVerificationPending": "shape_6",
+            "DeployVerificationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_configuration_validate": {
+          "action": "ApplyConfigurationValidate",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationValidationSucceeded": "shape_10",
+            "ApplyConfigurationValidationBlocked": "shape_5",
+            "ApplyConfigurationValidationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_configuration_execute": {
+          "action": "ApplyConfigurationExecute",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationExecutionSucceeded": "shape_7",
+            "ApplyConfigurationExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_railway_configuration_observe": {
+          "action": "ApplyConfigurationReconcile",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationProviderFound": "shape_7",
+            "ApplyConfigurationProviderAbsent": "shape_8",
+            "ApplyConfigurationObservationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_configuration_verify": {
+          "action": "ApplyConfigurationVerify",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationVerificationSucceeded": "shape_11",
+            "ApplyConfigurationVerificationPending": "shape_6",
+            "ApplyConfigurationVerificationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_rollback_validate": {
+          "action": "RollbackValidate",
+          "params": [],
+          "callbacks": {
+            "RollbackValidationSucceeded": "shape_4",
+            "RollbackValidationBlocked": "shape_5",
+            "RollbackValidationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_rollback_execute": {
+          "action": "RollbackExecute",
+          "params": [],
+          "callbacks": {
+            "RollbackExecutionSucceeded": "shape_7",
+            "RollbackExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_railway_rollback_observe": {
+          "action": "RollbackReconcile",
+          "params": [],
+          "callbacks": {
+            "RollbackProviderFound": "shape_7",
+            "RollbackProviderAbsent": "shape_8",
+            "RollbackObservationFailed": "shape_6"
+          }
+        },
+        "dsf_railway_rollback_verify": {
+          "action": "RollbackVerify",
+          "params": [],
+          "callbacks": {
+            "RollbackVerificationSucceeded": "shape_9",
+            "RollbackVerificationPending": "shape_6",
+            "RollbackVerificationFailed": "shape_6"
+          }
+        }
+      }
+    },
+    "DsfVercelProject": {
+      "entity_set": "DsfVercelProjects",
+      "register": [
+        {
+          "name": "account_id",
+          "type": "string"
+        },
+        {
+          "name": "project_id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "AccountId": "Edm.String",
+        "ProjectId": "Edm.String",
+        "Name": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "DeploymentTarget": "Edm.String",
+        "Alias": "Edm.String",
+        "RollbackExecutionId": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "DeployVerified": "Edm.Boolean",
+        "ApplyConfigurationVerified": "Edm.Boolean",
+        "RollbackVerified": "Edm.Boolean",
+        "SetAliasVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "Deploy": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "deployment_target",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_revision",
+            "deployment_target"
+          ]
+        },
+        "DeployStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "DeployResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "DeployResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "DeployObserved"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfiguration": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "deployment_target",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration",
+            "deployment_target"
+          ]
+        },
+        "ApplyConfigurationStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfigurationResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": []
+        },
+        "Rollback": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "deployment_target",
+              "type": "string"
+            },
+            {
+              "name": "rollback_execution_id",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_revision",
+            "rollback_execution_id",
+            "deployment_target"
+          ]
+        },
+        "RollbackStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "RollbackResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "RollbackResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RollbackObserved"
+          ],
+          "param_nonempty": []
+        },
+        "SetAlias": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "deployment_target",
+              "type": "string"
+            },
+            {
+              "name": "alias",
+              "type": "string"
+            },
+            {
+              "name": "provider_execution_id",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration",
+            "deployment_target",
+            "alias",
+            "provider_execution_id"
+          ]
+        },
+        "SetAliasStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "SetAliasObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "SetAliasAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "SetAliasUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "SetAliasAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "SetAliasFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "SetAliasResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "SetAliasUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "SetAliasResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "SetAliasObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "Deploy": "deploy_verified",
+        "ApplyConfiguration": "apply_configuration_verified",
+        "Rollback": "rollback_verified",
+        "SetAlias": "set_alias_verified"
+      },
+      "modules": {
+        "dsf_vercel_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_vercel_deploy_validate": {
+          "action": "DeployValidate",
+          "params": [],
+          "callbacks": {
+            "DeployValidationSucceeded": "shape_4",
+            "DeployValidationBlocked": "shape_5",
+            "DeployValidationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_deploy_execute": {
+          "action": "DeployExecute",
+          "params": [],
+          "callbacks": {
+            "DeployExecutionSucceeded": "shape_7",
+            "DeployExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_vercel_deploy_observe": {
+          "action": "DeployReconcile",
+          "params": [],
+          "callbacks": {
+            "DeployProviderFound": "shape_7",
+            "DeployProviderAbsent": "shape_8",
+            "DeployObservationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_deploy_verify": {
+          "action": "DeployVerify",
+          "params": [],
+          "callbacks": {
+            "DeployVerificationSucceeded": "shape_9",
+            "DeployVerificationPending": "shape_6",
+            "DeployVerificationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_configuration_validate": {
+          "action": "ApplyConfigurationValidate",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationValidationSucceeded": "shape_10",
+            "ApplyConfigurationValidationBlocked": "shape_5",
+            "ApplyConfigurationValidationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_configuration_execute": {
+          "action": "ApplyConfigurationExecute",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationExecutionSucceeded": "shape_7",
+            "ApplyConfigurationExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_vercel_configuration_observe": {
+          "action": "ApplyConfigurationReconcile",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationProviderFound": "shape_7",
+            "ApplyConfigurationProviderAbsent": "shape_8",
+            "ApplyConfigurationObservationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_configuration_verify": {
+          "action": "ApplyConfigurationVerify",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationVerificationSucceeded": "shape_11",
+            "ApplyConfigurationVerificationPending": "shape_6",
+            "ApplyConfigurationVerificationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_rollback_validate": {
+          "action": "RollbackValidate",
+          "params": [],
+          "callbacks": {
+            "RollbackValidationSucceeded": "shape_4",
+            "RollbackValidationBlocked": "shape_5",
+            "RollbackValidationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_rollback_execute": {
+          "action": "RollbackExecute",
+          "params": [],
+          "callbacks": {
+            "RollbackExecutionSucceeded": "shape_7",
+            "RollbackExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_vercel_rollback_observe": {
+          "action": "RollbackReconcile",
+          "params": [],
+          "callbacks": {
+            "RollbackProviderFound": "shape_7",
+            "RollbackProviderAbsent": "shape_8",
+            "RollbackObservationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_rollback_verify": {
+          "action": "RollbackVerify",
+          "params": [],
+          "callbacks": {
+            "RollbackVerificationSucceeded": "shape_9",
+            "RollbackVerificationPending": "shape_6",
+            "RollbackVerificationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_alias_validate": {
+          "action": "SetAliasValidate",
+          "params": [],
+          "callbacks": {
+            "SetAliasValidationSucceeded": "shape_10",
+            "SetAliasValidationBlocked": "shape_5",
+            "SetAliasValidationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_alias_execute": {
+          "action": "SetAliasExecute",
+          "params": [],
+          "callbacks": {
+            "SetAliasExecutionSucceeded": "shape_7",
+            "SetAliasExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_vercel_alias_observe": {
+          "action": "SetAliasReconcile",
+          "params": [],
+          "callbacks": {
+            "SetAliasProviderFound": "shape_7",
+            "SetAliasProviderAbsent": "shape_8",
+            "SetAliasObservationFailed": "shape_6"
+          }
+        },
+        "dsf_vercel_alias_verify": {
+          "action": "SetAliasVerify",
+          "params": [],
+          "callbacks": {
+            "SetAliasVerificationSucceeded": "shape_11",
+            "SetAliasVerificationPending": "shape_6",
+            "SetAliasVerificationFailed": "shape_6"
+          }
+        }
+      }
+    },
+    "DsfSupabaseProject": {
+      "entity_set": "DsfSupabaseProjects",
+      "register": [
+        {
+          "name": "project_ref",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "ProjectRef": "Edm.String",
+        "Name": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "ApplyConfigurationVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfiguration": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration"
+          ]
+        },
+        "ApplyConfigurationStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfigurationResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "ApplyConfiguration": "apply_configuration_verified"
+      },
+      "modules": {
+        "dsf_supabase_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_supabase_configuration_validate": {
+          "action": "ApplyConfigurationValidate",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationValidationSucceeded": "shape_10",
+            "ApplyConfigurationValidationBlocked": "shape_5",
+            "ApplyConfigurationValidationFailed": "shape_6"
+          }
+        },
+        "dsf_supabase_configuration_execute": {
+          "action": "ApplyConfigurationExecute",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationExecutionSucceeded": "shape_7",
+            "ApplyConfigurationExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_supabase_configuration_observe": {
+          "action": "ApplyConfigurationReconcile",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationProviderFound": "shape_7",
+            "ApplyConfigurationProviderAbsent": "shape_8",
+            "ApplyConfigurationObservationFailed": "shape_6"
+          }
+        },
+        "dsf_supabase_configuration_verify": {
+          "action": "ApplyConfigurationVerify",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationVerificationSucceeded": "shape_11",
+            "ApplyConfigurationVerificationPending": "shape_6",
+            "ApplyConfigurationVerificationFailed": "shape_6"
+          }
+        }
+      }
+    },
+    "DsfCloudflareR2Bucket": {
+      "entity_set": "DsfCloudflareR2Buckets",
+      "register": [
+        {
+          "name": "account_id",
+          "type": "string"
+        },
+        {
+          "name": "bucket_name",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "AccountId": "Edm.String",
+        "BucketName": "Edm.String",
+        "Name": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "ApplyConfigurationVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfiguration": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration"
+          ]
+        },
+        "ApplyConfigurationStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfigurationResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "ApplyConfiguration": "apply_configuration_verified"
+      },
+      "modules": {
+        "dsf_r2_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_r2_configuration_validate": {
+          "action": "ApplyConfigurationValidate",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationValidationSucceeded": "shape_10",
+            "ApplyConfigurationValidationBlocked": "shape_5",
+            "ApplyConfigurationValidationFailed": "shape_6"
+          }
+        },
+        "dsf_r2_configuration_execute": {
+          "action": "ApplyConfigurationExecute",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationExecutionSucceeded": "shape_7",
+            "ApplyConfigurationExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_r2_configuration_observe": {
+          "action": "ApplyConfigurationReconcile",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationProviderFound": "shape_7",
+            "ApplyConfigurationProviderAbsent": "shape_8",
+            "ApplyConfigurationObservationFailed": "shape_6"
+          }
+        },
+        "dsf_r2_configuration_verify": {
+          "action": "ApplyConfigurationVerify",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationVerificationSucceeded": "shape_11",
+            "ApplyConfigurationVerificationPending": "shape_6",
+            "ApplyConfigurationVerificationFailed": "shape_6"
+          }
+        }
+      }
+    },
+    "DsfDatadogMonitor": {
+      "entity_set": "DsfDatadogMonitors",
+      "register": [
+        {
+          "name": "site",
+          "type": "string"
+        },
+        {
+          "name": "organization_id",
+          "type": "string"
+        },
+        {
+          "name": "monitor_id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "Site": "Edm.String",
+        "OrganizationId": "Edm.String",
+        "MonitorId": "Edm.String",
+        "Name": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "ApplyConfigurationVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfiguration": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_configuration"
+          ]
+        },
+        "ApplyConfigurationStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "ApplyConfigurationResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "ApplyConfigurationResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "ApplyConfigurationObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "ApplyConfiguration": "apply_configuration_verified"
+      },
+      "modules": {
+        "dsf_datadog_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_datadog_configuration_validate": {
+          "action": "ApplyConfigurationValidate",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationValidationSucceeded": "shape_10",
+            "ApplyConfigurationValidationBlocked": "shape_5",
+            "ApplyConfigurationValidationFailed": "shape_6"
+          }
+        },
+        "dsf_datadog_configuration_execute": {
+          "action": "ApplyConfigurationExecute",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationExecutionSucceeded": "shape_7",
+            "ApplyConfigurationExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_datadog_configuration_observe": {
+          "action": "ApplyConfigurationReconcile",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationProviderFound": "shape_7",
+            "ApplyConfigurationProviderAbsent": "shape_8",
+            "ApplyConfigurationObservationFailed": "shape_6"
+          }
+        },
+        "dsf_datadog_configuration_verify": {
+          "action": "ApplyConfigurationVerify",
+          "params": [],
+          "callbacks": {
+            "ApplyConfigurationVerificationSucceeded": "shape_11",
+            "ApplyConfigurationVerificationPending": "shape_6",
+            "ApplyConfigurationVerificationFailed": "shape_6"
+          }
+        }
+      }
+    },
+    "DsfMediaPipeline": {
+      "entity_set": "DsfMediaPipelines",
+      "register": [
+        {
+          "name": "application_id",
+          "type": "string"
+        },
+        {
+          "name": "environment_id",
+          "type": "string"
+        },
+        {
+          "name": "api_resource_id",
+          "type": "string"
+        },
+        {
+          "name": "bucket_resource_id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "environment_name",
+          "type": "string"
+        },
+        {
+          "name": "source_repository",
+          "type": "string"
+        },
+        {
+          "name": "config_ref",
+          "type": "string"
+        },
+        {
+          "name": "config_sha256",
+          "type": "string"
+        },
+        {
+          "name": "allowed_operations",
+          "type": "string"
+        },
+        {
+          "name": "dependency_ids",
+          "type": "string"
+        },
+        {
+          "name": "intended_configuration",
+          "type": "string"
+        }
+      ],
+      "properties": {
+        "Id": "Edm.String",
+        "Status": "Edm.String",
+        "ApplicationId": "Edm.String",
+        "EnvironmentId": "Edm.String",
+        "ApiResourceId": "Edm.String",
+        "BucketResourceId": "Edm.String",
+        "Name": "Edm.String",
+        "EnvironmentName": "Edm.String",
+        "SourceRepository": "Edm.String",
+        "ConfigRef": "Edm.String",
+        "ConfigSha256": "Edm.String",
+        "AllowedOperations": "Edm.String",
+        "DependencyIds": "Edm.String",
+        "ModelProvenanceRef": "Edm.String",
+        "IntendedConfiguration": "Edm.String",
+        "IntendedRevision": "Edm.String",
+        "OperationKey": "Edm.String",
+        "EffortId": "Edm.String",
+        "RequestRevision": "Edm.String",
+        "RequestConfiguration": "Edm.String",
+        "ProofRef": "Edm.String",
+        "ValidationEvidenceRef": "Edm.String",
+        "ProviderExecutionId": "Edm.String",
+        "ProviderEvidenceRef": "Edm.String",
+        "AbsenceEvidenceRef": "Edm.String",
+        "FlowEvidenceRef": "Edm.String",
+        "TelemetryEvidenceRef": "Edm.String",
+        "ErrorMessage": "Edm.String",
+        "AskId": "Edm.String",
+        "CollectedObservationId": "Edm.String",
+        "CollectedSourceEventId": "Edm.String",
+        "CollectedQuery": "Edm.String",
+        "CollectedWindowStart": "Edm.String",
+        "CollectedWindowEnd": "Edm.String",
+        "CollectedSampleKind": "Edm.String",
+        "CollectedOutcome": "Edm.String",
+        "CollectedSummary": "Edm.String",
+        "CollectedEvidenceRef": "Edm.String",
+        "CollectedObservedConfiguration": "Edm.String",
+        "CollectedObservedRevision": "Edm.String",
+        "ObservedConfiguration": "Edm.String",
+        "ObservedRevision": "Edm.String",
+        "ObservationId": "Edm.String",
+        "SelectedGenerationIds": "Edm.String",
+        "CostAuthorityRef": "Edm.String",
+        "ModelSequence": "Edm.Int64",
+        "ObservedSequence": "Edm.Int64",
+        "ObservedAtMs": "Edm.Int64",
+        "OperationSequence": "Edm.Int64",
+        "ExecutionAttempts": "Edm.Int64",
+        "ReconciliationAttempts": "Edm.Int64",
+        "VerificationAttempts": "Edm.Int64",
+        "RefreshSequence": "Edm.Int64",
+        "CollectedObservedAtMs": "Edm.Int64",
+        "CollectedExpectedResourceSequence": "Edm.Int64",
+        "ObservationAvailable": "Edm.Boolean",
+        "ProviderKnown": "Edm.Boolean",
+        "OperationVerified": "Edm.Boolean",
+        "RetrySelectedVerified": "Edm.Boolean",
+        "Coverage": "Edm.String",
+        "ProvenanceRef": "Edm.String"
+      },
+      "human_actions": {
+        "ReviseModel": {
+          "params": [
+            {
+              "name": "expected_model_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "source_repository",
+              "type": "string"
+            },
+            {
+              "name": "dependency_ids",
+              "type": "string"
+            },
+            {
+              "name": "config_ref",
+              "type": "string"
+            },
+            {
+              "name": "config_sha256",
+              "type": "string"
+            },
+            {
+              "name": "allowed_operations",
+              "type": "string"
+            },
+            {
+              "name": "model_provenance_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "config_ref",
+            "config_sha256",
+            "model_provenance_ref"
+          ]
+        },
+        "BootstrapOperationSequence": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RefreshObservations": {
+          "params": [],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": []
+        },
+        "RetrySelected": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            },
+            {
+              "name": "effort_id",
+              "type": "string"
+            },
+            {
+              "name": "request_revision",
+              "type": "string"
+            },
+            {
+              "name": "request_configuration",
+              "type": "string"
+            },
+            {
+              "name": "proof_ref",
+              "type": "string"
+            },
+            {
+              "name": "selected_generation_ids",
+              "type": "string"
+            },
+            {
+              "name": "cost_authority_ref",
+              "type": "string"
+            }
+          ],
+          "from": [
+            "Active"
+          ],
+          "param_nonempty": [
+            "operation_key",
+            "effort_id",
+            "proof_ref",
+            "request_configuration",
+            "request_revision",
+            "selected_generation_ids"
+          ]
+        },
+        "RetrySelectedStopExhaustedVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RetrySelectedObserved"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RetrySelectedAbandonReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RetrySelectedUnknown"
+          ],
+          "param_nonempty": [
+            "error_message",
+            "failure_evidence_ref"
+          ]
+        },
+        "RetrySelectedAcknowledgeFailure": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "failure_evidence_ref",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RetrySelectedFailed"
+          ],
+          "param_nonempty": [
+            "failure_evidence_ref"
+          ]
+        },
+        "RetrySelectedResumeReconciliation": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RetrySelectedUnknown"
+          ],
+          "param_nonempty": []
+        },
+        "RetrySelectedResumeVerification": {
+          "params": [
+            {
+              "name": "operation_key",
+              "type": "string"
+            },
+            {
+              "name": "expected_operation_sequence",
+              "type": "counter"
+            }
+          ],
+          "from": [
+            "RetrySelectedObserved"
+          ],
+          "param_nonempty": []
+        }
+      },
+      "verification_flags": {
+        "RetrySelected": "retry_selected_verified"
+      },
+      "modules": {
+        "dsf_media_collect": {
+          "action": "RefreshObservations",
+          "params": [],
+          "callbacks": {
+            "CollectionMeasured": "shape_1",
+            "CollectionAbsent": "shape_2",
+            "CollectionInaccessible": "shape_2",
+            "CollectionStale": "shape_2",
+            "CollectionFailed": "shape_3"
+          }
+        },
+        "dsf_media_retry_selected_validate": {
+          "action": "RetrySelectedValidate",
+          "params": [],
+          "callbacks": {
+            "RetrySelectedValidationSucceeded": "shape_4",
+            "RetrySelectedValidationBlocked": "shape_5",
+            "RetrySelectedValidationFailed": "shape_6"
+          }
+        },
+        "dsf_media_retry_selected_execute": {
+          "action": "RetrySelectedExecute",
+          "params": [],
+          "callbacks": {
+            "RetrySelectedExecutionSucceeded": "shape_7",
+            "RetrySelectedExecutionUncertain": "shape_6"
+          }
+        },
+        "dsf_media_retry_selected_observe": {
+          "action": "RetrySelectedReconcile",
+          "params": [],
+          "callbacks": {
+            "RetrySelectedProviderFound": "shape_7",
+            "RetrySelectedProviderAbsent": "shape_8",
+            "RetrySelectedObservationFailed": "shape_6"
+          }
+        },
+        "dsf_media_retry_selected_verify": {
+          "action": "RetrySelectedVerify",
+          "params": [],
+          "callbacks": {
+            "RetrySelectedVerificationSucceeded": "shape_9",
+            "RetrySelectedVerificationPending": "shape_6",
+            "RetrySelectedVerificationFailed": "shape_6"
+          }
+        }
+      }
+    }
+  }
+}

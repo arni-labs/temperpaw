@@ -73,7 +73,7 @@ profiling when a CPU path is suspected.
 
 ## Railway Datadog Product Coverage
 
-Railway production has two supported observability profiles:
+Railway production has one supported observability profile:
 
 - `datadog-enhanced-railway` sends TemperPaw runtime OTLP to the
   `datadog-runtime-agent` Railway service at
@@ -83,8 +83,9 @@ Railway production has two supported observability profiles:
   LLMObs export with `DD_LLMOBS_API_ENABLED=true`. It also includes
   `dd_llmobs_enabled=false` in `OTEL_RESOURCE_ATTRIBUTES` so Datadog keeps OTLP
   spans in APM instead of auto-converting them into duplicate LLMObs rows.
-- `portable-otel` keeps the existing `otel-collector` route as the fallback for
-  non-Datadog and recovery deployments.
+
+Deployments without a Datadog key run with `OTEL_ENABLED=false` and export no
+telemetry.
 
 For an already-deployed Railway instance, call
 `POST /paw/infra/railway/datadog-runtime-agent/ensure`. The endpoint uses the
@@ -112,7 +113,7 @@ Product status is green or proven blocked, not guessed:
 | APM | Supported by `datadog-runtime-agent` APM intake. |
 | Logs correlation | Supported by decimal Datadog trace/span ids plus OTel ids. |
 | Error Tracking | Supported by normalized exception and Datadog error fields. |
-| LLM Observability | Supported by direct LLMObs export or collector LLMObs routing. |
+| LLM Observability | Supported by direct LLMObs export. |
 | On-demand Profiling | Supported by `/_admin/profile/cpu` capture and upload. |
 | Continuous Profiling | Canary-gated; record `blocked-on-Railway-perf-permissions` if Railway denies OS perf APIs. |
 | Universal Service Monitoring | Capability-gated; record `blocked-on-Railway-system-probe` if Railway cannot provide system-probe mounts/capabilities. |
@@ -317,8 +318,8 @@ requires Datadog scanner group context in the UI for this account.
 
 Open LLM Observability with `ml_app:temperpaw`.
 
-TemperPaw emits LLMObs through the direct LLMObs span payload path. The OTEL
-collector still exports runtime OTLP traces to Datadog APM, but it intentionally
+TemperPaw emits LLMObs through the direct LLMObs span payload path. The Datadog
+Runtime Agent still receives runtime OTLP traces for APM, but TemperPaw intentionally
 does not forward generic OTLP spans to the LLMObs intake; otherwise internal
 workflow, SQL, and WASM phase spans show up in LLMObs as `No content` rows.
 Use LLMObs for agent/workflow/LLM/tool content and APM for the lower-level

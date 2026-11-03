@@ -21,6 +21,7 @@ initial = "Proposed"
 # the world (re-priced on evidence updates). Same posture as Endpoint;
 # revisit with state_timeout once 0.3 run-time envelopes are measured.
 allow_indefinite_states = ["Proposed", "Settled"]
+terminal = ["Unreachable", "Failed"]
 
 # Self-heal (ADR-007): a Bridging claim whose routes all died gets re-evaluated
 # so it settles or opens an alternate rather than hanging forever.
@@ -120,7 +121,6 @@ from = ["Proposed", "Bridging"]
 to = "Bridging"
 params = []
 hint = "Dispatched by decompose_endpoint for the first route, and by aggregate_costs for alternate routes (revision_brief carries the standing objections). Spawns a repairer route."
-effect = [{ type = "trigger", name = "spawn_repairers" }]
 
 [[action.triggers]]
 name = "spawn_repairers"
@@ -153,7 +153,6 @@ from = ["Bridging"]
 to = "Bridging"
 params = []
 hint = "Self-heal: re-evaluate this claim (routes may have died). Re-runs the claim decision deterministically. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -171,7 +170,6 @@ kind = "input"
 from = ["Bridging"]
 params = ["path_id", "route_cost"]
 hint = "A route finished costing. aggregate_costs decides: settle the claim, spawn an alternate route, or mark unreachable. System principals only."
-effect = [{ type = "trigger", name = "aggregate_costs" }]
 
 [[action.triggers]]
 name = "aggregate_costs"
@@ -213,15 +211,3 @@ from = ["Proposed", "Bridging"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error during decomposition or bridging."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "UnreachableIsFinal"
-when = ["Unreachable"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

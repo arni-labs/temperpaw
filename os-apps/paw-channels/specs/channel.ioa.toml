@@ -13,6 +13,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Connecting", "Connected", "Disconnected"]
+terminal = ["Archived"]
 
 [[state]]
 name = "channel_type"
@@ -52,12 +53,12 @@ initial = ""
 [[state]]
 name = "active_sessions"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "message_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[action]]
 name = "Configure"
@@ -72,7 +73,6 @@ kind = "input"
 from = ["Created"]
 to = "Connecting"
 hint = "Start channel connection."
-effect = [{ type = "trigger", name = "channel_connect" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -100,7 +100,7 @@ kind = "input"
 from = ["Connected"]
 params = ["message_id", "author_id", "thread_id", "content", "command", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
 hint = "Receive an incoming message from the channel platform. Optional command field for slash commands (plan, execute). Optional GenAI parent trace fields preserve distributed tracing through routing and reply delivery."
-effect = [{ type = "increment", var = "message_count" }, { type = "trigger", name = "route_message" }]
+effect = ["message_count += 1"]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -122,7 +122,6 @@ kind = "input"
 from = ["Connected"]
 params = ["thread_id", "content", "agent_entity_id", "reply_attachments_json"]
 hint = "Send a reply back to the channel."
-effect = [{ type = "trigger", name = "send_reply" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -171,7 +170,13 @@ kind = "input"
 from = ["Disconnected"]
 to = "Connecting"
 hint = "Reconnect the channel."
-effect = [{ type = "trigger", name = "channel_connect" }]
+
+[[action.triggers]]
+name = "channel_connect"
+kind = "wasm"
+module = "channel_connect"
+on_failure = "ConnectFailed"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "Archive"
@@ -201,8 +206,3 @@ kind = "input"
 from = ["Connected"]
 params = ["error_message"]
 hint = "Reply delivery WASM failed. Stay Connected."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

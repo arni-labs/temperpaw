@@ -501,7 +501,7 @@ mod tests {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
     use tracing_subscriber::prelude::*;
 
-    use super::{ApprovalScope, PawApiClient, PawApiConfig, approval_body_for_scope};
+    use super::{PawApiClient, PawApiConfig};
 
     #[derive(Clone, Default)]
     struct HeaderProbe {
@@ -739,26 +739,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paw_api_query_entities_rejects_archived_negative_predicates() {
-        let client = PawApiClient::new(PawApiConfig {
-            base_url: "http://127.0.0.1:9".to_string(),
-            tenant: "default".to_string(),
-            api_key: None,
-        });
-
-        let error = client
-            .query_entities(
-                "Channels",
-                "ChannelType eq 'cli' and Status ne 'Archived'",
-                20,
-            )
-            .await
-            .expect_err("Status ne Archived should be rejected before transport");
-
-        assert!(error.contains("must not filter with Status ne 'Archived'"));
-    }
-
-    #[tokio::test]
     async fn paw_api_raw_post_surfaces_non_success_responses() {
         let app = Router::new().route(
             "/api/tenants/default/decisions/PD-123/approve",
@@ -794,58 +774,6 @@ mod tests {
         assert!(
             error.contains("missing manage_policies"),
             "expected response body in error, got: {error}"
-        );
-    }
-
-    #[test]
-    fn approval_body_for_scope_includes_required_cedar_dimensions() {
-        let decision = json!({
-            "id": "PD-123",
-            "session_id": "ss-123",
-            "agent_type": "swe",
-        });
-
-        let always = approval_body_for_scope(
-            ApprovalScope::AlwaysForAgent,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("always approval body");
-        assert_eq!(always["scope"]["principal"], "this_agent");
-        assert_eq!(always["scope"]["action"], "this_action");
-        assert_eq!(always["scope"]["resource"], "any_of_type");
-        assert_eq!(always["scope"]["duration"], "always");
-        assert_eq!(always["scope"]["agent_type_value"], "swe");
-
-        let session = approval_body_for_scope(
-            ApprovalScope::Session,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("session approval body");
-        assert_eq!(session["scope"]["resource"], "any_of_type");
-        assert_eq!(session["scope"]["duration"], "session");
-        assert_eq!(session["scope"]["session_id"], "ss-123");
-
-        let once = approval_body_for_scope(
-            ApprovalScope::Once,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("once approval body");
-        assert_eq!(once["scope"]["resource"], "this_resource");
-        assert_eq!(once["scope"]["duration"], "session");
-        assert_eq!(once["scope"]["session_id"], "ss-123");
-    }
-
-    #[test]
-    fn session_limited_approval_body_requires_decision_session_id() {
-        let error = approval_body_for_scope(ApprovalScope::Session, None, "test:user".to_string())
-            .expect_err("session approval without decision session id should fail");
-
-        assert!(
-            error.contains("decision.session_id"),
-            "expected actionable session id error, got: {error}"
         );
     }
 

@@ -1,6 +1,7 @@
 //! Authentication routes and middleware for the embedded dashboard.
 
 use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,7 +10,7 @@ use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, MatchedPath, State};
 use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
@@ -19,13 +20,15 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
-use temper_platform::bearer_auth::PreAuthenticatedRequest;
+use temper_authz::{AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext};
+use temper_runtime::tenant::TenantId;
 #[cfg(test)]
 use temper_store_turso::TursoEventStore;
 
 use crate::storage::PawStorage;
 
 type SecretsVault = temper_server::secrets::vault::SecretsVault;
+type HttpEndpointTables = temper_server::http_endpoint::HttpEndpointTables;
 
 const ACCOUNTS_SECRET_KEY: &str = "auth_accounts";
 const SESSION_COOKIE: &str = "paw_session";
@@ -39,6 +42,11 @@ pub struct AuthState {
     tenant: Arc<String>,
     cookie_secure: bool,
     register_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The kernel's own HttpEndpoint route tables, read to admit routes a
+    /// tenant declared public (`RequiresAuth = false`).
+    http_endpoints: Arc<HttpEndpointTables>,
+    /// The kernel's state, read to resolve a bearer on TemperPaw's own routes.
+    server: temper_server::ServerState,
 }
 
 impl AuthState {
@@ -48,6 +56,8 @@ impl AuthState {
         jwt_secret: Vec<u8>,
         tenant: String,
         cookie_secure: bool,
+        http_endpoints: Arc<HttpEndpointTables>,
+        server: temper_server::ServerState,
     ) -> Self {
         Self {
             storage: storage.into(),
@@ -56,6 +66,8 @@ impl AuthState {
             tenant: Arc::new(tenant),
             cookie_secure,
             register_lock: Arc::new(tokio::sync::Mutex::new(())),
+            http_endpoints,
+            server,
         }
     }
 
@@ -64,13 +76,21 @@ impl AuthState {
     }
 
     #[cfg(test)]
-    async fn for_tests(root: &std::path::Path) -> Self {
+    pub(crate) async fn for_tests(root: &std::path::Path) -> Self {
         let db_path = root.join("auth-test.db");
         let store = TursoEventStore::new(&format!("file:{}", db_path.display()), None)
             .await
             .unwrap();
         let vault = Arc::new(SecretsVault::new(&[7; 32]));
-        Self::new(store, vault, vec![3; 32], "default".to_string(), false)
+        Self::new(
+            store,
+            vault,
+            vec![3; 32],
+            "default".to_string(),
+            false,
+            Arc::new(HttpEndpointTables::new()),
+            temper_platform::PlatformState::new(None).server,
+        )
     }
 }
 
@@ -123,6 +143,13 @@ pub fn router(state: AuthState) -> Router {
         .with_state(state)
 }
 
+/// Put [`middleware`] in front of every route and the fallback. It must be
+/// attached with `Router::layer`, as here: only then does it see axum's
+/// `MatchedPath`, which keeps HttpEndpoint rows away from TemperPaw's routes.
+pub fn layer(router: Router, state: AuthState) -> Router {
+    router.layer(axum::middleware::from_fn_with_state(state, middleware))
+}
+
 pub async fn middleware(
     State(state): State<AuthState>,
     mut request: Request<Body>,
@@ -130,6 +157,14 @@ pub async fn middleware(
 ) -> Response {
     let path = request.uri().path().to_string();
     let method = request.method().as_str().to_string();
+
+    // Principal headers are how this process's own clients and WASM modules
+    // name themselves over loopback. From anywhere else they are a claim
+    // nobody checked, so they never pass this edge.
+    let from_loopback = peer_is_loopback(&request);
+    if !from_loopback {
+        strip_caller_authority_headers(request.headers_mut());
+    }
 
     if is_safe_setup_path_public_during_bootstrap(&state, &method, &path).await
         || is_public_path(request.method().as_str(), &path)
@@ -139,23 +174,87 @@ pub async fn middleware(
 
     if let Some(claims) = claims_from_headers(&state, request.headers()) {
         inject_auth_headers(&mut request, &claims, state.tenant());
-        request.extensions_mut().insert(PreAuthenticatedRequest);
+        let principal = Principal {
+            id: claims.email.clone(),
+            kind: PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            label: None,
+            attributes: Default::default(),
+        };
+        request
+            .extensions_mut()
+            .insert(authenticated_context(state.tenant(), principal));
         return next.run(request).await;
     }
 
-    if has_bearer_auth(request.headers()) {
-        ensure_tenant_header(request.headers_mut(), state.tenant());
-        return next.run(request).await;
+    if let Some(token) = bearer_token(request.headers()) {
+        // The kernel's own edge resolves a bearer on its routes. TemperPaw's
+        // routes have no edge but this one, so here the bearer resolves to the
+        // caller its handlers act for: the internal capability a WASM module
+        // presents over loopback, or the tenant's operator credential.
+        // TemperPaw's own local clients name themselves with principal
+        // headers instead, below.
+        if !is_temperpaw_route(&path) {
+            ensure_tenant_header(request.headers_mut(), state.tenant());
+            return next.run(request).await;
+        }
+        let internal_capability =
+            temper_server::internal_invocation::is_internal_invocation_bearer(&token);
+        if internal_capability || !(from_loopback && has_principal_headers(request.headers())) {
+            let caller = if from_loopback && internal_capability {
+                internal_caller(&state, &request, &token)
+            } else {
+                operator_caller(&state, &token).await
+            };
+            match caller {
+                Ok(caller) => {
+                    if internal_capability {
+                        // Consumed: it opens nothing again, and no handler may
+                        // forward it.
+                        request
+                            .headers_mut()
+                            .remove(axum::http::header::AUTHORIZATION);
+                    }
+                    request.extensions_mut().insert(caller);
+                }
+                Err(status) => return status.into_response(),
+            }
+            ensure_tenant_header(request.headers_mut(), state.tenant());
+            return next.run(request).await;
+        }
     }
 
     // Internal WASM agent calls carry principal headers but no Bearer token
-    // or session cookie. Mark as pre-authenticated so Temper's bearer_auth_check
-    // passes through.
-    if request.headers().contains_key("x-temper-principal-kind")
-        && request.headers().contains_key("x-temper-principal-id")
-    {
+    // or session cookie. Build the authenticated context from those headers so
+    // the kernel guard admits the request (the kernel strips the headers
+    // themselves at its edge). Per ADR-0157 this loopback path should move to
+    // minted credentials (follow-up).
+    if let (Some(id), Some(kind)) = (
+        header_value(request.headers(), "x-temper-principal-id"),
+        header_value(request.headers(), "x-temper-principal-kind"),
+    ) {
+        let kind = match kind.as_str() {
+            "admin" => PrincipalKind::Admin,
+            "agent" => PrincipalKind::Agent,
+            // "system" is never accepted from headers; anything else stays
+            // Customer, matching the retired kernel header parser.
+            _ => PrincipalKind::Customer,
+        };
+        let principal = Principal {
+            id,
+            kind,
+            role: None,
+            acting_for: None,
+            agent_type: header_value(request.headers(), "x-temper-agent-type"),
+            label: None,
+            attributes: Default::default(),
+        };
         ensure_tenant_header(request.headers_mut(), state.tenant());
-        request.extensions_mut().insert(PreAuthenticatedRequest);
+        request
+            .extensions_mut()
+            .insert(authenticated_context(state.tenant(), principal));
         return next.run(request).await;
     }
 
@@ -163,7 +262,53 @@ pub async fn middleware(
         return Redirect::temporary("/dashboard/login").into_response();
     }
 
+    // A caller with no credential, such as a signed webhook sender, may reach
+    // an HttpEndpoint its tenant declared public. Nothing is attached here:
+    // the kernel edge matches the same route and serves it as anonymous.
+    if admit_public_http_endpoint(&state, &mut request).await {
+        return next.run(request).await;
+    }
+
     StatusCode::UNAUTHORIZED.into_response()
+}
+
+/// Whether the request is bound for the kernel's HttpEndpoint fallback and
+/// matches an Active route with `RequiresAuth = false` there, by the kernel's
+/// own table and matcher (method, then whole-segment path prefix, longest
+/// wins). The tenant is resolved as for any other request (the caller's
+/// `X-Tenant-Id`, else this deployment's tenant) and pinned on the request, so
+/// the kernel edge checks the same tenant's route again.
+async fn admit_public_http_endpoint(state: &AuthState, request: &mut Request<Body>) -> bool {
+    // A request a declared route serves never reaches the fallback. TemperPaw's
+    // own routes sit outside the kernel's bearer edge, so this middleware is
+    // their only gate and an HttpEndpoint row must never open them. Axum sets
+    // `MatchedPath` for every declared route, even on a method mismatch, but
+    // not under a `nest_service` mount: `/dashboard`, the only mount, is
+    // redirected above, and any new mount needs the same treatment.
+    if request.extensions().get::<MatchedPath>().is_some() {
+        return false;
+    }
+    let tenant = header_value(request.headers(), "x-tenant-id")
+        .map(|tenant| tenant.trim().to_string())
+        .filter(|tenant| !tenant.is_empty())
+        .unwrap_or_else(|| state.tenant().to_string());
+    let Ok(tenant_header) = HeaderValue::from_str(&tenant) else {
+        return false;
+    };
+    let Ok(tenant) = TenantId::try_new(tenant) else {
+        return false;
+    };
+    let Some(table) = state.http_endpoints.get(&tenant).await else {
+        return false;
+    };
+    let is_public = table
+        .match_request(request.method().as_str(), request.uri().path())
+        .await
+        .is_some_and(|matched| !matched.route.requires_auth);
+    if is_public {
+        request.headers_mut().insert("x-tenant-id", tenant_header);
+    }
+    is_public
 }
 
 async fn is_safe_setup_path_public_during_bootstrap(
@@ -189,12 +334,163 @@ async fn is_safe_setup_path_public_during_bootstrap(
     }
 }
 
-fn has_bearer_auth(headers: &HeaderMap) -> bool {
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Bind a locally-authenticated principal to the tenant as the typed authority
+/// the kernel guard requires (ADR-0157); headers never carry identity inward.
+fn authenticated_context(tenant: &str, principal: Principal) -> AuthenticatedRequestContext {
+    let mut security_context = SecurityContext::anonymous();
+    security_context.principal = principal;
+    AuthenticatedRequestContext::new(TenantId::new(tenant), security_context)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.starts_with("Bearer "))
-        .unwrap_or(false)
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|token| token.trim().to_string())
+}
+
+/// Whether the request was made on this machine. Requests through Railway's
+/// edge, or from any other host, never are. Nor is one a local proxy relayed
+/// (the ngrok tunnel TransportManager starts when no public URL is set): a
+/// proxy names the original client in a forwarding header, which this
+/// process's own clients never send. A request with no peer address (a router
+/// driven in a test) is treated as remote.
+fn peer_is_loopback(request: &Request<Body>) -> bool {
+    let relayed = [
+        "x-forwarded-for",
+        "forwarded",
+        "x-real-ip",
+        "x-forwarded-host",
+    ]
+    .iter()
+    .any(|name| request.headers().contains_key(*name));
+    !relayed
+        && request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .is_some_and(|ConnectInfo(peer)| match peer.ip() {
+                IpAddr::V4(ip) => ip.is_loopback(),
+                IpAddr::V6(ip) => {
+                    ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+                }
+            })
+}
+
+/// Remove caller-supplied `x-temper-*` authority headers, as the kernel's own
+/// edge does (`temper_server::authz::strip_inbound_identity_headers`): only
+/// `x-temper-observe-*` and `x-temper-workflow-*` stay, as correlation data.
+fn strip_caller_authority_headers(headers: &mut HeaderMap) {
+    let names = headers
+        .keys()
+        .filter(|name| {
+            let name = name.as_str();
+            name.starts_with("x-temper-")
+                && !name.starts_with("x-temper-observe-")
+                && !name.starts_with("x-temper-workflow-")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in names {
+        headers.remove(name);
+    }
+}
+
+fn has_principal_headers(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-temper-principal-id") && headers.contains_key("x-temper-principal-kind")
+}
+
+/// TemperPaw's own routes, which sit outside the kernel's bearer edge.
+fn is_temperpaw_route(path: &str) -> bool {
+    path == "/paw"
+        || path.starts_with("/paw/")
+        || path == "/auth"
+        || path.starts_with("/auth/")
+        || path.starts_with("/discord/")
+        || path.starts_with("/triggers/")
+        || path.starts_with("/dashboard")
+}
+
+/// The caller `token` names when it resolves, by the kernel's own identity
+/// check, to this deployment's operator: the credential `TEMPER_API_KEY`
+/// bootstraps (`temper_platform::bootstrap::bootstrap_operator_credential`),
+/// or another issued to the operator, in the deployment's own tenant, whose
+/// secrets and apps TemperPaw's routes act on. The caller is the one the
+/// kernel's edge makes of the same credential. A trusted issuer's token (a
+/// person, a computer) is never the operator. 503 when the identity store
+/// cannot be read.
+async fn operator_caller(
+    state: &AuthState,
+    token: &str,
+) -> Result<AuthenticatedRequestContext, StatusCode> {
+    if temper_server::internal_invocation::is_internal_invocation_bearer(token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let tenant = TenantId::new(state.tenant());
+    match temper_server::identity::IdentityResolver::new()
+        .resolve(&state.server, &tenant, token)
+        .await
+    {
+        Ok(identity) if !identity.from_jwt && identity.agent_type_name == "operator" => {
+            Ok(AuthenticatedRequestContext::new(
+                tenant,
+                SecurityContext::from_resolved_identity(
+                    &identity.agent_instance_id,
+                    &identity.agent_type_name,
+                    None,
+                ),
+            ))
+        }
+        Ok(_) | Err(temper_server::identity::IdentityError::Invalid) => {
+            Err(StatusCode::UNAUTHORIZED)
+        }
+        Err(temper_server::identity::IdentityError::Unavailable(reason)) => {
+            tracing::warn!(
+                reason,
+                "operator credential check unavailable; failing closed"
+            );
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+    }
+}
+
+/// The caller an internal capability was issued for, consumed for this exact
+/// request the way the kernel's edge consumes one on its own routes. A WASM
+/// module's call acts for whoever caused its transition, so a handler that
+/// dispatches on that call acts for the same caller.
+fn internal_caller(
+    state: &AuthState,
+    request: &Request<Body>,
+    token: &str,
+) -> Result<AuthenticatedRequestContext, StatusCode> {
+    let tenant = header_value(request.headers(), "x-tenant-id")
+        .map(|tenant| tenant.trim().to_string())
+        .filter(|tenant| !tenant.is_empty())
+        .unwrap_or_else(|| state.tenant().to_string());
+    state
+        .server
+        .internal_invocation_credentials
+        .consume_for_request(
+            token,
+            &TenantId::new(&tenant),
+            request.method(),
+            request.uri(),
+        )
+        .map_err(|error| {
+            tracing::warn!(
+                %error,
+                path = %request.uri().path(),
+                "internal capability refused on a TemperPaw route"
+            );
+            StatusCode::UNAUTHORIZED
+        })
 }
 
 fn is_public_path(method: &str, path: &str) -> bool {
@@ -507,7 +803,7 @@ async fn load_accounts(state: &AuthState) -> Result<BTreeMap<String, LocalAccoun
 
 async fn save_accounts(state: &AuthState, accounts: &BTreeMap<String, LocalAccount>) -> Result<()> {
     let payload = serde_json::to_string(accounts).context("Failed to encode auth accounts")?;
-    let _ = state
+    state
         .vault
         .cache_secret(state.tenant(), ACCOUNTS_SECRET_KEY, payload.clone());
 
@@ -619,18 +915,21 @@ enum AuthError {
 #[cfg(test)]
 mod tests {
     use axum::body::{Body, to_bytes};
+    use axum::extract::Extension;
     use axum::http::HeaderMap;
     use axum::http::{Request, StatusCode};
     use axum::middleware::from_fn_with_state;
-    use axum::response::IntoResponse;
+    use axum::response::{IntoResponse, Response};
     use axum::routing::get;
     use axum::{Json, Router};
     use serde_json::json;
+    use temper_authz::AuthenticatedRequestContext;
+    use temper_runtime::tenant::TenantId;
     use tower::ServiceExt;
 
     use super::{
-        AuthState, claims_from_headers, is_public_path, issue_session_cookie_value, middleware,
-        router,
+        AuthState, HttpEndpointTables, claims_from_headers, is_public_path,
+        issue_session_cookie_value, layer, middleware, router,
     };
 
     #[test]
@@ -639,6 +938,555 @@ mod tests {
             is_public_path("POST", "/triggers/webhook/patrol-datadog"),
             "external webhook providers cannot send Temper bearer auth"
         );
+    }
+
+    /// One HttpEndpoint row projected the way the kernel's reconciler does it.
+    fn endpoint_route(
+        id: &str,
+        path_prefix: &str,
+        methods: &str,
+        requires_auth: bool,
+    ) -> temper_server::http_endpoint::HttpEndpointRoute {
+        temper_server::http_endpoint::route_from_entity_fields(
+            id,
+            &json!({
+                "PathPrefix": path_prefix,
+                "Methods": methods,
+                "IntegrationModule": "hooks",
+                "RequiresAuth": requires_auth,
+                "TimeoutSecs": 30,
+            }),
+        )
+        .expect("endpoint row projects")
+    }
+
+    /// Public and private rows in the deployment's tenant, plus public rows
+    /// over TemperPaw's own `/paw` and `/dashboard` paths in it and over
+    /// `/paw` in another tenant.
+    async fn install_routes(tables: &HttpEndpointTables) {
+        tables
+            .table_for(&TenantId::new("default"))
+            .await
+            .replace(vec![
+                endpoint_route("he-hook", "/app/hooks/provider", "POST", false),
+                endpoint_route("he-private", "/app/private", "POST", true),
+                endpoint_route("he-paw", "/paw", "GET,POST", false),
+                endpoint_route("he-dashboard", "/dashboard", "GET", false),
+            ])
+            .await;
+        tables
+            .table_for(&TenantId::new("other"))
+            .await
+            .replace(vec![endpoint_route(
+                "he-paw-other",
+                "/paw",
+                "GET,POST",
+                false,
+            )])
+            .await;
+    }
+
+    /// Stands for TemperPaw's own routes, merged beside the kernel's router
+    /// and outside its bearer edge, as `startup.rs` does.
+    fn temperpaw_routes() -> Router {
+        Router::new().route(
+            "/paw/setup/secrets/{key}",
+            get(caller_probe).post(caller_probe),
+        )
+    }
+
+    /// What a TemperPaw handler is handed: the caller the edge attached, and
+    /// whether a bearer is left for it to forward.
+    async fn caller_probe(
+        context: Option<Extension<AuthenticatedRequestContext>>,
+        headers: HeaderMap,
+    ) -> String {
+        let caller = context.map(|Extension(context)| {
+            let principal = &context.security_context().principal;
+            format!("{:?} {}", principal.kind, principal.id)
+        });
+        format!(
+            "temperpaw handler caller={caller:?} bearer={}",
+            headers.contains_key("authorization")
+        )
+    }
+
+    async fn authority_probe(
+        context: Option<Extension<AuthenticatedRequestContext>>,
+        headers: HeaderMap,
+    ) -> String {
+        format!(
+            "context={} kind={:?} tenant={:?}",
+            context.is_some(),
+            headers.get("x-temper-principal-kind"),
+            headers.get("x-tenant-id"),
+        )
+    }
+
+    fn anonymous(method: &str, uri: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn anonymous_in(tenant: &str, method: &str, uri: &str) -> Request<Body> {
+        let mut request = anonymous(method, uri);
+        request
+            .headers_mut()
+            .insert("x-tenant-id", tenant.parse().unwrap());
+        request
+    }
+
+    /// The edge as deployed: this middleware outside the kernel's platform
+    /// router and TemperPaw's own routes, reading the kernel's tables.
+    async fn edge_with_kernel(root: &std::path::Path) -> Router {
+        let platform = temper_platform::PlatformState::new(None);
+        install_routes(&platform.server.http_endpoint_tables).await;
+        let mut state = AuthState::for_tests(root).await;
+        state.http_endpoints = platform.server.http_endpoint_tables.clone();
+        layer(
+            temper_platform::router::build_platform_router(platform).merge(temperpaw_routes()),
+            state,
+        )
+    }
+
+    /// The same edge with a probe in place of the kernel, so anything this
+    /// middleware lets through answers 200 instead of a kernel refusal.
+    async fn edge_with_probe(root: &std::path::Path) -> Router {
+        let state = AuthState::for_tests(root).await;
+        install_routes(&state.http_endpoints).await;
+        layer(temperpaw_routes().fallback(authority_probe), state)
+    }
+
+    #[tokio::test]
+    async fn anonymous_post_to_a_public_http_endpoint_reaches_the_kernel_dispatcher() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_kernel(tempdir.path()).await;
+
+        let response = app
+            .oneshot(anonymous("POST", "/app/hooks/provider"))
+            .await
+            .unwrap();
+
+        // The kernel matched the route as anonymous and went on to dispatch
+        // its WASM module, which this test never installed.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("WASM integration 'hooks' not installed"),
+            "unexpected body: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_http_endpoint_gets_no_authority_from_temperpaw() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_probe(tempdir.path()).await;
+
+        let response = app
+            .oneshot(anonymous("POST", "/app/hooks/provider"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            "context=false kind=None tenant=Some(\"default\")"
+        );
+    }
+
+    #[tokio::test]
+    async fn anonymous_requests_elsewhere_still_need_a_credential() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_probe(tempdir.path()).await;
+
+        let secret = "/paw/setup/secrets/temper_api_key";
+        let cases = [
+            (
+                "GET on the public route",
+                anonymous("GET", "/app/hooks/provider"),
+            ),
+            ("a RequiresAuth route", anonymous("POST", "/app/private")),
+            (
+                "a longer segment",
+                anonymous("POST", "/app/hooks/provider-x"),
+            ),
+            ("a parent path", anonymous("POST", "/app/hooks")),
+            ("an unrouted path", anonymous("POST", "/somewhere/else")),
+            (
+                "a tenant without the route",
+                anonymous_in("other", "POST", "/app/hooks/provider"),
+            ),
+            (
+                "a TemperPaw route under a public row",
+                anonymous("GET", secret),
+            ),
+            (
+                "a TemperPaw route under another tenant's public row",
+                anonymous_in("other", "GET", secret),
+            ),
+        ];
+        for (case, request) in cases {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+        }
+
+        // The dashboard is a nested service, which axum gives no MatchedPath:
+        // its login redirect has to keep coming before endpoint admission.
+        let response = app
+            .oneshot(anonymous("GET", "/dashboard/settings"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    }
+
+    /// The probe edge over a kernel state holding an operator credential for
+    /// `api_key` in the default tenant, and that kernel state.
+    async fn edge_with_operator(
+        root: &std::path::Path,
+        api_key: &str,
+    ) -> (Router, temper_server::ServerState) {
+        let platform = temper_platform::PlatformState::new(None);
+        temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
+            .await
+            .unwrap();
+        temper_platform::bootstrap::bootstrap_operator_credential(&platform, api_key, "default")
+            .await
+            .unwrap();
+        issue_credential(&platform, "worker", WORKER_KEY).await;
+        let mut state = AuthState::for_tests(root).await;
+        state.server = platform.server.clone();
+        (
+            layer(temperpaw_routes().fallback(authority_probe), state),
+            platform.server.clone(),
+        )
+    }
+
+    /// A capability the kernel's WASM host would present for a module of a
+    /// move `caller_id` made, bound to `method` and `url`.
+    fn kernel_capability(
+        server: &temper_server::ServerState,
+        caller_id: &str,
+        method: &str,
+        url: &str,
+    ) -> String {
+        let mut security_context = temper_authz::SecurityContext::anonymous();
+        security_context.principal = temper_authz::Principal {
+            id: caller_id.to_string(),
+            kind: temper_authz::PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            label: None,
+            attributes: Default::default(),
+        };
+        server
+            .internal_invocation_credentials
+            .issue_for_url(
+                AuthenticatedRequestContext::new(TenantId::new("default"), security_context),
+                method,
+                url,
+            )
+            .unwrap()
+    }
+
+    /// An active credential for `key`, of a new agent type named `name`, made
+    /// the way the kernel bootstraps the operator's.
+    async fn issue_credential(platform: &temper_platform::PlatformState, name: &str, key: &str) {
+        let tenant = TenantId::new("default");
+        let ctx = temper_server::request_context::AgentContext::for_service("edge-test");
+        let type_id = format!("{name}-type");
+        platform
+            .server
+            .dispatch_tenant_action(
+                &tenant,
+                "AgentType",
+                &type_id,
+                "Define",
+                json!({
+                    "name": name, "system_prompt": "test", "tool_set": "local", "model": "none",
+                    "max_turns": "0", "adapter_config": "{}", "default_budget_cents": "0"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let key_hash = temper_server::identity::hash_token(key);
+        platform
+            .server
+            .dispatch_tenant_action(
+                &tenant,
+                "AgentCredential",
+                &key_hash,
+                "Issue",
+                json!({
+                    "agent_type_id": type_id, "agent_instance_id": name, "key_hash": key_hash,
+                    "key_prefix": &key[..8], "description": "edge test", "created_by": "test",
+                    "expires_at": ""
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// `request` as it arrives over a connection from `peer`.
+    fn from_peer(mut request: Request<Body>, peer: [u8; 4]) -> Request<Body> {
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                peer, 40_000,
+            ))));
+        request
+    }
+
+    fn with_header(mut request: Request<Body>, name: &'static str, value: &str) -> Request<Body> {
+        request.headers_mut().insert(name, value.parse().unwrap());
+        request
+    }
+
+    fn claiming_admin(request: Request<Body>) -> Request<Body> {
+        with_header(
+            with_header(request, "x-temper-principal-id", "someone"),
+            "x-temper-principal-kind",
+            "admin",
+        )
+    }
+
+    async fn body_text(response: Response) -> String {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8_lossy(&body).to_string()
+    }
+
+    const SECRET: &str = "/paw/setup/secrets/temper_api_key";
+    const OPERATOR_KEY: &str = "operator-key-for-the-edge-test";
+    const WORKER_KEY: &str = "worker-key-for-the-edge-test";
+
+    #[tokio::test]
+    async fn principal_headers_from_another_host_open_nothing() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+
+        for (case, request) in [
+            (
+                "a TemperPaw route",
+                claiming_admin(from_peer(anonymous("GET", SECRET), [10, 0, 0, 7])),
+            ),
+            (
+                "a kernel route",
+                claiming_admin(from_peer(anonymous("GET", "/tdata/Agents"), [10, 0, 0, 7])),
+            ),
+            (
+                "a TemperPaw route, no peer",
+                claiming_admin(anonymous("GET", SECRET)),
+            ),
+        ] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+        }
+
+        // With a bearer the kernel resolves, the forged headers are gone before
+        // anything downstream reads them.
+        let request = with_header(
+            claiming_admin(from_peer(anonymous("GET", "/tdata/Agents"), [10, 0, 0, 7])),
+            "authorization",
+            "Bearer anything",
+        );
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(response).await,
+            "context=false kind=None tenant=Some(\"default\")"
+        );
+    }
+
+    #[tokio::test]
+    async fn temperpaw_routes_take_only_the_operator_bearer() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let remote = |request| from_peer(request, [10, 0, 0, 7]);
+
+        for (case, token) in [
+            ("a made-up bearer", "not-a-real-token"),
+            (
+                "an internal capability from outside",
+                "temper-internal-v1.0000",
+            ),
+            ("an empty bearer", ""),
+        ] {
+            let request = with_header(
+                remote(anonymous("GET", SECRET)),
+                "authorization",
+                &format!("Bearer {token}"),
+            );
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+        }
+        // A real credential of another agent type is not the operator.
+        let request = with_header(
+            remote(anonymous("GET", SECRET)),
+            "authorization",
+            &format!("Bearer {WORKER_KEY}"),
+        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "another agent's credential"
+        );
+
+        let request = with_header(
+            remote(anonymous("GET", SECRET)),
+            "authorization",
+            &format!("Bearer {OPERATOR_KEY}"),
+        );
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // The handler acts for the operator and may forward its credential.
+        let body = body_text(response).await;
+        assert!(
+            body.starts_with("temperpaw handler caller=Some(\"Agent ")
+                && body.ends_with("bearer=true"),
+            "unexpected body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_kernel_capability_opens_its_one_request_as_its_caller() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (app, server) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let local = |request| from_peer(request, [127, 0, 0, 1]);
+        let module_call = |method: &str, token: &str| {
+            with_header(
+                with_header(local(anonymous(method, SECRET)), "x-tenant-id", "default"),
+                "authorization",
+                &format!("Bearer {token}"),
+            )
+        };
+        let url = format!("http://127.0.0.1:8080{SECRET}");
+
+        // A module's call back into TemperPaw, as the kernel's WASM host makes
+        // it: the capability alone. Its handler acts for the move's caller and
+        // has no bearer left to forward.
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(response).await,
+            "temperpaw handler caller=Some(\"Admin dashboard-person\") bearer=false"
+        );
+
+        // It opens nothing a second time.
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "replayed");
+
+        // Nor any request it was not issued for, nor from another host.
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
+        let response = app
+            .clone()
+            .oneshot(module_call("POST", &token))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "another method"
+        );
+        let token = kernel_capability(&server, "dashboard-person", "GET", &url);
+        let request = with_header(
+            from_peer(anonymous("GET", SECRET), [10, 0, 0, 7]),
+            "authorization",
+            &format!("Bearer {token}"),
+        );
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "from another host"
+        );
+
+        // A made-up capability opens nothing, with or without principal
+        // headers beside it.
+        let response = app
+            .clone()
+            .oneshot(module_call("GET", "temper-internal-v1.0000"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "made up");
+        let response = app
+            .oneshot(claiming_admin(module_call(
+                "GET",
+                "temper-internal-v1.0000",
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "made up, with principal headers"
+        );
+    }
+
+    #[tokio::test]
+    async fn loopback_clients_still_name_themselves() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (app, _) = edge_with_operator(tempdir.path(), OPERATOR_KEY).await;
+        let local = |request| from_peer(request, [127, 0, 0, 1]);
+
+        // A request a local proxy relayed (a tunnel) is not a local call.
+        let relayed = with_header(
+            claiming_admin(local(anonymous("GET", SECRET))),
+            "x-forwarded-for",
+            "203.0.113.9",
+        );
+        let response = app.clone().oneshot(relayed).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "relayed by a tunnel"
+        );
+
+        // TemperPaw's own clients: principal headers alone.
+        let response = app
+            .clone()
+            .oneshot(claiming_admin(local(anonymous("GET", SECRET))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app
+            .oneshot(claiming_admin(local(anonymous("GET", "/tdata/Agents"))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(response).await,
+            "context=true kind=Some(\"admin\") tenant=Some(\"default\")"
+        );
+    }
+
+    #[tokio::test]
+    async fn temperpaw_routes_stay_closed_beside_the_kernel() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let app = edge_with_kernel(tempdir.path()).await;
+
+        for request in [
+            anonymous("GET", "/paw/setup/secrets/temper_api_key"),
+            anonymous_in("other", "GET", "/paw/setup/secrets/temper_api_key"),
+        ] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[tokio::test]

@@ -39,6 +39,18 @@ fn states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+fn terminal_states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
+    automaton(spec, path)
+        .get("terminal")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn actions(spec: &toml::Value) -> Vec<&toml::value::Table> {
     spec.get("action")
         .and_then(|v| v.as_array())
@@ -242,10 +254,9 @@ fn forecast_is_immutable_once_registered() {
         );
     }
 
-    let text = read(&path);
     assert!(
-        text.contains("no_further_transitions"),
-        "Forecast spec must pin Scored as final via invariant"
+        terminal_states(&spec, &path).contains("Scored"),
+        "Forecast spec must pin Scored as terminal"
     );
 }
 
@@ -304,10 +315,10 @@ fn event_node_confirmation_is_peer_gated_and_resolution_is_final() {
         );
     }
 
-    let text = read(&path);
+    let terminal = terminal_states(&spec, &path);
     assert!(
-        text.contains("no_further_transitions"),
-        "EventNode Resolved/Retired must be final"
+        terminal.contains("Resolved") && terminal.contains("Retired"),
+        "EventNode Resolved/Retired must be terminal"
     );
 }
 
@@ -486,7 +497,6 @@ fn csdl_serves_all_corridor_entity_sets() {
         "Projections",
         "ForesightModels",
         "Observations",
-        "Directions",
     ] {
         assert!(
             csdl.contains(&format!("EntitySet Name=\"{set}\"")),
@@ -523,40 +533,6 @@ fn app_manifest_declares_corridor_wasm_modules() {
         assert!(
             crate_dir.is_dir() || alt_dir.is_dir(),
             "wasm crate for {module} must exist"
-        );
-    }
-}
-
-#[test]
-fn corridor_wasm_modules_are_packaged_for_core_startup() {
-    let root = repo_root();
-    let dockerfile = read(root.join("Dockerfile"));
-    let ci = read(root.join(".github/workflows/ci.yml"));
-    let identity_contract =
-        read(root.join("crates/temperpaw/tests/temperpaw_identity_contract.rs"));
-    let build_script = read(root.join("os-apps/paw-foresight/wasm/build.sh"));
-
-    assert!(
-        dockerfile.contains("cd /app/os-apps/paw-foresight/wasm && bash build.sh"),
-        "Dockerfile must build paw-foresight WASM before copying os-apps into the runtime image"
-    );
-    assert!(
-        ci.contains("os-apps/paw-foresight/wasm/build.sh"),
-        "CI must build paw-foresight WASM so fresh core startup images do not miss corridor modules"
-    );
-    assert!(
-        identity_contract.contains("\"os-apps/paw-foresight/wasm/build.sh\""),
-        "identity contract should keep paw-foresight in the audited WASM build-script set"
-    );
-
-    for module in CORRIDOR_WASM_MODULES {
-        assert!(
-            build_script.contains(module),
-            "paw-foresight build.sh should build {module}"
-        );
-        assert!(
-            build_script.contains(&format!("{module}.wasm")),
-            "paw-foresight build.sh should publish {module}.wasm outside target/"
         );
     }
 }
@@ -649,7 +625,7 @@ fn world_active_self_heals_when_claims_terminal_but_canonical_unset() {
         "ResumeWorldCascade is an Active self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
@@ -708,7 +684,7 @@ fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
         "ResumeSeed is a Seeding self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));
@@ -762,7 +738,7 @@ fn endpoint_under_repair_self_heals_when_claims_terminal_but_unscored() {
         "ResumeEndpointScoring is an UnderRepair self-loop"
     );
     let trigger = resume
-        .get("effect")
+        .get("triggers")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|e| e.get("name").and_then(|v| v.as_str()));

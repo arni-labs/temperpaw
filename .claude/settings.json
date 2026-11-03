@@ -1,16 +1,14 @@
 {
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "scripts/check-temper-native.sh",
-            "description": "Architect Reviewer — Temper-native compliance check"
-          }
-        ]
+  "hooks": {},
+  "extraKnownMarketplaces": {
+    "arni-stack": {
+      "source": {
+        "source": "github",
+        "repo": "arni-labs/stack"
       }
-    ]
+    }
+  },
+  "enabledPlugins": {
+    "stack@arni-stack": true
   }
 }

@@ -14,6 +14,7 @@ initial = "Active"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active"]
+terminal = ["Archived"]
 
 [[state]]
 name = "key"
@@ -71,8 +72,3 @@ name = "Recall"
 kind = "input"
 from = ["Active"]
 hint = "Read-only recall action for audit trail. No state mutation."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

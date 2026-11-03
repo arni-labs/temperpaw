@@ -1,0 +1,9 @@
+# DSF twin
+
+This app is a live model of Deep Sci-fi: its infrastructure, application flows and participants. All changes to DSF go through this model. The factory is the surrounding lifecycle: Intent, Effort and Ask, computers and Foundry. Model and operate Deep Sci-fi through its resource owners. Railway service instances, Vercel projects, Supabase projects, Cloudflare R2 buckets, Datadog monitors and the media pipeline have separate types. Discover each row's declared actions before changing it. An accepted action keeps its operation key, sequence, requested configuration and proof together until verification completes or reconciliation establishes the result.
+
+Resources collect provider facts into immutable observations. Flow and Participant describe the application and its users; registered `dsf-factory` agents maintain these models with observation provenance and current compare-and-set sequences. ModelSync collects code, flow, participant and telemetry evidence. An inaccessible source is an evidence gap, not a healthy resource or confirmed absence.
+
+The optional resident `paw-codex-worker` investigates material observation changes through PatrolRun and WorkerRun. It preserves the source observation, uses deterministic run IDs, and asks a subscription-authenticated agent to distinguish expected changes, model maintenance and actionable drift. Ordinary repair work uses Intent, Effort and Ask. The original setup Effort is not kept open as an operations queue.
+
+Provider writes belong to the typed resource actions. Native callbacks and provider observation projection belong to runtime principals. Agents must not fabricate success callbacks or overwrite observed facts with desired configuration. See [README.md](README.md) for installation, evidence and verification details, and [specs/module-contracts.json](specs/module-contracts.json) for the generated action contract.

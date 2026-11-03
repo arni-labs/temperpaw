@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - release
   release:
     types: [published]
   workflow_dispatch:
@@ -62,14 +63,121 @@ jobs:
             org.opencontainers.image.title=TemperPaw
             org.opencontainers.image.description=TemperPaw - Agent daemon built on Temper platform
 
+      # The Dockerfile's layers and its cargo cache mounts live between runs. Layers: a commit that leaves the server's
+      # sources alone reuses its layer whole, and the same for the os-app modules and the dashboard. Mounts: a commit
+      # that changes them recompiles its crates, not their dependencies. The key changes when a lock file does, so the
+      # 10 GB Actions cache gets one new copy per lock change rather than one per commit; a new key starts from the latest.
+      - uses: docker/setup-buildx-action@v3
+        id: buildx
+
+      - name: Cargo caches
+        id: cargo-caches
+        uses: actions/cache@v4
+        with:
+          path: docker-cargo
+          key: docker-cargo-${{ hashFiles('Cargo.lock', 'os-apps/**/Cargo.lock') }}
+          restore-keys: docker-cargo-
+
+      - name: Put the cargo caches in the build's mounts
+        uses: reproducible-containers/buildkit-cache-dance@2925f5cfd92896e0f5a155899ff2ed2922b575c6 # v3.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          cache-map: |
+            {
+              "docker-cargo/server-target": { "target": "/cache/target", "id": "server-target" },
+              "docker-cargo/wasm-target": { "target": "/cache/target", "id": "wasm-target" },
+              "docker-cargo/server-registry": { "target": "/usr/local/cargo/registry", "id": "server-registry" },
+              "docker-cargo/server-git": { "target": "/usr/local/cargo/git", "id": "server-git" },
+              "docker-cargo/wasm-registry": { "target": "/usr/local/cargo/registry", "id": "wasm-registry" },
+              "docker-cargo/wasm-git": { "target": "/usr/local/cargo/git", "id": "wasm-git" }
+            }
+          skip-extraction: ${{ steps.cargo-caches.outputs.cache-hit }}
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          cache-from: type=gha,scope=docker
+          cache-to: type=gha,scope=docker,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.version }}
             BUILD_SHA=${{ github.sha }}
+
+  # Deterministic production deploy. Fires only for the release branch, after the
+  # image is built and pushed. Deploys the built image, verifies the live service
+  # reports this commit, and auto-rolls-back to the last-good image on failure.
+  # Deploy/verify/rollback logic lives in arni-labs/stack (deploy/), cloned here.
+  deploy:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-temperpaw-production
+      cancel-in-progress: false
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID || vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID || vars.RAILWAY_SERVICE_ID }}
+      TEMPER_API_KEY: ${{ secrets.TEMPER_API_KEY }}
+      BASE_URL: ${{ secrets.TEMPERPAW_BASE_URL || vars.TEMPERPAW_BASE_URL }}
+      STACK_TOKEN: ${{ secrets.STACK_TOKEN }}
+    steps:
+      - name: Validate secrets
+        run: |
+          set -euo pipefail
+          for v in RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL STACK_TOKEN TEMPER_API_KEY; do
+            if [ -z "${!v:-}" ]; then echo "missing required secret/var: $v" >&2; exit 65; fi
+          done
+
+      - name: Only the release head deploys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # an older commit's run finishing late must not clobber a newer deploy:
+          # deploy only if this run's sha is still the branch head
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/release" -q .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "release has moved to ${head:0:9}; skipping deploy of ${GITHUB_SHA:0:9}"
+            echo "SKIP_DEPLOY=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Clone stack (deploy driver)
+        if: env.SKIP_DEPLOY != '1'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${STACK_TOKEN}@github.com/arni-labs/stack.git" /tmp/stack
+
+      - name: Resolve image tag and expected sha
+        if: env.SKIP_DEPLOY != '1'
+        id: r
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA}"
+          echo "expected_sha=${sha}" >> "$GITHUB_OUTPUT"
+          # must match docker/metadata-action `type=sha` above (7-char, sha- prefix)
+          echo "image_tag=sha-${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy, verify, rollback on failure
+        if: env.SKIP_DEPLOY != '1'
+        env:
+          NEW_IMAGE_TAG: ${{ steps.r.outputs.image_tag }}
+          EXPECTED_SHA: ${{ steps.r.outputs.expected_sha }}
+          POLL_ATTEMPTS: "60"
+          POLL_SECONDS: "10"
+          # /healthz + the /paw/version identity check. /readyz is core readiness
+          # since ADR-0066, but a rollback target built before it still answers
+          # 503 there on a degraded Discord (ARN-432), so keep /healthz until
+          # every rollback candidate has the new /readyz.
+          READY_PATH: /healthz
+        run: bash /tmp/stack/deploy/railway-deploy-verify-rollback.sh

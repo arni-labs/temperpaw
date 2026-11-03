@@ -68,7 +68,6 @@ name = "Accept"
 kind = "input"
 from = ["Open"]
 to = "Accepted"
-effect = [{ type = "trigger", name = "security_finding_accepted" }]
 hint = "Accept this finding as actionable security work."
 
 [[action.triggers]]
@@ -125,16 +124,16 @@ hint = "Waive with explicit rationale."
 state = "Open"
 after_seconds = 604800
 on_timeout = "Escalate"
-params = { resolution_summary = "SecurityFinding stayed Open for 7d without triage." }
+args = { resolution_summary = "'SecurityFinding stayed Open for 7d without triage.'" }
 
 [[state_timeout]]
 state = "Accepted"
 after_seconds = 604800
 on_timeout = "Escalate"
-params = { resolution_summary = "SecurityFinding stayed Accepted for 7d without work." }
+args = { resolution_summary = "'SecurityFinding stayed Accepted for 7d without work.'" }
 
 [[state_timeout]]
 state = "InProgress"
 after_seconds = 604800
 on_timeout = "Escalate"
-params = { resolution_summary = "SecurityFinding stayed InProgress for 7d." }
+args = { resolution_summary = "'SecurityFinding stayed InProgress for 7d.'" }

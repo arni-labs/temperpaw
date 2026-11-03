@@ -12,10 +12,9 @@
 
 use openai_chat_wire::{
     ChatCompletionStreamAccumulator, ChatStreamDelta, ChatStreamParseFailure,
-    build_chat_completion_body, convert_messages_to_chat, parse_headers_json,
+    build_chat_completion_body, convert_messages_to_chat, event_token_signals,
+    merge_token_signals, parse_headers_json, synthetic_tool_call_id,
 };
-#[cfg(test)]
-use openai_codex_wire::base64_url_no_pad;
 use openai_codex_wire::{
     build_openai_headers, extract_chatgpt_account_id_from_jwt, is_openai_codex_token_expired_error,
     select_openai_responses_url,
@@ -69,6 +68,8 @@ struct LlmResponse {
     cache_creation_input_tokens: i64,
     request_bytes: usize,
     response_bytes: usize,
+    /// Token-level RL signals the serving stack returned, when it returned any.
+    token_signals: Option<Value>,
 }
 
 fn normalize_provider(provider: &str) -> String {
@@ -409,6 +410,8 @@ struct ParsedProviderStream {
     response_bytes: usize,
     semantic_deltas: Vec<LlmStreamDelta>,
     completed: bool,
+    /// Token-level RL signals the serving stack streamed, when it streamed any.
+    token_signals: Option<Value>,
 }
 
 impl ParsedProviderStream {
@@ -422,6 +425,7 @@ impl ParsedProviderStream {
             cache_creation_input_tokens: self.cache_creation_input_tokens,
             request_bytes,
             response_bytes: self.response_bytes,
+            token_signals: self.token_signals,
         }
     }
 }
@@ -555,6 +559,7 @@ struct OpenAiStreamAccumulator {
     streamed_text: String,
     saw_completed: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
+    token_signals: Option<Value>,
 }
 
 impl OpenAiStreamAccumulator {
@@ -618,6 +623,12 @@ impl OpenAiStreamAccumulator {
             "response.completed" => {
                 self.saw_completed = true;
                 if let Some(resp) = event.get("response") {
+                    // One event contributes each signal once — the response is
+                    // the content level, `response.usage` the accounting one.
+                    // See `event_token_signals`.
+                    if let Some(source) = event_token_signals(resp.get("usage"), Some(resp)) {
+                        merge_token_signals(&mut self.token_signals, &source);
+                    }
                     if let Some(usage) = resp.get("usage") {
                         self.usage = usage.clone();
                     }
@@ -685,6 +696,7 @@ impl OpenAiStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            token_signals: self.token_signals,
         })
     }
 }
@@ -1001,6 +1013,8 @@ impl AnthropicStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            // The Anthropic Messages stream carries no token ids or logprobs.
+            token_signals: None,
         })
     }
 }
@@ -1016,6 +1030,18 @@ fn parse_anthropic_stream_events(
     }
     acc.finalize(response_bytes)
 }
+
+// The OpenRouter-specific path below is NOT the live one. `call_provider`
+// dispatches "openrouter" to `call_openai_compatible_chat`, which uses the
+// shared `openai_chat_wire` conversions and accumulator. Everything from here
+// to `convert_tools_to_openrouter` is unreachable — the compiler says so on
+// every build ("never used" / "never constructed"), and those warnings are left
+// standing deliberately rather than silenced with `#[allow(dead_code)]`.
+//
+// It is kept, not deleted, because whether this copy has a future is
+// nerdsane/temperpaw#459's call, not this branch's. It is still maintained to
+// the same invariants — a reader who mistakes it for the live path must not
+// find a stale rule in it.
 
 #[derive(Default)]
 struct OpenRouterToolCallAccum {
@@ -1033,6 +1059,8 @@ struct OpenRouterStreamAccumulator {
     output_tokens: i64,
     saw_done: bool,
     semantic_deltas: Vec<LlmStreamDelta>,
+    token_signals: Option<Value>,
+    response_id: String,
 }
 
 impl OpenRouterStreamAccumulator {
@@ -1050,6 +1078,13 @@ impl OpenRouterStreamAccumulator {
         })?;
         let mut deltas = Vec::new();
 
+        if self.response_id.is_empty()
+            && let Some(id) = event.get("id").and_then(Value::as_str)
+            && !id.is_empty()
+        {
+            self.response_id = id.to_string();
+        }
+
         if let Some(usage) = event.get("usage") {
             self.input_tokens = usage
                 .get("prompt_tokens")
@@ -1061,6 +1096,17 @@ impl OpenRouterStreamAccumulator {
                 .and_then(Value::as_i64)
                 .or_else(|| usage.get("output_tokens").and_then(Value::as_i64))
                 .unwrap_or(self.output_tokens);
+        }
+
+        // One event contributes each signal once — see `event_token_signals`.
+        if let Some(source) = event_token_signals(
+            event.get("usage"),
+            event
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first()),
+        ) {
+            merge_token_signals(&mut self.token_signals, &source);
         }
 
         if let Some(choice) = event
@@ -1145,7 +1191,11 @@ impl OpenRouterStreamAccumulator {
             };
             content.push(json!({
                 "type": "tool_use",
-                "id": if tool_call.id.is_empty() { format!("or_tool_{}", idx + 1) } else { tool_call.id.clone() },
+                "id": if tool_call.id.is_empty() {
+                    synthetic_tool_call_id(&self.response_id, "or_tool", idx + 1)
+                } else {
+                    tool_call.id.clone()
+                },
                 "name": if tool_call.name.is_empty() { "unknown_tool".to_string() } else { tool_call.name.clone() },
                 "input": input,
             }));
@@ -1165,6 +1215,7 @@ impl OpenRouterStreamAccumulator {
             response_bytes,
             semantic_deltas: self.semantic_deltas,
             completed: true,
+            token_signals: self.token_signals,
         })
     }
 }
@@ -2438,9 +2489,12 @@ fn call_openai_compatible_chat(
         cache_creation_input_tokens: 0,
         request_bytes: body_str.len(),
         response_bytes: parsed.response_bytes,
+        token_signals: parsed.token_signals,
     })
 }
 
+/// Unreachable: `call_provider` sends "openrouter" to
+/// `call_openai_compatible_chat`. See the note above `OpenRouterToolCallAccum`.
 fn call_openrouter(
     ctx: &Context,
     temper_api_url: &str,
@@ -2967,6 +3021,21 @@ fn build_openai_responses_input(messages: &[Value]) -> OpenAiResponsesInput {
 ///
 /// Uses the Responses API format (not Chat Completions): instructions, input, stream=true.
 /// The WASM http_call buffers the full SSE stream — we parse the response.completed event.
+fn reasoning_effort_from_options(provider_options_json: &str) -> &'static str {
+    let parsed: Option<Value> = serde_json::from_str(provider_options_json).ok();
+    match parsed
+        .as_ref()
+        .and_then(|v| v.get("reasoning_effort"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+    {
+        "minimal" => "minimal",
+        "low" => "low",
+        "high" => "high",
+        _ => "medium",
+    }
+}
+
 fn call_openai(
     ctx: &Context,
     temper_api_url: &str,
@@ -2980,6 +3049,7 @@ fn call_openai(
     tools: &[Value],
     temperature: f64,
     provider: &str,
+    provider_options_json: &str,
 ) -> Result<LlmResponse, String> {
     // Convert Anthropic-format messages to Responses API input format
     let pre_convert_types: Vec<String> = messages
@@ -3046,7 +3116,9 @@ fn call_openai(
         "stream": true,
         "store": false,
         "reasoning": {
-            "effort": "medium",
+            // Session-configurable via provider_options_json
+            // {"reasoning_effort": ...}; "medium" preserves prior behavior.
+            "effort": reasoning_effort_from_options(provider_options_json),
             "summary": "auto",
         },
     });
@@ -3470,6 +3542,7 @@ fn build_mock_step_response(
             cache_creation_input_tokens: 0,
             request_bytes: 0,
             response_bytes: serialized_content.len(),
+            token_signals: None,
         });
     }
 
@@ -3498,6 +3571,7 @@ fn mock_text_response(messages: &[Value], text: String) -> LlmResponse {
         cache_creation_input_tokens: 0,
         request_bytes: 0,
         response_bytes: text.len(),
+        token_signals: None,
     }
 }
 
@@ -3574,9 +3648,12 @@ fn extract_memory_keys(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Unreachable, and kept in step with the live `convert_messages_to_chat`
+/// anyway: the fallback tool-call id is scoped per message, because a reader
+/// who mistakes this for the live path must not find the unscoped rule here.
 fn convert_messages_to_openrouter(messages: &[Value]) -> Vec<Value> {
     let mut out = Vec::<Value>::new();
-    for msg in messages {
+    for (message_index, msg) in messages.iter().enumerate() {
         let role = msg.get("role").and_then(Value::as_str).unwrap_or("user");
         let content = msg.get("content").cloned().unwrap_or(json!(""));
 
@@ -3603,7 +3680,19 @@ fn convert_messages_to_openrouter(messages: &[Value]) -> Vec<Value> {
                                     .get("id")
                                     .and_then(Value::as_str)
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("tool_{}", idx + 1));
+                                    .unwrap_or_else(|| {
+                                        // Position within the message is not
+                                        // unique across a conversation; scope
+                                        // it so two id-less assistant turns
+                                        // cannot send the provider the same
+                                        // call id, which would collapse two
+                                        // decisions into one (ADR-0035 §14).
+                                        synthetic_tool_call_id(
+                                            &format!("msg{message_index}"),
+                                            "tool",
+                                            idx + 1,
+                                        )
+                                    });
                                 let name = block
                                     .get("name")
                                     .and_then(Value::as_str)
@@ -3954,6 +4043,7 @@ pub fn run_provider_caller() -> Result<(), String> {
                 &prepared.tools,
                 temperature,
                 &provider,
+                &provider_options_json,
             ),
             other => Err(format!("unsupported LLM provider: {other}")),
         },
@@ -4018,6 +4108,7 @@ pub fn run_provider_caller() -> Result<(), String> {
         cache_creation_input_tokens: response.cache_creation_input_tokens,
         request_bytes: response.request_bytes,
         response_bytes: response.response_bytes,
+        token_signals: response.token_signals,
     };
     let artifact_json = serde_json::to_string(&artifact)
         .map_err(|e| format!("provider response artifact serialize: {e}"))?;
@@ -4237,493 +4328,33 @@ fn check_phase_budget(
 mod tests {
     use super::*;
 
+    /// The dead OpenRouter conversion is kept in step with the live one. This
+    /// exact line regressed once already — a rebase restored a copy predating
+    /// the fix — so the invariant is pinned here rather than trusted to the
+    /// code being unreachable today. Position within a message is not unique
+    /// across a conversation: two id-less assistant turns would otherwise send
+    /// the provider the same call id, and the emitter would collapse two
+    /// decisions into one (ADR-0035 section 14).
     #[test]
-    fn provider_progress_wrapper_emits_start_and_end_on_success() {
-        let mut events = Vec::new();
-
-        let result = run_with_provider_progress(|event| events.push(event), || Ok::<_, String>(42));
-
-        assert_eq!(result, Ok(42));
-        assert_eq!(
-            events,
-            vec![
-                ProviderProgressBoundary::Start,
-                ProviderProgressBoundary::End
-            ]
-        );
-    }
-
-    #[test]
-    fn provider_progress_wrapper_emits_end_on_error() {
-        let mut events = Vec::new();
-
-        let result = run_with_provider_progress(
-            |event| events.push(event),
-            || Err::<(), _>("provider failed".to_string()),
-        );
-
-        assert_eq!(result, Err("provider failed".to_string()));
-        assert_eq!(
-            events,
-            vec![
-                ProviderProgressBoundary::Start,
-                ProviderProgressBoundary::End
-            ]
-        );
-    }
-
-    #[test]
-    fn initial_provider_heartbeat_is_opt_in_and_never_masks_mock_hang() {
-        assert!(
-            !should_send_initial_provider_heartbeat(false, false),
-            "fast provider path should not emit an eager Session.Heartbeat by default"
-        );
-        assert!(
-            should_send_initial_provider_heartbeat(false, true),
-            "operator opt-in should preserve the old eager heartbeat behavior"
-        );
-        assert!(
-            !should_send_initial_provider_heartbeat(true, true),
-            "mock hang proof path should still exercise timeout behavior without a pre-heartbeat"
-        );
-    }
-
-    #[test]
-    fn typing_indicator_is_route_aware() {
-        assert!(
-            !should_send_provider_typing_indicator("ss-direct", &json!({})),
-            "direct no-route sessions should not spend provider time on ChannelSession lookup"
-        );
-        assert!(
-            !should_send_provider_typing_indicator(
-                "ss-cli",
-                &json!({
-                    "reply_channel_id": "cli-channel",
-                    "reply_thread_id": "thread-1",
-                    "reply_channel_type": "cli"
-                })
-            ),
-            "inline CLI routes have no external typing indicator"
-        );
-        assert!(
-            !should_send_provider_typing_indicator(
-                "ss-cli-pascal",
-                &json!({
-                    "ReplyChannelId": "cli-channel",
-                    "ReplyThreadId": "thread-1",
-                    "ReplyChannelType": "CLI"
-                })
-            ),
-            "inline route detection should support projected field casing"
-        );
-        assert!(
-            !should_send_provider_typing_indicator(
-                "ss-tui",
-                &json!({
-                    "reply_channel_id": "tui-channel",
-                    "reply_thread_id": "thread-1",
-                    "reply_channel_type": "tui"
-                })
-            ),
-            "inline TUI routes have no external typing indicator"
-        );
-        assert!(
-            should_send_provider_typing_indicator(
-                "ss-discord",
-                &json!({
-                    "reply_channel_id": "discord-channel",
-                    "reply_thread_id": "thread-1",
-                    "reply_channel_type": "discord"
-                })
-            ),
-            "explicit Discord routes should preserve typing behavior"
-        );
-        assert!(
-            should_send_provider_typing_indicator(
-                "ss-legacy",
-                &json!({
-                    "reply_channel_id": "legacy-channel",
-                    "reply_thread_id": "thread-1"
-                })
-            ),
-            "legacy channel routes without a type may still be webhook-backed"
-        );
-        assert!(
-            should_send_provider_typing_indicator(
-                "ss-child",
-                &json!({
-                    "parent_session_id": "ss-parent"
-                })
-            ),
-            "parented sessions keep inherited channel typing compatibility"
-        );
-    }
-
-    #[test]
-    fn llm_attempt_start_log_includes_provider_model_attempt_and_elapsed() {
-        let msg = format_llm_attempt_start_log("anthropic", "claude-sonnet-4.6", 2, 5, 1234);
-        assert!(msg.contains("anthropic"));
-        assert!(msg.contains("attempt 2/5"));
-        assert!(msg.contains("total_elapsed_ms=1234"));
-        assert!(msg.contains("model=claude-sonnet-4.6"));
-        assert!(msg.contains("start"));
-    }
-
-    #[test]
-    fn llm_attempt_end_log_includes_http_status_and_body_len() {
-        let msg = format_llm_attempt_end_log("openrouter", 1, 850, 200, 4096);
-        assert!(msg.contains("openrouter"));
-        assert!(msg.contains("attempt 1"));
-        assert!(msg.contains("elapsed_ms=850"));
-        assert!(msg.contains("http_status=200"));
-        assert!(msg.contains("body_len=4096"));
-        assert!(msg.contains("end"));
-    }
-
-    #[test]
-    fn llm_complete_log_summarises_total_and_outcome() {
-        let msg = format_llm_complete_log("anthropic", "claude-sonnet-4.6", 3, 9500, "success");
-        assert!(msg.contains("complete"));
-        assert!(msg.contains("attempts=3"));
-        assert!(msg.contains("total_elapsed_ms=9500"));
-        assert!(msg.contains("outcome=success"));
-    }
-
-    #[test]
-    fn hang_hint_triggers_at_sixty_seconds() {
-        // Below threshold — no hint.
-        assert!(!should_emit_hang_hint(59_999));
-        // At threshold — hint fires.
-        assert!(should_emit_hang_hint(60_000));
-        // Well over threshold — hint fires.
-        assert!(should_emit_hang_hint(180_000));
-    }
-
-    #[test]
-    fn hang_hint_message_mentions_elapsed_and_provider() {
-        let msg = format_llm_hang_hint("anthropic", 1, 70_123);
-        assert!(msg.to_lowercase().contains("hang"));
-        assert!(msg.contains("anthropic"));
-        assert!(msg.contains("attempt 1"));
-        assert!(msg.contains("70123"));
-    }
-
-    #[test]
-    fn provider_auth_expired_result_is_action_routable() {
-        let body = r#"{"error":{"code":"token_expired"}}"#;
-        let err = provider_auth_expired_error(body);
-
-        assert_eq!(provider_auth_expired_reason(&err), Some(body));
-        assert_eq!(
-            provider_auth_expired_reason("regular provider failure"),
-            None
-        );
-    }
-
-    #[test]
-    fn gen_ai_prompt_attr_includes_system_and_messages() {
-        let msgs = vec![
-            json!({"role": "user", "content": "hello"}),
-            json!({"role": "assistant", "content": "hi"}),
+    fn openrouter_conversion_scopes_missing_tool_call_ids_per_message() {
+        let messages = vec![
+            json!({"role":"assistant","content":[{"type":"tool_use","name":"a","input":{}}]}),
+            json!({"role":"assistant","content":[{"type":"tool_use","name":"b","input":{}}]}),
         ];
-        let out = format_gen_ai_prompt_attr("you are helpful", &msgs);
-        let v: Value = serde_json::from_str(&out).expect("must be valid JSON");
-        assert_eq!(v["system"], "you are helpful");
-        assert_eq!(v["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(v["messages"][0]["content"], "hello");
-    }
+        let converted = convert_messages_to_openrouter(&messages);
+        let ids: Vec<&str> = converted
+            .iter()
+            .filter_map(|message| message.get("tool_calls"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|call| call["id"].as_str())
+            .collect();
 
-    #[test]
-    fn gen_ai_prompt_attr_omits_system_when_empty() {
-        let msgs = vec![json!({"role": "user", "content": "hi"})];
-        let out = format_gen_ai_prompt_attr("", &msgs);
-        let v: Value = serde_json::from_str(&out).expect("must be valid JSON");
-        assert!(v.get("system").is_none());
-        assert_eq!(v["messages"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn gen_ai_prompt_attr_truncates_on_utf8_boundary_with_suffix() {
-        // Build a huge message payload to force truncation.
-        let big = "🎉".repeat(10 * 1024); // 40 KB of 4-byte chars.
-        let msgs = vec![json!({"role": "user", "content": big})];
-        let out = format_gen_ai_prompt_attr("", &msgs);
-        assert!(out.ends_with("…[truncated]"));
-        assert!(
-            out.len() <= LLM_PROMPT_ATTR_MAX_BYTES + "…[truncated]".len(),
-            "attr length {} exceeded expected cap",
-            out.len()
+        assert_eq!(ids.len(), 2);
+        assert_ne!(
+            ids[0], ids[1],
+            "two id-less assistant turns must not share a synthetic call id"
         );
-        // Truncation must keep the prefix valid UTF-8.
-        let _ = std::str::from_utf8(out.as_bytes()).expect("must remain valid utf-8");
-    }
-
-    #[test]
-    fn gen_ai_usage_log_emits_semconv_keys() {
-        let msg = format_gen_ai_usage_log("anthropic", "claude-sonnet-4.6", 120, 480, 40, 80);
-        // Required gen_ai semconv attributes are visible as key=value pairs
-        // so DD's grok ingestion tags them on the log event.
-        assert!(msg.contains("gen_ai.system=anthropic"));
-        assert!(msg.contains("gen_ai.request.model=claude-sonnet-4.6"));
-        assert!(msg.contains("gen_ai.usage.input_tokens=120"));
-        assert!(msg.contains("gen_ai.usage.output_tokens=480"));
-        assert!(msg.contains("gen_ai.usage.cache_read_input_tokens=40"));
-        assert!(msg.contains("gen_ai.usage.cache_creation_input_tokens=80"));
-    }
-
-    #[test]
-    fn gen_ai_usage_log_includes_human_prefix() {
-        let msg = format_gen_ai_usage_log("openrouter", "anthropic/claude-sonnet-4.6", 0, 0, 0, 0);
-        assert!(msg.starts_with("session_turn: usage "));
-    }
-
-    #[test]
-    fn llm_success_span_attrs_include_datadog_output_messages() {
-        let attrs = llm_success_span_attributes(
-            "anthropic",
-            "claude-sonnet-4.6",
-            "end_turn",
-            120,
-            480,
-            40,
-            80,
-            2048,
-            &json!([
-                {"type": "text", "text": "The repair is complete."}
-            ]),
-        );
-
-        let output_messages = attrs["gen_ai.output.messages"]
-            .as_str()
-            .expect("gen_ai.output.messages should be a serialized JSON attribute");
-        let parsed: Value =
-            serde_json::from_str(output_messages).expect("output messages must be JSON");
-        assert_eq!(parsed[0]["role"], "assistant");
-        assert_eq!(parsed[0]["finish_reason"], "end_turn");
-        assert_eq!(parsed[0]["parts"][0]["content"], "The repair is complete.");
-        let legacy_completion: Value =
-            serde_json::from_str(attrs["gen_ai.completion"].as_str().unwrap())
-                .expect("legacy completion should remain JSON");
-        assert_eq!(legacy_completion[0]["type"], "text");
-        assert_eq!(legacy_completion[0]["text"], "The repair is complete.");
-    }
-
-    #[test]
-    fn llm_success_span_attrs_bound_legacy_completion() {
-        let big = "🎉".repeat(10 * 1024);
-        let attrs = llm_success_span_attributes(
-            "openai_codex",
-            "gpt-5.5",
-            "tool_use",
-            12_000,
-            4_000,
-            0,
-            0,
-            big.len(),
-            &json!([
-                {"type": "text", "text": big}
-            ]),
-        );
-
-        let completion = attrs["gen_ai.completion"]
-            .as_str()
-            .expect("legacy completion should remain a string attribute");
-        assert!(completion.ends_with("…[truncated]"));
-        assert!(
-            completion.len() <= LLM_COMPLETION_ATTR_MAX_BYTES + "…[truncated]".len(),
-            "completion attr length {} exceeded expected cap",
-            completion.len()
-        );
-        let _ = std::str::from_utf8(completion.as_bytes()).expect("must remain valid utf-8");
-    }
-
-    #[test]
-    fn llm_span_hint_headers_use_datadog_genai_semconv() {
-        let mut headers = Vec::new();
-        append_llm_span_hint_headers(
-            &mut headers,
-            "anthropic",
-            "claude-sonnet-4.6",
-            0.7,
-            LLM_MAX_TOKENS,
-            "You are precise.",
-            &[json!({"role": "user", "content": "Summarize the trace."})],
-            "session-123",
-            "/content/0/text",
-        );
-
-        let lookup = |name: &str| {
-            headers
-                .iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value.as_str())
-        };
-
-        assert_eq!(lookup("X-Temper-Span-Name"), Some("tool.llm_call"));
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-gen_ai.operation.name"),
-            Some("chat")
-        );
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-dd_llmobs_enabled"),
-            Some("false")
-        );
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-gen_ai.provider.name"),
-            Some("anthropic")
-        );
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-gen_ai.system"),
-            Some("anthropic")
-        );
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-gen_ai.request.model"),
-            Some("claude-sonnet-4.6")
-        );
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-gen_ai.conversation.id"),
-            Some("session-123")
-        );
-        assert_eq!(lookup("X-Temper-Span-Attr-session_id"), Some("session-123"));
-        assert_eq!(
-            lookup("X-Temper-Span-Attr-tool.name"),
-            Some("provider_caller")
-        );
-        assert!(lookup("X-Temper-Span-Attr-gen_ai.system_instructions").is_some());
-        assert!(lookup("X-Temper-Span-Attr-gen_ai.input.messages").is_some());
-        assert_eq!(
-            lookup("X-Temper-Span-Capture-Response-gen_ai.completion"),
-            Some("/content/0/text")
-        );
-    }
-
-    #[test]
-    fn openai_codex_uses_subscription_endpoint_not_public_responses_api() {
-        let mut config = std::collections::BTreeMap::new();
-        config.insert(
-            "openai_api_url".to_string(),
-            "https://api.openai.com/v1/responses".to_string(),
-        );
-        config.insert(
-            "openai_codex_api_url".to_string(),
-            "https://chatgpt.com/backend-api/codex/responses".to_string(),
-        );
-
-        assert_eq!(
-            select_openai_responses_url(&config, "openai"),
-            "https://api.openai.com/v1/responses"
-        );
-        assert_eq!(
-            select_openai_responses_url(&config, "openai_codex"),
-            "https://chatgpt.com/backend-api/codex/responses"
-        );
-    }
-
-    #[test]
-    fn openai_codex_headers_include_chatgpt_account_and_sse_contract() {
-        let headers = build_openai_headers("openai_codex", "access-token", Some("acct_123"));
-
-        assert!(headers.contains(&(
-            "authorization".to_string(),
-            "Bearer access-token".to_string()
-        )));
-        assert!(headers.contains(&("chatgpt-account-id".to_string(), "acct_123".to_string())));
-        assert!(headers.contains(&("OpenAI-Beta".to_string(), "responses=v1".to_string())));
-        assert!(headers.contains(&("accept".to_string(), "text/event-stream".to_string())));
-    }
-
-    #[test]
-    fn public_openai_headers_do_not_include_codex_subscription_headers() {
-        let headers = build_openai_headers("openai", "sk-test", Some("acct_123"));
-
-        assert!(!headers.iter().any(|(name, _)| name == "chatgpt-account-id"));
-        assert!(!headers.iter().any(|(name, _)| name == "OpenAI-Beta"));
-        assert!(headers.contains(&("authorization".to_string(), "Bearer sk-test".to_string())));
-    }
-
-    #[test]
-    fn openai_responses_input_downgrades_matched_tool_history_to_user_context() {
-        let converted = build_openai_responses_input(&[
-            json!({
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": "call_ok",
-                    "name": "temper_status",
-                    "input": {"scope": "dm"}
-                }]
-            }),
-            json!({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "call_ok",
-                    "content": [{"type": "text", "text": "ready"}]
-                }]
-            }),
-        ]);
-
-        assert_eq!(converted.tool_calls_as_context, 1);
-        assert_eq!(converted.tool_outputs_as_context, 1);
-        assert!(!converted.input.iter().any(|item| {
-            matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call" | "function_call_output")
-            )
-        }));
-        assert!(converted.input.iter().any(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && item
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some_and(|content| {
-                        content.contains("Tool result for call call_ok")
-                            && content.contains("ready")
-                    })
-        }));
-    }
-
-    #[test]
-    fn openai_responses_input_downgrades_orphan_tool_outputs_to_user_context() {
-        let converted = build_openai_responses_input(&[json!({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "call_FGEV2z33q2Wz9T03YAVRwx2E",
-                "content": [{"type": "text", "text": "status failed"}]
-            }]
-        })]);
-
-        assert_eq!(converted.tool_calls_as_context, 0);
-        assert_eq!(converted.tool_outputs_as_context, 1);
-        assert!(!converted.input.iter().any(|item| {
-            item.get("type").and_then(Value::as_str) == Some("function_call_output")
-        }));
-        assert!(converted.input.iter().any(|item| {
-            item.get("role").and_then(Value::as_str) == Some("user")
-                && item
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some_and(|content| {
-                        content.contains("Tool result for call")
-                            && content.contains("status failed")
-                    })
-        }));
-    }
-
-    #[test]
-    fn openai_codex_host_http_failure_message_names_host_boundary() {
-        let msg = format_openai_codex_exhausted_error(
-            5,
-            "HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses",
-        );
-
-        assert!(msg.contains("OpenAI Codex host HTTP call failed after 5 attempts"));
-        assert!(msg.contains("before a provider HTTP response was returned"));
-        assert!(
-            msg.contains("HTTP call failed: POST https://chatgpt.com/backend-api/codex/responses")
-        );
-        assert!(!msg.starts_with("OpenAI Codex API failed"));
     }
 
     #[test]
@@ -4870,23 +4501,5 @@ mod tests {
             Some("42}")
         );
         assert!(parsed.completed);
-    }
-
-    #[test]
-    fn stream_failures_retry_only_before_semantic_output() {
-        assert!(should_retry_stream_failure(1, 5, false));
-        assert!(!should_retry_stream_failure(1, 5, true));
-        assert!(!should_retry_stream_failure(5, 5, false));
-    }
-
-    #[test]
-    fn chatgpt_account_id_is_extracted_from_codex_jwt() {
-        let payload = r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_456"}}"#;
-        let token = format!("header.{}.sig", base64_url_no_pad(payload.as_bytes()));
-
-        assert_eq!(
-            extract_chatgpt_account_id_from_jwt(&token).as_deref(),
-            Some("acct_456")
-        );
     }
 }
