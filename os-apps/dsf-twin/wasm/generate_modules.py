@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -187,7 +188,7 @@ def build(names: list[str]) -> None:
     selected = names or sorted(modules)
     if any(name not in modules for name in selected):
         raise ValueError("Build selection contains an undeclared module")
-    target = ROOT / "target"
+    target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
     for name in selected:
         manifest = ROOT / name / "Cargo.toml"
         if not manifest.is_file():

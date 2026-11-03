@@ -8,12 +8,11 @@ permit(
 );
 
 // Session tool reads (temper.read) authorize content access through a
-// family of capitalized action names relayed as service:wasm-runtime —
-// without this permit every session file read dies in WaitingForApproval
-// (found live: the hindcast surveyor could not read its own frozen
-// corpus). Scoped to the relay principal, mirroring the write permit below.
+// family of capitalized action names. They are reads like `read` above,
+// so any principal may make them; without this permit every session file
+// read dies in WaitingForApproval.
 permit(
-    principal == Agent::"service:wasm-runtime",
+    principal,
     action in [
         Action::"Read", Action::"Download", Action::"GetContent",
         Action::"GetValue", Action::"Stream", Action::"Open",
@@ -49,12 +48,20 @@ forbid(
     resource.status == "Locked"
 };
 
-// The wasm-runtime service writes files on behalf of sessions (turn
-// artifacts, agent temper.write via the directory tree). Without this
-// permit every fresh tenant needs a runtime decision approval before any
-// session can persist content — found live, twice, in corridor e2e runs.
+// Sessions write files for the caller that started them (turn artifacts,
+// agent temper.write via the directory tree): through a module's call
+// (`context.module`) or a move the kernel makes for the caller (a module's
+// answer, a reaction or a timer: `context.via` other than "request"). A
+// caller's own direct requests do not pass this permit. The relay
+// principal service:wasm-runtime keeps it until every deployment sends
+// these moves as the caller. Without this permit every fresh tenant needs
+// a runtime decision approval before any session can persist content.
 permit(
-    principal == Agent::"service:wasm-runtime",
+    principal,
     action in [Action::"create", Action::"Create", Action::"StreamUpdated", Action::"update"],
     resource is File
-);
+) when {
+    principal == Agent::"service:wasm-runtime" ||
+    (context has via && context.via != "request") ||
+    context has module
+};
