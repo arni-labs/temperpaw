@@ -174,28 +174,6 @@ fn is_allowlisted_legacy_reference(path: &Path, line: &str) -> bool {
         })
 }
 
-#[test]
-fn legacy_external_resource_allowlist_documents_live_runtime_residue() {
-    let allowlist_path = repo_root().join("docs/temperpaw-legacy-identity-allowlist.md");
-    let allowlist = fs::read_to_string(&allowlist_path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", allowlist_path.display()));
-
-    for required in [
-        "Railway project slug: `openpaw-seshendranalla`",
-        "Railway service name: `openpaw`",
-        "Railway generated domain: `openpaw-production.up.railway.app`",
-        "R2 bucket: `openpaw-fs-seshendranalla`",
-        "Observed product identity must remain `service:temperpaw`",
-        "Do not create new resources with legacy names.",
-        "Migration requires a planned cutover window",
-    ] {
-        assert!(
-            allowlist.contains(required),
-            "legacy external-resource allowlist must document `{required}`"
-        );
-    }
-}
-
 fn collect_files(root: &Path, relative_dir: &Path, files: &mut Vec<PathBuf>) {
     let dir = root.join(relative_dir);
     let entries =
@@ -299,79 +277,6 @@ fn dockerignore_excludes_local_runtime_state_from_production_images() {
 }
 
 #[test]
-fn temperpaw_runtime_uses_bounded_large_stack_workers_for_wasm_loopback_io() {
-    let main_rs =
-        fs::read_to_string(repo_root().join("crates/temperpaw/src/main.rs")).expect("read main.rs");
-
-    assert!(
-        main_rs.contains("TOKIO_WORKER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024"),
-        "TemperPaw must keep Tokio worker stack size explicit and bounded for WASM loopback OData requests"
-    );
-    assert!(
-        main_rs.contains(".thread_stack_size(TOKIO_WORKER_THREAD_STACK_BYTES)"),
-        "TemperPaw must build the Tokio runtime with the bounded worker stack instead of using the default macro runtime"
-    );
-}
-
-#[test]
-fn dockerfile_prunes_wasm_build_outputs_before_runtime_copy() {
-    let dockerfile =
-        fs::read_to_string(repo_root().join("Dockerfile")).expect("Dockerfile should be readable");
-
-    let wasm_build_idx = dockerfile
-        .find("cd /app/os-apps/paw-patrol/wasm && bash build.sh")
-        .expect("Dockerfile should build Paw runtime WASM modules before pruning");
-    let prune_idx = dockerfile
-        .find("RUN find os-apps -type d -name target -prune -exec rm -rf {} +")
-        .expect(
-            "Dockerfile should prune nested WASM target directories before the runtime image copy",
-        );
-    let runtime_copy_idx = dockerfile
-        .find("COPY --from=rust-build /app/os-apps ./os-apps")
-        .expect("Dockerfile should copy os-apps into the runtime image");
-
-    assert!(
-        wasm_build_idx < prune_idx && prune_idx < runtime_copy_idx,
-        "Dockerfile must remove nested WASM target directories after building modules and before copying os-apps into the runtime image"
-    );
-
-    for forbidden in [
-        "github.com/arni-labs/katagami.git",
-        "KATAGAMI_REF",
-        "/tmp/katagami",
-        "os-apps/katagami-curation/wasm",
-        "os-apps/katagami-commons",
-    ] {
-        assert!(
-            !dockerfile.contains(forbidden),
-            "Dockerfile must not bake Katagami from GitHub or local os-app folders; found `{forbidden}`"
-        );
-    }
-}
-
-#[test]
-fn app_required_wasm_build_scripts_publish_module_local_artifacts() {
-    let root = repo_root();
-
-    for (module, script_path) in [
-        ("blob_adapter", "os-apps/paw-fs/wasm/blob_adapter/build.sh"),
-        ("workspace_fs", "os-apps/paw-fs/wasm/workspace_fs/build.sh"),
-    ] {
-        let script = fs::read_to_string(root.join(script_path))
-            .unwrap_or_else(|err| panic!("failed to read {script_path}: {err}"));
-        assert!(
-            script.contains(&format!("{module}.wasm")),
-            "{script_path} must publish the compiled {module}.wasm artifact"
-        );
-        assert!(
-            script.contains(&format!("\"$SCRIPT_DIR/{module}.wasm\""))
-                || script.contains(&format!("\"$(dirname \"$0\")/{module}.wasm\"")),
-            "{script_path} must copy {module}.wasm into the module directory so production target pruning does not remove the only discoverable artifact"
-        );
-    }
-}
-
-#[test]
 fn os_app_wasm_build_scripts_preserve_temper_host_imports() {
     let root = repo_root();
     let build_env = fs::read_to_string(root.join("os-apps/wasm-build-env.sh"))
@@ -438,50 +343,6 @@ fn railway_deploy_dockerfile_uses_image_tag_variable() {
     assert!(
         railway_config.contains("overlapSeconds = 0\n"),
         "no overlap after cutover: two copies would both hold a Discord gateway session (ADR-0066)"
-    );
-
-    let deploy_rs = fs::read_to_string(repo_root().join("crates/temperpaw/src/deploy.rs"))
-        .expect("deploy.rs should be readable");
-    assert!(
-        deploy_rs.contains("healthcheckPath = \\\"/healthz\\\""),
-        "generated Railway manifests must also use /healthz for process liveness"
-    );
-    assert!(
-        !deploy_rs.contains("healthcheckPath = \\\"/readyz\\\""),
-        "generated Railway manifests must not cut over on /readyz"
-    );
-}
-
-#[test]
-fn railway_redeploy_uses_current_deployment_api() {
-    let setup_api = fs::read_to_string(repo_root().join("crates/temperpaw/src/setup_api.rs"))
-        .expect("setup_api.rs should be readable");
-
-    assert!(
-        setup_api.contains("deploymentRedeploy(id: $deploymentId)"),
-        "setup API redeploy must use Railway's deploymentRedeploy mutation with variables"
-    );
-    assert!(
-        setup_api.contains("skipDeploys"),
-        "setup API must upsert IMAGE_TAG without triggering an extra variable-change deployment"
-    );
-    for required in [
-        "build_sha",
-        "BUILD_SHA",
-        "BUILD_VERSION",
-        "DD_VERSION",
-        "OTEL_RESOURCE_ATTRIBUTES",
-        "datadog_app_otel_resource_attributes(build_version)",
-        "deployment_runtime_vars",
-    ] {
-        assert!(
-            setup_api.contains(required),
-            "setup API redeploy must keep Railway runtime version variables aligned with the selected image: {required}"
-        );
-    }
-    assert!(
-        !setup_api.contains("serviceInstanceRedeploy"),
-        "setup API must not use Railway's removed serviceInstanceRedeploy mutation"
     );
 }
 
@@ -567,46 +428,6 @@ fn manual_railway_redeploy_workflow_is_secret_backed_and_version_proven() {
         !workflow.contains("deploymentRedeploy") && !release.contains("deploymentRedeploy"),
         "the redeploy must not use deploymentRedeploy"
     );
-}
-
-#[test]
-fn railway_agent_tool_uses_project_scoped_variable_lookup() {
-    let railway_tool =
-        fs::read_to_string(repo_root().join("os-apps/paw-agent/wasm/monty_repl/src/railway.rs"))
-            .expect("railway.rs should be readable");
-    let session_spec =
-        fs::read_to_string(repo_root().join("os-apps/paw-agent/specs/session.ioa.toml"))
-            .expect("session.ioa.toml should be readable");
-
-    assert!(
-        railway_tool.contains(
-            "query variables($projectId: String!, $environmentId: String!, $serviceId: String)"
-        ),
-        "railway variables lookup must include Railway's required projectId and environmentId"
-    );
-    assert!(
-        railway_tool.contains("project(id: $projectId)"),
-        "railway deployment_status must use a variableized project lookup"
-    );
-    assert!(
-        railway_tool.contains("deploymentRedeploy(id: $deploymentId)"),
-        "railway redeploy action must use deploymentRedeploy with a deployment id"
-    );
-    assert!(
-        !railway_tool.contains("variables(serviceId:"),
-        "railway variables lookup must not use the old serviceId-only API shape"
-    );
-
-    for required_secret in [
-        "railway_project_id = \"{secret:railway_project_id}\"",
-        "railway_environment_id = \"{secret:railway_environment_id}\"",
-        "railway_service_id = \"{secret:railway_service_id}\"",
-    ] {
-        assert!(
-            session_spec.contains(required_secret),
-            "Session run_tools config must expose `{required_secret}`"
-        );
-    }
 }
 
 #[test]

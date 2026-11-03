@@ -1136,6 +1136,7 @@ mod tests {
             entity_state: json!({"entity_id": "mg-1", "fields": {}}),
             config: BTreeMap::new(),
             http_request: None,
+            trigger_principal: None,
         };
 
         assert_eq!(

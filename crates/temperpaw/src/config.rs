@@ -144,6 +144,11 @@ pub struct Config {
     /// GitHub token for repo cloning and PR flows.
     pub github_token: Option<String>,
 
+    /// Genesis (temper-git) token for pushing app bundles to the Genesis
+    /// registry. Genesis requires auth on push; supplied as the Basic-auth
+    /// username on git pushes to the Genesis host.
+    pub genesis_token: Option<String>,
+
     /// Datadog API key for monitor and events APIs.
     pub dd_api_key: Option<String>,
 
@@ -171,9 +176,6 @@ pub struct Config {
 
     /// Railway environment ID (captured during deploy).
     pub railway_environment_id: Option<String>,
-
-    /// Railway otel-collector service ID (captured during deploy).
-    pub railway_otel_service_id: Option<String>,
 
     /// Railway Datadog runtime Agent service ID (captured during deploy).
     pub railway_datadog_runtime_agent_service_id: Option<String>,
@@ -282,6 +284,7 @@ impl Config {
             modal_token_secret: optional_env("MODAL_TOKEN_SECRET"),
             modal_bridge_url: optional_env("MODAL_BRIDGE_URL"),
             github_token: optional_env("GITHUB_TOKEN"),
+            genesis_token: optional_env("GENESIS_TOKEN"),
             dd_api_key: optional_env("DD_API_KEY"),
             dd_app_key: optional_env("DD_APP_KEY"),
             dd_site: std::env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string()),
@@ -291,7 +294,6 @@ impl Config {
             railway_token: optional_env("RAILWAY_TOKEN"),
             railway_project_id: optional_env("RAILWAY_PROJECT_ID"),
             railway_environment_id: optional_env("RAILWAY_ENVIRONMENT_ID"),
-            railway_otel_service_id: optional_env("RAILWAY_OTEL_SERVICE_ID"),
             railway_datadog_runtime_agent_service_id: optional_env(
                 "RAILWAY_DATADOG_RUNTIME_AGENT_SERVICE_ID",
             ),

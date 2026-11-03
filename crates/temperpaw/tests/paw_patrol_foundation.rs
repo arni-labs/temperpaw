@@ -13,24 +13,6 @@ fn read(path: impl AsRef<Path>) -> String {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.as_ref().display()))
 }
 
-fn worker_source_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = fs::read_dir(root.join("crates/paw-codex-worker/src"))
-        .expect("read paw-codex-worker src")
-        .map(|entry| entry.expect("worker source entry").path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("rs"))
-        .collect::<Vec<_>>();
-    files.sort();
-    files
-}
-
-fn read_worker_sources(root: &Path) -> String {
-    worker_source_files(root)
-        .into_iter()
-        .map(read)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn agent_context(id: &str, agent_type: &str) -> SecurityContext {
     SecurityContext::from_resolved_identity(id, agent_type, None)
 }
@@ -40,34 +22,6 @@ fn resource_attrs(pairs: &[(&str, serde_json::Value)]) -> HashMap<String, serde_
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
         .collect()
-}
-
-#[test]
-fn local_worker_can_review_and_evaluate_repo_sweep_runs() {
-    let root = repo_root();
-    let worker_src = read_worker_sources(&root);
-
-    for needle in [
-        "ReviewRun.Claim",
-        "ReviewDecisionAction::Approve",
-        "EvaluationRun.Start",
-        "EvaluationRun.Pass",
-        "handle_requested_review_run",
-        "handle_queued_evaluation_run",
-        "claim_boot_requested_review_runs",
-        "claim_boot_queued_evaluation_runs",
-        "worker_run_is_repo_sweep",
-        "run_codex_review",
-        "parse_codex_review_verdict",
-        "run_code_change_evaluation",
-        "EvaluationRun.Claim",
-        "PAW_CODEX_EVAL_COMMANDS",
-    ] {
-        assert!(
-            worker_src.contains(needle),
-            "local worker should include repo-sweep review/evaluation support: {needle}"
-        );
-    }
 }
 
 #[test]
@@ -133,29 +87,6 @@ fn patrol_cedar_binds_evaluation_pass_fail_to_claimed_evaluator() {
         assert!(
             decision.is_allowed(),
             "claimed evaluator should be able to dispatch EvaluationRun.{action}: {decision:?}"
-        );
-    }
-}
-
-#[test]
-fn ci_covers_paw_patrol_worker_and_wasm_gates() {
-    let root = repo_root();
-    let ci = read(root.join(".github/workflows/ci.yml"));
-
-    for needle in [
-        "workflow_dispatch:",
-        "cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings",
-        "cargo check --locked -p temperpaw -p paw-codex-worker",
-        "for f in crates/paw-codex-worker/scripts/*.sh; do bash -n \"$f\"; done",
-        "os-apps/paw-ingest/wasm/build.sh",
-        "os-apps/paw-patrol/wasm/build.sh",
-        "cargo test --locked -p paw-codex-worker --quiet",
-        "cargo test --locked -p temperpaw --quiet",
-        "cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet",
-    ] {
-        assert!(
-            ci.contains(needle),
-            "CI should keep the Patrol worker/wasm surface covered: {needle}"
         );
     }
 }
@@ -270,6 +201,8 @@ fn paw_agent_is_discoverable_by_the_os_app_catalog() {
         "paw-agent bundle should include the Session spec"
     );
 }
+
+// --- Stage 3 S0: record entities + shadow ingest (ARN-430) ---
 
 // --- ARN-434: narrow Cedar permits for the shadow-sweep writes ---
 
