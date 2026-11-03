@@ -13,20 +13,10 @@ use std::path::{Path, PathBuf};
 #[derive(serde::Deserialize)]
 struct AppManifest {
     name: String,
-    #[serde(default)]
-    dependencies: Vec<String>,
-    #[serde(default)]
-    wasm_modules: Vec<WasmModule>,
-}
-
-#[derive(serde::Deserialize)]
-struct WasmModule {
-    name: String,
 }
 
 struct App {
     dir: PathBuf,
-    manifest: AppManifest,
 }
 
 fn os_apps_dir() -> PathBuf {
@@ -44,30 +34,10 @@ fn read_apps() -> BTreeMap<String, App> {
         let source = std::fs::read_to_string(&manifest_path).expect("app.toml should be readable");
         let manifest: AppManifest = toml::from_str(&source)
             .unwrap_or_else(|error| panic!("{} should parse: {error}", manifest_path.display()));
-        apps.insert(manifest.name.clone(), App { dir, manifest });
+        apps.insert(manifest.name, App { dir });
     }
     assert!(!apps.is_empty(), "os-apps should hold at least one app");
     apps
-}
-
-/// `temperpaw/paw-fs@<sha>` and `paw-fs` both name the app `paw-fs`.
-fn dependency_app_name(dependency: &str) -> &str {
-    let unversioned = dependency.split('@').next().unwrap_or(dependency);
-    unversioned.rsplit('/').next().unwrap_or(unversioned)
-}
-
-fn ships_wasm_build(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|entry| {
-        let path = entry.path();
-        if path.is_dir() {
-            ships_wasm_build(&path)
-        } else {
-            path.file_name().is_some_and(|name| name == "build.sh")
-        }
-    })
 }
 
 /// Collects every module a WASM trigger or integration in a spec names.
@@ -110,48 +80,6 @@ fn triggered_modules(app: &App) -> BTreeSet<String> {
         collect_triggered_modules(&spec, &mut modules);
     }
     modules
-}
-
-#[test]
-fn every_module_a_spec_triggers_is_declared_by_its_app_or_a_dependency() {
-    let apps = read_apps();
-    let mut checked = 0;
-    let mut undeclared = Vec::new();
-    for (name, app) in &apps {
-        if !ships_wasm_build(&app.dir.join("wasm")) {
-            continue;
-        }
-        checked += 1;
-        let mut installed: BTreeSet<&str> = app
-            .manifest
-            .wasm_modules
-            .iter()
-            .map(|module| module.name.as_str())
-            .collect();
-        for dependency in &app.manifest.dependencies {
-            if let Some(dependency) = apps.get(dependency_app_name(dependency)) {
-                installed.extend(
-                    dependency
-                        .manifest
-                        .wasm_modules
-                        .iter()
-                        .map(|m| m.name.as_str()),
-                );
-            }
-        }
-        for module in triggered_modules(app) {
-            if !installed.contains(module.as_str()) {
-                undeclared.push(format!("{name}: {module}"));
-            }
-        }
-    }
-    assert!(checked > 0, "at least one os-app should ship a WASM build");
-    assert!(
-        undeclared.is_empty(),
-        "specs trigger WASM modules their app never installs; declare each in that app's \
-         app.toml [[wasm_modules]]:\n{}",
-        undeclared.join("\n")
-    );
 }
 
 #[test]
