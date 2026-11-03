@@ -14,6 +14,12 @@ initial = "Active"
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Active", "Disabled"]
 
+# Public route names are capability addresses and must be unique. The key also
+# makes admission lookup bounded instead of falling back to a broad scan.
+[[key]]
+name = "route_key"
+properties = ["RouteKey"]
+
 [[state]]
 name = "route_key"
 type = "string"
@@ -40,9 +46,34 @@ type = "string"
 initial = ""
 
 [[state]]
-name = "webhook_secret"
+name = "auth_scheme"
+type = "string"
+initial = "hmac-sha256"
+
+[[state]]
+name = "secret_ref"
 type = "string"
 initial = ""
+
+[[state]]
+name = "signature_header"
+type = "string"
+initial = "x-temper-signature"
+
+[[state]]
+name = "delivery_id_header"
+type = "string"
+initial = "x-temper-delivery-id"
+
+[[state]]
+name = "max_body_bytes"
+type = "string"
+initial = "262144"
+
+[[state]]
+name = "max_deliveries_per_minute"
+type = "string"
+initial = "120"
 
 [[state]]
 name = "monitor_resolution_enabled"
@@ -63,14 +94,14 @@ initial = "60"
 name = "Register"
 kind = "input"
 from = ["Active"]
-params = ["route_key", "source_type", "event_filter", "target_entity_type", "target_action", "webhook_secret", "monitor_resolution_enabled", "dedup_enabled", "dedup_window_minutes"]
+params = ["route_key", "source_type", "event_filter", "target_entity_type", "target_action", "auth_scheme", "secret_ref", "signature_header", "delivery_id_header", "max_body_bytes", "max_deliveries_per_minute", "monitor_resolution_enabled", "dedup_enabled", "dedup_window_minutes"]
 hint = "Register or fully configure a webhook route."
 
 [[action]]
 name = "Update"
 kind = "input"
 from = ["Active"]
-params = ["event_filter", "target_action", "webhook_secret", "monitor_resolution_enabled", "dedup_enabled", "dedup_window_minutes"]
+params = ["source_type", "event_filter", "target_entity_type", "target_action", "auth_scheme", "secret_ref", "signature_header", "delivery_id_header", "max_body_bytes", "max_deliveries_per_minute", "monitor_resolution_enabled", "dedup_enabled", "dedup_window_minutes"]
 hint = "Update mutable fields on an active route."
 
 [[action]]

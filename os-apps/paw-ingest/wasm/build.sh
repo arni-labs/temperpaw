@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../wasm-build-env.sh"
 
-for module in validate_webhook route_webhook process_webhook; do
+for module in route_webhook process_webhook; do
     echo "Building $module (wasm32-unknown-unknown)..."
     src="$(temperpaw_build_wasm "$SCRIPT_DIR/$module" wasm32-unknown-unknown)"
     cp "$src" "$SCRIPT_DIR/$module/$module.wasm"

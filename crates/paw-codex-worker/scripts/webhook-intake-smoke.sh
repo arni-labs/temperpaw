@@ -40,9 +40,12 @@ WEBHOOK_PORT="$((PORT + 12))"
 WEBHOOK_URL="${WEBHOOK_URL:-http://127.0.0.1:${WEBHOOK_PORT}}"
 TENANT="${TEMPER_TENANT:-patrol_webhook_smoke}"
 API_KEY="${TEMPER_API_KEY:-patrol-webhook-smoke}"
+WORKER_ID="${LOCAL_CODEX_WORKER_ID:-webhook-smoke-worker}"
+WORKSPACE_ROOT="${LOCAL_CODEX_WORKTREE_ROOT:-$(dirname "$ROOT")}"
 DB_PATH="${DB_PATH:-/tmp/paw-patrol-webhook-smoke-${PORT}-$$.db}"
 READY_ATTEMPTS="${READY_ATTEMPTS:-300}"
 PROOF_DIR="${PROOF_DIR:-/tmp/paw-patrol-webhook-smoke-proof-${PORT}-$$}"
+WEBHOOK_SECRET="${WEBHOOK_SECRET:-patrol-webhook-smoke-signing-secret}"
 INGEST_WASM_BUILD="os-apps/paw-ingest/wasm/build.sh"
 PATROL_WASM_BUILD="os-apps/paw-patrol/wasm/build.sh"
 
@@ -127,45 +130,36 @@ wait_for_status() {
   exit 1
 }
 
-register_route() {
+find_seeded_route_id() {
   local route_key="$1"
-  local source_type="$2"
-  local target_entity_type="$3"
-  local target_action="$4"
-  local route_id
-
-  route_id="$(post_json "${TEMPER_URL}/tdata/WebhookRoutes" '{}' | jq -r '.entity_id')"
-  post_json \
-    "$(entity_url WebhookRoutes "$route_id")/TemperPaw.Ingest.Register" \
-    "$(jq -n \
-      --arg route_key "$route_key" \
-      --arg source_type "$source_type" \
-      --arg target_entity_type "$target_entity_type" \
-      --arg target_action "$target_action" \
-      '{
-        route_key: $route_key,
-        source_type: $source_type,
-        event_filter: "*",
-        target_entity_type: $target_entity_type,
-        target_action: $target_action,
-        webhook_secret: "",
-        monitor_resolution_enabled: "false",
-        dedup_enabled: "false",
-        dedup_window_minutes: "60"
-      }')" \
-    >/dev/null
-  printf '%s' "$route_id"
+  local result count
+  result="$(curl_json "${TEMPER_URL}/tdata/WebhookRoutes?\$filter=route_key%20eq%20%27${route_key}%27%20and%20Status%20eq%20%27Active%27&\$top=2")"
+  count="$(jq '.value | length' <<<"$result")"
+  if [[ "$count" != "1" ]]; then
+    log "expected exactly one active seeded route for ${route_key}, found ${count}"
+    jq . <<<"$result"
+    exit 1
+  fi
+  jq -r '.value[0].entity_id // .value[0].Id' <<<"$result"
 }
 
 post_webhook() {
   local route_key="$1"
   local body="$2"
-  local attempts="${3:-60}"
+  local signature_header="$3"
+  local delivery_id_header="$4"
+  local delivery_id="$5"
+  local attempts="${6:-60}"
   local response
+  local signature
+
+  signature="$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $NF}')"
 
   for _ in $(seq 1 "$attempts"); do
     if response="$(curl -fsS \
       -H "Content-Type: application/json" \
+      -H "${signature_header}: sha256=${signature}" \
+      -H "${delivery_id_header}: ${delivery_id}" \
       -X POST \
       "${WEBHOOK_URL}/triggers/webhook/${route_key}" \
       -d "$body" 2>/dev/null)"; then
@@ -177,6 +171,69 @@ post_webhook() {
 
   log "webhook trigger did not accept ${route_key} at ${WEBHOOK_URL}"
   exit 1
+}
+
+webhook_event_count() {
+  curl_json "${TEMPER_URL}/tdata/WebhookEvents?\$top=1000" | jq '.value | length'
+}
+
+assert_forged_webhook_creates_no_event() {
+  local before after status
+  before="$(webhook_event_count)"
+  status="$(curl -sS -o /tmp/paw-patrol-forged-webhook-response.json -w '%{http_code}' \
+    -H "Content-Type: application/json" \
+    -H "x-temper-signature: sha256=deadbeef" \
+    -H "x-temper-delivery-id: forged-smoke-1" \
+    -X POST \
+    "${WEBHOOK_URL}/triggers/webhook/patrol-request" \
+    -d "$1")"
+  after="$(webhook_event_count)"
+  if [[ "$status" != "401" || "$before" != "$after" ]]; then
+    log "forged webhook must return 401 without durable WebhookEvent (status=${status}, before=${before}, after=${after})"
+    jq . /tmp/paw-patrol-forged-webhook-response.json 2>/dev/null || true
+    exit 1
+  fi
+}
+
+assert_delivery_id_payload_mismatch_rejected() {
+  local body="$1"
+  local before after signature status
+  signature="$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $NF}')"
+  before="$(webhook_event_count)"
+  status="$(curl -sS -o /tmp/paw-patrol-replay-mismatch-response.json -w '%{http_code}' \
+    -H "Content-Type: application/json" \
+    -H "x-temper-signature: sha256=${signature}" \
+    -H "x-temper-delivery-id: smoke-request-1" \
+    -X POST \
+    "${WEBHOOK_URL}/triggers/webhook/patrol-request" \
+    -d "$body")"
+  after="$(webhook_event_count)"
+  if [[ "$status" != "409" || "$before" != "$after" ]]; then
+    log "delivery ID reuse with changed payload must return 409 without creating an event (status=${status}, before=${before}, after=${after})"
+    jq . /tmp/paw-patrol-replay-mismatch-response.json 2>/dev/null || true
+    exit 1
+  fi
+}
+
+assert_signed_invalid_payload_creates_no_event() {
+  local body="$1"
+  local delivery_id="$2"
+  local before after signature status
+  signature="$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $NF}')"
+  before="$(webhook_event_count)"
+  status="$(curl -sS -o /tmp/paw-patrol-invalid-webhook-response.json -w '%{http_code}' \
+    -H "Content-Type: application/json" \
+    -H "x-temper-signature: sha256=${signature}" \
+    -H "x-temper-delivery-id: ${delivery_id}" \
+    -X POST \
+    "${WEBHOOK_URL}/triggers/webhook/patrol-request" \
+    -d "$body")"
+  after="$(webhook_event_count)"
+  if [[ "$status" != "400" || "$before" != "$after" ]]; then
+    log "signed malformed/non-object payload must return 400 without durable WebhookEvent (status=${status}, before=${before}, after=${after})"
+    jq . /tmp/paw-patrol-invalid-webhook-response.json 2>/dev/null || true
+    exit 1
+  fi
 }
 
 write_proof_bundle() {
@@ -214,7 +271,7 @@ write_proof_bundle() {
     <text x="348" y="158" font-weight="700">WebhookEvent</text>
     <text x="348" y="184">Processed</text>
     <rect x="588" y="124" width="190" height="86" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
-    <text x="618" y="158" font-weight="700">PatrolRequest</text>
+    <text x="618" y="158" font-weight="700">WorkRequest</text>
     <text x="618" y="184">Linked</text>
     <rect x="858" y="124" width="190" height="86" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
     <text x="888" y="158" font-weight="700">FactoryCase</text>
@@ -305,7 +362,7 @@ flowchart LR
 ## OData Links
 
 - Request WebhookEvent: ${TEMPER_URL}/tdata/WebhookEvents('$(jq -r '.entities.request_event' <<<"$summary_json")')
-- Request PatrolRequest: ${TEMPER_URL}/tdata/PatrolRequests('$(jq -r '.entities.patrol_request' <<<"$summary_json")')
+- Request WorkRequest: ${TEMPER_URL}/tdata/WorkRequests('$(jq -r '.entities.patrol_request' <<<"$summary_json")')
 - Request FactoryCase: ${TEMPER_URL}/tdata/FactoryCases('$(jq -r '.entities.request_factory_case' <<<"$summary_json")')
 - Request WorkCycle: ${TEMPER_URL}/tdata/WorkCycles('$(jq -r '.entities.request_work_cycle' <<<"$summary_json")')
 - Datadog WebhookEvent: ${TEMPER_URL}/tdata/WebhookEvents('$(jq -r '.entities.datadog_event' <<<"$summary_json")')
@@ -340,6 +397,7 @@ require_cmd cargo
 require_cmd curl
 require_cmd git
 require_cmd jq
+require_cmd openssl
 
 log "repo root: ${ROOT}"
 log "odata server: ${TEMPER_URL}"
@@ -351,7 +409,10 @@ log "building current paw-ingest and paw-patrol WASM modules"
   (cd "$ROOT/$(dirname "$PATROL_WASM_BUILD")" && bash "$(basename "$PATROL_WASM_BUILD")")
 } >/tmp/paw-patrol-webhook-smoke-wasm-build.log 2>&1
 
-TEMPERPAW_WASM_STARTUP_POLICY=build \
+# The affected ingest/patrol modules were built immediately above. Loading the
+# persisted artifacts avoids rebuilding every unrelated OS app inside the
+# server's readiness window.
+TEMPERPAW_WASM_STARTUP_POLICY="${TEMPERPAW_WASM_STARTUP_POLICY:-load-only}" \
 PORT="$PORT" \
 TEMPER_API_KEY="$API_KEY" \
 PAW_TENANT="$TENANT" \
@@ -364,47 +425,70 @@ SERVER_PID="$!"
 wait_for_metadata
 log "control plane ready"
 
-request_route_id="$(register_route \
-  patrol-request \
-  patrol-request \
-  PatrolRequest \
-  TemperPaw.Patrol.Submit)"
-datadog_route_id="$(register_route \
-  patrol-datadog \
-  datadog \
-  Signal \
-  TemperPaw.Patrol.Ingest)"
-github_route_id="$(register_route \
-  patrol-github \
-  github \
-  Signal \
-  TemperPaw.Patrol.Ingest)"
-discord_route_id="$(register_route \
-  patrol-discord \
-  discord \
-  Signal \
-  TemperPaw.Patrol.Ingest)"
-log "registered routes ${request_route_id}, ${datadog_route_id}, ${github_route_id}, and ${discord_route_id}"
+for secret_ref in \
+  patrol_request_webhook_secret \
+  patrol_signal_webhook_secret \
+  datadog_webhook_secret \
+  github_webhook_secret \
+  patrol_discord_webhook_secret; do
+  post_json "${TEMPER_URL}/paw/setup/secrets" "$(jq -n \
+    --arg key "$secret_ref" \
+    --arg value "$WEBHOOK_SECRET" \
+    '{key: $key, value: $value}')" >/dev/null
+done
+log "configured all governed seeded webhook signing references"
+
+request_route_id="$(find_seeded_route_id patrol-request)"
+datadog_route_id="$(find_seeded_route_id patrol-datadog)"
+github_route_id="$(find_seeded_route_id patrol-github)"
+discord_route_id="$(find_seeded_route_id patrol-discord)"
+log "resolved seeded routes ${request_route_id}, ${datadog_route_id}, ${github_route_id}, and ${discord_route_id}"
+
+request_payload="$(jq -n '{
+  source: "webhook-smoke",
+  request_text: "Webhook smoke request should enter Paw Patrol and create work.",
+  requester_id: "codex-webhook-smoke"
+}')"
+assert_forged_webhook_creates_no_event "$request_payload"
+log "forged webhook rejected before persistence"
+assert_signed_invalid_payload_creates_no_event 'not-json' smoke-malformed-1
+assert_signed_invalid_payload_creates_no_event '"scalar"' smoke-scalar-1
+log "signed malformed and non-object webhook bodies rejected before persistence"
 
 request_event_response="$(post_webhook \
   patrol-request \
-  "$(jq -n '{
-    source: "webhook-smoke",
-    request_text: "Webhook smoke request should enter Paw Patrol and create work.",
-    requester_id: "codex-webhook-smoke"
-  }')")"
+  "$request_payload" \
+  x-temper-signature \
+  x-temper-delivery-id \
+  smoke-request-1)"
 request_event_id="$(jq -r '.event_id' <<<"$request_event_response")"
 request_event_body="$(wait_for_status WebhookEvents "$request_event_id" Processed 120)"
+altered_request_payload="$(jq '.request_text = "Changed content under a reused delivery identity must be rejected."' <<<"$request_payload")"
+assert_delivery_id_payload_mismatch_rejected "$altered_request_payload"
+log "changed payload under consumed delivery ID rejected without dispatch"
+request_replay_response="$(post_webhook \
+  patrol-request \
+  "$request_payload" \
+  x-temper-signature \
+  x-temper-delivery-id \
+  smoke-request-1)"
+if [[ "$(jq -r '.event_id' <<<"$request_replay_response")" != "$request_event_id" \
+  || "$(jq -r '.status' <<<"$request_replay_response")" != "duplicate" ]]; then
+  log "exact signed replay was not suppressed"
+  jq . <<<"$request_replay_response"
+  exit 1
+fi
+log "exact signed replay returned the original event without redispatch"
 request_target_type="$(field target_entity_type <<<"$request_event_body")"
 request_target_id="$(field target_entity_id <<<"$request_event_body")"
 
-if [[ "$request_target_type" != "PatrolRequest" || -z "$request_target_id" ]]; then
+if [[ "$request_target_type" != "WorkRequest" || -z "$request_target_id" ]]; then
   log "request webhook routed to unexpected target '${request_target_type}' '${request_target_id}'"
   jq . <<<"$request_event_body"
   exit 1
 fi
 
-request_body="$(wait_for_status PatrolRequests "$request_target_id" Linked 120)"
+request_body="$(wait_for_status WorkRequests "$request_target_id" Linked 120)"
 request_case_id="$(field factory_case_id <<<"$request_body")"
 request_pm_issue_id="$(field pm_issue_id <<<"$request_body")"
 request_case_body="$(curl_json "$(entity_url FactoryCases "$request_case_id")")"
@@ -419,7 +503,10 @@ datadog_event_response="$(post_webhook \
     title: "Webhook smoke Datadog signal",
     message: "Discord DM surfaced a trace and needs Patrol triage.",
     source_url: "https://example.invalid/datadog/webhook-smoke"
-  }')")"
+  }')" \
+  x-datadog-signature \
+  x-temper-delivery-id \
+  smoke-datadog-1)"
 datadog_event_id="$(jq -r '.event_id' <<<"$datadog_event_response")"
 datadog_event_body="$(wait_for_status WebhookEvents "$datadog_event_id" Processed 120)"
 datadog_target_type="$(field target_entity_type <<<"$datadog_event_body")"
@@ -445,7 +532,10 @@ github_event_response="$(post_webhook \
     title: "Webhook smoke GitHub signal",
     message: "A failing pull request check should enter Patrol as a GitHub signal.",
     source_url: "https://github.com/nerdsane/temperpaw/actions/runs/webhook-smoke"
-  }')")"
+  }')" \
+  x-hub-signature-256 \
+  x-github-delivery \
+  smoke-github-1)"
 github_event_id="$(jq -r '.event_id' <<<"$github_event_response")"
 github_event_body="$(wait_for_status WebhookEvents "$github_event_id" Processed 120)"
 github_target_type="$(field target_entity_type <<<"$github_event_body")"
@@ -471,7 +561,10 @@ discord_event_response="$(post_webhook \
     title: "Webhook smoke Discord DM signal",
     message: "A Discord DM exposed a Rust trace to the user and needs Patrol triage.",
     source_url: "discord://dm/webhook-smoke"
-  }')")"
+  }')" \
+  x-temper-signature \
+  x-temper-delivery-id \
+  smoke-discord-1)"
 discord_event_id="$(jq -r '.event_id' <<<"$discord_event_response")"
 discord_event_body="$(wait_for_status WebhookEvents "$discord_event_id" Processed 120)"
 discord_target_type="$(field target_entity_type <<<"$discord_event_body")"

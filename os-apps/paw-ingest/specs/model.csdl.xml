@@ -13,14 +13,19 @@
         <Property Name="Status" Type="Edm.String"/>
         <Property Name="RouteKey" Type="Edm.String"/>
         <Property Name="RawPayload" Type="Edm.String"/>
-        <Property Name="RawHeaders" Type="Edm.String"/>
         <Property Name="SourceType" Type="Edm.String"/>
         <Property Name="NormalizedPayload" Type="Edm.String"/>
-        <Property Name="HmacVerified" Type="Edm.String"/>
+        <Property Name="AuthenticationScheme" Type="Edm.String"/>
+        <Property Name="DeliveryId" Type="Edm.String"/>
+        <Property Name="PayloadDigest" Type="Edm.String"/>
+        <Property Name="RouteSnapshotDigest" Type="Edm.String"/>
         <Property Name="TargetEntityType" Type="Edm.String"/>
         <Property Name="TargetEntityId" Type="Edm.String"/>
         <Property Name="TargetAction" Type="Edm.String"/>
         <Property Name="WebhookRouteId" Type="Edm.String"/>
+        <Property Name="MonitorResolutionEnabled" Type="Edm.String"/>
+        <Property Name="DedupEnabled" Type="Edm.String"/>
+        <Property Name="DedupWindowMinutes" Type="Edm.String"/>
         <Property Name="ValidationError" Type="Edm.String"/>
         <Annotation Term="Paw.Vocab.AuthZ.CedarPolicy" String="policies/webhook.cedar"/>
         <Annotation Term="Paw.Vocab.Agent.Hint" String="Tracks the lifecycle of a single inbound webhook from receipt through processing."/>
@@ -35,7 +40,12 @@
         <Property Name="EventFilter" Type="Edm.String"/>
         <Property Name="TargetEntityType" Type="Edm.String"/>
         <Property Name="TargetAction" Type="Edm.String"/>
-        <Property Name="WebhookSecret" Type="Edm.String"/>
+        <Property Name="AuthScheme" Type="Edm.String"/>
+        <Property Name="SecretRef" Type="Edm.String"/>
+        <Property Name="SignatureHeader" Type="Edm.String"/>
+        <Property Name="DeliveryIdHeader" Type="Edm.String"/>
+        <Property Name="MaxBodyBytes" Type="Edm.String"/>
+        <Property Name="MaxDeliveriesPerMinute" Type="Edm.String"/>
         <Property Name="MonitorResolutionEnabled" Type="Edm.String"/>
         <Property Name="DedupEnabled" Type="Edm.String"/>
         <Property Name="DedupWindowMinutes" Type="Edm.String"/>
@@ -47,16 +57,19 @@
       <Action Name="Received" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Ingest.WebhookEvent"/>
         <Parameter Name="raw_payload" Type="Edm.String" Nullable="false"/>
-        <Parameter Name="raw_headers" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="normalized_payload" Type="Edm.String" Nullable="false"/>
         <Parameter Name="route_key" Type="Edm.String" Nullable="false"/>
-        <ReturnType Type="TemperPaw.Ingest.WebhookEvent"/>
-      </Action>
-
-      <Action Name="Validated" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Ingest.WebhookEvent"/>
         <Parameter Name="source_type" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="hmac_verified" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="normalized_payload" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="target_entity_type" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="target_action" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="webhook_route_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="route_snapshot_digest" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="payload_digest" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="delivery_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="authentication_scheme" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="monitor_resolution_enabled" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="dedup_enabled" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="dedup_window_minutes" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Ingest.WebhookEvent"/>
       </Action>
 
@@ -71,12 +84,6 @@
 
       <Action Name="Processed" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Ingest.WebhookEvent"/>
-        <ReturnType Type="TemperPaw.Ingest.WebhookEvent"/>
-      </Action>
-
-      <Action Name="ValidationFailed" IsBound="true">
-        <Parameter Name="bindingParameter" Type="TemperPaw.Ingest.WebhookEvent"/>
-        <Parameter Name="validation_error" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Ingest.WebhookEvent"/>
       </Action>
 
@@ -100,7 +107,12 @@
         <Parameter Name="event_filter" Type="Edm.String" Nullable="true"/>
         <Parameter Name="target_entity_type" Type="Edm.String" Nullable="false"/>
         <Parameter Name="target_action" Type="Edm.String" Nullable="false"/>
-        <Parameter Name="webhook_secret" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="auth_scheme" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="secret_ref" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="signature_header" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="delivery_id_header" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="max_body_bytes" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="max_deliveries_per_minute" Type="Edm.String" Nullable="false"/>
         <Parameter Name="monitor_resolution_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="dedup_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="dedup_window_minutes" Type="Edm.String" Nullable="true"/>
@@ -109,9 +121,16 @@
 
       <Action Name="Update" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Ingest.WebhookRoute"/>
+        <Parameter Name="source_type" Type="Edm.String" Nullable="false"/>
         <Parameter Name="event_filter" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="target_entity_type" Type="Edm.String" Nullable="false"/>
         <Parameter Name="target_action" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="webhook_secret" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="auth_scheme" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="secret_ref" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="signature_header" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="delivery_id_header" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="max_body_bytes" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="max_deliveries_per_minute" Type="Edm.String" Nullable="false"/>
         <Parameter Name="monitor_resolution_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="dedup_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="dedup_window_minutes" Type="Edm.String" Nullable="true"/>

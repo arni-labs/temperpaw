@@ -4,14 +4,6 @@ version = "0.1.0"
 dependencies = []
 
 [[wasm_modules]]
-name = "validate_webhook"
-target = "wasm32-unknown-unknown"
-criticality = "app-required"
-startup_loading = "lazy"
-provenance = "bundled-artifact"
-import_class = "temper-host"
-
-[[wasm_modules]]
 name = "route_webhook"
 target = "wasm32-unknown-unknown"
 criticality = "app-required"

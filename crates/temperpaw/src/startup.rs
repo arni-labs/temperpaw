@@ -1878,20 +1878,24 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         .as_deref()
         .map(|url| url.starts_with("https://"))
         .unwrap_or(false);
+    let secrets_vault = state
+        .server
+        .secrets_vault
+        .as_ref()
+        .context("Vault must be initialized before auth and webhook admission")?
+        .clone();
     let auth_state = crate::auth::AuthState::new(
         storage.clone(),
-        state
-            .server
-            .secrets_vault
-            .as_ref()
-            .context("Vault must be initialized before auth")?
-            .clone(),
+        secrets_vault.clone(),
         vault_key_bytes.to_vec(),
         tenant.clone(),
         cookie_secure,
         state.server.http_endpoint_tables.clone(),
         state.server.clone(),
     );
+    let webhook_secret_tenant = tenant.clone();
+    let webhook_secrets: paw_transport::webhook::WebhookSecretResolver =
+        Arc::new(move |key| secrets_vault.get_secret(&webhook_secret_tenant, key));
 
     let router = build_platform_router(state.clone());
     let setup_state = crate::setup_api::SetupApiState {
@@ -1912,7 +1916,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     let router = router
         .merge(crate::setup_api::router(setup_state.clone()))
         .merge(crate::auth::router(auth_state.clone()))
-        .merge(paw_transport::webhook::router(webhook_api));
+        .merge(paw_transport::webhook::router(
+            webhook_api,
+            webhook_secrets.clone(),
+        ));
 
     let router = router.layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024));
 
@@ -2177,7 +2184,12 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     tracing::info!("Phase 9: Finalizing runtime bring-up...");
 
     // Spawn webhook trigger (ONE entity, ONE action per request).
-    spawn_webhook_trigger(&tenant, actual_port, config.temper_api_key.clone());
+    spawn_webhook_trigger(
+        &tenant,
+        actual_port,
+        config.temper_api_key.clone(),
+        webhook_secrets,
+    );
 
     // Cron scheduling is now handled by the platform's schedule_at effect —
     // CronJob entities self-schedule via ActivateComplete/TriggerComplete.
@@ -4053,7 +4065,12 @@ fn find_wasm_binary(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
 ///
 /// Listens on port+12 for POST /triggers/webhook/{route_key}.
 /// ONE entity, ONE action — everything else is WASM integrations.
-fn spawn_webhook_trigger(tenant: &str, port: u16, api_key: Option<String>) {
+fn spawn_webhook_trigger(
+    tenant: &str,
+    port: u16,
+    api_key: Option<String>,
+    secrets: paw_transport::webhook::WebhookSecretResolver,
+) {
     use paw_transport::PawApiConfig;
     use paw_transport::webhook::{WebhookTrigger, WebhookTriggerConfig};
 
@@ -4069,7 +4086,7 @@ fn spawn_webhook_trigger(tenant: &str, port: u16, api_key: Option<String>) {
             api_key,
         });
         let config = WebhookTriggerConfig { port: trigger_port };
-        let trigger = WebhookTrigger::new(config, api);
+        let trigger = WebhookTrigger::new(config, api, secrets);
         if let Err(e) = trigger.run().await {
             tracing::error!("Webhook trigger fatal error: {e}");
         }

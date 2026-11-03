@@ -1,8 +1,8 @@
-//! Route Webhook — WASM module for routing validated webhooks to target entities.
+//! Route Webhook — route an authenticated immutable webhook envelope.
 //!
-//! Triggered by WebhookEvent.Validated action. Looks up the WebhookRoute to
-//! determine the target entity type and action, optionally resolves monitors
-//! and checks for duplicates, then creates the target entity.
+//! Triggered by `WebhookEvent.Received`. The HTTP admission boundary snapshots
+//! the governed target capability into the event after HMAC verification. This
+//! module deliberately never re-reads mutable WebhookRoute state (ARN-168).
 //!
 //! Build: `cargo build --target wasm32-unknown-unknown --release`
 
@@ -17,7 +17,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
 
         let fields = ctx.entity_state.get("fields").cloned().unwrap_or(json!({}));
 
-        // Read state set by prior actions
+        // Read the immutable envelope set atomically by Received.
         let source_type = fields
             .get("source_type")
             .and_then(|v| v.as_str())
@@ -32,10 +32,58 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             .get("route_key")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let route_id = fields
+            .get("webhook_route_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let route_snapshot_digest = fields
+            .get("route_snapshot_digest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let payload_digest = fields
+            .get("payload_digest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let delivery_id = fields
+            .get("delivery_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let authentication_scheme = fields
+            .get("authentication_scheme")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let target_entity_type = fields
+            .get("target_entity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let target_action = fields
+            .get("target_action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let monitor_resolution_enabled = fields
+            .get("monitor_resolution_enabled")
+            .and_then(|v| v.as_str())
+            .unwrap_or("false");
+        let dedup_enabled = fields
+            .get("dedup_enabled")
+            .and_then(|v| v.as_str())
+            .unwrap_or("false");
 
-        if route_key.is_empty() {
+        if [
+            route_key,
+            route_id,
+            route_snapshot_digest,
+            payload_digest,
+            delivery_id,
+            target_entity_type,
+            target_action,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+            || authentication_scheme != "hmac-sha256"
+        {
             set_success_result("RouteFailed", &json!({
-                "validation_error": "route_key missing from entity state"
+                "validation_error": "authenticated webhook envelope is incomplete"
             }));
             return Ok(());
         }
@@ -43,76 +91,6 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
         let temper_api_url = resolve_api_url(&ctx);
         let tenant = &ctx.tenant;
         let headers = odata_headers(&ctx, tenant);
-
-        // Query WebhookRoute by route_key to get routing config
-        let filter = format!(
-            "route_key eq '{}' and Status eq 'Active'",
-            route_key.replace('\'', "''")
-        );
-        let query_url = format!(
-            "{}/tdata/WebhookRoutes?$filter={}",
-            temper_api_url,
-            urlencoded(&filter)
-        );
-
-        let resp = ctx.http_call("GET", &query_url, &headers, "")?;
-        if resp.status < 200 || resp.status >= 300 {
-            set_success_result("RouteFailed", &json!({
-                "validation_error": format!("route lookup failed (HTTP {})", resp.status)
-            }));
-            return Ok(());
-        }
-
-        let body: Value = serde_json::from_str(&resp.body)
-            .map_err(|e| format!("parse route response: {e}"))?;
-
-        let routes = body
-            .get("value")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        if routes.is_empty() {
-            set_success_result("RouteFailed", &json!({
-                "validation_error": "no matching route for routing"
-            }));
-            return Ok(());
-        }
-
-        let route = &routes[0];
-        let route_fields = route.get("fields").cloned().unwrap_or(json!({}));
-
-        let route_id = route
-            .get("entity_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let target_entity_type = route_fields
-            .get("target_entity_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let target_action = route_fields
-            .get("target_action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let monitor_resolution_enabled = route_fields
-            .get("monitor_resolution_enabled")
-            .and_then(|v| v.as_str())
-            .unwrap_or("false");
-
-        let dedup_enabled = route_fields
-            .get("dedup_enabled")
-            .and_then(|v| v.as_str())
-            .unwrap_or("false");
-
-        if target_entity_type.is_empty() || target_action.is_empty() {
-            set_success_result("RouteFailed", &json!({
-                "validation_error": "route missing target_entity_type or target_action"
-            }));
-            return Ok(());
-        }
 
         ctx.log(
             "info",
@@ -123,8 +101,23 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             ),
         );
 
-        // Parse the normalized payload for monitor/dedup logic
-        let payload: Value = serde_json::from_str(normalized_payload).unwrap_or(json!({}));
+        // Admission guarantees a canonical JSON object. Fail closed if a
+        // corrupted or manually created event violates that envelope contract.
+        let payload: Value = match serde_json::from_str(normalized_payload) {
+            Ok(payload @ Value::Object(_)) => payload,
+            Ok(_) => {
+                set_success_result("RouteFailed", &json!({
+                    "validation_error": "normalized webhook payload is not a JSON object"
+                }));
+                return Ok(());
+            }
+            Err(error) => {
+                set_success_result("RouteFailed", &json!({
+                    "validation_error": format!("normalized webhook payload is invalid: {error}")
+                }));
+                return Ok(());
+            }
+        };
 
         // Monitor resolution: if enabled and source is datadog, ensure Monitor entity exists
         if monitor_resolution_enabled == "true" && source_type == "datadog" {

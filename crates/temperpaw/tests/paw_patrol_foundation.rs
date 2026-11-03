@@ -204,6 +204,87 @@ fn paw_agent_is_discoverable_by_the_os_app_catalog() {
 
 // --- Stage 3 S0: record entities + shadow ingest (ARN-430) ---
 
+#[test]
+fn paw_ingest_cedar_enforces_webhook_capability_owners() {
+    let root = repo_root();
+    let policy = read(root.join("os-apps/paw-ingest/policies/webhook.cedar"));
+    let engine = AuthzEngine::new(&policy).expect("webhook.cedar should parse");
+    let attrs = resource_attrs(&[("id", serde_json::json!("webhook-security-test"))]);
+    let mut admin = SecurityContext::system();
+    admin.principal.id = "admin-1".to_string();
+    admin.principal.kind = temper_authz::PrincipalKind::Admin;
+    let agent = agent_context("untrusted-agent", "agent");
+
+    for (entity, actions) in [
+        (
+            "WebhookRoute",
+            &[
+                "create", "read", "list", "Register", "Update", "Disable", "Enable",
+            ][..],
+        ),
+        (
+            "WebhookEvent",
+            &[
+                "create",
+                "read",
+                "list",
+                "Received",
+                "Routed",
+                "Processed",
+                "RouteFailed",
+                "ProcessFailed",
+            ][..],
+        ),
+    ] {
+        for action in actions {
+            assert!(
+                engine
+                    .authorize(&admin, action, entity, &attrs)
+                    .is_allowed(),
+                "Admin must own {entity}.{action}"
+            );
+            assert!(
+                !engine
+                    .authorize(&agent, action, entity, &attrs)
+                    .is_allowed(),
+                "plain Agent must not own {entity}.{action}"
+            );
+        }
+    }
+
+    let mut route_module = agent_context("route-webhook", "agent");
+    route_module
+        .context_attrs
+        .insert("module".to_string(), serde_json::json!("route_webhook"));
+    for action in ["Routed", "RouteFailed"] {
+        assert!(
+            engine
+                .authorize(&route_module, action, "WebhookEvent", &attrs)
+                .is_allowed(),
+            "route_webhook must own WebhookEvent.{action}"
+        );
+    }
+    assert!(
+        !engine
+            .authorize(&route_module, "Processed", "WebhookEvent", &attrs)
+            .is_allowed(),
+        "route_webhook must not impersonate process_webhook"
+    );
+
+    let mut process_module = agent_context("process-webhook", "agent");
+    process_module
+        .context_attrs
+        .insert("module".to_string(), serde_json::json!("process_webhook"));
+    for action in ["Processed", "ProcessFailed"] {
+        assert!(
+            engine
+                .authorize(&process_module, action, "WebhookEvent", &attrs)
+                .is_allowed(),
+            "process_webhook must own WebhookEvent.{action}"
+        );
+    }
+}
+
 // --- ARN-434: narrow Cedar permits for the shadow-sweep writes ---
 
 #[test]

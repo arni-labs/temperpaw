@@ -1,18 +1,18 @@
 # WebhookEvent — Ingest, validate, route, and process an incoming webhook.
 #
-# Each event flows: Created → Validating → Routing → Processing → Processed.
+# Each authenticated event flows: Created → Routing → Processing → Processed.
 # Failure at any stage transitions to Rejected.
 
 [automaton]
 name = "WebhookEvent"
-states = ["Created", "Validating", "Routing", "Processing", "Processed", "Rejected"]
+states = ["Created", "Routing", "Processing", "Processed", "Rejected"]
 initial = "Created"
 
 # ADR-0050 migration TODO: each state below needs either a
 # [[state_timeout]] declaration or a domain-specific justification
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Created", "Validating", "Routing", "Processing"]
+allow_indefinite_states = ["Created", "Routing", "Processing"]
 terminal = ["Processed", "Rejected"]
 
 [[state]]
@@ -22,11 +22,6 @@ initial = ""
 
 [[state]]
 name = "raw_payload"
-type = "string"
-initial = ""
-
-[[state]]
-name = "raw_headers"
 type = "string"
 initial = ""
 
@@ -41,7 +36,22 @@ type = "string"
 initial = ""
 
 [[state]]
-name = "hmac_verified"
+name = "authentication_scheme"
+type = "string"
+initial = ""
+
+[[state]]
+name = "delivery_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "payload_digest"
+type = "string"
+initial = ""
+
+[[state]]
+name = "route_snapshot_digest"
 type = "string"
 initial = ""
 
@@ -66,6 +76,21 @@ type = "string"
 initial = ""
 
 [[state]]
+name = "monitor_resolution_enabled"
+type = "string"
+initial = "false"
+
+[[state]]
+name = "dedup_enabled"
+type = "string"
+initial = "false"
+
+[[state]]
+name = "dedup_window_minutes"
+type = "string"
+initial = "60"
+
+[[state]]
 name = "validation_error"
 type = "string"
 initial = ""
@@ -74,30 +99,9 @@ initial = ""
 name = "Received"
 kind = "input"
 from = ["Created"]
-to = "Validating"
-params = ["raw_payload", "raw_headers", "route_key"]
-hint = "Accept a webhook payload and begin validation."
-
-# ADR-0046: inline trigger — migrated from [[integration]] below.
-# Post-parse expansion re-synthesizes the equivalent Integration so
-# the existing WASM/webhook runtime handles execution unchanged.
-[[action.triggers]]
-name = "validate_webhook"
-kind = "wasm"
-module = "validate_webhook"
-on_failure = "ValidationFailed"
-
-[action.triggers.config]
-temper_api_url = "{secret:temper_api_url}"
-
-
-[[action]]
-name = "Validated"
-kind = "input"
-from = ["Validating"]
 to = "Routing"
-params = ["source_type", "hmac_verified", "normalized_payload"]
-hint = "Payload validated and source identified. Begin routing."
+params = ["raw_payload", "normalized_payload", "route_key", "source_type", "target_entity_type", "target_action", "webhook_route_id", "route_snapshot_digest", "payload_digest", "delivery_id", "authentication_scheme", "monitor_resolution_enabled", "dedup_enabled", "dedup_window_minutes"]
+hint = "Record an authenticated immutable webhook envelope and begin routing."
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -139,14 +143,6 @@ kind = "input"
 from = ["Processing"]
 to = "Processed"
 hint = "Webhook processing completed successfully."
-
-[[action]]
-name = "ValidationFailed"
-kind = "input"
-from = ["Validating"]
-to = "Rejected"
-params = ["validation_error"]
-hint = "Webhook validation failed (bad HMAC, malformed payload, etc.)."
 
 [[action]]
 name = "RouteFailed"

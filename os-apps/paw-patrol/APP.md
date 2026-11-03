@@ -399,6 +399,13 @@ observed failures, alerts, traces, GitHub events, and Discord incidents.
 PatrolRequest remains a legacy entity set, but new human or manager-agent work
 flows through `WebhookEvent -> WorkRequest.Submit`.
 
+Every route is HMAC-SHA256 authenticated at the HTTP boundary before a
+WebhookEvent exists. Configure its seeded vault reference, send the configured
+signature header over the exact body, and include a unique provider delivery
+ID. Exact replays return the original event without a second dispatch. Route
+records are Admin-only capabilities; downstream WASM uses the immutable target
+snapshot accepted with the event rather than re-reading mutable route state.
+
 ## WASM Modules
 
 Patrol's business logic lives in WASM integrations on entity actions. The Rust

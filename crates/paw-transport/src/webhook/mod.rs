@@ -6,6 +6,7 @@
 //!
 //! This is a Paw OData API client — no dependency on paw-server internals.
 
+mod admission;
 mod trigger;
 
-pub use trigger::{WebhookTrigger, WebhookTriggerConfig, router};
+pub use trigger::{WebhookSecretResolver, WebhookTrigger, WebhookTriggerConfig, router};
