@@ -215,7 +215,7 @@ name = "Escalate"
 kind = "input"
 from = ["Reviewing", "Claimed", "Requested"]
 to = "Escalated"
-params = ["review_summary", "verdict"]
+params = ["review_summary", "live_e2e_summary", "verdict"]
 hint = "Escalate to human when review cannot safely decide."
 
 [[action.triggers]]

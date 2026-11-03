@@ -101,7 +101,7 @@ hint = "Set up the agent identity and session configuration."
 name = "Update"
 kind = "input"
 from = ["Active"]
-params = ["description", "instructions_file_id", "model", "provider", "provider_options_json", "temperature", "tools_enabled", "max_turns"]
+params = ["description", "soul_id", "instructions_file_id", "model", "provider", "provider_options_json", "temperature", "tools_enabled", "max_turns"]
 hint = "Update agent configuration."
 
 [[action]]
