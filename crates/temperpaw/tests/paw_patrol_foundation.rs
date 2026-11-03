@@ -210,10 +210,9 @@ fn paw_ingest_cedar_enforces_webhook_capability_owners() {
     let policy = read(root.join("os-apps/paw-ingest/policies/webhook.cedar"));
     let engine = AuthzEngine::new(&policy).expect("webhook.cedar should parse");
     let attrs = resource_attrs(&[("id", serde_json::json!("webhook-security-test"))]);
-    let admin = SecurityContext::from_headers(&[
-        ("X-Temper-Principal-Id".to_string(), "admin-1".to_string()),
-        ("X-Temper-Principal-Kind".to_string(), "admin".to_string()),
-    ]);
+    let mut admin = SecurityContext::system();
+    admin.principal.id = "admin-1".to_string();
+    admin.principal.kind = temper_authz::PrincipalKind::Admin;
     let agent = agent_context("untrusted-agent", "agent");
 
     for (entity, actions) in [
