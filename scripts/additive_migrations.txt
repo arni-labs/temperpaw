@@ -5,3 +5,4 @@
 # here.
 19 0019_state_timers.sql: a new table and its row policy (CREATE TABLE IF NOT EXISTS, DROP POLICY IF EXISTS)
 20 0020_scheduled_actions.sql: a new table and its row policy (CREATE TABLE IF NOT EXISTS, DROP POLICY IF EXISTS)
+22 0022_first_event_at.sql: a nullable catalog column and a new table (ADD COLUMN IF NOT EXISTS, CREATE TABLE IF NOT EXISTS)
