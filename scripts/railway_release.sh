@@ -3,6 +3,7 @@
 # .github/workflows/railway-redeploy.yml runs it; a person can run it the same way with the same environment.
 #
 #   scripts/railway_release.sh snapshot          what runs now: its deployment, image, routes and probe answers
+#   scripts/railway_release.sh forward           whether EXPECTED_SHA is live already, or goes on top of what serves
 #   scripts/railway_release.sh deploy <sha-tag>  point the service at ghcr.io/arni-labs/temperpaw:<tag>, wait for SUCCESS
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
@@ -13,7 +14,8 @@
 #   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
 #                    after the deploy must equal the answer before it. An operator probe on a route's path also shows
 #                    the route table serves when Railway drops the deployment's "route table rebuilt" log line
-#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok with the same counts
+#   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok and have lost nothing:
+#                    counts may grow; ids from before must remain when both reads returned the whole thing.
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
 #   EXPECTED_SHA     the full commit /paw/version must report
 #   SOAK_SECONDS     how long the new deployment runs before memory is read (default 300)
@@ -27,7 +29,8 @@
 #                    scripts/additive_migrations.txt (through a TCP proxy opened for that and removed). Otherwise the
 #                    way back stops and says which rows a person must remove. A kernel that ignores unknown migrations
 #                    needs neither: the rows stay.
-#   GH_TOKEN         reads the kernel pin and its migrations from GitHub
+#   GH_TOKEN         reads the kernel pin and its migrations, and which commit contains which, from GitHub
+#   DEPLOY_ENV       production: forward takes only a commit main contains
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -174,23 +177,48 @@ probe() {
   printf '%s' "$out"
 }
 
-# The guest read: "<status> <ok> <thing count, ...>".
+# The guest read as {status, ok, things: {<thing>: {whole, ids}}}. A page limit makes whole false.
 guest() {
   [ -n "${GUEST_CHECK_URL:-}" ] || return 0
   local body code read
   body="$(curl -s -m 60 -w '\n%{http_code}' "$GUEST_CHECK_URL" || true)"
   code="$(tail -n1 <<<"$body")"
-  # jq given an empty body prints nothing and succeeds, so an empty answer is named here rather than read as "".
-  read="$(sed '$d' <<<"$body" | jq -r --arg c "$code" \
-    '"\($c) \(.ok // false) \([(.data.records // [])[] | select(type == "object") | "\(.thing) \((.records // []) | length)"] | join(", "))"' \
+  # An empty or unreadable body cannot provide a baseline.
+  read="$(sed '$d' <<<"$body" | jq -c --arg c "$code" \
+    '{status: $c, ok: (.ok // false), things: ([(.data.records // [])[] | select(type == "object")
+      | {key: .thing, value: {whole: (.more != true), ids: ([(.records // [])[] | .id] | sort)}}] | from_entries)}' \
     2>/dev/null || true)"
-  printf '%s' "${read:-${code:-000} false no JSON body}"
+  if [ -n "$read" ]; then
+    printf '%s' "$read"
+  else
+    jq -nc --arg c "${code:-000}" '{status: $c, ok: false, things: {}, error: "no JSON body"}'
+  fi
+}
+
+# One guest read (a file) as a compact count summary; + marks a page limit.
+guest_counts() {
+  jq -r 'if .error then "\(.status) false \(.error)" else "\(.status) \(.ok) \([.things | to_entries[] | "\(.key) \(.value.ids | length)\(if .value.whole then "" else "+" end)"] | join(", "))" end' "$1"
+}
+
+# A paginated window compares counts only: additions can push old ids out of it.
+guest_lost() {
+  jq -rn --slurpfile was "$1" --slurpfile now "$2" '$was[0] as $was | $now[0] as $now |
+    if $now.status != "200" or $now.ok != true then "the guest read answered \($now.status) \($now.ok)"
+    else $was.things | to_entries[] | .key as $thing | .value as $w | $now.things[$thing] as $n
+      | if $n == null then "the guest read has no \($thing) any more"
+        elif ($n.ids | length) < ($w.ids | length) then "the guest read has \($thing) \($n.ids | length), before \($w.ids | length)"
+        elif $w.whole and $n.whole and (($w.ids - $n.ids) | length) > 0
+        then "the guest read lost \(($w.ids - $n.ids) | length) \($thing): \(($w.ids - $n.ids)[:3] | join(", "))"
+        else empty end
+    end'
 }
 
 # The snapshot's guest read: a check after the deploy compares with it, so anything but a good read stops the release.
 guest_baseline() {
   local was
-  was="$(guest)"
+  [ -n "${GUEST_CHECK_URL:-}" ] || return 0
+  guest >"$STATE_DIR/guest-before.json"
+  was="$(guest_counts "$STATE_DIR/guest-before.json")"
   case "${GUEST_CHECK_URL:+set}:$was" in
     : | "set:200 true "*) printf '%s' "$was" ;;
     *) echo "the guest read answered ${was}: no baseline, so no deploy" >&2; return 1 ;;
@@ -291,15 +319,21 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
     jq -r '[.series[]?.pointlist[]?[1] | select(. != null)] | max // empty'
 }
 
-# Everything that must equal the snapshot, for a deployment that now serves. Appends misses to the array named misses.
+# Compare a serving deployment with the snapshot; guest records may grow. Appends to the array named misses.
 against_before() { # $1 deployment id
-  local want got failed after key was now guest_now served
+  local want got failed after key was now guest_now served lost
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
-  # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
-  want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
+  # The logged count is extra evidence: fewer routes than the deployment before ended with is a miss, a missing line is
+  # not, when a probe reaches a route. Both counts are of the same stored routes, read by each binary: the one before
+  # is its last rebuild (read again now, so a route installed after the snapshot counts on both sides; the snapshot's
+  # count when its logs are gone). A route installed after the old deployment's last rebuild adds one to the new
+  # count only, so more routes is reported, not a miss: the probes check that each named route answers as before.
+  want="$(route_count "$(jq -r '.deployment_id // empty' "$STATE_DIR/before.json")" || true)"
+  [ -n "$want" ] || want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
-  echo "route_count: ${got:-none} (before: ${want:-none})"
-  [ -z "$got" ] || [ -z "$want" ] || [ "$got" = "$want" ] || misses+=("route_count ${got}, before ${want}")
+  echo "route_count: ${got:-none} (the deployment before ended with ${want:-none})"
+  [ -z "$got" ] || [ -z "$want" ] || [ "$got" -ge "$want" ] ||
+    misses+=("route_count ${got}, fewer than the ${want} the deployment before ended with")
   failed="$(ask_failures "$1")"
   [ "${failed:-0}" = 0 ] || misses+=("${failed} route actor ask(s) failed during a rebuild")
   after="$(probe)"
@@ -318,11 +352,14 @@ against_before() { # $1 deployment id
     [ "$now" = "$was" ] || misses+=("${key} answered ${now}, before ${was}")
   done < <(jq -r 'keys[]' <<<"$after")
   if [ -n "${GUEST_CHECK_URL:-}" ]; then
-    guest_now="$(guest)"
-    was="$(jq -r .guest "$STATE_DIR/before.json")"
-    echo "guest read: ${guest_now} (before: ${was})"
-    case "$guest_now" in "200 true "*) ;; *) misses+=("the guest read answered ${guest_now}") ;; esac
-    [ "$guest_now" = "$was" ] || misses+=("the guest read changed: ${guest_now}, before ${was}")
+    guest >"$STATE_DIR/guest-now.json"
+    guest_now="$(guest_counts "$STATE_DIR/guest-now.json")"
+    echo "guest read: ${guest_now} (before: $(guest_counts "$STATE_DIR/guest-before.json"))"
+    lost="$(guest_lost "$STATE_DIR/guest-before.json" "$STATE_DIR/guest-now.json")"
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      misses+=("$key")
+    done <<<"$lost"
   fi
   jq -n --arg id "$1" --arg routes "${got:-}" --argjson probes "$after" --arg guest "${guest_now:-}" \
     '{deployment_id: $id, route_count: $routes, probes: $probes, guest: $guest}' >"$STATE_DIR/checked.json"
@@ -458,6 +495,45 @@ report_misses() { # exits 1 when there are any
   fi
 }
 
+# GitHub's comparison of two commits: identical; ahead when the second contains the first; behind when the first
+# contains the second; diverged when neither contains the other.
+compared() { # $1 base, $2 head (a commit or main)
+  gh api "repos/arni-labs/temperpaw/compare/$1...$2" --jq .status
+}
+
+refuse() { # $1 why nothing deploys; it becomes the release record's miss
+  echo "$1: no deploy" | tee -a "$STATE_DIR/errors.txt" >&2
+}
+
+# A deploy never moves the Temper backwards. The release (EXPECTED_SHA) is live already when the commit that serves (the
+# snapshot's /paw/version) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
+# (already=false) only when it contains the commit that serves, and on production only when main contains it. Anything
+# else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Only the Factory's
+# stage and go_live run this; going back on purpose (roll_back, or a run started by hand) does not.
+forward() {
+  local served status
+  served="$(jq -r '.sha // empty' "$STATE_DIR/before.json")"
+  status="$(compared "$served" "$EXPECTED_SHA")" || { refuse "GitHub could not compare ${EXPECTED_SHA} with ${served:-nothing}, which serves"; return 1; }
+  case "$status" in
+    identical | behind)
+      echo "already=true"
+      echo "already live: ${served} serves, and it contains ${EXPECTED_SHA}" >&2
+      return 0
+      ;;
+    ahead) ;;
+    *) refuse "${EXPECTED_SHA} does not contain ${served}, which serves (GitHub: ${status:-no answer}), so it would drop changes that serve"; return 1 ;;
+  esac
+  if [ "${DEPLOY_ENV:-}" = production ]; then
+    status="$(compared "$EXPECTED_SHA" main)" || { refuse "GitHub could not compare ${EXPECTED_SHA} with main"; return 1; }
+    case "$status" in
+      identical | ahead) ;;
+      *) refuse "main does not contain ${EXPECTED_SHA}: only a commit on main goes to production"; return 1 ;;
+    esac
+  fi
+  echo "already=false"
+  echo "${EXPECTED_SHA} goes on top of ${served}" >&2
+}
+
 case "${1:-}" in
   snapshot)
     live="$(live_deployment)"
@@ -495,6 +571,11 @@ case "${1:-}" in
     guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
+    ;;
+
+  forward)
+    [[ "${EXPECTED_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "forward needs EXPECTED_SHA, a full commit" >&2; exit 64; }
+    forward
     ;;
 
   deploy)
@@ -585,7 +666,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "usage: railway_release.sh snapshot|deploy <sha-tag>|check|rollback" >&2
+    echo "usage: railway_release.sh snapshot|forward|deploy <sha-tag>|check|rollback" >&2
     exit 64
     ;;
 esac

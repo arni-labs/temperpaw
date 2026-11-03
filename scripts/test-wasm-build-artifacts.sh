@@ -108,7 +108,7 @@ for mode in default absolute relative missing fail; do
 done
 
 # Exercise the release entry points too: a working builder cannot package a
-# required module when the Docker or CI list never invokes it.
+# required module when Docker's list or CI's build script never invokes it.
 unset TEST_CARGO_MODE
 export CARGO_TARGET_DIR="$TMP/pipeline target"
 python3 - "$ROOT" "$TMP/repo" <<'PYTHON'
@@ -125,13 +125,15 @@ pipelines = {
         r"cd (?:/app/)?(os-apps/[^\s]+) && bash build\.sh",
         (root / "Dockerfile").read_text(),
     ),
+    # CI builds what scripts/ci/build_os_app_modules.py finds on disk.
     "CI": [
         str(Path(script).parent)
-        for script in re.findall(
-            r"^\s+(os-apps/[^\s]+/build\.sh)",
-            (root / ".github/workflows/ci.yml").read_text(),
-            re.MULTILINE,
-        )
+        for script in subprocess.run(
+            ["python3", str(root / "scripts/ci/build_os_app_modules.py"), "--list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
     ],
 }
 # dsf-twin's generated modules are outside this shell-builder fixture.

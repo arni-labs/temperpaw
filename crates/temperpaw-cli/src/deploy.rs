@@ -84,6 +84,12 @@ fn datadog_runtime_variables(
     variables.push("DD_ENV=prod".to_string());
     variables.push("DD_TAGS=team:temperpaw".to_string());
 
+    // Without a Datadog key there is nothing to export to, so telemetry export
+    // is switched off (config.rs reads OTEL_ENABLED and clears the endpoint).
+    // Leaving it unset would default to on and point at a localhost endpoint
+    // that nothing listens on in Railway.
+    variables.push(format!("OTEL_ENABLED={datadog_enabled}"));
+
     if datadog_enabled {
         variables.push("TEMPER_PROFILING_ENABLED=true".to_string());
         variables.push("TEMPER_PROFILING_AUTO_UPLOAD=true".to_string());
@@ -103,8 +109,6 @@ fn datadog_runtime_variables(
         variables.push(
             "DD_TRACE_AGENT_URL=http://datadog-runtime-agent.railway.internal:8126".to_string(),
         );
-    } else {
-        variables.push("TEMPER_DATADOG_RAILWAY_PROFILE=portable-otel".to_string());
     }
 
     variables
@@ -379,36 +383,6 @@ pub async fn run_deploy() -> Result<()> {
     // Get project/env IDs for all deploys
     let (project_id, env_id) = get_railway_ids()?;
 
-    // Always deploy the OTEL collector — it auto-detects DD_API_KEY at startup.
-    // With DD_API_KEY → exports to Datadog. Without → debug exporter (logs to stdout).
-    // To enable Datadog later, just add DD_API_KEY to the otel-collector service in Railway.
-    cliclack::log::step("Deploying OTEL collector...")?;
-
-    let _ = Command::new("railway")
-        .args(["add", "--service", "otel-collector"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    // Set DD vars on the collector (if available now — can be added later via Railway dashboard)
-    let mut collector_vars: Vec<String> = Vec::new();
-    if let Some(key) = &dd_api_key {
-        collector_vars.push(format!("DD_API_KEY={key}"));
-    }
-    if let Some(site) = &dd_site {
-        collector_vars.push(format!("DD_SITE={site}"));
-    }
-    let mut collector_set_args = vec![
-        "variable".to_string(),
-        "set".to_string(),
-        "-s".to_string(),
-        "otel-collector".to_string(),
-    ];
-    collector_set_args.extend(collector_vars);
-    run_interactive("railway", &as_str_slice(&collector_set_args))?;
-
-    deploy_otel_collector(&project_id, &env_id)?;
-
     if let Some(key) = &dd_api_key {
         deploy_datadog_runtime_agent(
             &project_id,
@@ -437,40 +411,12 @@ pub async fn run_deploy() -> Result<()> {
         }
     }
 
-    if dd_api_key.is_some() {
-        cliclack::log::success("OTEL collector → Datadog ✓")?;
-    } else {
+    if dd_api_key.is_none() {
         cliclack::log::info(
-            "OTEL collector deployed in debug mode (no DD_API_KEY).\n  \
-             To enable Datadog: add DD_API_KEY to the otel-collector service in Railway.\n  \
-             The collector will auto-detect it on restart.",
+            "Telemetry export is off because Datadog is disabled for this deploy.\n  \
+             Redeploy with a Datadog API key to turn it on.",
         )?;
     }
-
-    // Point temperpaw at the active OTLP route via Railway private networking.
-    let (otel_endpoint, railway_profile) = if dd_api_key.is_some() {
-        (
-            "OTEL_EXPORTER_OTLP_ENDPOINT=http://datadog-runtime-agent.railway.internal:4318",
-            "TEMPER_DATADOG_RAILWAY_PROFILE=datadog-enhanced-railway",
-        )
-    } else {
-        (
-            "OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.railway.internal:4318",
-            "TEMPER_DATADOG_RAILWAY_PROFILE=portable-otel",
-        )
-    };
-    run_interactive(
-        "railway",
-        &[
-            "variable",
-            "set",
-            "-s",
-            "temperpaw",
-            otel_endpoint,
-            "OTEL_ENABLED=true",
-            railway_profile,
-        ],
-    )?;
 
     // Capture Railway metadata so the deployed server can call Railway's API from the dashboard.
     // These enable the Update / Deploy buttons in the sidebar.
@@ -479,14 +425,10 @@ pub async fn run_deploy() -> Result<()> {
         format!("RAILWAY_ENVIRONMENT_ID={env_id}"),
     ];
 
-    // Resolve service IDs for both services
+    // Resolve service IDs for the services the dashboard manages
     if let Ok(temperpaw_service_id) = resolve_railway_service_id(&project_id, &env_id, "temperpaw")
     {
         meta_vars.push(format!("RAILWAY_SERVICE_ID={temperpaw_service_id}"));
-    }
-    if let Ok(otel_service_id) = resolve_railway_service_id(&project_id, &env_id, "otel-collector")
-    {
-        meta_vars.push(format!("RAILWAY_OTEL_SERVICE_ID={otel_service_id}"));
     }
     if let Ok(runtime_agent_service_id) =
         resolve_railway_service_id(&project_id, &env_id, DATADOG_RUNTIME_AGENT_SERVICE_NAME)
@@ -1291,7 +1233,6 @@ fn deploy_prebuilt_image(project_id: &str, env_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Deploy the OTEL collector as a Railway service.
 /// Interactive Datadog configuration.
 ///
 /// Asks the user if they want Datadog observability. If yes, collects
@@ -1305,10 +1246,8 @@ fn prompt_datadog_config(
 
     if !enable {
         cliclack::log::info(
-            "Datadog skipped. You can enable it later by adding DD_API_KEY\n  \
-             to the otel-collector service in Railway, then adding DD_API_KEY\n  \
-             TEMPER_PROFILING_ENABLED=true, and TEMPER_PROFILING_AUTO_UPLOAD=true\n  \
-             to the temperpaw runtime service.",
+            "Datadog skipped. To enable it later, rerun `temperpaw deploy` with a\n  \
+             Datadog API key.",
         )?;
         return Ok((None, None, None));
     }
@@ -1360,186 +1299,6 @@ fn prompt_datadog_config(
         app_key,
         Some(site.trim().to_string()),
     ))
-}
-
-/// Uses a dynamic entrypoint: if DD_API_KEY is set, exports to Datadog.
-/// Otherwise, uses a debug exporter (traces logged to stdout).
-/// Adding DD_API_KEY later via Railway dashboard auto-restarts with Datadog enabled.
-/// OTEL collector YAML emitted when the service has `DD_API_KEY` set.
-/// GenAI spans are copied to Datadog LLM Observability and also kept in the
-/// ordinary APM trace so guest LLM/tool spans stay stitched to host-boundary
-/// spans in trace search.
-///
-/// Includes `resourcedetection` + `resource` processors per ADR-0037:
-/// without them, Railway containers emit spans with a 12-hex container id
-/// as `host.name`, which makes DD APM bucket spans oddly. The detectors
-/// populate real host/container metadata; the resource processor upserts
-/// `service.name=temperpaw` for any OTLP signal that arrives missing its
-/// resource attributes.
-fn otel_datadog_config() -> &'static str {
-    r#"receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
-
-processors:
-  resourcedetection:
-    detectors: [env, system]
-    timeout: 5s
-    override: false
-  resource:
-    attributes:
-      - key: service.name
-        value: temperpaw
-        action: upsert
-      - key: service.namespace
-        value: temperpaw
-        action: upsert
-      - key: team
-        value: temperpaw
-        action: upsert
-  transform/dbm:
-    error_mode: ignore
-    trace_statements:
-      - context: span
-        statements:
-          - set(attributes["span.type"], "sql") where attributes["db.system"] != nil and attributes["span.type"] == nil
-  batch:
-    send_batch_size: 1000
-    timeout: 5s
-
-exporters:
-  datadog:
-    api:
-      key: ${env:DD_API_KEY}
-      site: ${env:DD_SITE}
-
-service:
-  pipelines:
-    traces/apm:
-      receivers: [otlp]
-      processors: [resourcedetection, resource, transform/dbm, batch]
-      exporters: [datadog]
-    metrics:
-      receivers: [otlp]
-      processors: [resourcedetection, resource, batch]
-      exporters: [datadog]
-    logs:
-      receivers: [otlp]
-      processors: [resourcedetection, resource, batch]
-      exporters: [datadog]
-"#
-}
-
-/// Minimal OTEL collector YAML used when `DD_API_KEY` is absent — pipes
-/// all signals to the debug exporter so an operator can see traces in
-/// the collector logs without a Datadog account. Intentionally does not
-/// include the resourcedetection/resource processors: the debug exporter
-/// prints raw OTLP payloads, so enrichment would just add noise.
-fn otel_debug_config() -> &'static str {
-    "receivers:\n\
-     \x20 otlp:\n\
-     \x20   protocols:\n\
-     \x20     grpc:\n\
-     \x20       endpoint: 0.0.0.0:4317\n\
-     \x20     http:\n\
-     \x20       endpoint: 0.0.0.0:4318\n\
-     \n\
-     processors:\n\
-     \x20 batch:\n\
-     \x20   send_batch_size: 1000\n\
-     \x20   timeout: 5s\n\
-     \n\
-     exporters:\n\
-     \x20 debug:\n\
-     \x20   verbosity: basic\n\
-     \n\
-     service:\n\
-     \x20 pipelines:\n\
-     \x20   traces:\n\
-     \x20     receivers: [otlp]\n\
-     \x20     processors: [batch]\n\
-     \x20     exporters: [debug]\n\
-     \x20   metrics:\n\
-     \x20     receivers: [otlp]\n\
-     \x20     processors: [batch]\n\
-     \x20     exporters: [debug]\n\
-     \x20   logs:\n\
-     \x20     receivers: [otlp]\n\
-     \x20     processors: [batch]\n\
-     \x20     exporters: [debug]\n"
-}
-
-fn otel_collector_entrypoint() -> &'static str {
-    r#"#!/bin/sh
-if [ -n "$DD_API_KEY" ]; then
-  echo "DD_API_KEY detected - exporting to Datadog"
-  exec /otelcol-contrib \
-    --feature-gates=datadog.EnableOperationAndResourceNameV2 \
-    --config /etc/otelcol-contrib/otel-datadog.yaml
-else
-  echo "No DD_API_KEY - running in debug mode (traces logged to stdout)"
-  echo "To enable Datadog: add DD_API_KEY to this service in Railway"
-  exec /otelcol-contrib --config /etc/otelcol-contrib/otel-debug.yaml
-fi
-"#
-}
-
-fn deploy_otel_collector(project_id: &str, env_id: &str) -> Result<()> {
-    let tmp = std::env::temp_dir().join("temperpaw-otel-deploy");
-    let _ = std::fs::create_dir_all(&tmp);
-
-    // Dockerfile with both config files + a startup script that picks the right one
-    std::fs::write(
-        tmp.join("Dockerfile"),
-        "FROM otel/opentelemetry-collector-contrib:latest AS collector\n\
-         \n\
-         FROM alpine:3.20\n\
-         \n\
-         RUN apk add --no-cache ca-certificates\n\
-         \n\
-         COPY --from=collector /otelcol-contrib /otelcol-contrib\n\
-         COPY otel-datadog.yaml /etc/otelcol-contrib/otel-datadog.yaml\n\
-         COPY otel-debug.yaml /etc/otelcol-contrib/otel-debug.yaml\n\
-         COPY --chmod=755 entrypoint.sh /entrypoint.sh\n\
-         ENTRYPOINT [\"/entrypoint.sh\"]\n",
-    )?;
-
-    // Entrypoint: choose config based on DD_API_KEY presence
-    std::fs::write(tmp.join("entrypoint.sh"), otel_collector_entrypoint())?;
-
-    // Config with Datadog exporter — used when DD_API_KEY is present
-    std::fs::write(tmp.join("otel-datadog.yaml"), otel_datadog_config())?;
-
-    // Config with debug exporter — used when DD_API_KEY is absent
-    std::fs::write(tmp.join("otel-debug.yaml"), otel_debug_config())?;
-
-    std::fs::write(
-        tmp.join("railway.toml"),
-        "[build]\nbuilder = \"dockerfile\"\ndockerfilePath = \"Dockerfile\"\n\n\
-         [deploy]\nrestartPolicyType = \"ON_FAILURE\"\nrestartPolicyMaxRetries = 3\n",
-    )?;
-
-    let status = Command::new("railway")
-        .args(["up", "-s", "otel-collector", "-p", project_id, "-e", env_id])
-        .current_dir(&tmp)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .context("Failed to deploy OTEL collector")?;
-
-    let _ = std::fs::remove_dir_all(&tmp);
-
-    if !status.success() {
-        anyhow::bail!("OTEL collector deploy failed");
-    }
-
-    cliclack::log::success("OTEL collector deployed ✓")?;
-    Ok(())
 }
 
 fn deploy_datadog_runtime_agent(
