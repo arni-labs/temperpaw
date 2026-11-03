@@ -176,10 +176,7 @@ async fn native_model_investigation_creates_one_worker_and_reports_correlated_ev
 #[test]
 fn installed_bundle_includes_investigation_policy_and_retains_provider_guards() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../os-apps");
-    temper_platform::os_apps::add_os_apps_dir_preferred(
-        root,
-        temper_platform::os_apps::DirApps::Every,
-    );
+    temper_platform::os_apps::set_os_apps_dir(root);
     let bundle = temper_platform::os_apps::get_os_app("dsf-twin").unwrap();
     assert!(
         bundle

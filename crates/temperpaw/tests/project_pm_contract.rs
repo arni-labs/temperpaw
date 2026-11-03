@@ -36,11 +36,13 @@ fn dashboard_admin() -> SecurityContext {
             role: None,
             acting_for: None,
             agent_type: None,
+            label: None,
             attributes: HashMap::new(),
         },
         context_attrs: HashMap::new(),
         correlation_id: "project-pm-contract".into(),
         cause: None,
+        credential: None,
     }
 }
 
