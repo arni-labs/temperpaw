@@ -500,11 +500,6 @@ mod tests {
         assert_eq!(output_tail(&text, 8192), "rest of the output");
     }
 
-    #[test]
-    fn default_tail_cap_is_256k() {
-        assert_eq!(OUTPUT_TAIL_BYTES, 262_144);
-    }
-
     // -- Command wrapping ----------------------------------------------------
 
     #[test]

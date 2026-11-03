@@ -201,6 +201,20 @@ fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> Bootstra
     }
 }
 
+/// Bring back the policies and modules installed apps run on, then see what state those apps are
+/// in. Modules come first: an app with modules can only read as ready once they are registered.
+async fn recover_installed_apps(
+    state: &PlatformState,
+    platform_store: &dyn PlatformStore,
+) -> Result<InstalledAppsRuntimeRecoverySummary> {
+    recover_cedar_policies(state, platform_store).await;
+    if let Err(error) = state.server.load_wasm_modules().await {
+        record_wasm_module_load_failure("phase_6a_pre_recovery");
+        return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
+    }
+    Ok(recover_installed_apps_runtime_state(state, platform_store).await)
+}
+
 #[cfg(test)]
 fn runtime_indexes_required_before_reconcile(
     summary: &InstalledAppsRuntimeRecoverySummary,
@@ -1518,6 +1532,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             "github_token",
             config.github_token
         );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "genesis_token",
+            config.genesis_token
+        );
         seed_secret!(vault, &storage, &tenant, "dd_api_key", config.dd_api_key);
         seed_secret!(vault, &storage, &tenant, "dd_app_key", config.dd_app_key);
         seed_secret!(vault, &storage, &tenant, "exa_api_key", config.exa_api_key);
@@ -1604,13 +1625,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             &tenant,
             "railway_environment_id",
             config.railway_environment_id
-        );
-        seed_secret!(
-            vault,
-            &storage,
-            &tenant,
-            "railway_otel_service_id",
-            config.railway_otel_service_id
         );
         seed_secret!(
             vault,
@@ -1959,9 +1973,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         tracing::info!(
             "Phase 6a: Recovering runtime app state, persisted WASM modules + Cedar policies..."
         );
-        recover_cedar_policies(&state, platform_store).await;
-        let app_runtime_recovery =
-            recover_installed_apps_runtime_state(&state, platform_store).await;
+        let app_runtime_recovery = recover_installed_apps(&state, platform_store).await?;
         tracing::info!(
             ready = app_runtime_recovery.ready,
             healed = app_runtime_recovery.healed,
@@ -1971,10 +1983,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             result = installed_app_runtime_recovery_result(&app_runtime_recovery),
             "Installed OS app runtime recovery complete"
         );
-        if let Err(error) = state.server.load_wasm_modules().await {
-            record_wasm_module_load_failure("phase_6a_pre_recovery");
-            return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
-        }
         record_startup_phase_duration("phase_6a_pre_recovery", phase_started.elapsed());
         tracing::info!(
             elapsed_ms = phase_started.elapsed().as_millis(),
@@ -4110,6 +4118,7 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::anyhow;
+    use serde_json::Value;
     use temper_platform::recovery::InstalledAppsRuntimeRecoverySummary;
     use temper_runtime::tenant::TenantId;
     use temper_server::secrets::vault::SecretsVault;
@@ -4123,8 +4132,9 @@ mod tests {
         genesis_bootstrap_app_names, genesis_bootstrap_timeout, genesis_cache_restore_timeout,
         installed_app_runtime_recovery_result, load_or_create_temper_api_key,
         local_wasm_startup_policy, orphaned_session_recovery_limit,
-        paw_soul_content_is_personalized, repair_default_agent_tools_enabled,
-        resolve_startup_secret, runtime_indexes_required_before_reconcile, runtime_recovery_plan,
+        paw_soul_content_is_personalized, recover_installed_apps,
+        repair_default_agent_tools_enabled, resolve_startup_secret,
+        runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
         start_http_endpoint_routes, start_kernel_runtime, startup_discord_connect_result,
         startup_discord_summary_label, startup_os_apps,
@@ -4134,6 +4144,8 @@ mod tests {
 
     static ORPHANED_SESSION_ENV_LOCK: Mutex<()> = Mutex::new(());
     static GENESIS_ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// The app catalog is one per process, and `set_os_apps_dir` replaces all of it.
+    static CATALOG_LOCK: Mutex<()> = Mutex::new(());
 
     fn empty_install_result() -> temper_platform::os_apps::InstallResult {
         temper_platform::os_apps::InstallResult::default()
@@ -4607,6 +4619,58 @@ on_timeout = "Fire"
     }
 
     #[test]
+    fn an_installed_app_with_a_module_is_ready_after_a_restart() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("apps");
+        let app = apps.join("module-app");
+        let module = app.join("wasm").join("echo");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(
+            app.join("app.toml"),
+            "name = \"module-app\"\ndescription = \"An app with one module\"\nversion = \"0.1.0\"\n\n\
+             [[wasm_modules]]\nname = \"echo\"\ncriticality = \"app-required\"\nstartup_loading = \"lazy\"\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("APP.md"), "# Module app\n").unwrap();
+        // The smallest valid module: the header and no sections.
+        std::fs::write(module.join("echo.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        temper_platform::os_apps::add_os_apps_dir(apps);
+
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let data_dir = dir.path().join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let summary = runtime.block_on(async {
+            let process = || async {
+                let mut state = temper_platform::PlatformState::new(None);
+                let store = temper_store_turso::TursoEventStore::new(&events, None)
+                    .await
+                    .unwrap();
+                state
+                    .server
+                    .set_storage_stack(temper_server::StorageStack::from_turso(store));
+                state.server.data_dir = data_dir.clone();
+                state
+            };
+            let first = process().await;
+            temper_platform::os_apps::install_os_app(&first, "module-tenant", "module-app")
+                .await
+                .unwrap();
+
+            // A new process on the same store: its module registry starts empty.
+            let restarted = process().await;
+            let store = restarted.server.platform_turso_store().unwrap();
+            recover_installed_apps(&restarted, &store).await.unwrap()
+        });
+
+        assert_eq!(summary.needs_reconcile, 0, "{summary:?}");
+        assert_eq!(summary.ready, 1, "{summary:?}");
+    }
+
+    #[test]
     fn installed_app_runtime_recovery_result_prioritizes_bounded_hot_path_state() {
         assert_eq!(
             installed_app_runtime_recovery_result(&InstalledAppsRuntimeRecoverySummary {
@@ -4736,6 +4800,7 @@ on_timeout = "Fire"
 
     #[test]
     fn startup_os_apps_includes_core_apps() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();
@@ -4749,6 +4814,7 @@ on_timeout = "Fire"
 
     #[test]
     fn startup_os_app_order_dedupes_shared_dependencies() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();

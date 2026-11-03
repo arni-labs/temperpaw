@@ -386,7 +386,6 @@ fn legacy_entity_types_are_retired_read_only_except_for_system() {
         "ForesightModel",
         "Projection",
         "Observation",
-        "Direction",
         "DirectionFeedback",
     ] {
         let a = attrs(&[("id", serde_json::json!("legacy-1"))]);

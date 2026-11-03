@@ -8,6 +8,15 @@ fn repo_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+fn load_json(relative_path: &str) -> Value {
+    let path = repo_root().join(relative_path);
+    serde_json::from_str(
+        &std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display())),
+    )
+    .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
+}
+
 fn load_text(relative_path: &str) -> String {
     let path = repo_root().join(relative_path);
     std::fs::read_to_string(&path)
@@ -179,12 +188,15 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         }
     }
 
+    // Non-vacuity guards: the walk must find SDK manifests and lockfiles at all, so a moved
+    // os-apps layout cannot make this pass by inspecting nothing. They are not size floors;
+    // the number of WASM modules changes whenever an app is added or retired.
     assert!(
-        sdk_manifests > 20,
+        sdk_manifests > 0,
         "contract must inspect the packaged WASM module dependency surface"
     );
     assert!(
-        sdk_lockfiles > 20,
+        sdk_lockfiles > 0,
         "contract must inspect checked-in WASM Cargo.lock resolution"
     );
 }
