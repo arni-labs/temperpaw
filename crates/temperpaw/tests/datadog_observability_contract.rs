@@ -188,12 +188,15 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
         }
     }
 
+    // Non-vacuity guards: the walk must find SDK manifests and lockfiles at all, so a moved
+    // os-apps layout cannot make this pass by inspecting nothing. They are not size floors;
+    // the number of WASM modules changes whenever an app is added or retired.
     assert!(
-        sdk_manifests > 20,
+        sdk_manifests > 0,
         "contract must inspect the packaged WASM module dependency surface"
     );
     assert!(
-        sdk_lockfiles > 20,
+        sdk_lockfiles > 0,
         "contract must inspect checked-in WASM Cargo.lock resolution"
     );
 }

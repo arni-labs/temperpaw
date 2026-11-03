@@ -37,3 +37,8 @@ opt-level = 3
 
 [profile.dev.package.regalloc2]
 opt-level = 3
+
+# Full debug information across dozens of integration-test executables produces about 30 GiB of build artifacts.
+# Omit it to keep test builds within the CI runner's disk budget.
+[profile.test]
+debug = 0
