@@ -8,15 +8,6 @@ fn repo_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn load_json(relative_path: &str) -> Value {
-    let path = repo_root().join(relative_path);
-    serde_json::from_str(
-        &std::fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display())),
-    )
-    .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
-}
-
 fn load_text(relative_path: &str) -> String {
     let path = repo_root().join(relative_path);
     std::fs::read_to_string(&path)
