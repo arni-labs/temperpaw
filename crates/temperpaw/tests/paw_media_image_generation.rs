@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -6,12 +6,6 @@ fn repo_root() -> PathBuf {
         .and_then(|p| p.parent())
         .expect("crate should live under repo/crates/temperpaw")
         .to_path_buf()
-}
-
-fn read(path: impl Into<PathBuf>) -> String {
-    let path = path.into();
-    fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
 }
 
 #[test]
