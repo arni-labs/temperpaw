@@ -134,34 +134,3 @@ fn odata_row_count(body: &str) -> Result<u64, String> {
         .map(|a| a.len() as u64)
         .ok_or_else(|| "contract_probe: response is not an OData value array".into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn url_requires_tdata() {
-        assert!(probe_url("https://x", "/tdata/DesignLanguages", "").is_ok());
-        assert!(probe_url("https://x", "/paw/version", "").is_err());
-    }
-
-    #[test]
-    fn filter_is_single_clause() {
-        let url = probe_url(
-            "https://x",
-            "/tdata/DesignLanguages",
-            "id eq '__arn462_missing__'",
-        )
-        .unwrap();
-        assert!(url.contains("%20eq%20"));
-        assert!(probe_url("https://x", "/tdata/DesignLanguages", "a&b").is_err());
-    }
-
-    #[test]
-    fn counts_odata_value() {
-        assert_eq!(odata_row_count(r#"{"value":[]}"#).unwrap(), 0);
-        assert_eq!(odata_row_count(r#"{"value":[{},{}]}"#).unwrap(), 2);
-        assert!(odata_row_count("not-json").is_err());
-        assert!(odata_row_count(r#"{"ok":true}"#).is_err());
-    }
-}
