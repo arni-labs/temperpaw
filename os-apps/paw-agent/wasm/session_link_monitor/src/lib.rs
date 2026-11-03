@@ -215,13 +215,15 @@ fn dispatch_parent_error(
         &link.on_failure_action,
         &json!({
             "error_message": error_message,
-            "ErrorMessage": error_message,
             "child_session_id": link.child_session_id,
             "child_status": child_status,
         }),
     )
 }
 
+/// Send `action` to the link's parent. Each key goes in one spelling, the
+/// snake_case name the parent's action declares, so the parent's fields carry
+/// no PascalCase copies.
 fn dispatch_parent_action(
     ctx: &Context,
     api_url: &str,
