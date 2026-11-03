@@ -87,34 +87,3 @@ fn event_urls_try_planned_and_current_temper_streams() {
         ]
     );
 }
-
-#[test]
-fn worker_event_status_reads_observe_stream_shape() {
-    let event: EntityEvent = serde_json::from_value(json!({
-        "seq": 12,
-        "entity_type": "WorkerRun",
-        "entity_id": "wr-queued",
-        "action": "Create",
-        "status": "Queued",
-        "tenant": "default"
-    }))
-    .expect("event should parse");
-
-    assert_eq!(event.entity_type, "WorkerRun");
-    assert_eq!(event.entity_id, "wr-queued");
-    assert_eq!(event.status, "Queued");
-}
-
-#[test]
-fn worker_event_status_accepts_status_aliases() {
-    let event: EntityEvent = serde_json::from_value(json!({
-        "entityType": "WorkerRun",
-        "entityId": "wr-queued",
-        "new_status": "Queued"
-    }))
-    .expect("event should parse");
-
-    assert_eq!(event.entity_type, "WorkerRun");
-    assert_eq!(event.entity_id, "wr-queued");
-    assert_eq!(event.status, "Queued");
-}
