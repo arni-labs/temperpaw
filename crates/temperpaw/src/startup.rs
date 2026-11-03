@@ -4118,7 +4118,6 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::anyhow;
-    use serde_json::Value;
     use temper_platform::recovery::InstalledAppsRuntimeRecoverySummary;
     use temper_runtime::tenant::TenantId;
     use temper_server::secrets::vault::SecretsVault;
