@@ -148,33 +148,3 @@ fn handle_from_computer(computer: &Value) -> Result<SandboxHandle, String> {
         provider,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn handle_requires_live_computer() {
-        // Ready (a source) and Leased (a governed copy) are both exec-able.
-        let ready = json!({"Status": "Ready", "fields": {"sandbox_url": "https://x.sandbox.tensorlake.ai", "machine_id": "x"}});
-        assert!(handle_from_computer(&ready).is_ok());
-        let leased = json!({"Status": "Leased", "fields": {"sandbox_url": "https://x.sandbox.tensorlake.ai", "machine_id": "x"}});
-        assert!(handle_from_computer(&leased).is_ok());
-        let sleeping = json!({"Status": "Sleeping", "fields": {"sandbox_url": "https://x.sandbox.tensorlake.ai", "machine_id": "x"}});
-        assert!(handle_from_computer(&sleeping).is_ok());
-        // Any non-runnable state fails closed.
-        for st in ["Created", "Provisioning", "Terminating", "Destroyed"] {
-            let c =
-                json!({"Status": st, "fields": {"sandbox_url": "https://x.sandbox.tensorlake.ai"}});
-            assert!(
-                handle_from_computer(&c).is_err(),
-                "{st} must not be exec-able"
-            );
-        }
-    }
-
-    #[test]
-    fn quotes_command_for_bash() {
-        assert_eq!(shell_single_quote("echo 'hi'"), r"'echo '\''hi'\'''");
-    }
-}

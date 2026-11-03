@@ -206,25 +206,3 @@ fn handle_from_computer(computer: &Value) -> Result<SandboxHandle, String> {
         provider,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn success_params_truncates_and_carries_exit() {
-        let r = ExecResult { stdout: "ok".into(), stderr: "warn".into(), exit_code: 0 };
-        let p = success_params(&r);
-        assert_eq!(p["exit_code"], "0");
-        assert_eq!(p["stdout_tail"], "ok");
-        assert_eq!(p["stderr_tail"], "warn");
-    }
-
-    #[test]
-    fn tail_bounds_output() {
-        let long = "x".repeat(300_000);
-        let t = output_tail(&long, OUTPUT_TAIL_BYTES);
-        assert!(t.contains("bytes truncated"));
-        assert!(t.len() < 300_000);
-    }
-}

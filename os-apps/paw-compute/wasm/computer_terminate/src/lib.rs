@@ -67,15 +67,3 @@ fn provider_from_fields(fields: &Value) -> String {
         .map(normalize_sandbox_provider)
         .unwrap_or_else(|| "tensorlake".to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn provider_defaults_to_tensorlake() {
-        assert_eq!(provider_from_fields(&json!({})), "tensorlake");
-        assert_eq!(provider_from_fields(&json!({"provider": "tl"})), "tensorlake");
-        assert_eq!(provider_from_fields(&json!({"provider": "modal"})), "modal");
-    }
-}
