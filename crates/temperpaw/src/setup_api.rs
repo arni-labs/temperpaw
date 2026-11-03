@@ -462,6 +462,7 @@ pub fn router(state: SetupApiState) -> Router {
         )
         .route("/paw/infra/railway/redeploy", post(railway_redeploy))
         .route("/paw/version", get(get_version))
+        .route("/paw/version/sha", get(get_version_sha))
         .route("/paw/infra/updates", get(check_for_updates))
         .route("/paw/infra/edge", get(check_edge_build))
         .with_state(state)
@@ -2774,6 +2775,19 @@ struct VersionInfo {
 async fn get_version(State(state): State<SetupApiState>) -> Json<VersionInfo> {
     Json(VersionInfo {
         version: state.build_version.clone(),
+        sha: state.build_sha.clone(),
+    })
+}
+
+#[derive(Serialize)]
+struct BuildSha {
+    sha: String,
+}
+
+/// The commit this build was made from and nothing else, for anyone (`auth::is_public_path`): a release reads it to
+/// know what serves without holding a key, as katagami.ai's `/api/version` does.
+async fn get_version_sha(State(state): State<SetupApiState>) -> Json<BuildSha> {
+    Json(BuildSha {
         sha: state.build_sha.clone(),
     })
 }

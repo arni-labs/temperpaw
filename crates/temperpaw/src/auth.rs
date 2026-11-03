@@ -501,6 +501,9 @@ fn is_public_path(method: &str, path: &str) -> bool {
         || path.starts_with("/discord/interaction")
         || path.starts_with("/triggers/webhook/")
         || (method == "GET" && (path == "/tdata" || path == "/tdata/"))
+        // The build's commit only (setup_api's get_version_sha): what serves is no secret, and a release reads it
+        // without a key. /paw/version, which also names the version, stays signed in.
+        || (method == "GET" && path == "/paw/version/sha")
         || is_dashboard_public_path(path)
 }
 
@@ -931,6 +934,13 @@ mod tests {
         AuthState, HttpEndpointTables, claims_from_headers, is_public_path,
         issue_session_cookie_value, layer, middleware, router,
     };
+
+    #[test]
+    fn the_build_sha_is_public_and_the_version_is_not() {
+        assert!(is_public_path("GET", "/paw/version/sha"));
+        assert!(!is_public_path("POST", "/paw/version/sha"));
+        assert!(!is_public_path("GET", "/paw/version"));
+    }
 
     #[test]
     fn webhook_trigger_paths_are_public_for_external_providers() {
