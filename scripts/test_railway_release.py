@@ -372,7 +372,8 @@ jq -n --arg guest "$was" '{route_count:"11",probes:{},guest:$guest}' >"$STATE_DI
         functions = ''
         for name in ('routes_serve', 'against_before'):
             functions += name + '()' + script.split('\n' + name + '()', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
-        # The table answers a method no route takes with its 404; a built-in path answers 405 with no body.
+        # The table answers a method no route takes with its 404 once the key resolves; a TemperPaw path answers the release
+        # key 401, route or not.
         mock = r'''
 wait_healthy() { :; }
 ask_failures() { echo 0; }
@@ -385,36 +386,36 @@ curl() {
   return 0
 }
 '''
-        judge = 'POST operator /katagami/judge'
-        status = 'GET operator /paw/setup/status'
+        judge = 'POST release /katagami/judge'
+        status = 'GET release /paw/setup/status'
         # (new deployment's count, old deployment's last count read now, snapshot's count, answers, table, misses)
         for logged, before_logged, before_count, answers, table, misses in [
-            ('11', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '11', '11', {judge: '401', status: '200'}, 'loaded', []),
-            ('', '', '', {judge: '401', status: '200'}, 'loaded', []),
-            ('10', '11', '11', {judge: '401', status: '200'}, 'loaded',
+            ('11', '11', '11', {judge: '401', status: '401'}, 'loaded', []),
+            ('', '11', '11', {judge: '401', status: '401'}, 'loaded', []),
+            ('', '', '', {judge: '401', status: '401'}, 'loaded', []),
+            ('10', '11', '11', {judge: '401', status: '401'}, 'loaded',
              ['route_count 10, fewer than the 11 the deployment before ended with']),
             # A route installed after the snapshot: the old deployment's last rebuild counts it too.
-            ('14', '14', '13', {judge: '401', status: '200'}, 'loaded', []),
+            ('14', '14', '13', {judge: '401', status: '401'}, 'loaded', []),
             # A route installed after the old deployment's last rebuild: only the new count has it.
-            ('14', '13', '13', {judge: '401', status: '200'}, 'loaded', []),
+            ('14', '13', '13', {judge: '401', status: '401'}, 'loaded', []),
             # The old deployment's logs are gone: the snapshot's count stands in.
-            ('10', '', '11', {judge: '401', status: '200'}, 'loaded',
+            ('10', '', '11', {judge: '401', status: '401'}, 'loaded',
              ['route_count 10, fewer than the 11 the deployment before ended with']),
             # Only a built-in path answers, or the route path answers 404: nothing shows the table serves.
-            ('', '11', '11', {judge: '404', status: '200'}, 'loaded',
-             ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
-            ('', '11', '11', {judge: '401', status: '200'}, 'empty',
-             ['the deployment logged no route table for the default tenant, and no signed-in probe reaches a route']),
+            ('', '11', '11', {judge: '404', status: '401'}, 'loaded',
+             ['the deployment logged no route table for the default tenant, and no release probe reaches a route']),
+            ('', '11', '11', {judge: '401', status: '401'}, 'empty',
+             ['the deployment logged no route table for the default tenant, and no release probe reaches a route']),
         ]:
             with self.subTest(logged=logged, before_logged=before_logged, before=before_count, answers=answers, table=table), tempfile.TemporaryDirectory() as tmp:
-                before = {'deployment_id': 'old', 'route_count': before_count, 'probes': {judge: answers[judge], status: '200'}}
+                before = {'deployment_id': 'old', 'route_count': before_count, 'probes': {judge: answers[judge], status: '401'}}
                 Path(tmp, 'before.json').write_text(__import__('json').dumps(before))
                 command = ('set -euo pipefail\n' + functions + mock +
                            '\nmisses=()\nagainst_before dep\nprintf "MISS %s\\n" "${misses[@]+"${misses[@]}"}"\n')
                 env = dict(os.environ, STATE_DIR=tmp, LOGGED=logged, BEFORE_LOGGED=before_logged, TABLE=table, TABLE_PATH='/katagami/judge',
                            AFTER=__import__('json').dumps(answers), PROBE_ROUTES=judge + '\n' + status,
-                           BASE_URL='https://example.test', TEMPER_API_KEY='test')
+                           BASE_URL='https://example.test', RELEASE_KEY='test')
                 result = subprocess.run(['bash', '-c', command], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 got = [line[5:] for line in result.stdout.splitlines() if line.startswith('MISS ') and line[5:]]
