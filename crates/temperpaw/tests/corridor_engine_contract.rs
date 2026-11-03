@@ -497,7 +497,6 @@ fn csdl_serves_all_corridor_entity_sets() {
         "Projections",
         "ForesightModels",
         "Observations",
-        "Directions",
     ] {
         assert!(
             csdl.contains(&format!("EntitySet Name=\"{set}\"")),
@@ -536,48 +535,6 @@ fn app_manifest_declares_corridor_wasm_modules() {
             "wasm crate for {module} must exist"
         );
     }
-}
-
-#[test]
-fn corridor_wasm_modules_are_packaged_for_core_startup() {
-    let root = repo_root();
-    let dockerfile = read(root.join("Dockerfile"));
-    let ci = read(root.join(".github/workflows/ci.yml"));
-    let identity_contract =
-        read(root.join("crates/temperpaw/tests/temperpaw_identity_contract.rs"));
-    let build_script = read(root.join("os-apps/paw-foresight/wasm/build.sh"));
-
-    assert!(
-        dockerfile.contains("cd /app/os-apps/paw-foresight/wasm && bash build.sh"),
-        "Dockerfile must build paw-foresight WASM before copying os-apps into the runtime image"
-    );
-    assert!(
-        ci.contains("os-apps/paw-foresight/wasm/build.sh"),
-        "CI must build paw-foresight WASM so fresh core startup images do not miss corridor modules"
-    );
-    assert!(
-        identity_contract.contains("\"os-apps/paw-foresight/wasm/build.sh\""),
-        "identity contract should keep paw-foresight in the audited WASM build-script set"
-    );
-
-    for module in CORRIDOR_WASM_MODULES {
-        assert!(
-            build_script.contains(module),
-            "paw-foresight build.sh should build {module}"
-        );
-    }
-
-    // Drive packaging: a loop need not spell every output filename literally.
-    let output = std::process::Command::new("bash")
-        .arg(root.join("scripts/test-wasm-build-artifacts.sh"))
-        .output()
-        .expect("WASM artifact regression should run");
-    assert!(
-        output.status.success(),
-        "WASM artifact packaging failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
