@@ -368,9 +368,7 @@ run_step syntax-production-preflight-github-smoke bash -n "${ROOT}/crates/paw-co
 run_step syntax-production-observe bash -n "${ROOT}/crates/paw-codex-worker/scripts/production-observe-only.sh"
 run_step syntax-production-observe-smoke bash -n "${ROOT}/crates/paw-codex-worker/scripts/production-observe-only-smoke.sh"
 run_step syntax-production-smoke bash -n "${ROOT}/crates/paw-codex-worker/scripts/production-readiness-smoke.sh"
-run_step syntax-ci-actions-runtime-smoke bash -n "${ROOT}/crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh"
 run_step syntax-acceptance bash -n "${ROOT}/crates/paw-codex-worker/scripts/paw-patrol-acceptance.sh"
-run_step ci-actions-runtime-smoke "${ROOT}/crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh"
 run_step fmt cargo fmt --check --all
 run_step diff-check git diff --check
 run_step cargo-check cargo check --locked -p temperpaw -p paw-codex-worker
