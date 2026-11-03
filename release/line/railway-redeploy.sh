@@ -14,7 +14,7 @@
 #   LOGIN_RAILWAY_TOKEN_STAGING (staging only), LOGIN_RAILWAY_TOKEN   -> RAILWAY_API_TOKEN (secret RAILWAY_TOKEN)
 #   LOGIN_TEMPER_API_KEY_STAGING (staging only), LOGIN_TEMPER_API_KEY -> TEMPER_API_KEY (the environment's operator key)
 #   LOGIN_DATADOG_API_KEY, LOGIN_DATADOG_APP_KEY, LOGIN_DATADOG_SITE (optional) -> DD_API_KEY, DD_APP_KEY, DD_SITE
-#   LOGIN_GITHUB_READ (else LOGIN_GITHUB_TOKEN, else GH_TOKEN already set) -> GH_TOKEN, for commit compare and the kernel pin
+#   LOGIN_GITHUB_READ (JSON {"arni-labs": token}, or a bare token; else GH_TOKEN already set) -> GH_TOKEN, for commit compare and the kernel pin
 set -euo pipefail
 
 : "${SRC:?}" "${COMMIT:?}" "${STEP:?}" "${SCRATCH:?}"
@@ -22,10 +22,10 @@ cd "$SRC"
 
 # --- what the step means: the workflow's Factory step, the environment, whether it deploys
 case "$STEP" in
-  stage) FACTORY_STEP=stage;         DEPLOY_ENV=staging;    MODE=deploy ;;
-  check) FACTORY_STEP=check_staging; DEPLOY_ENV=staging;    MODE=check ;;
-  live)  FACTORY_STEP=go_live;       DEPLOY_ENV=production; MODE=deploy ;;
-  back)  FACTORY_STEP=roll_back;     DEPLOY_ENV=production; MODE=deploy ;;
+  stage) DEPLOY_ENV=staging;    MODE=deploy ;;
+  check) DEPLOY_ENV=staging;    MODE=check ;;
+  live)  DEPLOY_ENV=production; MODE=deploy ;;
+  back)  DEPLOY_ENV=production; MODE=deploy ;;
   *) echo "unknown STEP ${STEP}" >&2; echo '{"conclusion":"failure","what":"unknown step"}'; exit 64 ;;
 esac
 
@@ -75,9 +75,37 @@ fi
 DD_API_KEY="${LOGIN_DATADOG_API_KEY:-}"
 DD_APP_KEY="${LOGIN_DATADOG_APP_KEY:-}"
 DD_SITE="${LOGIN_DATADOG_SITE:-}"
-GH_TOKEN="${LOGIN_GITHUB_READ:-${LOGIN_GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+# LOGIN_GITHUB_READ is a JSON object keyed by GitHub account, {"arni-labs": "<token>"}; a bare token is taken as it is.
+if [ -n "${LOGIN_GITHUB_READ:-}" ]; then
+  GH_TOKEN="$(jq -r 'if type == "object" then .["arni-labs"] // empty else . end' <<<"$LOGIN_GITHUB_READ" 2>/dev/null || printf '%s' "$LOGIN_GITHUB_READ")"
+fi
+GH_TOKEN="${GH_TOKEN:-}"
 export RAILWAY_API_TOKEN TEMPER_API_KEY DD_API_KEY DD_APP_KEY GH_TOKEN
 [ -n "$DD_SITE" ] && export DD_SITE
+
+# The sandbox has curl but not gh; scripts/railway_release.sh and this script only use `gh api <path> [-H h] [--jq expr]`.
+if ! command -v gh >/dev/null 2>&1; then
+  mkdir -p "$SCRATCH/bin"
+  cat > "$SCRATCH/bin/gh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = api ] || { echo "gh shim: only 'gh api' is supported" >&2; exit 2; }
+shift
+path="$1"; shift
+accept="application/vnd.github+json"; jqexpr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -H) case "$2" in [Aa]ccept:*) accept="${2#*: }" ;; esac; shift 2 ;;
+    --jq) jqexpr="$2"; shift 2 ;;
+    *) echo "gh shim: unsupported argument $1" >&2; exit 2 ;;
+  esac
+done
+body="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN:?}" -H "Accept: $accept" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/${path#/}")"
+if [ -n "$jqexpr" ]; then jq -r "$jqexpr" <<<"$body"; else printf '%s\n' "$body"; fi
+SHIM
+  chmod +x "$SCRATCH/bin/gh"
+  export PATH="$SCRATCH/bin:$PATH"
+fi
 
 IMAGE_TAG="${REF:-sha-${COMMIT:0:7}}"
 EXPECTED_SHA_INPUT="$COMMIT"
