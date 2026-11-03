@@ -33,6 +33,7 @@ fn context(entity: &str, module: &str, state: Value) -> WasmInvocationContext {
         workflow_root_entity_id: None,
         workflow_run_id: None,
         http_request: None,
+        trigger_principal: None,
     }
 }
 
