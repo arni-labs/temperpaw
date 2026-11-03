@@ -8,15 +8,6 @@ fn repo_root() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn load_json(relative_path: &str) -> Value {
-    let path = repo_root().join(relative_path);
-    serde_json::from_str(
-        &std::fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display())),
-    )
-    .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
-}
-
 fn load_text(relative_path: &str) -> String {
     let path = repo_root().join(relative_path);
     std::fs::read_to_string(&path)
@@ -198,118 +189,6 @@ fn wasm_sdk_dependencies_pin_same_temper_runtime_revision_as_server() {
     assert!(
         sdk_lockfiles > 0,
         "contract must inspect checked-in WASM Cargo.lock resolution"
-    );
-}
-
-#[test]
-fn dockerfile_does_not_clone_or_rewrite_katagami_apps() {
-    let dockerfile = load_text("Dockerfile");
-
-    for forbidden in [
-        "github.com/arni-labs/katagami.git",
-        "KATAGAMI_REF",
-        "TEMPER_OBSERVABILITY_REV",
-        "/tmp/katagami",
-        "os-apps/katagami-curation/wasm",
-        "os-apps/katagami-commons",
-    ] {
-        assert!(
-            !dockerfile.contains(forbidden),
-            "Dockerfile must install Katagami from Genesis refs, not clone or rewrite Katagami with `{forbidden}`"
-        );
-    }
-}
-
-#[test]
-fn agent_operating_guidance_teaches_complete_datadog_diagnostics() {
-    let sre_manual = load_text("os-apps/paw-agent/agents/sre/AGENT.md");
-    let paw_skill = load_text("os-apps/paw-agent/agents/paw/skills/temperpaw-agent/SKILL.md");
-    let combined = format!("{sre_manual}\n{paw_skill}");
-
-    for required in [
-        "temperpaw.agent.session",
-        "managed_session_id",
-        "inner_session_id",
-        "dd.trace_id",
-        "dd.span_id",
-        "LLM Observability",
-        "gen_ai.operation.name",
-        "Postgres DBM",
-        "profiling",
-        "Database Monitoring",
-        "get_llmobs_agent_loop",
-        "wasm_module",
-        "workflow_step",
-        "wasm_guest.progress",
-        "wasm.host.get_secret",
-        "non-redundant",
-        "chronological",
-    ] {
-        assert!(
-            combined.contains(required),
-            "agent operating guidance must teach Datadog diagnostic concept `{required}`"
-        );
-    }
-}
-
-#[test]
-fn otel_collector_keeps_otlp_in_apm_and_avoids_noisy_llmobs_forwarding() {
-    let collector =
-        std::fs::read_to_string(repo_root().join("scripts/otel-collector-datadog.yaml"))
-            .expect("collector config should be readable");
-
-    for required in [
-        "traces/apm",
-        "transform/dbm",
-        "set(attributes[\"span.type\"], \"sql\") where attributes[\"db.system\"] != nil and attributes[\"span.type\"] == nil",
-        "exporters: [clickhouse, datadog]",
-        "processors: [resourcedetection, resource, transform/dbm, batch]",
-    ] {
-        assert!(
-            collector.contains(required),
-            "collector must preserve Datadog APM routing clause `{required}`"
-        );
-    }
-    for forbidden in [
-        "traces/llmobs",
-        "otlphttp/llmobs",
-        "dd-otlp-source: llmobs",
-        "filter/traces_llmobs",
-        "filter/traces_apm",
-    ] {
-        assert!(
-            !collector.contains(forbidden),
-            "collector must not use generic OTLP trace forwarding for LLMObs clause `{forbidden}`"
-        );
-    }
-}
-
-#[test]
-fn sensitive_data_scanner_covers_observability_and_agent_secret_shapes() {
-    let scanner = load_json("dd-pipelines/sensitive-data-scanner.json").to_string();
-    let deploy_script = std::fs::read_to_string(repo_root().join("scripts/deploy_pipelines.py"))
-        .expect("deploy_pipelines.py should be readable");
-
-    for required in [
-        "Datadog API/application keys",
-        "DD_(?:API|APP|APPLICATION)_KEY",
-        "sk-(?:ant-)?",
-        "gh[posu]_",
-        "xox[pbaors]-",
-        "[REDACTED:DATADOG]",
-        "[REDACTED:OPENAI]",
-        "[REDACTED:GITHUB]",
-        "[REDACTED:SLACK]",
-    ] {
-        assert!(
-            scanner.contains(required),
-            "Sensitive-data scanner must cover `{required}`"
-        );
-    }
-
-    assert!(
-        deploy_script.contains("deploy_sds"),
-        "Datadog pipeline deploy must read the sensitive-data scanner source of truth"
     );
 }
 

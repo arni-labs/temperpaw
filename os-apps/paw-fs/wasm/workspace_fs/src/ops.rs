@@ -67,18 +67,31 @@ fn find_directory(
     parent_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     let name_enc = odata_encode(name);
+    // `ParentId eq '<id>'` is a lossless string-equality that pushes down. But the root's
+    // old `ParentId eq null` is NON-LOSSLESS -> disables index pushdown -> full Directories
+    // scan -> 413 QueryTooLarge at workspace scale (ARN-68). Name + WorkspaceId already
+    // uniquely identify the root, so omit the null predicate (lossless pushdown) and confirm
+    // ParentId is unset in-memory.
     let parent_clause = match parent_id {
         Some(pid) => format!("%20and%20ParentId%20eq%20'{}'", odata_encode(pid)),
-        None => "%20and%20ParentId%20eq%20null".to_string(),
+        None => String::new(),
     };
     let url = format!(
         "{api_url}/tdata/Directories?$filter=Name%20eq%20'{name_enc}'%20and%20WorkspaceId%20eq%20'{ws_id}'{parent_clause}"
     );
     let resp = http_get(ctx, &url, tenant)?;
     let items = resp.get("value").and_then(|v| v.as_array());
-    Ok(items
-        .and_then(|arr| arr.first())
-        .and_then(|v| extract_id(v)))
+    let chosen = items.and_then(|arr| {
+        arr.iter().find(|v| match parent_id {
+            // root: accept only an entry whose ParentId is null / absent / empty
+            None => v
+                .get("ParentId")
+                .map_or(true, |p| p.is_null() || p.as_str().map_or(true, str::is_empty)),
+            // a specific parent is already constrained by the query
+            Some(_) => true,
+        })
+    });
+    Ok(chosen.and_then(extract_id))
 }
 
 /// Find a file by Path + WorkspaceId.
