@@ -122,5 +122,3 @@ fn csdl_serves_all_corridor_entity_sets() {
         );
     }
 }
-
-#[test]

@@ -44,4 +44,3 @@ fn emitter_spec_version_matches_the_app_manifest() {
          it as OTSMetadata.spec_version and it may not drift from app.toml"
     );
 }
-
