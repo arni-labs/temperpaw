@@ -23,22 +23,6 @@ fn parse_spec(path: &Path) -> toml::Value {
         .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
 }
 
-const CORRIDOR_WASM_MODULES: &[&str] = &[
-    "seed_world",
-    "sample_endpoints",
-    "decompose_endpoint",
-    "spawn_repairers",
-    "spawn_adversaries",
-    "aggregate_costs",
-    "evidence_ingest",
-    "register_forecasts",
-    "render_artifacts",
-    "consistency_gate",
-    "grade_hindcast",
-    "animate_dwellers",
-    "adjudicate_nodes",
-];
-
 #[test]
 fn entity_type_names_are_unique_across_apps() {
     // The tenant CSDL is merged across all installed apps and install_os_app

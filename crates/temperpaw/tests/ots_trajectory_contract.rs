@@ -17,13 +17,6 @@ fn session_spec() -> String {
         .expect("session.ioa.toml should exist")
 }
 
-fn emitter_source() -> String {
-    fs::read_to_string(
-        repo_root().join("os-apps/paw-agent/wasm/emit_ots_trajectory/src/ots_build.rs"),
-    )
-    .expect("ots_build.rs should exist")
-}
-
 /// `metadata.spec_version` has to name the spec that actually ran, and the WASM
 /// guest context exposes no spec hash — so the literal in the spec is the
 /// identity, and it must track the app manifest.

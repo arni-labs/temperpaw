@@ -7,6 +7,7 @@ fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+#[test]
 fn os_app_wasm_build_scripts_preserve_temper_host_imports() {
     let root = repo_root();
     let build_env = fs::read_to_string(root.join("os-apps/wasm-build-env.sh"))
