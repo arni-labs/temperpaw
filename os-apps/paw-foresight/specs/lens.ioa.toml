@@ -12,6 +12,7 @@ initial = "Configured"
 
 # ADR-0050: a lens is a standing subscription — Live is indefinite by design.
 allow_indefinite_states = ["Configured", "Live"]
+terminal = ["Archived"]
 
 # --- State Variables ---
 
@@ -61,10 +62,3 @@ from = ["Configured", "Live"]
 to = "Archived"
 params = ["archive_reason"]
 hint = "Consumer is done with this lens."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

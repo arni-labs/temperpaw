@@ -6,6 +6,5 @@ dashboard/node_modules
 dashboard/.svelte-kit
 dashboard/build
 .env
-.proofs
 .wrangler
 tmp_*.log

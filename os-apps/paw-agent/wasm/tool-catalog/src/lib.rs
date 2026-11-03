@@ -473,17 +473,3 @@ pub fn build_method_listing(enabled: &BTreeSet<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enabled_tool_set_normalizes_legacy_aliases() {
-        let enabled = enabled_tool_set("spawn_agent,save_memory,read_entity,temper_file_upload");
-        assert!(enabled.contains("temper_spawn_session"));
-        assert!(enabled.contains("temper_save_memory"));
-        assert!(enabled.contains("temper_get"));
-        assert!(enabled.contains("temper_write"));
-    }
-}

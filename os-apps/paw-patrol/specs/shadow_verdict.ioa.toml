@@ -1,0 +1,75 @@
+# ShadowVerdict (ARN-430, stage 3 S0) - TEMPORARY, retired at S3.
+# The S1 comparison row: for one gate on one effort, what Temper's state
+# machine concluded vs what CI concluded, and whether they agree. Written by
+# nothing in S0 (its writer is S1); the shape lands now so S1 has it. Retired
+# together with record_ingest once every gate reads Temper directly (S3).
+[automaton]
+name = "ShadowVerdict"
+states = ["Recorded"]
+initial = "Recorded"
+
+allow_indefinite_states = ["Recorded"]
+
+[[state]]
+name = "effort_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "pr"
+type = "string"
+initial = ""
+
+[[state]]
+name = "gate"
+type = "string"
+initial = ""
+
+[[state]]
+name = "temper_verdict"
+type = "string"
+initial = ""
+
+[[state]]
+name = "ci_verdict"
+type = "string"
+initial = ""
+
+# agree is a real boolean (Edm.Boolean in the CSDL). It is COMPUTED by the S1
+# comparison sweep from the two verdicts (temper_verdict vs ci_verdict) - the
+# entity cannot verify the equality itself, because a guard cannot read action
+# params to compare them until the kernel gains param-aware guards (gap already
+# filed). Booleans are set by the set_bool effect, not by a param, so the two
+# verdicts and the agree flag are written together by MarkAgree / MarkDisagree
+# (one action each), and the flag can never diverge from the verdict pair the
+# sweep summarized. Record sets only the identity (effort/pr/gate).
+[[state]]
+name = "agree"
+type = "bool"
+initial = false
+
+[[action]]
+name = "Record"
+kind = "input"
+from = ["Recorded"]
+to = "Recorded"
+params = ["effort_ref", "pr", "gate"]
+hint = "Record the identity of one gate comparison (effort, PR, gate)."
+
+[[action]]
+name = "MarkAgree"
+kind = "input"
+from = ["Recorded"]
+to = "Recorded"
+params = ["temper_verdict", "ci_verdict"]
+effect = ["agree = true"]
+hint = "Record the Temper and CI verdicts for this gate and that they agree, in one write."
+
+[[action]]
+name = "MarkDisagree"
+kind = "input"
+from = ["Recorded"]
+to = "Recorded"
+params = ["temper_verdict", "ci_verdict"]
+effect = ["agree = false"]
+hint = "Record the Temper and CI verdicts for this gate and that they disagree, in one write."

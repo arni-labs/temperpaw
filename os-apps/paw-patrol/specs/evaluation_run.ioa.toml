@@ -69,7 +69,6 @@ kind = "input"
 from = ["Running"]
 to = "Passed"
 params = ["results_json", "e2e_summary"]
-effect = [{ type = "trigger", name = "evaluation_run_passed" }]
 hint = "All required automated checks passed."
 
 [[action.triggers]]
@@ -86,7 +85,6 @@ kind = "input"
 from = ["Queued", "Running"]
 to = "Failed"
 params = ["results_json", "error_message", "failure_classification"]
-effect = [{ type = "trigger", name = "evaluation_run_failed" }]
 hint = "One or more required automated checks failed."
 
 [[action.triggers]]
@@ -101,10 +99,10 @@ temper_api_url = "{secret:temper_api_url}"
 state = "Queued"
 after_seconds = 86400
 on_timeout = "Fail"
-params = { results_json = "{}", error_message = "EvaluationRun was not started within 24h.", failure_classification = "evaluation_not_started_timeout" }
+args = { results_json = "'{}'", error_message = "'EvaluationRun was not started within 24h.'", failure_classification = "'evaluation_not_started_timeout'" }
 
 [[state_timeout]]
 state = "Running"
 after_seconds = 21600
 on_timeout = "Fail"
-params = { results_json = "{}", error_message = "EvaluationRun ran for 6h without completing.", failure_classification = "evaluation_entity_timeout" }
+args = { results_json = "'{}'", error_message = "'EvaluationRun ran for 6h without completing.'", failure_classification = "'evaluation_entity_timeout'" }

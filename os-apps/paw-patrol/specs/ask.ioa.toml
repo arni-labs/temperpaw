@@ -1,0 +1,105 @@
+# Ask (ARN-456)
+# One inbox row on an Effort. Three kinds, one machine.
+#   decide — Rita picks. Waiting.
+#   do     — Rita does one act. No choice. Waiting.
+#   fyi    — the agent already decided. Born Answered.
+# Same record either way: need, options or act, chose, why, who.
+# stalls is true only when this Ask is why the Effort is Stalled.
+# Raise does not Stall. Answer does not Resume.
+[automaton]
+name = "Ask"
+states = ["Open", "Answered", "Withdrawn"]
+initial = "Open"
+
+allow_indefinite_states = ["Open", "Answered", "Withdrawn"]
+
+[[state]]
+name = "effort_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "kind"
+type = "string"
+initial = ""
+
+[[state]]
+name = "need"
+type = "string"
+initial = ""
+
+[[state]]
+name = "options"
+type = "string"
+initial = ""
+
+[[state]]
+name = "act"
+type = "string"
+initial = ""
+
+[[state]]
+name = "chose"
+type = "string"
+initial = ""
+
+[[state]]
+name = "why"
+type = "string"
+initial = ""
+
+[[state]]
+name = "who"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stalls"
+type = "bool"
+initial = false
+
+[[state]]
+name = "pr_url"
+type = "string"
+initial = ""
+
+[[action]]
+name = "Raise"
+kind = "input"
+from = ["Open"]
+to = "Open"
+params = ["effort_id", "kind", "need", "options", "act", "pr_url"]
+hint = "Open a decide or do Ask. kind is decide or do. stalls stays false. Booleans are set_bool, not params."
+
+[[action]]
+name = "RaiseBlocking"
+kind = "input"
+from = ["Open"]
+to = "Open"
+params = ["effort_id", "kind", "need", "options", "act", "pr_url"]
+effect = ["stalls = true"]
+hint = "Open the stall Ask. stalls becomes true. The Effort remains an open record while independent work continues."
+
+[[action]]
+name = "RecordFyi"
+kind = "input"
+from = ["Open"]
+to = "Answered"
+params = ["effort_id", "kind", "need", "options", "chose", "why", "who"]
+hint = "Record a decision the agent was allowed to make. Born closed. kind is fyi. who is the agent."
+
+[[action]]
+name = "Answer"
+kind = "input"
+from = ["Open"]
+to = "Answered"
+params = ["chose", "why", "who"]
+hint = "Rita resolved this Ask. Same shape as RecordFyi. The implementer writes the row, then Resume if stalls."
+
+[[action]]
+name = "Withdraw"
+kind = "input"
+from = ["Open"]
+to = "Withdrawn"
+params = ["why", "who"]
+hint = "This Ask is no longer needed."

@@ -1,4 +1,0 @@
-name = "paw-autoreason"
-description = "Tournament-based artifact refinement with convergence detection. Implements the NousResearch/autoreason protocol with cross-model judge pools, Borda count scoring, and principled stopping."
-version = "0.1.0"
-dependencies = ["paw-agent", "paw-fs"]

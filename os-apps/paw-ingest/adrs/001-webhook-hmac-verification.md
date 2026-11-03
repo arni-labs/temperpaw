@@ -54,8 +54,11 @@ disabling controls or becoming internal URL fragments. Duplicate signature or
 delivery-ID headers are rejected as ambiguous.
 
 `route_key` is a declared unique key. Route creation, reads, updates, and state
-changes are Admin-only. Shipped seed routes use governed vault references and
-fail readiness/admission when their referenced secret is absent.
+changes are Admin-only. Shipped seed routes use governed vault references.
+Admission refuses a delivery with 503 when its route's referenced secret is
+absent. `/readyz` and setup status report the missing references, but `/readyz`
+still answers 200: it is core readiness only (ADR-0066), and a missing webhook
+secret must not stop a deploy from taking over.
 
 Startup injects a tenant-scoped in-process secret resolver into the trigger.
 The resolver closes over the active tenant and vault, and accepts only the
@@ -138,6 +141,9 @@ removed so authentication has one owner.
 
 - Unsigned shipped routes no longer work. Operators must configure the named
   vault secrets and providers must send both signature and delivery headers.
+- Seed data does not rewrite an existing record, so a route created before this
+  change answers 503 until an Admin runs `Update` with `auth_scheme`,
+  `secret_ref`, `signature_header` and `delivery_id_header`.
 - Route changes are governance operations, and existing literal-secret routes
   must be migrated to secret references before traffic is accepted.
 - Exact replay is durable across restarts because it is represented by entity

@@ -53,6 +53,7 @@ fn event_stream_queue_poll_interval() -> Duration {
 }
 
 async fn claim_event_stream_backlog(client: &reqwest::Client, config: &Config) -> Result<()> {
+    reconcile_dsf_model_sources(client, config).await?;
     claim_boot_queued_runs(client, config).await?;
     claim_boot_requested_review_runs(client, config).await?;
     claim_boot_queued_evaluation_runs(client, config).await?;
@@ -80,6 +81,9 @@ async fn handle_event_payload(client: &reqwest::Client, config: &Config, data: &
         }
         ("WorkItem", "Queued") => {
             handle_queued_directed_evolution_work_item(client, config, &event.entity_id).await?;
+        }
+        _ if event.entity_type.starts_with("Dsf") => {
+            reconcile_dsf_model_sources(client, config).await?;
         }
         _ => {}
     }
@@ -120,7 +124,10 @@ async fn handle_running_worker_run(
     config: &Config,
     worker_run_id: &str,
 ) -> Result<()> {
-    info!(worker_run_id, "saw running WorkerRun claimed by this worker");
+    info!(
+        worker_run_id,
+        "saw running WorkerRun claimed by this worker"
+    );
     let worker_run = fetch_worker_run(client, config, worker_run_id).await?;
     if !worker_run_is_recoverable_by_local_codex(&worker_run, &config.worker_id) {
         debug!(
@@ -144,6 +151,21 @@ async fn execute_worker_run(
     worker_run: WorkerRunState,
 ) -> Result<()> {
     let worker_run_id = worker_run.id.clone();
+    if let Some(patrol_id) = dsf_patrol_id(&worker_run.task) {
+        return match run_dsf_model_patrol(client, config, &worker_run, &patrol_id).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                post_action(
+                    client,
+                    config,
+                    &worker_run.id,
+                    "FailInvestigation",
+                    json!({"error_message":format!("DSF investigation failed: {error}")}),
+                )
+                .await
+            }
+        };
+    }
     let run_result = if let Some(snapshot_id) = extract_repo_sweep_snapshot_id(&worker_run.task) {
         run_repo_sweep(client, config, &worker_run, &snapshot_id).await
     } else if let Some(patrol_run_id) = extract_datadog_patrol_run_id(&worker_run.task) {

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted. Step 3 finished 1 Nov 2026; see the amendment at the end.
 
 ## Context
 
@@ -89,3 +89,25 @@ Project is a standard IOA entity spec. All existing Temper mechanisms (OData que
 - Multi-tenant project sharing (projects exist within one tenant only)
 - App installation scoping (apps remain tenant-wide)
 - Enforcing app_ids as a hard permission boundary (it's advisory, not enforced by Cedar)
+
+## Amendment, 1 Nov 2026: step 3 finished
+
+Step 3 was never done. paw-agent's Project spec shipped without an entry in
+paw-agent's CSDL, and paw-pm kept `Paw.PM.Project` in its CSDL with no spec.
+In a tenant with both apps, such as production's `default`, the kernel served
+paw-agent's state machine under paw-pm's schema with the `Projects` set, whose
+states disagree (Planning and Completed had no place to be in; Active was
+the initial place, not Planning). Production and staging held no Project
+records on 1 Nov 2026.
+
+- paw-agent's CSDL declares `TemperPaw.Project` and its `Projects` set.
+- paw-pm's CSDL drops `Paw.PM.Project`, its status enum and its moves.
+  `Issue.ProjectId` and `Cycle.ProjectId` stay, as strings, since a
+  TemperPaw.Project id is not a Guid. The navigations to Project go: a
+  navigation to `TemperPaw.Project` would make paw-pm depend on paw-agent,
+  which adds a paw-agent pin to paw-pm's closure that must move with every
+  paw-agent version, for a link no code follows.
+- Project takes what paw-pm's half had and it lacked: a `Completed` place,
+  a `Complete` move, `Archive` from Completed, and `Update` while Paused.
+  Pause and Resume were already here. Planning is not added: a Project starts
+  Active.

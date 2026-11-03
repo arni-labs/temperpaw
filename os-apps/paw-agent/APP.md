@@ -41,12 +41,18 @@ Group of agents working together.
 - **States**: Active -> Archived
 - **Key actions**: `Configure`, `AddMember`, `RemoveMember`, `Archive`
 
+### Project
+A coordinated effort. Teams, sessions, skills and memories point at it by `project_id`, and so do paw-pm's issues and cycles (ADR-0018).
+
+- **States**: Active <-> Paused, Active -> Completed, then Archived
+- **Key actions**: `Configure` (name, description, owner_agent_id, app_ids), `Update`, `Pause`, `Resume`, `Complete`, `Archive`
+
 ### CronJob
 Scheduled agent runs using cron expressions. Self-scheduling via `schedule_at` effects.
 
 - **States**: Created -> Active <-> Paused -> Expired
-- **Key actions**: `Configure`, `Activate`, `Trigger` (auto-spawns Session), `Pause`, `Resume`
-- **WASM**: `cron_compute_next` parses cron schedule and substitutes message templates
+- **Key actions**: `Configure`, `Activate`, `Trigger` (auto-spawns Session), `Pause`, `Resume`; `RecordLastSession` is an operator-only repair
+- **WASM**: `cron_compute_next` parses cron schedule and substitutes message templates; a job with no template sends its own `user_message`
 
 ### Plan
 Plan entity with review workflow. Worker creates, lead reviews, human escalation optional.

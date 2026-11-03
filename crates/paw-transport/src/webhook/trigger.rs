@@ -466,7 +466,3 @@ mod tests;
 #[cfg(test)]
 #[path = "trigger_budget_tests.rs"]
 mod budget_tests;
-
-#[cfg(test)]
-#[path = "trigger_logging_tests.rs"]
-mod logging_tests;

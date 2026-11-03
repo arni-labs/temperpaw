@@ -6,8 +6,18 @@ on:
   push:
     branches:
       - main
+      - release
+  schedule:
+    - cron: "0 7 * * *"   # nightly full validation
+
+# A new push to a pull request cancels its older run. Every push to main runs to the end, because its result decides
+# whether revert-on-red acts.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # Fast lane: what a PR waits on. Target <5 min. (ARN-429)
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -15,6 +25,125 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install Z3 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libz3-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: WASM artifact packaging regression
+        run: bash scripts/test-wasm-build-artifacts.sh
+      - name: Channel continuation regression
+        run: |
+          python3 -m venv "$RUNNER_TEMP/route-message-tests"
+          "$RUNNER_TEMP/route-message-tests/bin/pip" install wasmtime==38.0.0
+          source os-apps/wasm-build-env.sh
+          wasm_path="$(temperpaw_build_wasm "$PWD/os-apps/paw-channels/wasm/route_message" wasm32-wasip1)"
+          "$RUNNER_TEMP/route-message-tests/bin/python" scripts/test-route-message-continuation.py "$wasm_path"
+      - name: Release script regressions
+        run: python3 scripts/test_railway_release.py
+      - name: Datadog monitors file
+        run: python3 scripts/check_monitors.py
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+      - name: Cargo clippy
+        run: cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings
+      - name: Worker script syntax
+        run: |
+          for f in crates/paw-codex-worker/scripts/*.sh; do bash -n "$f"; done
+      # Check RSA integrations against the deployment WASM target.
+      - name: WASM rsa crates compile on wasm32-unknown-unknown
+        run: |
+          bash scripts/check-wasm-rsa-getrandom.sh
+          cargo check --manifest-path os-apps/paw-patrol/wasm/release_run_lifecycle/Cargo.toml --target wasm32-unknown-unknown
+
+  # Every Cargo workspace's tests, on every push to main and nightly; a pull request runs only `checks` above, so one
+  # tree is not tested twice and revert-on-red answers a failing push. scripts/ci/rust_tests.py finds the workspaces on
+  # disk: the root one (crates/*) and every os-app module and reference crate, each a workspace of its own. The root
+  # tests load packaged os-app modules, so that job first builds every module the way a release does. Branch protection
+  # requires `tests`, which gathers the three. (Until 28 Oct 2026 only `full` ran Rust tests, after merge, and only for
+  # 13 of 73 workspaces that have tests: 40 of 53 pull requests in the month before landed with none run.)
+  tests-root:
+    name: cargo test (root workspace)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - name: Install Z3 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libz3-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The packaged modules and their stamps from main's latest build: an app whose sources a change leaves alone is
+      # not built again. The nightly run builds every app.
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            os-apps/**/*.wasm
+            !os-apps/**/target/**
+            ~/.cache/temperpaw-os-app-modules
+          key: os-app-modules-${{ github.sha }}
+          restore-keys: os-app-modules-
+      - name: Every os-app module, built and packaged as a release builds it
+        env:
+          REUSE: ${{ github.event_name != 'schedule' && '--reuse' || '' }}
+        run: |
+          python3 scripts/ci/build_os_app_modules.py ${REUSE:+"$REUSE"}
+          bash scripts/verify_route_message_wasm.sh
+      - name: The modules' cache key, from their stamps
+        id: modules
+        if: github.ref == 'refs/heads/main'
+        run: echo "key=os-app-modules-$(cat ~/.cache/temperpaw-os-app-modules/*.stamp | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            os-apps/**/*.wasm
+            !os-apps/**/target/**
+            ~/.cache/temperpaw-os-app-modules
+          key: ${{ steps.modules.outputs.key }}
+      - run: echo "::add-matcher::.github/rust-test-failures.json"
+      - name: cargo test, the root workspace
+        run: python3 scripts/ci/rust_tests.py root
+
+  tests-others:
+    name: cargo test (other workspaces ${{ matrix.part }}/2)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2]
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: echo "::add-matcher::.github/rust-test-failures.json"
+      - name: cargo test, every other workspace in this part
+        run: python3 scripts/ci/rust_tests.py others ${{ matrix.part }}/2
+
+  tests:
+    needs: [tests-root, tests-others]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every cargo test job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null
+
+  # Dashboard build and executed smokes. Runs on merges (push to main/release) and nightly, never on pull requests.
+  # (ARN-429)
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
       - uses: actions/setup-node@v6.4.0
         with:
           node-version: 22
@@ -22,54 +151,8 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - name: Install dashboard dependencies
         run: cd dashboard && npm install
-      - name: Cargo fmt
-        run: cargo fmt --all -- --check
-      - name: Cargo clippy
-        run: cargo clippy --locked -p temperpaw -p paw-codex-worker --all-targets -- -D warnings
-      - name: Cargo check
-        run: cargo check --locked -p temperpaw -p paw-codex-worker
-      - name: Worker smoke script syntax
+      - name: Smoke scripts (executed)
         run: |
-          bash -n crates/paw-codex-worker/scripts/deterministic-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/datadog-patrol-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/repo-sweep-brief-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/webhook-intake-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-readiness.sh
-          bash -n crates/paw-codex-worker/scripts/production-preflight.sh
-          bash -n crates/paw-codex-worker/scripts/production-git-ancestry-guard.sh
-          bash -n crates/paw-codex-worker/scripts/production-observe-only.sh
-          bash -n crates/paw-codex-worker/scripts/production-preflight-github-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-observe-only-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/production-readiness-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/mac-mini-production-bootstrap.sh
-          bash -n crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
-          bash -n crates/paw-codex-worker/scripts/paw-patrol-acceptance.sh
-          crates/paw-codex-worker/scripts/ci-actions-runtime-smoke.sh
           crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
-      - name: WASM build (os-apps)
-        run: |
-          set -e
-          for script in \
-            os-apps/paw-agent/wasm/build.sh \
-            os-apps/paw-channels/wasm/build.sh \
-            os-apps/paw-fs/wasm/blob_adapter/build.sh \
-            os-apps/paw-fs/wasm/workspace_fs/build.sh \
-            os-apps/paw-ingest/wasm/build.sh \
-            os-apps/paw-managed-agents/wasm/build.sh \
-            os-apps/paw-media/wasm/build.sh \
-            os-apps/paw-foresight/wasm/build.sh \
-            os-apps/paw-skills/wasm/build.sh \
-            os-apps/paw-research/wasm/build.sh \
-            os-apps/paw-patrol/wasm/build.sh; do
-            echo "=== Running $script ==="
-            (cd "$(dirname "$script")" && bash "$(basename "$script")")
-          done
-          bash scripts/verify_route_message_wasm.sh
-      - name: Cargo test
-        run: |
-          cargo test --locked -p temperpaw --quiet
-          cargo test --locked -p paw-codex-worker --quiet
-          cargo test --manifest-path os-apps/paw-patrol/wasm/review_gate_lifecycle/Cargo.toml --quiet
       - name: Dashboard build
         run: cd dashboard && npm run build

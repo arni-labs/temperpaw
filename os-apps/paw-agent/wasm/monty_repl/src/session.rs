@@ -64,6 +64,7 @@ pub fn persist_results(
                 "user",
                 &tool_results_value,
                 tokens_est,
+                None,
             )?;
             // create_session_entry now does a read-back verify, so reaching
             // here means the row is durably visible.
@@ -367,11 +368,80 @@ fn progress_action_dispatch_enabled(ctx: &Context, fields: &Value, key: &str) ->
         .unwrap_or(false)
 }
 
+/// Largest `result` kept in a persisted tool span. The OTS decision only ever
+/// shows the first 500 characters; the full result already lives in the
+/// tool_result session entry, so a longer copy here buys nothing and the span
+/// file is rewritten in full on every tool batch.
+const TOOL_SPAN_RESULT_MAX_CHARS: usize = 600;
+/// Largest `arguments` payload kept in a persisted tool span.
+const TOOL_SPAN_ARGUMENTS_MAX_CHARS: usize = 2_000;
+/// Ceiling on the whole tool-span document. Past this the session stops
+/// appending rather than paying an unbounded read-modify-write per tool batch.
+const TOOL_SPANS_FILE_MAX_BYTES: usize = 262_144;
+/// Reserved tool name marking a span document that hit the ceiling. The OTS
+/// emitter recognizes it and records the truncation instead of turning it into
+/// a decision.
+pub const TOOL_SPANS_TRUNCATED_MARKER: &str = "_tool_spans_truncated";
+/// The marker line, written once when the document seals.
+const TOOL_SPANS_TRUNCATED_LINE: &str = "{\"tool_call_id\":\"\",\"tool_name\":\"_tool_spans_truncated\",\"result\":\"tool span file size ceiling reached\",\"duration_ms\":0,\"is_error\":false}\n";
+
+/// True once the document has been sealed by a truncation marker.
+///
+/// Only the last non-empty line is examined, and only its `tool_name` field:
+/// the marker is a reserved tool name, so a substring search would also fire on
+/// a tool result that merely quotes it. Byte slicing is avoided outright — a
+/// result carrying CJK or emoji puts arbitrary offsets inside a character.
+fn tool_spans_document_sealed(document: &str) -> bool {
+    document
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(is_tool_spans_truncation_line)
+}
+
+/// True when a JSONL line is the reserved truncation marker record.
+fn is_tool_spans_truncation_line(line: &str) -> bool {
+    serde_json::from_str::<Value>(line.trim())
+        .ok()
+        .as_ref()
+        .and_then(|value| value.get("tool_name"))
+        .and_then(Value::as_str)
+        == Some(TOOL_SPANS_TRUNCATED_MARKER)
+}
+
+fn truncate_span_chars(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return value.to_string();
+    }
+    let mut out: String = value.chars().take(max_chars).collect();
+    out.push_str(&format!("...[truncated {} of {total} chars]", total - max_chars));
+    out
+}
+
+/// Shrink a tool-span event to what the trajectory emitter actually consumes.
+pub fn compact_tool_span(event: &Value) -> Value {
+    let mut compacted = event.clone();
+    if let Some(object) = compacted.as_object_mut() {
+        if let Some(Value::String(result)) = object.get("result") {
+            let bounded = truncate_span_chars(result, TOOL_SPAN_RESULT_MAX_CHARS);
+            object.insert("result".to_string(), json!(bounded));
+        }
+        if let Some(Value::String(arguments)) = object.get("arguments") {
+            let bounded = truncate_span_chars(arguments, TOOL_SPAN_ARGUMENTS_MAX_CHARS);
+            object.insert("arguments".to_string(), json!(bounded));
+        }
+    }
+    compacted
+}
+
 /// Encode a tool-span JSONL document by appending new events to the existing content.
 ///
 /// Each event in `new_events` is serialized as a single JSON object on its own line,
 /// separated by '\n'. The returned string always ends with '\n' so that subsequent
-/// appends stay line-delimited.
+/// appends stay line-delimited. Events are compacted first, and appends stop once
+/// the document reaches `TOOL_SPANS_FILE_MAX_BYTES` so a long session cannot turn
+/// the per-batch rewrite into unbounded traffic.
 pub fn encode_tool_spans_jsonl(existing: &str, new_events: &[Value]) -> String {
     let mut out = String::with_capacity(existing.len() + new_events.len() * 128);
     if !existing.is_empty() {
@@ -380,8 +450,28 @@ pub fn encode_tool_spans_jsonl(existing: &str, new_events: &[Value]) -> String {
             out.push('\n');
         }
     }
+    if tool_spans_document_sealed(&out) {
+        return out;
+    }
+    if out.len() >= TOOL_SPANS_FILE_MAX_BYTES {
+        // At the ceiling with no seal on it: a document written before this
+        // ceiling existed, or a batch that landed byte-exact on it. The spans
+        // in hand are being dropped, so the document has to say so — otherwise
+        // it parses clean and the trajectory built from it reads as holding
+        // every tool call the session made. Sealing costs one line over the
+        // ceiling, which is bounded; silence costs the record.
+        if !new_events.is_empty() {
+            out.push_str(TOOL_SPANS_TRUNCATED_LINE);
+        }
+        return out;
+    }
     for event in new_events {
-        let line = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let line = serde_json::to_string(&compact_tool_span(event))
+            .unwrap_or_else(|_| "{}".to_string());
+        if out.len() + line.len() + 1 > TOOL_SPANS_FILE_MAX_BYTES {
+            out.push_str(TOOL_SPANS_TRUNCATED_LINE);
+            break;
+        }
         out.push_str(&line);
         out.push('\n');
     }
@@ -886,5 +976,175 @@ mod tests {
         let existing = "{\"tool_call_id\":\"prev\"}\n";
         let out = encode_tool_spans_jsonl(existing, &[]);
         assert_eq!(out, existing);
+    }
+
+    #[test]
+    fn compact_tool_span_bounds_result_and_arguments() {
+        let event = json!({
+            "tool_call_id": "a",
+            "tool_name": "temper.bash",
+            "arguments": "x".repeat(TOOL_SPAN_ARGUMENTS_MAX_CHARS + 500),
+            "result": "y".repeat(TOOL_SPAN_RESULT_MAX_CHARS + 5_000),
+            "duration_ms": 12,
+            "is_error": false,
+        });
+        let compacted = compact_tool_span(&event);
+        assert_eq!(compacted["tool_call_id"], "a");
+        assert_eq!(compacted["duration_ms"], 12);
+        let result = compacted["result"].as_str().unwrap();
+        assert!(result.starts_with(&"y".repeat(TOOL_SPAN_RESULT_MAX_CHARS)));
+        assert!(result.contains("truncated 5000 of"));
+        let arguments = compacted["arguments"].as_str().unwrap();
+        assert!(arguments.contains("truncated 500 of"));
+    }
+
+    #[test]
+    fn compact_tool_span_leaves_small_events_untouched() {
+        let event = json!({
+            "tool_call_id": "a",
+            "tool_name": "read",
+            "arguments": "{\"path\":\"/tmp/x\"}",
+            "result": "ok",
+            "duration_ms": 3,
+            "is_error": false,
+        });
+        assert_eq!(compact_tool_span(&event), event);
+    }
+
+    #[test]
+    fn encode_tool_spans_jsonl_stops_at_the_size_ceiling() {
+        let event = json!({
+            "tool_call_id": "a",
+            "tool_name": "temper.bash",
+            "arguments": "z".repeat(TOOL_SPAN_ARGUMENTS_MAX_CHARS),
+            "result": "w".repeat(TOOL_SPAN_RESULT_MAX_CHARS),
+            "duration_ms": 1,
+            "is_error": false,
+        });
+        let events: Vec<Value> = std::iter::repeat_n(event, 400).collect();
+        let out = encode_tool_spans_jsonl("", &events);
+        assert!(
+            out.len() <= TOOL_SPANS_FILE_MAX_BYTES,
+            "span file must stay bounded, got {} bytes",
+            out.len()
+        );
+        assert!(out.contains("_tool_spans_truncated"));
+        // Every line still parses — a truncated document must stay readable.
+        for line in out.split_terminator('\n') {
+            serde_json::from_str::<Value>(line).expect("each line must be valid JSON");
+        }
+    }
+
+    #[test]
+    fn encode_tool_spans_jsonl_seals_a_full_document_it_refuses_to_grow() {
+        let existing = format!("{}\n", "x".repeat(TOOL_SPANS_FILE_MAX_BYTES));
+        let out = encode_tool_spans_jsonl(&existing, &[json!({"tool_call_id": "next"})]);
+
+        assert!(
+            out.starts_with(&existing),
+            "a full document must not grow with new spans"
+        );
+        assert!(
+            !out.contains("\"tool_call_id\":\"next\""),
+            "the refused span must not be written"
+        );
+        assert!(
+            tool_spans_document_sealed(&out),
+            "a document that is dropping spans must say so; a clean parse of it \
+             otherwise reads as a complete record of the session's tool calls"
+        );
+
+        // Sealing is idempotent — later batches find the seal and stop.
+        let again = encode_tool_spans_jsonl(&out, &[json!({"tool_call_id": "later"})]);
+        assert_eq!(again, out, "an already sealed document must not grow");
+        assert_eq!(
+            again.matches(TOOL_SPANS_TRUNCATED_MARKER).count(),
+            1,
+            "the seal is written once"
+        );
+    }
+
+    #[test]
+    fn encode_tool_spans_jsonl_does_not_seal_a_full_document_with_nothing_to_add() {
+        let existing = format!("{}\n", "x".repeat(TOOL_SPANS_FILE_MAX_BYTES));
+        let out = encode_tool_spans_jsonl(&existing, &[]);
+        assert_eq!(
+            out, existing,
+            "no spans were dropped, so nothing was lost and nothing is marked"
+        );
+    }
+
+    #[test]
+    fn encode_tool_spans_jsonl_seals_the_document_once() {
+        let event = json!({
+            "tool_call_id": "a",
+            "tool_name": "temper.bash",
+            "arguments": "z".repeat(TOOL_SPAN_ARGUMENTS_MAX_CHARS),
+            "result": "w".repeat(TOOL_SPAN_RESULT_MAX_CHARS),
+            "duration_ms": 1,
+            "is_error": false,
+        });
+        let events: Vec<Value> = std::iter::repeat_n(event.clone(), 400).collect();
+        let sealed = encode_tool_spans_jsonl("", &events);
+        let markers = sealed.matches(TOOL_SPANS_TRUNCATED_MARKER).count();
+        assert_eq!(markers, 1);
+
+        // A later batch must not stack a second marker onto a sealed document.
+        let again = encode_tool_spans_jsonl(&sealed, &[event]);
+        assert_eq!(again, sealed);
+        assert_eq!(again.matches(TOOL_SPANS_TRUNCATED_MARKER).count(), 1);
+    }
+
+    /// Tool output is arbitrary UTF-8. The seal check used to slice the document
+    /// at a byte offset, which traps the guest mid-character on any multibyte
+    /// tail — after the tools already ran, so the result callback never fires.
+    #[test]
+    fn encode_tool_spans_jsonl_survives_multibyte_tool_output() {
+        let existing = format!(
+            "{}\n",
+            json!({
+                "tool_call_id": "a",
+                "tool_name": "temper.bash",
+                "result": "日本語のテキスト🎌".repeat(20),
+                "duration_ms": 1,
+                "is_error": false,
+            })
+        );
+        let out = encode_tool_spans_jsonl(&existing, &[json!({"tool_call_id": "b"})]);
+        assert!(out.starts_with(&existing));
+        assert!(out.contains("\"tool_call_id\":\"b\""));
+    }
+
+    /// A tool that reads or greps this source returns the marker literal in its
+    /// own output. That must not look like a sealed document.
+    #[test]
+    fn encode_tool_spans_jsonl_ignores_a_quoted_marker_in_tool_output() {
+        let existing = format!(
+            "{}\n",
+            json!({
+                "tool_call_id": "a",
+                "tool_name": "temper.read",
+                "result": format!("const MARKER = \"{TOOL_SPANS_TRUNCATED_MARKER}\";"),
+                "duration_ms": 1,
+                "is_error": false,
+            })
+        );
+        let out = encode_tool_spans_jsonl(&existing, &[json!({"tool_call_id": "b"})]);
+        assert!(
+            out.contains("\"tool_call_id\":\"b\""),
+            "a quoted marker must not seal the document"
+        );
+    }
+
+    #[test]
+    fn tool_spans_document_sealed_reads_the_marker_record_only() {
+        assert!(!tool_spans_document_sealed(""));
+        assert!(tool_spans_document_sealed(TOOL_SPANS_TRUNCATED_LINE));
+        assert!(
+            !tool_spans_document_sealed(
+                "{\"tool_call_id\":\"a\",\"tool_name\":\"read\",\"result\":\"_tool_spans_truncated\"}\n"
+            ),
+            "the marker is a reserved tool_name, not a substring of any field"
+        );
     }
 }

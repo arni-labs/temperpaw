@@ -20,6 +20,7 @@ initial = "Proposed"
 # nodes live until their resolve_by date passes (evidence_ingest resolves or
 # retires them); the deadline is domain data, not a state timeout.
 allow_indefinite_states = ["Proposed", "Confirmed"]
+terminal = ["Resolved", "Retired"]
 
 # --- State Variables ---
 
@@ -145,7 +146,6 @@ kind = "input"
 from = ["Confirmed"]
 params = ["adjudicated_outcome", "adjudication_evidence_refs", "adjudication_confidence"]
 hint = "Adjudicator session self-reports its judged verdict with evidence refs and confidence. The module validates (confidence threshold, evidence present) and owns the Resolve transition — sessions never decide truth directly."
-effect = [{ type = "trigger", name = "adjudicate_nodes" }]
 
 [[action.triggers]]
 name = "adjudicate_nodes"
@@ -179,15 +179,3 @@ from = ["Proposed", "Confirmed"]
 to = "Retired"
 params = ["retire_reason"]
 hint = "Node left the graph: superseded, malformed, or its path was rejected."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ResolvedIsFinal"
-when = ["Resolved"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "RetiredIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"

@@ -27,6 +27,8 @@
         <Property Name="CredentialsScoped" Type="Edm.String" />
         <Property Name="NetworkAllow" Type="Edm.String" />
         <Property Name="ProjectHarnessId" Type="Edm.String" />
+        <Property Name="SourceMachineId" Type="Edm.String" />
+        <Property Name="CopyDeadlineAtMs" Type="Edm.String" />
 
         <Action Name="Configure" IsBound="true">
           <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
@@ -72,17 +74,172 @@
           <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
         </Action>
 
+        <Action Name="SleepFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
         <Action Name="Wake" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="WakeFailed" IsBound="true">
           <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
         </Action>
 
         <Action Name="Destroy" IsBound="true">
           <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
         </Action>
+
+        <!-- Copy lifecycle (ARN-443 C): governed child copies, async start+poll. -->
+        <Action Name="Copy" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="ProvisionFromCopy" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+          <Parameter Name="machine_id" Type="Edm.String" />
+          <Parameter Name="provider" Type="Edm.String" />
+          <Parameter Name="cpu_cores" Type="Edm.String" />
+          <Parameter Name="memory_gb" Type="Edm.String" />
+          <Parameter Name="storage_gb" Type="Edm.String" />
+          <Parameter Name="base_image" Type="Edm.String" />
+          <Parameter Name="project_harness_id" Type="Edm.String" />
+          <Parameter Name="description" Type="Edm.String" />
+        </Action>
+
+        <Action Name="ReconcileCopy" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="CopyStarted" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+          <Parameter Name="machine_id" Type="Edm.String" />
+          <Parameter Name="sandbox_url" Type="Edm.String" />
+          <Parameter Name="source_machine_id" Type="Edm.String" />
+          <Parameter Name="name" Type="Edm.String" />
+          <Parameter Name="copy_deadline_at_ms" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CopyPoll" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="CopyComplete" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="CopyFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+          <Parameter Name="error_message" Type="Edm.String" />
+        </Action>
+
+        <Action Name="CopyExpired" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="Heartbeat" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+
+        <Action Name="TerminateComplete" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Computer" />
+        </Action>
+      </EntityType>
+
+      <EntityType Name="Exec">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" />
+        <Property Name="ComputerId" Type="Edm.String" />
+        <Property Name="Command" Type="Edm.String" />
+        <Property Name="ExitCode" Type="Edm.String" />
+        <Property Name="StdoutTail" Type="Edm.String" />
+        <Property Name="StderrTail" Type="Edm.String" />
+        <Property Name="StdoutPath" Type="Edm.String" />
+        <Property Name="StdoutBytes" Type="Edm.String" />
+        <Property Name="Error" Type="Edm.String" />
+        <Property Name="RunId" Type="Edm.String" />
+        <Property Name="StartedAtMs" Type="Edm.String" />
+        <Property Name="DeadlineAtMs" Type="Edm.String" />
+
+        <Action Name="Run" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+          <Parameter Name="computer_id" Type="Edm.String" Nullable="false" />
+          <Parameter Name="command" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <Action Name="RunSucceeded" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+          <Parameter Name="exit_code" Type="Edm.String" Nullable="false" />
+          <Parameter Name="stdout_tail" Type="Edm.String" />
+          <Parameter Name="stderr_tail" Type="Edm.String" />
+          <Parameter Name="stdout_path" Type="Edm.String" />
+          <Parameter Name="stdout_bytes" Type="Edm.String" />
+        </Action>
+
+        <Action Name="RunFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+          <Parameter Name="error" Type="Edm.String" Nullable="false" />
+        </Action>
+
+        <!-- Async exec (ARN-443 D): start + state_timeout poll loop. -->
+        <Action Name="ExecStarted" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+          <Parameter Name="run_id" Type="Edm.String" />
+          <Parameter Name="started_at_ms" Type="Edm.String" />
+          <Parameter Name="deadline_at_ms" Type="Edm.String" />
+        </Action>
+
+        <Action Name="Poll" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+        </Action>
+
+        <Action Name="Cancel" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.Exec" />
+          <Parameter Name="error" Type="Edm.String" />
+        </Action>
+      </EntityType>
+
+      <!-- LatencyDiag — learned diagnostic tool. One constrained action
+           (RunScan, no parameters) runs a canned read-only Datadog p95
+           latency query on a pinned computer via the computer_exec trigger.
+           Same shape as Exec, minus the caller-supplied command. -->
+      <EntityType Name="LatencyDiag">
+        <Key>
+          <PropertyRef Name="Id" />
+        </Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false" />
+        <Property Name="Status" Type="Edm.String" />
+        <Property Name="ComputerId" Type="Edm.String" />
+        <Property Name="Command" Type="Edm.String" />
+        <Property Name="ExitCode" Type="Edm.String" />
+        <Property Name="StdoutTail" Type="Edm.String" />
+        <Property Name="StderrTail" Type="Edm.String" />
+        <Property Name="Error" Type="Edm.String" />
+
+        <Action Name="RunScan" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.LatencyDiag" />
+        </Action>
+
+        <Action Name="RunSucceeded" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.LatencyDiag" />
+          <Parameter Name="exit_code" Type="Edm.String" Nullable="false" />
+          <Parameter Name="stdout_tail" Type="Edm.String" />
+          <Parameter Name="stderr_tail" Type="Edm.String" />
+        </Action>
+
+        <Action Name="RunFailed" IsBound="true">
+          <Parameter Name="bindingParameter" Type="Paw.Compute.LatencyDiag" />
+          <Parameter Name="error" Type="Edm.String" Nullable="false" />
+        </Action>
       </EntityType>
 
       <EntityContainer Name="PawComputeService">
         <EntitySet Name="Computers" EntityType="Paw.Compute.Computer" />
+        <EntitySet Name="Execs" EntityType="Paw.Compute.Exec" />
+        <EntitySet Name="LatencyDiags" EntityType="Paw.Compute.LatencyDiag" />
       </EntityContainer>
 
     </Schema>

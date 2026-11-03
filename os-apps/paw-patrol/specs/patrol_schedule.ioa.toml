@@ -18,17 +18,17 @@ initial = "daily"
 [[state]]
 name = "enable_repo_sweep"
 type = "bool"
-initial = "true"
+initial = true
 
 [[state]]
 name = "enable_daily_brief"
 type = "bool"
-initial = "true"
+initial = true
 
 [[state]]
 name = "enable_github_patrol"
 type = "bool"
-initial = "true"
+initial = true
 
 [[state]]
 name = "commit_sha"
@@ -68,7 +68,7 @@ initial = ""
 [[state]]
 name = "run_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "max_runs"
@@ -93,7 +93,6 @@ name = "Activate"
 kind = "input"
 from = ["Created"]
 to = "Active"
-effect = [{ type = "trigger", name = "patrol_schedule_activate" }]
 hint = "Activate the schedule and compute its first next_run_at."
 
 [[action.triggers]]
@@ -112,7 +111,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["next_run_at", "last_summary"]
-effect = [{ type = "schedule_at", field = "next_run_at", action = "Trigger" }]
+effect = ["schedule_at('Trigger', next_run_at)"]
 hint = "Store the first scheduled run time and schedule Trigger."
 
 [[action]]
@@ -121,7 +120,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["last_run_at"]
-effect = [{ type = "increment", var = "run_count" }, { type = "trigger", name = "patrol_schedule_trigger" }]
+effect = ["run_count += 1"]
 hint = "Run the recurring Patrol jobs now and compute the next run."
 
 [[action.triggers]]
@@ -140,7 +139,7 @@ kind = "input"
 from = ["Active"]
 to = "Active"
 params = ["next_run_at", "last_run_at", "last_repo_graph_snapshot_id", "last_daily_brief_id", "last_github_patrol_run_id", "last_summary"]
-effect = [{ type = "schedule_at", field = "next_run_at", action = "Trigger" }]
+effect = ["schedule_at('Trigger', next_run_at)"]
 hint = "Store created job ids and schedule the next recurring run."
 
 [[action]]
@@ -155,15 +154,20 @@ name = "Resume"
 kind = "input"
 from = ["Paused"]
 to = "Active"
-effect = [{ type = "trigger", name = "patrol_schedule_activate" }]
 hint = "Resume and compute a fresh next_run_at."
+
+[[action.triggers]]
+name = "patrol_schedule_activate"
+kind = "wasm"
+module = "patrol_schedule_lifecycle"
+on_failure = "Fail"
+config = { mode = "activate", temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "Recover"
 kind = "input"
 from = ["Failed"]
 to = "Active"
-effect = [{ type = "trigger", name = "patrol_schedule_recover" }]
 hint = "Recover a failed schedule after its missing module, policy, or config has been repaired."
 
 [[action.triggers]]

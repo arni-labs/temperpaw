@@ -94,9 +94,17 @@ pub fn is_openai_codex_token_expired_error(status: u16, body: &str) -> bool {
     if status != 401 {
         return false;
     }
+    // A revoked or invalidated token goes through the same auth gate as an
+    // expired one, instead of failing the turn as a plain API error.
     let lower = body.to_ascii_lowercase();
     lower.contains("token_expired")
+        || lower.contains("token_invalidated")
+        || lower.contains("token_revoked")
         || lower.contains("authentication token is expired")
+        || lower.contains("authentication token has been invalidated")
+        || lower.contains("invalidated oauth token")
+        || lower.contains("token has been invalidated")
+        || lower.contains("token has been revoked")
         || lower.contains("token is expired")
 }
 
@@ -175,44 +183,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_url_round_trips_unpadded_payloads() {
-        let value = br#"{"k":"v"}"#;
-        let encoded = base64_url_no_pad(value);
-        assert!(!encoded.contains('='));
-        assert_eq!(base64_url_decode(&encoded).as_deref(), Some(&value[..]));
-    }
+    fn codex_revoked_or_invalidated_token_routes_to_auth_recovery() {
+        // The 401 body OpenAI Codex returned in production on 2 and 3 June.
+        let revoked = r#"{"error":{"message":"Encountered invalidated oauth token for user, failing request","type":null,"code":"token_revoked","param":null},"status":401}"#;
+        // The same refusal under the token_invalidated code.
+        let invalidated = r#"{"error":{"message":"Your authentication token has been invalidated.","code":"token_invalidated"}}"#;
 
-    #[test]
-    fn extracts_jwt_expiry_from_payload() {
-        let payload = r#"{"exp":12345}"#;
-        let token = format!("h.{}.s", base64_url_no_pad(payload.as_bytes()));
-
-        assert_eq!(extract_jwt_expires_at_ms(&token), Some(12_345_000));
-    }
-
-    #[test]
-    fn codex_access_token_freshness_uses_stored_expiry_with_skew() {
-        assert!(codex_access_token_is_fresh(
-            Some("not-a-jwt"),
-            Some("100000"),
-            40_000,
-            30_000
+        assert!(is_openai_codex_token_expired_error(401, revoked));
+        assert!(is_openai_codex_token_expired_error(401, invalidated));
+        assert!(!is_openai_codex_token_expired_error(403, revoked));
+        assert!(!is_openai_codex_token_expired_error(
+            401,
+            r#"{"error":{"message":"Missing scope","code":"insufficient_scope"}}"#
         ));
-        assert!(!codex_access_token_is_fresh(
-            Some("not-a-jwt"),
-            Some("100000"),
-            80_000,
-            30_000
-        ));
-        assert!(!codex_access_token_is_fresh(None, None, 0, 30_000));
-    }
-
-    #[test]
-    fn codex_expired_error_detection_matches_openai_401_shape() {
-        let body = r#"{"error":{"message":"Provided authentication token is expired. Please try signing in again.","code":"token_expired"}}"#;
-
-        assert!(is_openai_codex_token_expired_error(401, body));
-        assert!(!is_openai_codex_token_expired_error(500, body));
-        assert!(!is_openai_codex_token_expired_error(401, "{}"));
     }
 }

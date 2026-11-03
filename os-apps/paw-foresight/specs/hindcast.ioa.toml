@@ -20,6 +20,7 @@ initial = "Configured"
 # underlying world's corridor sessions plus heartbeat monitoring; revisit
 # with state_timeout once hindcast run-time envelopes are measured.
 allow_indefinite_states = ["Configured", "Running"]
+terminal = ["Scored", "Failed"]
 
 # --- State Variables ---
 
@@ -105,7 +106,6 @@ kind = "input"
 from = ["Running"]
 params = []
 hint = "Compare the world's forecasts against actuals: Brier per claim, anachronism check, contamination note."
-effect = [{ type = "trigger", name = "grade_hindcast" }]
 
 [[action.triggers]]
 name = "grade_hindcast"
@@ -134,15 +134,3 @@ from = ["Configured", "Running"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "ScoredIsFinal"
-when = ["Scored"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

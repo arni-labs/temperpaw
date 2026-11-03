@@ -71,7 +71,6 @@ kind = "input"
 from = ["Created"]
 to = "Scanning"
 params = ["commit_sha"]
-effect = [{ type = "trigger", name = "repo_sweep_started" }]
 hint = "Start a codebase/dependency graph scan."
 
 [[action.triggers]]
@@ -99,7 +98,6 @@ kind = "input"
 from = ["Scanning"]
 to = "Ready"
 params = ["graph_json", "summary_markdown", "generated_at", "finding_count"]
-effect = [{ type = "trigger", name = "repo_sweep_completed" }]
 hint = "Record completed repo graph snapshot."
 
 [[action.triggers]]
@@ -141,10 +139,10 @@ hint = "Record failed repo graph scan."
 state = "Created"
 after_seconds = 3600
 on_timeout = "ScanFailed"
-params = { error_message = "RepoGraphSnapshot stayed Created for 1h without scanning.", integration = "repo_graph_snapshot_timeout" }
+args = { error_message = "'RepoGraphSnapshot stayed Created for 1h without scanning.'", integration = "'repo_graph_snapshot_timeout'" }
 
 [[state_timeout]]
 state = "Scanning"
 after_seconds = 21600
 on_timeout = "ScanFailed"
-params = { error_message = "RepoGraphSnapshot scan exceeded 6h.", integration = "repo_graph_snapshot_timeout" }
+args = { error_message = "'RepoGraphSnapshot scan exceeded 6h.'", integration = "'repo_graph_snapshot_timeout'" }

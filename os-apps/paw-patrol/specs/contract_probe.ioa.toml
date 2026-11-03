@@ -1,0 +1,94 @@
+# ContractProbe — LatencyDiag-class HTTP probe (ARN-462).
+#
+# One action, RunScan, takes no parameters. Path, filter, and max_ms are
+# entity fields set at create. Dispatch cannot inject them. Re-runnable
+# from Ready or Failed. Ready times out into RunScan so a later session
+# sees worsening without a chat note.
+#
+# TemperDeploy.CheckHealthy fires RunScan on probe_id (default mcp-455-lists).
+
+[automaton]
+name = "ContractProbe"
+states = ["Idle", "Scanning", "Ready", "Failed"]
+initial = "Idle"
+allow_indefinite_states = ["Idle", "Ready", "Failed"]
+
+[[state]]
+name = "path"
+type = "string"
+initial = "/tdata/DesignLanguages"
+
+[[state]]
+name = "filter"
+type = "string"
+initial = "id eq '__arn462_missing__'"
+
+[[state]]
+name = "max_ms"
+type = "string"
+initial = "800"
+
+[[state]]
+name = "latency_ms"
+type = "string"
+initial = ""
+
+[[state]]
+name = "row_count"
+type = "string"
+initial = ""
+
+[[state]]
+name = "passed"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error_message"
+type = "string"
+initial = ""
+
+[[action]]
+name = "RunScan"
+kind = "input"
+from = ["Idle", "Ready", "Failed"]
+to = "Scanning"
+hint = "GET the pinned path and filter. No parameters."
+
+[[action.triggers]]
+name = "contract_probe_scan"
+kind = "wasm"
+module = "contract_probe"
+on_failure = "RunFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+temper_api_key = "{secret:temper_api_key}"
+
+[[action]]
+name = "RunSucceeded"
+kind = "input"
+from = ["Scanning"]
+to = "Ready"
+params = ["latency_ms", "row_count", "passed"]
+hint = "Probe HTTP succeeded. passed is true when latency_ms <= max_ms."
+
+[[action]]
+name = "RunFailed"
+kind = "input"
+from = ["Scanning"]
+to = "Failed"
+params = ["error_message", "latency_ms", "row_count", "passed"]
+hint = "Probe HTTP failed or the host could not run it."
+
+# Six hours. A Cortex session that arrives later still gets a fresh sample.
+# Failed retries the same way so a broken probe does not stay silent.
+[[state_timeout]]
+state = "Ready"
+after_seconds = 21600
+on_timeout = "RunScan"
+
+[[state_timeout]]
+state = "Failed"
+after_seconds = 21600
+on_timeout = "RunScan"

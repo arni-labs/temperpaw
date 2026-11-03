@@ -1,0 +1,45 @@
+# Label Entity — I/O Automaton Specification
+#
+# Categorization tag for issues.
+
+[automaton]
+name = "Label"
+states = ["Active", "Archived"]
+initial = "Active"
+
+# ADR-0050 migration TODO: each state below needs either a
+# [[state_timeout]] declaration or a domain-specific justification
+# for being indefinite. Added as a migration allowlist to unblock
+# TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
+allow_indefinite_states = ["Active"]
+terminal = ["Archived"]
+
+# --- State Variables ---
+
+[[state]]
+name = "usage_count"
+type = "counter"
+initial = 0
+
+# --- Actions ---
+
+[[action]]
+name = "Create"
+kind = "input"
+from = ["Active"]
+params = ["name", "color", "description"]
+hint = "Initialize label with name, color, and optional description."
+
+[[action]]
+name = "IncrementUsage"
+kind = "input"
+from = ["Active"]
+effect = ["usage_count += 1"]
+hint = "Increment usage count when label is attached to an issue."
+
+[[action]]
+name = "Archive"
+kind = "input"
+from = ["Active"]
+to = "Archived"
+hint = "Archive the label. Terminal state."

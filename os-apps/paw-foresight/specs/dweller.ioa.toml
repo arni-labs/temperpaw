@@ -16,6 +16,7 @@ initial = "Created"
 # ADR-0050: Active is the steady state of a long-lived character —
 # indefinite by definition; work is session-bounded, not state-bounded.
 allow_indefinite_states = ["Created", "Active"]
+terminal = ["Retired"]
 
 # --- State Variables ---
 
@@ -55,12 +56,12 @@ initial = ""
 [[state]]
 name = "traversal_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "contradiction_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # Small JSON summary maintained by the system: {"graded": n, "brier": x}.
 [[state]]
@@ -89,7 +90,7 @@ kind = "input"
 from = ["Active"]
 params = ["path_id", "traversal_note_file_id"]
 hint = "A traversal session finished living a path stretch. Lived detail lands in agent memory; contradictions were filed as cost flags on the Path."
-effect = [{ type = "increment", var = "traversal_count" }]
+effect = ["traversal_count += 1"]
 
 [[action]]
 name = "RecordContradiction"
@@ -97,7 +98,7 @@ kind = "input"
 from = ["Active"]
 params = ["path_id", "claim_id", "note"]
 hint = "A traversal could not be lived coherently. The trigger appends a contradiction flag to the route's challenge flags and re-prices the claim — dweller stress-testing feeds pricing (ADR-004)."
-effect = [{ type = "increment", var = "contradiction_count" }, { type = "trigger", name = "animate_dwellers" }]
+effect = ["contradiction_count += 1"]
 
 [[action.triggers]]
 name = "animate_dwellers"
@@ -122,10 +123,3 @@ from = ["Created", "Active"]
 to = "Retired"
 params = ["retire_reason"]
 hint = "Character leaves the world (or its soul was bred out by the meta-loop)."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "RetiredIsFinal"
-when = ["Retired"]
-assert = "no_further_transitions"

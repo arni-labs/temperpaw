@@ -1,0 +1,135 @@
+# ARN-467. Executable IOA contract; simulator tests run these declarations unchanged.
+[automaton]
+name = "DsfParticipant"
+states = ["Draft","Active","Retired"]
+initial = "Draft"
+strict_action_params = true
+# Durable records may wait indefinitely; work in progress has explicit timeouts.
+allow_indefinite_states = ["Draft","Active"]
+terminal = ["Retired"]
+
+[[state]]
+name = "application_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "product_participant_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "cohort_definition"
+type = "string"
+initial = ""
+
+[[state]]
+name = "identity_provenance_ref"
+type = "string"
+initial = ""
+
+[[state]]
+name = "activity_window"
+type = "string"
+initial = ""
+
+[[state]]
+name = "activity_summary"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observation_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "coverage"
+type = "string"
+initial = ""
+
+[[state]]
+name = "observed_sequence"
+type = "counter"
+initial = 0
+
+[[state]]
+name = "observed_at_ms"
+type = "counter"
+initial = 0
+
+[[action]]
+name = "RegisterAgent"
+kind = "input"
+from = ["Draft"]
+to = "Active"
+params = [{ name = "application_id", type = "string" }, { name = "product_participant_id", type = "string" }, { name = "identity_provenance_ref", type = "string" }]
+effect = []
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "application_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "product_participant_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "identity_provenance_ref"
+
+[[action]]
+name = "RegisterCohort"
+kind = "input"
+from = ["Draft"]
+to = "Active"
+params = [{ name = "application_id", type = "string" }, { name = "cohort_definition", type = "string" }, { name = "identity_provenance_ref", type = "string" }]
+effect = []
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "application_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "cohort_definition"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "identity_provenance_ref"
+
+[[action]]
+name = "ObserveActivity"
+kind = "input"
+from = ["Active"]
+to = "Active"
+params = [{ name = "activity_window", type = "string" }, { name = "activity_summary", type = "string" }, { name = "observation_id", type = "string" }, { name = "coverage", type = "string" }, { name = "observed_at_ms", type = "counter" }, { name = "expected_sequence", type = "counter" }]
+effect = ["observed_sequence += 1", "observed_at_ms = params.observed_at_ms"]
+
+[[action.constraints]]
+kind = "param_equals_field"
+param = "expected_sequence"
+field = "observed_sequence"
+
+[[action.constraints]]
+kind = "param_greater_than_field"
+param = "observed_at_ms"
+field = "observed_at_ms"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "observation_id"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "activity_window"
+
+[[action.constraints]]
+kind = "param_nonempty"
+param = "coverage"
+
+[[action]]
+name = "Retire"
+kind = "input"
+from = ["Active"]
+to = "Retired"

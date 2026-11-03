@@ -113,8 +113,8 @@
 - No production deploy was performed because PR #451 must remain open. Live
   Railway/Datadog verification is therefore pending merge and deployment.
 - All five configured webhook secret references must be populated in the
-  deployment vault; `/readyz` remains degraded and admission fails closed while
-  any are missing.
+  deployment vault; `/readyz` reports them in its body and admission fails closed
+  while any are missing. `/readyz` stays 200 per ADR-0066.
 
 ## Artifacts
 

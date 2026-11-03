@@ -22,6 +22,7 @@ initial = "Drafted"
 # Published persists for the life of the world. Revisit with state_timeout
 # once gate envelopes are measured.
 allow_indefinite_states = ["Drafted", "Checking", "ConsistencyChecked", "Published"]
+terminal = ["Retconned", "Rejected"]
 
 # --- State Variables ---
 
@@ -82,7 +83,7 @@ initial = ""
 [[state]]
 name = "check_attempts"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "check_failure_note"
@@ -108,10 +109,7 @@ from = ["Drafted"]
 to = "Checking"
 params = ["content_file_id", "cited_node_ids"]
 hint = "Author submits. Spawns a checker session against the world graph."
-effect = [
-  { type = "increment", var = "check_attempts" },
-  { type = "trigger", name = "consistency_gate" },
-]
+effect = ["check_attempts += 1"]
 
 [[action.triggers]]
 name = "consistency_gate"
@@ -129,7 +127,13 @@ kind = "input"
 from = ["Checking"]
 params = ["verdict_json", "checker_session_id"]
 hint = "Checker session self-reports its structured verdict. The gate validates the schema deterministically."
-effect = [{ type = "trigger", name = "consistency_gate" }]
+
+[[action.triggers]]
+name = "consistency_gate"
+kind = "wasm"
+module = "consistency_gate"
+on_failure = "FailCheck"
+config = { temper_api_url = "{secret:temper_api_url}" }
 
 [[action]]
 name = "PassCheck"
@@ -138,7 +142,6 @@ from = ["Checking"]
 to = "ConsistencyChecked"
 params = []
 hint = "Gate validated the verdict: citations resolve, dates agree, no canon contradiction. System principals only. Gate-cleared artifacts publish automatically (deterministic policy, ADR-004 C4)."
-effect = [{ type = "trigger", name = "consistency_gate_publish" }]
 
 [[action.triggers]]
 name = "consistency_gate_publish"
@@ -180,15 +183,3 @@ from = ["Drafted", "Checking"]
 to = "Rejected"
 params = ["check_failure_note"]
 hint = "Abandoned after repeated gate failures or by the author."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "RetconnedIsFinal"
-when = ["Retconned"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "RejectedIsFinal"
-when = ["Rejected"]
-assert = "no_further_transitions"
