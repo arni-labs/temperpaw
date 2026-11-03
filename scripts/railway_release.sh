@@ -9,16 +9,15 @@
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
 #
 # Environment: RAILWAY_API_TOKEN (this environment's project token, or an account or workspace token),
-# RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, BASE_URL, STATE_DIR, RELEASE_KEY (the release's own
-# key, agent type katagami-apps-release-ci: not the operator, so it opens no route, and it holds no admin key).
+# RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, RAILWAY_SERVICE_ID, BASE_URL, TEMPER_API_KEY (the operator key), STATE_DIR.
 # Optional:
-#   PROBE_ROUTES     one "<GET|POST> <anon|release|forged-customer|forged-admin|bogus> <path>" per line; each answer
-#                    after the deploy must equal the answer before it. A release probe on a route's path shows that
-#                    the route table serves, also when Railway drops the deployment's "route table rebuilt" log line
+#   PROBE_ROUTES     one "<GET|POST> <anon|operator|forged-customer|forged-admin|bogus> <path>" per line; each answer
+#                    after the deploy must equal the answer before it. An operator probe on a route's path also shows
+#                    the route table serves when Railway drops the deployment's "route table rebuilt" log line
 #   GUEST_CHECK_URL  a guest read through the site; after the deploy it must answer 200 ok and have lost nothing:
 #                    counts may grow; ids from before must remain when both reads returned the whole thing.
 #   ROLLBACK_TAG     the image to go back to when Railway's record names none and the service has no IMAGE_TAG
-#   EXPECTED_SHA     the full commit /paw/version/sha must report
+#   EXPECTED_SHA     the full commit /paw/version must report
 #   SOAK_SECONDS     how long the new deployment runs before memory is read (default 300)
 #   MEMORY_LIMIT_GB  a limit on Railway's memory figure; without it memory is reported, not gated
 #   DD_API_KEY, DD_APP_KEY, DD_SITE, DD_ENV  read this build's memory gauges from Datadog
@@ -45,7 +44,7 @@ BASE_URL="${BASE_URL%/}"
 ROUTE_MESSAGE="HttpEndpoint route table rebuilt"
 ASK_FAILED_MESSAGE="HttpEndpoint actor ask failed during rebuild"
 
-for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL RELEASE_KEY STATE_DIR; do
+for v in RAILWAY_API_TOKEN RAILWAY_PROJECT_ID RAILWAY_ENVIRONMENT_ID RAILWAY_SERVICE_ID BASE_URL TEMPER_API_KEY STATE_DIR; do
   [ -n "${!v:-}" ] || { echo "missing $v" >&2; exit 64; }
 done
 mkdir -p "$STATE_DIR"
@@ -134,18 +133,15 @@ route_count() {
 }
 
 # Whether the default tenant's route table serves, read from the probes rather than the logs, since Railway can drop a
-# deployment's log lines. The kernel answers a request it cannot match with 404 {"error":"no route matches"} only once
-# the request's key resolved (temper-server http_endpoint_fallback; an unknown key gets 401 AuthenticationRequired
-# first, and no key 401), and a built-in path answers a method it lacks with 405. So a path whose TRACE with the release
-# key gets that 404 belongs to the table and the key resolves, and a release probe there answering anything but 404
-# shows the table holds its route. A TemperPaw path (/paw/*) answers any key but the operator's 401, route or not
-# (auth.rs operator_caller), so it never counts. Prints the first such probe.
+# deployment's log lines. A signed-in request the table cannot match answers 404 {"error":"no route matches"}, and a
+# built-in path answers a method it lacks with 405, so a path whose TRACE gets that 404 belongs to the table, and a
+# signed-in probe there answering anything but 404 shows the table holds its route. Prints the first such probe.
 routes_serve() { # $1 probe answers, as probe prints them
   local method auth path body
   while read -r method auth path; do
-    [ "${auth:-}" = release ] || continue
+    [ "${auth:-}" = operator ] || continue
     [ "$(jq -r --arg k "$method $auth $path" '.[$k] // "404"' <<<"$1")" != 404 ] || continue
-    body="$(curl -s -m 30 -X TRACE -H "Authorization: Bearer ${RELEASE_KEY}" -H "X-Tenant-Id: default" "${BASE_URL}${path}" || true)"
+    body="$(curl -s -m 30 -X TRACE -H "Authorization: Bearer ${TEMPER_API_KEY}" -H "X-Tenant-Id: default" "${BASE_URL}${path}" || true)"
     if jq -e '.error == "no route matches"' >/dev/null 2>&1 <<<"$body"; then
       echo "${method} ${path}"
       return 0
@@ -160,23 +156,16 @@ ask_failures() {
 
 # Each PROBE_ROUTES request once, as {"<method> <auth> <path>": "<status>"}. A dropped route answers with the API's
 # fallback instead of its module, and a broken sign-in answers a forged or made-up caller differently.
-# The release key is a caller the kernel resolves but not the operator: on an HttpEndpoint route that requires a key it
-# reaches the route's module, which refuses it (jev 401, passes 403), and where the route is gone it gets the kernel's
-# 404 "no route matches" (routes_serve). So a release probe shows the route is there and refuses a caller it does not
-# know. It cannot show what the operator probe also showed, that the module serves the operator.
 probe() {
   local method auth path code out="{}" headers
   while read -r method auth path; do
     [ -n "${path:-}" ] || continue
     headers=(-H "Content-Type: application/json")
     case "$auth" in
-      anon) ;;
-      release) headers+=(-H "Authorization: Bearer ${RELEASE_KEY}" -H "X-Tenant-Id: default") ;;
+      operator) headers+=(-H "Authorization: Bearer ${TEMPER_API_KEY}" -H "X-Tenant-Id: default") ;;
       forged-customer) headers+=(-H "x-temper-principal-id: someone" -H "x-temper-principal-kind: customer") ;;
       forged-admin) headers+=(-H "x-temper-principal-id: someone" -H "x-temper-principal-kind: admin") ;;
       bogus) headers+=(-H "Authorization: Bearer not-a-real-token") ;;
-      # An unknown caller (such as the retired operator) would otherwise probe as anon and compare as equal.
-      *) echo "PROBE_ROUTES names an unknown caller ${auth}" | tee -a "$STATE_DIR/errors.txt" >&2; return 64 ;;
     esac
     if [ "$method" = POST ]; then
       code="$(curl -s -o /dev/null -m 30 -w '%{http_code}' -X POST "${headers[@]}" -d '{}' "${BASE_URL}${path}" || true)"
@@ -251,9 +240,8 @@ wait_healthy() {
   return 1
 }
 
-# The commit that serves, from the public /paw/version/sha (it names nothing else, so it needs no key).
 live_sha() {
-  curl -s -m 20 "${BASE_URL}/paw/version/sha" | jq -r '.sha // empty' 2>/dev/null || true
+  curl -s -m 20 -H "Authorization: Bearer ${TEMPER_API_KEY}" "${BASE_URL}/paw/version" | jq -r '.sha // empty' 2>/dev/null || true
 }
 
 # Point the service's source at one image, with the deploy settings `railway up` carried in railway.toml. Starts
@@ -353,7 +341,7 @@ against_before() { # $1 deployment id
     if served="$(routes_serve "$after")"; then
       echo "no route table line in the logs; ${served} reaches its route"
     else
-      misses+=("the deployment logged no route table for the default tenant, and no release probe reaches a route")
+      misses+=("the deployment logged no route table for the default tenant, and no signed-in probe reaches a route")
     fi
   fi
   while IFS= read -r key; do
@@ -518,7 +506,7 @@ refuse() { # $1 why nothing deploys; it becomes the release record's miss
 }
 
 # A deploy never moves the Temper backwards. The release (EXPECTED_SHA) is live already when the commit that serves (the
-# snapshot's /paw/version/sha) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
+# snapshot's /paw/version) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
 # (already=false) only when it contains the commit that serves, and on production only when main contains it. Anything
 # else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Only the Factory's
 # stage and go_live run this; going back on purpose (roll_back, or a run started by hand) does not.
@@ -565,21 +553,19 @@ case "${1:-}" in
     # The way back must be the build that serves, and every baseline must have been read: without one, a check after
     # the deploy would have nothing to compare with.
     sha="$(live_sha)"
-    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "/paw/version/sha names no commit, so the running build is unknown: no deploy" >&2; exit 1; }
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "/paw/version names no commit, so the running build is unknown: no deploy" >&2; exit 1; }
     [ "${sha:0:$((${#tag} - 4))}" = "${tag#sha-}" ] || {
       echo "${tag} does not name the build that serves (${sha}): no way back, so no deploy" >&2
       exit 1
     }
     routes="$(route_count "$id")"
     probes="$(probe)"
-    # Always, not only without the log line: a release probe's 401 tells a route that is there from nothing only when
-    # the key resolves, and this is what shows it does.
-    served="$(routes_serve "$probes")" || {
-      echo "no release probe reaches a route (or the release key does not resolve on deployment ${id}): no baseline, so no deploy" >&2
-      exit 1
-    }
     if ! [[ "$routes" =~ ^[0-9]+$ ]]; then
       routes=""
+      served="$(routes_serve "$probes")" || {
+        echo "deployment ${id} logged no route table for the default tenant and no signed-in probe reaches a route: no baseline, so no deploy" >&2
+        exit 1
+      }
       echo "deployment ${id} logged no route table; ${served} reaches its route" >&2
     fi
     guest_was="$(guest_baseline)"
@@ -604,7 +590,7 @@ case "${1:-}" in
     new_id="$(jq -r .deployment_id "$STATE_DIR/new.json")"
     if [ -n "${EXPECTED_SHA:-}" ]; then
       sha="$(live_sha)"
-      [ "$sha" = "$EXPECTED_SHA" ] || misses+=("/paw/version/sha reports ${sha:-nothing}, not ${EXPECTED_SHA}")
+      [ "$sha" = "$EXPECTED_SHA" ] || misses+=("/paw/version reports ${sha:-nothing}, not ${EXPECTED_SHA}")
     fi
     against_before "$new_id"
     if [ "${#misses[@]}" = 0 ]; then
@@ -613,7 +599,7 @@ case "${1:-}" in
       [ "$(live_deployment | jq -r '.id // empty')" = "$new_id" ] || misses+=("deployment ${new_id} no longer serves after the soak")
       if [ -n "${EXPECTED_SHA:-}" ]; then
         sha="$(live_sha)"
-        [ "$sha" = "$EXPECTED_SHA" ] || misses+=("after the soak /paw/version/sha reports ${sha:-nothing}, not ${EXPECTED_SHA}")
+        [ "$sha" = "$EXPECTED_SHA" ] || misses+=("after the soak /paw/version reports ${sha:-nothing}, not ${EXPECTED_SHA}")
       fi
       against_before "$new_id"
       mem="$(memory_gb "$SOAK_SECONDS" || true)"
@@ -673,7 +659,7 @@ case "${1:-}" in
     fi
     jq -n --arg id "$id" --arg tag "$tag" '{deployment_id: $id, image_tag: $tag}' | tee "$STATE_DIR/rolled-back.json"
     sha="$(live_sha)"
-    [ "$sha" = "$before_sha" ] || misses+=("/paw/version/sha reports ${sha:-nothing}, not ${before_sha} that served before")
+    [ "$sha" = "$before_sha" ] || misses+=("/paw/version reports ${sha:-nothing}, not ${before_sha} that served before")
     against_before "$id"
     report_misses
     echo "back on ${tag}, and it answers as it did before"

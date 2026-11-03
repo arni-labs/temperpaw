@@ -10,9 +10,9 @@
 #
 # Runner env: SRC, COMMIT, STEP, SCRATCH. Optional inputs: REF (image tag sha-*; default sha-<first 7 of COMMIT>),
 # ROLLBACK_TAG, DRILL (staging only), RUN_ARTIFACT_BATCH_E2E (true|false), POLL_ATTEMPTS, POLL_SECONDS, SOAK_SECONDS.
-# Logins (each environment uses only its own Railway token):
+# Logins (each environment uses only its own; neither falls back to the other's):
 #   LOGIN_RAILWAY_OPENPAW_KATAGAMI_STAGING (staging), LOGIN_RAILWAY_OPENPAW_PRODUCTION (production) -> RAILWAY_API_TOKEN
-#   LOGIN_APPS_RELEASE_CI_KEY -> RELEASE_KEY (agent type katagami-apps-release-ci, for the probes; not the operator key)
+#   LOGIN_STAGING_TEMPER_API_KEY (staging), LOGIN_TEMPER_API_KEY (production) -> TEMPER_API_KEY (the environment's operator key)
 #   LOGIN_DATADOG_API_KEY, LOGIN_DATADOG_APP_KEY, LOGIN_DATADOG_SITE (optional) -> DD_API_KEY, DD_APP_KEY, DD_SITE
 #   LOGIN_GITHUB_READ (JSON {"arni-labs": token}, or a bare token; else GH_TOKEN already set) -> GH_TOKEN, for commit compare and the kernel pin
 set -euo pipefail
@@ -54,24 +54,24 @@ esac
 PROBE_ROUTES='POST anon /katagami/webhooks/tensorlake
 POST anon /katagami/webhooks/datadog
 POST anon /katagami/webhooks/stripe
-POST release /katagami/judge
-POST release /katagami/pass/guest
-POST release /katagami/pass/files
+POST operator /katagami/judge
+POST operator /katagami/pass/guest
+POST operator /katagami/pass/files
 GET anon /paw/setup/status
 GET forged-customer /paw/setup/status
 GET forged-admin /paw/setup/status
-GET bogus /paw/setup/status'
-# No release probe on /paw/setup/status: TemperPaw answers any key but the operator's 401 there whether the route is
-# there or not (auth.rs operator_caller), so it would show nothing about the route.
+GET bogus /paw/setup/status
+GET operator /paw/setup/status'
 MEMORY_LIMIT_GB=""
 
 # --- the logins
 if [ "$DEPLOY_ENV" = staging ]; then
   RAILWAY_API_TOKEN="${LOGIN_RAILWAY_OPENPAW_KATAGAMI_STAGING:-}"
+  TEMPER_API_KEY="${LOGIN_STAGING_TEMPER_API_KEY:-}"
 else
   RAILWAY_API_TOKEN="${LOGIN_RAILWAY_OPENPAW_PRODUCTION:-}"
+  TEMPER_API_KEY="${LOGIN_TEMPER_API_KEY:-}"
 fi
-RELEASE_KEY="${LOGIN_APPS_RELEASE_CI_KEY:-}"
 DD_API_KEY="${LOGIN_DATADOG_API_KEY:-}"
 DD_APP_KEY="${LOGIN_DATADOG_APP_KEY:-}"
 DD_SITE="${LOGIN_DATADOG_SITE:-}"
@@ -80,7 +80,7 @@ if [ -n "${LOGIN_GITHUB_READ:-}" ]; then
   GH_TOKEN="$(jq -r 'if type == "object" then .["arni-labs"] // empty else . end' <<<"$LOGIN_GITHUB_READ" 2>/dev/null || printf '%s' "$LOGIN_GITHUB_READ")"
 fi
 GH_TOKEN="${GH_TOKEN:-}"
-export RAILWAY_API_TOKEN RELEASE_KEY DD_API_KEY DD_APP_KEY GH_TOKEN
+export RAILWAY_API_TOKEN TEMPER_API_KEY DD_API_KEY DD_APP_KEY GH_TOKEN
 [ -n "$DD_SITE" ] && export DD_SITE
 
 # The sandbox has curl but not gh; scripts/railway_release.sh and this script only use `gh api <path> [-H h] [--jq expr]`.
@@ -146,10 +146,7 @@ EXPECTED_SHA="$full"; export EXPECTED_SHA
 if [ -n "$DRILL" ] && [ "$DEPLOY_ENV" != staging ]; then stop 64 "a drill runs on staging only"; fi
 [ -z "$DRILL" ] || export DRILL
 case "$RUN_ARTIFACT_BATCH_E2E" in true|false) ;; *) stop 64 "RUN_ARTIFACT_BATCH_E2E must be true or false" ;; esac
-# Checked here, before anything deploys: failing later would roll back a good deploy.
-[ "$RUN_ARTIFACT_BATCH_E2E" = false ] ||
-  stop 64 "the ArtifactBatch E2E acts as the operator (it installs a module and writes records), and this step holds no operator key"
-for v in RAILWAY_API_TOKEN RELEASE_KEY; do
+for v in RAILWAY_API_TOKEN TEMPER_API_KEY; do
   [ -n "${!v}" ] || stop 65 "${v} is required (environment ${DEPLOY_ENV}): its login is missing"
 done
 for v in POLL_ATTEMPTS POLL_SECONDS SOAK_SECONDS; do
