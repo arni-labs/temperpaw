@@ -10,7 +10,7 @@ TemperPaw agents need an image generation tool. The implementation must remain T
 
 ## Decision
 
-Add a new core app, `paw-media`, centered on a generic `MediaGeneration` entity. Version 1 supports image generation through `provider = "openai_codex"` and a dedicated provider WASM module, `openai_codex_image_generate`.
+Add a new core app, `paw-media`, centered on a generic `MediaGenerationRequest` entity. Version 1 supports image generation through `provider = "openai_codex"` and a dedicated provider WASM module, `openai_codex_image_generate`.
 
 The entity flow is:
 
@@ -21,13 +21,13 @@ The entity flow is:
 
 The public OpenAI Images API and OpenAI API keys are deliberately not used in this version. If the Codex backend rejects image generation, the generation fails clearly rather than silently falling back to another credential path.
 
-The provider defaults to `quality = "low"` for the current buffered WASM HTTP path. The Codex image stream otherwise includes partial and final image payloads that can exceed the host response buffer at default/medium quality. This is an operational default, not a model boundary; higher-quality generation should be enabled when the provider module uses host-level response streaming.
+The provider reads Codex image responses through the Temper WASM streaming HTTP host API so generated images are not bounded by the fixed non-streaming SDK response buffer. The provider still defaults to `quality = "low"` for DM latency and cost; callers may request higher quality explicitly.
 
-`MediaGeneration` is provider/media generic so future providers and media types can add their own WASM modules without changing the agent-facing tool surface. New modules should be split by materially distinct provider and operation family, for example `fal_image_generate` or `openai_api_image_generate`, not by individual model.
+`MediaGenerationRequest` is provider/media generic so future providers and media types can add their own WASM modules without changing the agent-facing tool surface. New modules should be split by materially distinct provider and operation family, for example `fal_image_generate` or `openai_api_image_generate`, not by individual model.
 
 ## Consequences
 
 - Image generation is auditable through entity transitions.
 - Durable output uses PawFS `File` and `FileVersion` entities.
 - The agent receives immediate visual feedback through a short-lived `result_image_base64` overflow field; this is not the durable artifact store.
-- Future media types can add new provider WASM modules and action triggers while preserving the `MediaGeneration` state model.
+- Future media types can add new provider WASM modules and action triggers while preserving the `MediaGenerationRequest` state model.

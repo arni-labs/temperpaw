@@ -1,4 +1,0 @@
-name = "paw-consilium"
-description = "Multi-perspective deliberation — multiple perspectives examining knowledge from different angles, synthesized into a rich Brief. Supports cross-model diversity."
-version = "0.1.0"
-dependencies = ["paw-agent", "paw-fs"]

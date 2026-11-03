@@ -32,7 +32,7 @@ use temper_platform::recovery::{
 use temper_platform::router::build_platform_router;
 use temper_runtime::scheduler::sim_now;
 use temper_runtime::tenant::TenantId;
-use temper_server::platform_store::{PlatformStore, SpecVerificationUpdate};
+use temper_server::platform_store::{InstalledAppRecord, PlatformStore, SpecVerificationUpdate};
 use temper_server::registry::{EntityLevelSummary, EntityVerificationResult, VerificationStatus};
 use temper_server::registry_bootstrap::restore_registry_from_platform_store;
 use tokio::task::JoinHandle;
@@ -161,41 +161,58 @@ fn installed_app_runtime_recovery_result(
     }
 }
 
-fn genesis_bootstrap_runtime_recovery_allows_skip(
-    outcome: &InstalledAppRuntimeRecoveryOutcome,
-) -> bool {
-    matches!(
-        outcome,
-        InstalledAppRuntimeRecoveryOutcome::Ready | InstalledAppRuntimeRecoveryOutcome::Healed
-    )
+/// What to do with a configured Genesis bootstrap app at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapAction {
+    /// Leave the already-installed version in place; do not touch it.
+    KeepInstalled,
+    /// (Re)install the env-pinned bootstrap ref.
+    InstallPinned,
 }
 
-async fn unchanged_genesis_bootstrap_app_runtime_ready(
+/// A record is a candidate to KEEP only if it is a completed Genesis install.
+fn is_keep_eligible_genesis_install(record: &InstalledAppRecord) -> bool {
+    record.source_kind == "genesis" && record.status == "installed"
+}
+
+/// Decide whether to keep an already-installed Genesis bootstrap app or (re)install the
+/// env-pinned ref, from the DURABLE RECORD ALONE.
+///
+/// The env-pinned bootstrap ref (`TEMPERPAW_GENESIS_BOOTSTRAP_REFS`) is a **floor, not a
+/// ceiling**: it seeds a cold start but never overrides an installed Genesis version. If a
+/// Genesis `installed` record exists (any hash), KEEP it — so a redeploy can never revert a
+/// newer agent-published version to the pinned ref. The pin is (re)installed only when there is
+/// nothing installed to keep: no record, a non-Genesis record, or a record not in the
+/// `installed` status.
+///
+/// Deliberately record-only, NOT runtime-readiness-gated (see decision log D9). The keep decision
+/// runs at boot, while the runtime state it would probe — the process-global app catalog, Cedar
+/// policies, WASM registration — is still being restored concurrently, so ANY readiness probe is
+/// racy: a transient restore hiccup or another tenant's catalog activity looks like "not ready"
+/// and triggers a downgrade to the older pin — the exact bug this change exists to kill. The
+/// durable `InstalledAppRecord` is tenant-scoped and race-free, and it is the source of truth for
+/// "what is installed". Healing a genuinely-broken install is the recovery path's job (reconcile
+/// the INSTALLED version), not the bootstrap's — reverting to an older env pin is a downgrade
+/// masquerading as a heal.
+fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> BootstrapAction {
+    match installed {
+        Some(record) if is_keep_eligible_genesis_install(record) => BootstrapAction::KeepInstalled,
+        _ => BootstrapAction::InstallPinned,
+    }
+}
+
+/// Bring back the policies and modules installed apps run on, then see what state those apps are
+/// in. Modules come first: an app with modules can only read as ready once they are registered.
+async fn recover_installed_apps(
     state: &PlatformState,
     platform_store: &dyn PlatformStore,
-    tenant: &str,
-    app_name: &str,
-    app_ref: &str,
-) -> bool {
-    let outcome =
-        recover_installed_app_runtime_state(state, platform_store, tenant, app_name).await;
-    if genesis_bootstrap_runtime_recovery_allows_skip(&outcome) {
-        tracing::info!(
-            app = %app_name,
-            app_ref = %app_ref,
-            outcome = ?outcome,
-            "Skipping unchanged Genesis bootstrap app"
-        );
-        return true;
+) -> Result<InstalledAppsRuntimeRecoverySummary> {
+    recover_cedar_policies(state, platform_store).await;
+    if let Err(error) = state.server.load_wasm_modules().await {
+        record_wasm_module_load_failure("phase_6a_pre_recovery");
+        return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
     }
-
-    tracing::info!(
-        app = %app_name,
-        app_ref = %app_ref,
-        outcome = ?outcome,
-        "Reconciling unchanged Genesis bootstrap app because runtime recovery found drift"
-    );
-    false
+    Ok(recover_installed_apps_runtime_state(state, platform_store).await)
 }
 
 #[cfg(test)]
@@ -319,6 +336,27 @@ impl StartupReadiness {
     fn mark_ready(&self) {
         self.ready.store(true, Ordering::SeqCst);
     }
+}
+
+/// Makes the kernel's HttpEndpoint rows routable (an app's own inbound routes, such as Katagami's `/katagami/*`), as
+/// temper-cli's `serve` does: the reconciler rebuilds a tenant's route table on every HttpEndpoint transition, and
+/// each tenant's table is built once from the rows already stored. Without both the tables stay empty and every such
+/// route answers 404 "no route matches". The reconciler starts first, so a row that changes while the tables are
+/// built is still seen.
+async fn start_http_endpoint_routes(state: &PlatformState) {
+    temper_server::http_endpoint::spawn_reconciler(state.server.clone());
+    for tenant in registry_tenant_ids(state) {
+        temper_server::http_endpoint::rebuild_tenant_table(&state.server, &tenant).await;
+    }
+}
+
+/// Starts the kernel's background runtime, as temper-cli's `serve` does: arms again the state timers and scheduled
+/// actions the last process left waiting, from their rows, and starts the runtime metrics loop. Without it every timer
+/// waiting at a restart or deploy is lost. Runs once, after every startup install, because installs before it leave
+/// their timer follow-up to its boot walk. That walk runs in the background and logs `state timers after boot` when
+/// it ends.
+async fn start_kernel_runtime(state: &PlatformState) {
+    state.server.start_runtime().await;
 }
 
 fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
@@ -467,45 +505,68 @@ async fn bootstrap_configured_genesis_apps(
         };
 
         match platform_store.get_installed_app(tenant, &app_name).await {
-            Ok(Some(record))
-                if record.source_kind == "genesis"
-                    && record.app_ref == app_ref
-                    && record.status == "installed" =>
-            {
-                if unchanged_genesis_bootstrap_app_runtime_ready(
-                    state,
-                    platform_store,
-                    tenant,
-                    &app_name,
-                    &app_ref,
-                )
-                .await
-                {
-                    continue;
+            Ok(record) => {
+                // Record-only keep decision (see decision log D9): keep any Genesis `installed`
+                // record regardless of hash; the env pin is a floor. No runtime-readiness probe —
+                // at boot the runtime state is still being restored, so probing it is racy and
+                // can wrongly downgrade a healthy newer install.
+                match classify_bootstrap_action(record.as_ref()) {
+                    BootstrapAction::KeepInstalled => {
+                        let installed_ref = record
+                            .as_ref()
+                            .map(|r| r.app_ref.as_str())
+                            .unwrap_or_default();
+                        if installed_ref != app_ref {
+                            // The env pin is a floor: an install at a different hash is kept and the
+                            // pin is NOT force-applied. Surface this so an operator who bumped the
+                            // pin expecting an upgrade can see why it did not take — explicit
+                            // install is the upgrade path.
+                            tracing::warn!(
+                                app = %app_name,
+                                pinned_ref = %app_ref,
+                                installed_ref = %installed_ref,
+                                "Keeping installed Genesis app at a different hash than the env pin; the pin bump did NOT upgrade it (env pin is a floor, not a ceiling — use an explicit install to change the running version)"
+                            );
+                        } else {
+                            tracing::info!(
+                                app = %app_name,
+                                pinned_ref = %app_ref,
+                                installed_ref = %installed_ref,
+                                "Keeping installed Genesis bootstrap app (matches env pin)"
+                            );
+                        }
+                        continue;
+                    }
+                    BootstrapAction::InstallPinned => match record.as_ref() {
+                        Some(record) => tracing::info!(
+                            app = %app_name,
+                            previous_ref = %record.app_ref,
+                            next_ref = %app_ref,
+                            source_kind = %record.source_kind,
+                            status = %record.status,
+                            "Installing pinned Genesis bootstrap ref (no keep-eligible Genesis install record)"
+                        ),
+                        None => tracing::info!(
+                            app = %app_name,
+                            app_ref = %app_ref,
+                            "Installing fresh Genesis bootstrap app"
+                        ),
+                    },
                 }
             }
-            Ok(Some(record)) => {
-                tracing::info!(
-                    app = %app_name,
-                    previous_ref = %record.app_ref,
-                    next_ref = %app_ref,
-                    "Reconciling changed Genesis bootstrap app"
-                );
-            }
-            Ok(None) => {
-                tracing::info!(
-                    app = %app_name,
-                    app_ref = %app_ref,
-                    "Installing fresh Genesis bootstrap app"
-                );
-            }
             Err(error) => {
+                // An indeterminate read must NOT trigger a (re)install: a transient store outage
+                // during redeploy would otherwise overwrite a healthy newer Genesis version with
+                // the stale env pin — the exact downgrade this change exists to prevent. Skip and
+                // let the next boot reconcile once the store is readable. A genuinely fresh install
+                // reads Ok(None), not Err, so this does not strand first installs.
                 tracing::warn!(
                     app = %app_name,
                     app_ref = %app_ref,
                     error = %error,
-                    "Could not read installed app metadata before Genesis bootstrap; installing"
+                    "Could not read installed app metadata before Genesis bootstrap; skipping to avoid downgrading a possibly-healthy install (will retry next boot)"
                 );
+                continue;
             }
         }
 
@@ -578,7 +639,15 @@ fn spawn_runtime_server(
     listener: tokio::net::TcpListener,
     router: axum::Router,
 ) -> JoinHandle<std::io::Result<()>> {
-    tokio::spawn(async move { axum::serve(listener, router).await })
+    // The peer address lets the auth edge tell this process's own loopback
+    // calls from everyone else's.
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    })
 }
 
 async fn startup_gate_middleware(
@@ -863,6 +932,63 @@ fn spawn_query_projection_backfill(
     });
 }
 
+/// Backfill `entity_key_index` for declared-key entity types (ADR-0153), independent
+/// of the heavy field-index re-scan above. K (1-3) tiny key rows per entity, so it is
+/// cheap and runs on a short default delay. Lets existing Files/Directories/etc become
+/// keyed (so their point reads stop hitting the 413/QueryTooLarge scan) without
+/// enabling the expensive projection backfill.
+fn spawn_key_index_backfill(server: temper_server::state::ServerState, tenant_ids: Vec<TenantId>) {
+    if !key_index_backfill_on_startup() {
+        tracing::info!(
+            tenants = tenant_ids.len(),
+            "Background key-index backfill disabled for startup"
+        );
+        return;
+    }
+
+    tokio::spawn(async move {
+        let delay = key_index_backfill_delay();
+        if !delay.is_zero() {
+            tracing::info!(
+                tenants = tenant_ids.len(),
+                delay_secs = delay.as_secs(),
+                "Background key-index backfill delayed"
+            );
+            tokio::time::sleep(delay).await;
+        }
+        tracing::info!(
+            tenants = tenant_ids.len(),
+            "Background key-index backfill scheduled"
+        );
+        for tenant_id in tenant_ids {
+            server.populate_key_index_from_snapshots(&tenant_id).await;
+            tracing::info!(tenant = %tenant_id, "Background key-index backfill complete");
+        }
+    });
+}
+
+fn key_index_backfill_on_startup() -> bool {
+    std::env::var("TEMPERPAW_KEY_INDEX_BACKFILL_ON_STARTUP")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+}
+
+fn key_index_backfill_delay() -> Duration {
+    const DEFAULT_KEY_INDEX_BACKFILL_DELAY_SECS: u64 = 30;
+
+    let configured = std::env::var("TEMPERPAW_KEY_INDEX_BACKFILL_DELAY_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_KEY_INDEX_BACKFILL_DELAY_SECS);
+
+    Duration::from_secs(configured)
+}
+
 fn query_projection_backfill_on_startup() -> bool {
     std::env::var("TEMPERPAW_QUERY_PROJECTION_BACKFILL_ON_STARTUP")
         .ok()
@@ -971,6 +1097,12 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         .anthropic_api_key
         .clone()
         .or_else(|| config.openrouter_api_key.clone())
+        .or_else(|| config.huggingface_api_key.clone())
+        .or_else(|| config.fireworks_api_key.clone())
+        .or_else(|| config.sakana_fugu_api_key.clone())
+        .or_else(|| config.openai_compatible_api_key.clone())
+        .or_else(|| config.openai_compatible_api_url.clone())
+        .or_else(|| config.local_openai_api_url.clone())
         .or_else(|| config.openai_api_key.clone())
         .or_else(|| config.openai_codex_token.clone());
     let mut state = PlatformState::with_registry(registry, llm_api_key);
@@ -1030,7 +1162,90 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
                 tenant = %tenant,
                 "Skipping built-in default agent specs bootstrap; paw-agent OS app owns default agent specs"
             );
+            // paw-agent owns the agent lifecycle specs but NOT the platform
+            // IDENTITY specs (TrustedIssuer, PrincipalGeneration) that back
+            // kernel JWT verification (ARN-255). The skipped default bootstrap
+            // is the only place those load, so on this host they must be
+            // registered explicitly — otherwise `tdata/TrustedIssuer` returns
+            // EntitySetNotFound and `bootstrap_trusted_issuer_from_env` below is
+            // inert. The kernel's narrow `bootstrap_identity_specs` API registers
+            // exactly those two, cascade-free (so it does not reintroduce the OOM
+            // the skip exists to prevent) and merged (so paw-agent's specs are
+            // preserved). A failure here means JWT verification would be inert, so
+            // it fails readiness rather than booting silently broken.
+            temper_platform::bootstrap_identity_specs(&state, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to register platform identity specs for tenant '{tenant}': {e}"
+                    )
+                })?;
         }
+        // Bootstrap the operator credential so the deployment's TEMPER_API_KEY
+        // resolves to a real tenant AgentCredential on the credential-bound
+        // auth edge (ADR-0157). Without this the kernel edge has no credential
+        // to resolve and every authenticated request fails closed with 401.
+        if let Some(ref api_key) = config.temper_api_key {
+            // ARN-255 cold-boot ordering: on a virgin store paw-agent has not yet
+            // registered AgentType / AgentCredential, so the credential bootstrap
+            // would dispatch against missing tables and (previously) silently
+            // swallow the error — a 401 until the second boot. Register those two
+            // specs first (cascade-free, merged, idempotent) so the dispatch below
+            // resolves on the very first boot regardless of branch.
+            temper_platform::bootstrap_operator_credential_specs(&state, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to register AgentType/AgentCredential specs for tenant '{tenant}': {e}"
+                    )
+                })?;
+            // Propagate the credential bootstrap error instead of discarding it:
+            // a failure here means authenticated requests fail closed with 401,
+            // so fail readiness loudly rather than boot silently broken.
+            temper_platform::bootstrap_operator_credential(&state, api_key, &tenant)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to bootstrap operator credential for tenant '{tenant}': {e}"
+                    )
+                })?;
+            tracing::info!(tenant = %tenant, "Bootstrapped operator credential for TEMPER_API_KEY");
+        } else {
+            tracing::warn!(
+                "No TEMPER_API_KEY resolved; operator credential not bootstrapped — \
+                 authenticated requests will fail closed on the credential-bound edge"
+            );
+        }
+
+        // ARN-255: activate kernel JWT verification for this deployment by
+        // registering the trusted issuer from the environment. This dispatches
+        // RegisterIssuer on the TrustedIssuer entity, which requires that spec
+        // to be registered — guaranteed above (default agent-specs bootstrap in
+        // the taken branch, or the explicit identity-spec registration in the
+        // skip branch). The kernel API classifies the TEMPER_TRUSTED_ISSUER_*
+        // env authoritatively: none set is a safe no-op; a partial config or a
+        // registration failure is an error we fail readiness on — never a
+        // "registering…" log followed by a silent no-op.
+        match temper_platform::bootstrap_trusted_issuer_from_env(&state, &tenant).await {
+            Ok(temper_platform::IssuerBootstrapOutcome::Registered) => {
+                tracing::info!(
+                    tenant = %tenant,
+                    "Registered trusted JWT issuer from TEMPER_TRUSTED_ISSUER_* environment (ARN-255)"
+                );
+            }
+            Ok(temper_platform::IssuerBootstrapOutcome::Skipped) => {
+                tracing::info!(
+                    tenant = %tenant,
+                    "No TEMPER_TRUSTED_ISSUER_* env set; kernel JWT verification inactive for this deployment"
+                );
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Trusted issuer bootstrap failed for tenant '{tenant}': {e}"
+                ));
+            }
+        }
+
         tracing::info!("Bootstrapped startup platform specs for temper-system and {tenant}");
     }
 
@@ -1180,6 +1395,83 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             vault,
             &storage,
             &tenant,
+            "openrouter_api_url",
+            config.openrouter_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "huggingface_api_key",
+            config.huggingface_api_key
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "huggingface_api_url",
+            config.huggingface_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "fireworks_api_key",
+            config.fireworks_api_key
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "fireworks_api_url",
+            config.fireworks_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "sakana_fugu_api_key",
+            config.sakana_fugu_api_key
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "sakana_fugu_api_url",
+            config.sakana_fugu_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "openai_compatible_api_key",
+            config.openai_compatible_api_key
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "openai_compatible_api_url",
+            config.openai_compatible_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "openai_compatible_headers_json",
+            config.openai_compatible_headers_json
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "local_openai_api_url",
+            config.local_openai_api_url
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
             "openai_api_key",
             config.openai_api_key
         );
@@ -1239,6 +1531,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             &tenant,
             "github_token",
             config.github_token
+        );
+        seed_secret!(
+            vault,
+            &storage,
+            &tenant,
+            "genesis_token",
+            config.genesis_token
         );
         seed_secret!(vault, &storage, &tenant, "dd_api_key", config.dd_api_key);
         seed_secret!(vault, &storage, &tenant, "dd_app_key", config.dd_app_key);
@@ -1331,13 +1630,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             vault,
             &storage,
             &tenant,
-            "railway_otel_service_id",
-            config.railway_otel_service_id
-        );
-        seed_secret!(
-            vault,
-            &storage,
-            &tenant,
             "railway_datadog_runtime_agent_service_id",
             config.railway_datadog_runtime_agent_service_id
         );
@@ -1368,19 +1660,19 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
         // temper_api_url — always set to local server
         let api_url = format!("http://127.0.0.1:{actual_port}");
-        let _ = vault.cache_platform_secret("temper_api_url", api_url);
+        vault.cache_platform_secret("temper_api_url", api_url);
 
         if let Some(worker_id) = std::env::var("LOCAL_CODEX_WORKER_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worker_id", worker_id);
+            vault.cache_platform_secret("local_codex_worker_id", worker_id);
         }
         if let Some(worktree_root) = std::env::var("LOCAL_CODEX_WORKTREE_ROOT")
             .ok()
             .filter(|value| !value.trim().is_empty())
         {
-            let _ = vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
+            vault.cache_platform_secret("local_codex_worktree_root", worktree_root);
         }
 
         // Sandbox URL: explicit override for testing, otherwise Tensorlake provisions on demand.
@@ -1472,8 +1764,8 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             format!("http://127.0.0.1:{actual_port}/_internal/blobs")
         };
         let blob_bucket = std::env::var("BLOB_BUCKET").unwrap_or_else(|_| "temper-fs".into());
-        let _ = vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
-        let _ = vault.cache_platform_secret("blob_bucket", blob_bucket);
+        vault.cache_platform_secret("blob_endpoint", blob_endpoint.clone());
+        vault.cache_platform_secret("blob_bucket", blob_bucket);
 
         // Generic public artifact storage. This is separate from the private
         // TemperFS blob bucket so read-only public surfaces can serve immutable
@@ -1510,15 +1802,15 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             });
 
         if let Some(endpoint) = published_blob_endpoint {
-            let _ = vault.cache_platform_secret("published_blob_endpoint", endpoint);
-            let _ = vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
+            vault.cache_platform_secret("published_blob_endpoint", endpoint);
+            vault.cache_platform_secret("published_blob_bucket", published_blob_bucket);
         } else {
             tracing::warn!(
                 "PUBLISHED_BLOB_ENDPOINT is not configured; public artifact publishing is disabled"
             );
         }
         if let Some(public_base_url) = published_blob_public_base_url {
-            let _ = vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
+            vault.cache_platform_secret("published_blob_public_base_url", public_base_url);
         } else if running_on_railway() {
             tracing::warn!(
                 "PUBLISHED_BLOB_PUBLIC_BASE_URL is not configured; public artifact publishing is disabled"
@@ -1597,6 +1889,8 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         vault_key_bytes.to_vec(),
         tenant.clone(),
         cookie_secure,
+        state.server.http_endpoint_tables.clone(),
+        state.server.clone(),
     );
 
     let router = build_platform_router(state.clone());
@@ -1631,10 +1925,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     } else {
         router
     };
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        auth_state,
-        crate::auth::middleware,
-    ));
+    let router = crate::auth::layer(router, auth_state);
     let router =
         runtime_router_with_startup_gates(router, startup_readiness.clone(), Some(setup_state));
 
@@ -1669,6 +1960,44 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         );
     }
 
+    // Phase 6a: Recover persisted WASM modules + Cedar policies BEFORE app install.
+    //
+    // OS app install (Phase 6b) runs an integrity check that verifies each
+    // spec's [[integration]] references a WASM module in the registry. On
+    // subsequent startups the modules live in durable storage, not in the app bundle,
+    // so the registry must be populated first. Cedar policies are similarly
+    // needed for any effects dispatched during install (e.g. workspace
+    // bootstrap actions).
+    let app_runtime_recovery = {
+        let phase_started = Instant::now();
+        tracing::info!(
+            "Phase 6a: Recovering runtime app state, persisted WASM modules + Cedar policies..."
+        );
+        let app_runtime_recovery = recover_installed_apps(&state, platform_store).await?;
+        tracing::info!(
+            ready = app_runtime_recovery.ready,
+            healed = app_runtime_recovery.healed,
+            needs_reconcile = app_runtime_recovery.needs_reconcile,
+            missing_bundle = app_runtime_recovery.missing_bundle,
+            store_error = app_runtime_recovery.store_error,
+            result = installed_app_runtime_recovery_result(&app_runtime_recovery),
+            "Installed OS app runtime recovery complete"
+        );
+        record_startup_phase_duration("phase_6a_pre_recovery", phase_started.elapsed());
+        tracing::info!(
+            elapsed_ms = phase_started.elapsed().as_millis(),
+            "phase_6a_pre_recovery complete"
+        );
+        app_runtime_recovery
+    };
+
+    // Genesis bootstrap install/reconcile — runs AFTER Phase 6a on purpose. The env-pinned ref is
+    // a floor, not a ceiling. The keep-or-reinstall decision is RECORD-ONLY (decision log D9):
+    // it reads the durable InstalledAppRecord and never probes runtime readiness — at boot the
+    // runtime is still being restored concurrently, so a probe can misread a healthy newer
+    // install and wrongly downgrade it to the env pin, the exact redeploy-downgrade this change
+    // exists to prevent. Bootstrap still belongs after Phase 6a because bootstrap IS an install
+    // and sits with the other install/reconcile phases, after persisted-state recovery.
     let genesis_bootstrap_timeout = genesis_bootstrap_timeout();
     let genesis_bootstrap_installs = match tokio::time::timeout(
         genesis_bootstrap_timeout,
@@ -1691,43 +2020,6 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             "Installed configured Genesis bootstrap apps"
         );
     }
-
-    // Phase 6a: Recover persisted WASM modules + Cedar policies BEFORE app install.
-    //
-    // OS app install (Phase 6b) runs an integrity check that verifies each
-    // spec's [[integration]] references a WASM module in the registry. On
-    // subsequent startups the modules live in durable storage, not in the app bundle,
-    // so the registry must be populated first. Cedar policies are similarly
-    // needed for any effects dispatched during install (e.g. workspace
-    // bootstrap actions).
-    let app_runtime_recovery = {
-        let phase_started = Instant::now();
-        tracing::info!(
-            "Phase 6a: Recovering runtime app state, persisted WASM modules + Cedar policies..."
-        );
-        recover_cedar_policies(&state, platform_store).await;
-        let app_runtime_recovery =
-            recover_installed_apps_runtime_state(&state, platform_store).await;
-        tracing::info!(
-            ready = app_runtime_recovery.ready,
-            healed = app_runtime_recovery.healed,
-            needs_reconcile = app_runtime_recovery.needs_reconcile,
-            missing_bundle = app_runtime_recovery.missing_bundle,
-            store_error = app_runtime_recovery.store_error,
-            result = installed_app_runtime_recovery_result(&app_runtime_recovery),
-            "Installed OS app runtime recovery complete"
-        );
-        if let Err(error) = state.server.load_wasm_modules().await {
-            record_wasm_module_load_failure("phase_6a_pre_recovery");
-            return Err(anyhow::anyhow!("Failed to recover WASM modules: {error}"));
-        }
-        record_startup_phase_duration("phase_6a_pre_recovery", phase_started.elapsed());
-        tracing::info!(
-            elapsed_ms = phase_started.elapsed().as_millis(),
-            "phase_6a_pre_recovery complete"
-        );
-        app_runtime_recovery
-    };
 
     let startup_apps = startup_os_apps();
     tracing::info!(apps = ?startup_apps, "Startup OS app surface resolved from manifests");
@@ -1867,6 +2159,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         "phase_7_dispatcher_refresh complete"
     );
 
+    // Phase 7a: Start the kernel runtime once specs, Cedar, WASM, apps and the reaction dispatcher are in place.
+    // Requests still wait at the startup gate until mark_ready.
+    start_kernel_runtime(&state).await;
+
     // Phase 7b: Session recovery — recover or fail orphaned sessions (ADR-0025).
     if recover_indexes_before_reconcile {
         recover_orphaned_sessions(&state, &tenant).await;
@@ -1986,7 +2282,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     }
 
     // Spawn background loops
-    state.server.spawn_runtime_metrics_loop();
+    crate::allocator::spawn_allocator_metrics_loop();
     spawn_actor_passivation_loop(&state);
 
     // Resolve LLM config from vault/dashboard before env. Runtime must not
@@ -2032,6 +2328,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             .and_then(|v| {
                 v.get_secret(&tenant, "anthropic_api_key")
                     .or_else(|| v.get_secret(&tenant, "openrouter_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "huggingface_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "hf_token"))
+                    .or_else(|| v.get_secret(&tenant, "fireworks_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "sakana_fugu_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "openai_compatible_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "openai_compatible_api_url"))
+                    .or_else(|| v.get_secret(&tenant, "local_openai_api_url"))
                     .or_else(|| v.get_secret(&tenant, "openai_api_key"))
                     .or_else(|| v.get_secret(&tenant, "openai_codex_token"))
             })
@@ -2049,9 +2352,14 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         println!();
         println!("  API:       http://localhost:{actual_port}/tdata");
         println!("  Dashboard: http://localhost:{actual_port}/dashboard");
+        // Never the key itself: this banner lands in the deployment's log.
         println!(
             "  API key:   {}",
-            config.temper_api_key.as_deref().unwrap_or("")
+            if config.temper_api_key.is_some() {
+                "set (TEMPER_API_KEY)"
+            } else {
+                "not set"
+            }
         );
         println!();
         if has_api_key {
@@ -2072,6 +2380,9 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         }
         println!();
     }
+    let phase_started = Instant::now();
+    start_http_endpoint_routes(&state).await;
+    record_startup_phase_duration("http_endpoint_routes", phase_started.elapsed());
     startup_readiness.mark_ready();
     record_startup_time_to_ready(startup_started.elapsed(), &tenant);
     tracing::info!("Temper Paw listening on port {actual_port}");
@@ -2082,6 +2393,9 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     // Query projections are repaired as optional maintenance, not startup work.
     // Incremental projection writes remain active on entity changes.
     spawn_query_projection_backfill(state.server.clone(), tenant_ids.clone());
+    // ADR-0153/ARN-68: independent, cheap key-index backfill (own flag), so existing
+    // declared-key entities become keyed without the heavy field-index re-scan.
+    spawn_key_index_backfill(state.server.clone(), tenant_ids.clone());
 
     // Phase 10: Soul personalization (post-boot, writes to TemperFS via OData)
     if needs_soul_setup {
@@ -2092,6 +2406,13 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             .and_then(|v| {
                 v.get_secret(&tenant, "anthropic_api_key")
                     .or_else(|| v.get_secret(&tenant, "openrouter_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "huggingface_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "hf_token"))
+                    .or_else(|| v.get_secret(&tenant, "fireworks_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "sakana_fugu_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "openai_compatible_api_key"))
+                    .or_else(|| v.get_secret(&tenant, "openai_compatible_api_url"))
+                    .or_else(|| v.get_secret(&tenant, "local_openai_api_url"))
                     .or_else(|| v.get_secret(&tenant, "openai_api_key"))
                     .or_else(|| v.get_secret(&tenant, "openai_codex_token"))
             })
@@ -2148,7 +2469,7 @@ async fn cache_platform_and_persist_secret(
     key: &str,
     value: String,
 ) {
-    let _ = vault.cache_platform_secret(key, value.clone());
+    vault.cache_platform_secret(key, value.clone());
     match vault.encrypt(value.as_bytes()) {
         Ok((ciphertext, nonce)) => {
             if let Err(e) = store.upsert_secret(tenant, key, &ciphertext, &nonce).await {
@@ -2179,7 +2500,7 @@ async fn restore_secrets_as_platform(
                         if let Ok(value) = String::from_utf8(plaintext)
                             && vault.get_platform_secret(&key_name).is_none()
                         {
-                            let _ = vault.cache_platform_secret(&key_name, value);
+                            vault.cache_platform_secret(&key_name, value);
                             restored += 1;
                         }
                     }
@@ -3276,6 +3597,7 @@ fn default_agent_config(
     let mut config = serde_json::json!({
         "model": llm_model,
         "provider": llm_provider,
+        "provider_options_json": "",
         "tools_enabled": DEFAULT_AGENT_TOOLS_ENABLED,
         "workdir": DEFAULT_AGENT_WORKDIR,
         "max_turns": "24",
@@ -3796,49 +4118,36 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::anyhow;
-    use serde_json::Value;
-    use temper_platform::recovery::{
-        InstalledAppRuntimeRecoveryOutcome, InstalledAppsRuntimeRecoverySummary,
-    };
+    use temper_platform::recovery::InstalledAppsRuntimeRecoverySummary;
     use temper_runtime::tenant::TenantId;
     use temper_server::secrets::vault::SecretsVault;
 
     use super::{
-        DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
-        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy,
-        OS_APP_RECONCILE_DURATION_METRIC, OS_APP_RECONCILE_TOTAL_METRIC, RuntimeRecoveryStep,
-        STARTUP_LIVE_RESTORE_ENTITIES_METRIC, STARTUP_PHASE_DURATION_METRIC,
-        STARTUP_TIME_TO_READY_METRIC, StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
-        WASM_MODULE_LOAD_FAILURES_METRIC, actor_passivation_check_interval_secs,
-        app_required_wasm_failure, bootstrap_soul, default_agent_specs_bootstrap_needed,
-        genesis_bootstrap_app_names, genesis_bootstrap_runtime_recovery_allows_skip,
-        genesis_bootstrap_timeout, genesis_cache_restore_timeout,
+        BootstrapAction, DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
+        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy, RuntimeRecoveryStep,
+        StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
+        actor_passivation_check_interval_secs, app_required_wasm_failure, bootstrap_soul,
+        classify_bootstrap_action, default_agent_specs_bootstrap_needed,
+        genesis_bootstrap_app_names, genesis_bootstrap_timeout, genesis_cache_restore_timeout,
         installed_app_runtime_recovery_result, load_or_create_temper_api_key,
         local_wasm_startup_policy, orphaned_session_recovery_limit,
-        paw_soul_content_is_personalized, repair_default_agent_tools_enabled,
-        resolve_startup_secret, runtime_indexes_required_before_reconcile, runtime_recovery_plan,
+        paw_soul_content_is_personalized, recover_installed_apps,
+        repair_default_agent_tools_enabled, resolve_startup_secret,
+        runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
-        startup_discord_connect_result, startup_discord_summary_label, startup_os_apps,
+        start_http_endpoint_routes, start_kernel_runtime, startup_discord_connect_result,
+        startup_discord_summary_label, startup_os_apps,
         startup_surface_runtime_indexes_required_before_reconcile, wait_for_runtime_server,
     };
     use crate::transport_manager::TransportStatus;
 
     static ORPHANED_SESSION_ENV_LOCK: Mutex<()> = Mutex::new(());
     static GENESIS_ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// The app catalog is one per process, and `set_os_apps_dir` replaces all of it.
+    static CATALOG_LOCK: Mutex<()> = Mutex::new(());
 
     fn empty_install_result() -> temper_platform::os_apps::InstallResult {
-        temper_platform::os_apps::InstallResult {
-            added: Vec::new(),
-            updated: Vec::new(),
-            skipped: Vec::new(),
-            wasm_modules: Vec::new(),
-            wasm_skipped: Vec::new(),
-            wasm_failures: Vec::new(),
-            agents: Vec::new(),
-            skills: Vec::new(),
-            adrs_bootstrapped: Vec::new(),
-            seed_instances: Vec::new(),
-        }
+        temper_platform::os_apps::InstallResult::default()
     }
 
     #[test]
@@ -3880,6 +4189,201 @@ mod tests {
         unsafe {
             std::env::remove_var("TEMPERPAW_ORPHANED_SESSION_RECOVERY");
         }
+    }
+
+    /// One HttpEndpoint row, created the way an app's installer registers its route (an OData create is this action).
+    async fn create_http_endpoint(
+        state: &temper_platform::PlatformState,
+        tenant: &TenantId,
+        id: &str,
+        path: &str,
+    ) {
+        state
+            .server
+            .dispatch_tenant_action(
+                tenant,
+                "HttpEndpoint",
+                id,
+                "Create",
+                serde_json::json!({
+                    "PathPrefix": path,
+                    "Methods": "POST",
+                    "IntegrationModule": "hooks",
+                    "RequiresAuth": true,
+                    "TimeoutSecs": 30,
+                }),
+                &temper_server::request_context::AgentContext::system(),
+            )
+            .await
+            .expect("the HttpEndpoint row is created");
+    }
+
+    async fn routed(state: &temper_platform::PlatformState, tenant: &TenantId, path: &str) -> bool {
+        match state.server.http_endpoint_tables.get(tenant).await {
+            Some(table) => table.match_request("POST", path).await.is_some(),
+            None => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn http_endpoint_rows_are_routable_after_startup_and_after_every_change() {
+        let state = temper_platform::PlatformState::new(None);
+        temper_platform::bootstrap_system_tenant(&state, &std::collections::BTreeMap::new());
+        let tenant = TenantId::new(temper_platform::bootstrap::SYSTEM_TENANT);
+        // A row stored before this process started serving: nothing routes it until startup builds the table.
+        create_http_endpoint(&state, &tenant, "he-before", "/app/before").await;
+        assert!(
+            !routed(&state, &tenant, "/app/before").await,
+            "the kernel builds no route table by itself"
+        );
+
+        start_http_endpoint_routes(&state).await;
+        assert!(
+            routed(&state, &tenant, "/app/before").await,
+            "a stored row routes once startup is done"
+        );
+
+        // A row registered later (an app's install): the reconciler rebuilds the table from its transition.
+        create_http_endpoint(&state, &tenant, "he-after", "/app/after").await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !routed(&state, &tenant, "/app/after").await {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a row registered after startup routes within 10 s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            routed(&state, &tenant, "/app/before").await,
+            "and the earlier row still routes"
+        );
+    }
+
+    const TIMED_PROBE_IOA: &str = r#"
+[automaton]
+name = "Probe"
+states = ["Idle", "Armed", "Fired"]
+initial = "Idle"
+allow_indefinite_states = ["Idle", "Fired"]
+strict_action_params = true
+
+[[action]]
+name = "Arm"
+from = ["Idle"]
+to = "Armed"
+params = []
+
+[[action]]
+name = "Fire"
+from = ["Armed"]
+to = "Fired"
+params = []
+
+[[state_timeout]]
+state = "Armed"
+after_seconds = 2
+on_timeout = "Fire"
+"#;
+
+    const TIMED_PROBE_CSDL: &str = r#"<?xml version="1.0"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+<edmx:DataServices><Schema Namespace="Probe" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+<EntityType Name="Probe"><Key><PropertyRef Name="Id"/></Key>
+<Property Name="Id" Type="Edm.String" Nullable="false"/>
+</EntityType>
+<Action Name="Arm" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<Action Name="Fire" IsBound="true"><Parameter Name="bindingParameter" Type="Probe.Probe"/></Action>
+<EntityContainer Name="Container">
+<EntitySet Name="Probes" EntityType="Probe.Probe"/>
+</EntityContainer>
+</Schema></edmx:DataServices></edmx:Edmx>"#;
+
+    /// One TemperPaw process on the event store at `events`. It runs on its own runtime, so dropping it kills its
+    /// in-memory timers as a process exit would.
+    fn boot_timed_probe(events: &str) -> (tokio::runtime::Runtime, temper_platform::PlatformState) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = runtime.block_on(async {
+            let mut registry = temper_server::SpecRegistry::new();
+            registry.register_tenant(
+                "default",
+                temper_spec::csdl::parse_csdl(TIMED_PROBE_CSDL).unwrap(),
+                TIMED_PROBE_CSDL.to_string(),
+                &[("Probe", TIMED_PROBE_IOA)],
+            );
+            let mut state = temper_platform::PlatformState::with_registry(registry, None);
+            let store = temper_store_turso::TursoEventStore::new(events, None)
+                .await
+                .unwrap();
+            state
+                .server
+                .set_storage_stack(temper_server::StorageStack::from_turso(store));
+            state
+                .server
+                .authz
+                .reload_tenant_policies("default", "permit(principal, action, resource);")
+                .unwrap();
+            start_kernel_runtime(&state).await;
+            state
+        });
+        (runtime, state)
+    }
+
+    #[test]
+    fn a_state_timer_the_last_process_left_waiting_fires_after_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let tenant = TenantId::default();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        runtime.block_on(async {
+            state
+                .server
+                .get_or_create_tenant_entity(&tenant, "Probe", "r", serde_json::json!({}))
+                .await
+                .unwrap();
+            let armed = state
+                .server
+                .dispatch_tenant_action(
+                    &tenant,
+                    "Probe",
+                    "r",
+                    "Arm",
+                    serde_json::json!({}),
+                    &temper_server::request_context::AgentContext::system(),
+                )
+                .await
+                .unwrap();
+            assert!(armed.success, "Arm: {:?}", armed.error);
+        });
+        // The process exits inside the two-second budget, before its timer fires.
+        drop(state);
+        runtime.shutdown_background();
+
+        let (runtime, state) = boot_timed_probe(&events);
+        let status = runtime.block_on(async {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let status = state
+                    .server
+                    .get_tenant_entity_state(&tenant, "Probe", "r")
+                    .await
+                    .unwrap()
+                    .state
+                    .status;
+                if status == "Fired" || std::time::Instant::now() >= deadline {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        assert_eq!(
+            status, "Fired",
+            "the restarted process fires the timer the last one left waiting"
+        );
     }
 
     #[test]
@@ -4066,22 +4570,103 @@ mod tests {
     }
 
     #[test]
-    fn genesis_bootstrap_skip_requires_runtime_ready_or_healed() {
-        assert!(genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::Ready
-        ));
-        assert!(genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::Healed
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::NeedsReconcile
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::MissingBundle
-        ));
-        assert!(!genesis_bootstrap_runtime_recovery_allows_skip(
-            &InstalledAppRuntimeRecoveryOutcome::StoreError
-        ));
+    fn classify_bootstrap_keeps_installed_genesis_regardless_of_hash() {
+        use temper_server::platform_store::InstalledAppRecord;
+        let genesis_installed = |app_ref: &str| InstalledAppRecord {
+            source_kind: "genesis".to_string(),
+            status: "installed".to_string(),
+            app_ref: app_ref.to_string(),
+            ..Default::default()
+        };
+
+        // A Genesis install at the pin's hash -> keep.
+        assert_eq!(
+            classify_bootstrap_action(Some(&genesis_installed("owner/app@pin"))),
+            BootstrapAction::KeepInstalled
+        );
+        // A Genesis install at a DIFFERENT hash (a newer agent-published version) -> keep.
+        // Regression guard: the env pin is a FLOOR, not a ceiling; a redeploy must never
+        // revert a newer install back to the pinned ref. Record-only: no runtime-readiness
+        // probe (it is racy at boot — see D9), so the durable record alone decides.
+        assert_eq!(
+            classify_bootstrap_action(Some(&genesis_installed("owner/app@newer"))),
+            BootstrapAction::KeepInstalled
+        );
+        // Absent -> install the pin (cold-start seed).
+        assert_eq!(
+            classify_bootstrap_action(None),
+            BootstrapAction::InstallPinned
+        );
+        // Non-genesis source (e.g. a baked/local install) -> reinstall from the pin.
+        assert_eq!(
+            classify_bootstrap_action(Some(&InstalledAppRecord {
+                source_kind: "local".to_string(),
+                status: "installed".to_string(),
+                ..Default::default()
+            })),
+            BootstrapAction::InstallPinned
+        );
+        // Genesis but not in the "installed" status (e.g. failed/pending) -> reinstall the pin.
+        assert_eq!(
+            classify_bootstrap_action(Some(&InstalledAppRecord {
+                source_kind: "genesis".to_string(),
+                status: "failed".to_string(),
+                ..Default::default()
+            })),
+            BootstrapAction::InstallPinned
+        );
+    }
+
+    #[test]
+    fn an_installed_app_with_a_module_is_ready_after_a_restart() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("apps");
+        let app = apps.join("module-app");
+        let module = app.join("wasm").join("echo");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(
+            app.join("app.toml"),
+            "name = \"module-app\"\ndescription = \"An app with one module\"\nversion = \"0.1.0\"\n\n\
+             [[wasm_modules]]\nname = \"echo\"\ncriticality = \"app-required\"\nstartup_loading = \"lazy\"\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("APP.md"), "# Module app\n").unwrap();
+        // The smallest valid module: the header and no sections.
+        std::fs::write(module.join("echo.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        temper_platform::os_apps::add_os_apps_dir(apps);
+
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let data_dir = dir.path().join("data");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let summary = runtime.block_on(async {
+            let process = || async {
+                let mut state = temper_platform::PlatformState::new(None);
+                let store = temper_store_turso::TursoEventStore::new(&events, None)
+                    .await
+                    .unwrap();
+                state
+                    .server
+                    .set_storage_stack(temper_server::StorageStack::from_turso(store));
+                state.server.data_dir = data_dir.clone();
+                state
+            };
+            let first = process().await;
+            temper_platform::os_apps::install_os_app(&first, "module-tenant", "module-app")
+                .await
+                .unwrap();
+
+            // A new process on the same store: its module registry starts empty.
+            let restarted = process().await;
+            let store = restarted.server.platform_turso_store().unwrap();
+            recover_installed_apps(&restarted, &store).await.unwrap()
+        });
+
+        assert_eq!(summary.needs_reconcile, 0, "{summary:?}");
+        assert_eq!(summary.ready, 1, "{summary:?}");
     }
 
     #[test]
@@ -4214,6 +4799,7 @@ mod tests {
 
     #[test]
     fn startup_os_apps_includes_core_apps() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();
@@ -4227,6 +4813,7 @@ mod tests {
 
     #[test]
     fn startup_os_app_order_dedupes_shared_dependencies() {
+        let _catalog = CATALOG_LOCK.lock().unwrap();
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
         let apps = startup_os_apps();
@@ -4245,153 +4832,6 @@ mod tests {
                 "startup reconcile order should include requested app {app}"
             );
         }
-    }
-
-    #[test]
-    fn paw_agent_manifest_declares_hot_session_wasm_startup_policy() {
-        #[derive(serde::Deserialize)]
-        struct AppManifest {
-            #[serde(default)]
-            wasm_modules: Vec<WasmModuleManifest>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct WasmModuleManifest {
-            name: String,
-            startup_loading: String,
-        }
-
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let manifest_path = repo_root.join("os-apps/paw-agent/app.toml");
-        let manifest_source =
-            std::fs::read_to_string(&manifest_path).expect("paw-agent app.toml should be readable");
-        let manifest: AppManifest =
-            toml::from_str(&manifest_source).expect("paw-agent app.toml should parse");
-        let modules_by_name: std::collections::BTreeMap<_, _> = manifest
-            .wasm_modules
-            .into_iter()
-            .map(|module| (module.name, module.startup_loading))
-            .collect();
-
-        for module in [
-            "workspace_provisioner",
-            "context_preparer",
-            "provider_auth_gate",
-            "provider_caller",
-            "provider_response_applier",
-            "agent_reply",
-            "emit_ots_trajectory",
-        ] {
-            assert_eq!(
-                modules_by_name.get(module).map(String::as_str),
-                Some("eager"),
-                "paw-agent app.toml must eagerly load hot Session module {module}"
-            );
-        }
-
-        for module in ["monty_repl", "session_link_monitor", "session_recoverer"] {
-            assert_eq!(
-                modules_by_name.get(module).map(String::as_str),
-                Some("lazy"),
-                "paw-agent app.toml should keep non-hot Session module {module} lazy"
-            );
-        }
-    }
-
-    #[test]
-    fn paw_agent_build_script_builds_session_recoverer() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let build_script_path = repo_root.join("os-apps/paw-agent/wasm/build.sh");
-        let build_script = std::fs::read_to_string(&build_script_path)
-            .expect("paw-agent wasm build.sh should be readable");
-        let build_tokens: std::collections::BTreeSet<_> = build_script
-            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-            .collect();
-
-        assert!(
-            build_tokens.contains("session_recoverer"),
-            "paw-agent wasm build.sh must build session_recoverer"
-        );
-    }
-
-    #[test]
-    fn paw_channels_manifest_declares_route_reply_wasm_startup_policy() {
-        #[derive(serde::Deserialize)]
-        struct AppManifest {
-            #[serde(default)]
-            wasm_modules: Vec<WasmModuleManifest>,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct WasmModuleManifest {
-            name: String,
-            criticality: String,
-            startup_loading: String,
-        }
-
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let manifest_path = repo_root.join("os-apps/paw-channels/app.toml");
-        let manifest_source = std::fs::read_to_string(&manifest_path)
-            .expect("paw-channels app.toml should be readable");
-        let manifest: AppManifest =
-            toml::from_str(&manifest_source).expect("paw-channels app.toml should parse");
-        let modules_by_name: std::collections::BTreeMap<_, _> = manifest
-            .wasm_modules
-            .into_iter()
-            .map(|module| (module.name, (module.criticality, module.startup_loading)))
-            .collect();
-
-        for module in ["channel_connect", "route_message", "send_reply"] {
-            let Some((criticality, startup_loading)) = modules_by_name.get(module) else {
-                panic!("paw-channels app.toml must declare hot route/reply module {module}");
-            };
-            assert_eq!(
-                criticality.as_str(),
-                "app-required",
-                "paw-channels hot route/reply module {module} must be app-required"
-            );
-            assert_eq!(
-                startup_loading.as_str(),
-                "eager",
-                "paw-channels hot route/reply module {module} must eagerly load"
-            );
-        }
-
-        assert_eq!(
-            modules_by_name
-                .get("transport_reconcile")
-                .map(|(_, startup_loading)| startup_loading.as_str()),
-            Some("lazy"),
-            "transport_reconcile should stay lazy because it is not on the normal route/reply path"
-        );
-    }
-
-    #[test]
-    fn startup_metric_names_match_datadog_contract() {
-        assert_eq!(
-            STARTUP_PHASE_DURATION_METRIC,
-            "temper_startup_phase_duration_ms"
-        );
-        assert_eq!(
-            STARTUP_TIME_TO_READY_METRIC,
-            "temper_startup_time_to_healthy_ms"
-        );
-        assert_eq!(
-            STARTUP_LIVE_RESTORE_ENTITIES_METRIC,
-            "temper_startup_live_restore_entities_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_TOTAL_METRIC,
-            "temper_os_app_reconcile_total"
-        );
-        assert_eq!(
-            OS_APP_RECONCILE_DURATION_METRIC,
-            "temper_os_app_reconcile_duration_ms"
-        );
-        assert_eq!(
-            WASM_MODULE_LOAD_FAILURES_METRIC,
-            "temper_wasm_module_load_failures_total"
-        );
     }
 
     #[test]
@@ -4416,16 +4856,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_deploy_values_over_tenant_overrides() {
         let vault = SecretsVault::new(&[7u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(
             Some(&vault),
@@ -4440,16 +4876,12 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_prefers_platform_cache_over_tenant_overrides() {
         let vault = SecretsVault::new(&[8u8; 32]);
-        vault
-            .cache_secret(
-                "default",
-                "modal_token_id",
-                "stale-tenant-token".to_string(),
-            )
-            .unwrap();
-        vault
-            .cache_platform_secret("modal_token_id", "fresh-platform-token".to_string())
-            .unwrap();
+        vault.cache_secret(
+            "default",
+            "modal_token_id",
+            "stale-tenant-token".to_string(),
+        );
+        vault.cache_platform_secret("modal_token_id", "fresh-platform-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
@@ -4459,559 +4891,11 @@ mod tests {
     #[test]
     fn sandbox_secret_resolution_falls_back_to_tenant_override_without_deploy_values() {
         let vault = SecretsVault::new(&[9u8; 32]);
-        vault
-            .cache_secret("default", "modal_token_id", "tenant-token".to_string())
-            .unwrap();
+        vault.cache_secret("default", "modal_token_id", "tenant-token".to_string());
 
         let resolved = resolve_startup_secret(Some(&vault), "default", "modal_token_id", None);
 
         assert_eq!(resolved.as_deref(), Some("tenant-token"));
-    }
-
-    #[test]
-    fn datadog_configs_use_tenant_aware_entity_queries() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let dashboard_path = repo_root.join("dd-dashboards/temperpaw-overview.json");
-        let monitor_path = repo_root.join("dd-monitors/temperpaw-monitors.json");
-
-        let dashboard: Value =
-            serde_json::from_str(&std::fs::read_to_string(&dashboard_path).unwrap()).unwrap();
-        let monitors: Value =
-            serde_json::from_str(&std::fs::read_to_string(&monitor_path).unwrap()).unwrap();
-
-        let indexed_entities_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if matches!(
-                        definition["title"].as_str()?,
-                        "Indexed Entities" | "Indexed Entities (Query Plane)"
-                    ) {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Entity count widget query should exist");
-        assert_eq!(
-            indexed_entities_query,
-            "sum:temper_indexed_entities{service:temperpaw,tenant:*}"
-        );
-
-        let active_actors_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if matches!(
-                        definition["title"].as_str()?,
-                        "Active Actors" | "Active Actors (Hydrated)"
-                    ) {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Active Actors widget query should exist");
-        assert_eq!(
-            active_actors_query,
-            "avg:temper_active_actors{service:temperpaw}"
-        );
-
-        let process_memory_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if matches!(
-                        definition["title"].as_str()?,
-                        "Process Memory (RSS)" | "TemperPaw Process Memory (RSS)"
-                    ) {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Process Memory widget query should exist");
-        assert_eq!(
-            process_memory_query,
-            "avg:process_resident_memory_bytes{service:temperpaw}"
-        );
-
-        let indexed_entities_by_host_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Indexed Entities by Host" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Indexed Entities by Host widget query should exist");
-        assert_eq!(
-            indexed_entities_by_host_query,
-            "sum:temper_indexed_entities{service:temperpaw,tenant:*} by {host}"
-        );
-
-        let active_actors_by_host_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Active Actors by Host" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Active Actors by Host widget query should exist");
-        assert_eq!(
-            active_actors_by_host_query,
-            "avg:temper_active_actors{service:temperpaw} by {host}"
-        );
-
-        let process_memory_by_host_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "TemperPaw RSS by Host" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("TemperPaw RSS by Host widget query should exist");
-        assert_eq!(
-            process_memory_by_host_query,
-            "avg:process_resident_memory_bytes{service:temperpaw} by {host}"
-        );
-
-        let projected_entities_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if matches!(
-                        definition["title"].as_str()?,
-                        "Projected Entities" | "Projected Entities (Durable Catalog)"
-                    ) {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Projected Entities widget query should exist");
-        assert_eq!(
-            projected_entities_query,
-            "sum:temper_projected_entities{service:temperpaw,tenant:*}"
-        );
-
-        let projection_coverage_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Projection Coverage" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Projection Coverage widget query should exist");
-        assert_eq!(
-            projection_coverage_query,
-            "avg:temper_projection_coverage_ratio{service:temperpaw}"
-        );
-
-        let snapshot_miss_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Projection Snapshot Misses" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Projection Snapshot Misses widget query should exist");
-        assert_eq!(
-            snapshot_miss_query,
-            "default_zero(sum:temper_projection_backfill_snapshot_misses_total{service:temperpaw}.as_count().rollup(sum, 60))"
-        );
-
-        let reconcile_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "OS App Reconcile" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("OS App Reconcile widget query should exist");
-        assert_eq!(
-            reconcile_query,
-            "default_zero(sum:temper_os_app_reconcile_total{service:temperpaw} by {app,result}.as_count().rollup(sum, 60))"
-        );
-
-        let reconcile_duration_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "OS App Reconcile Duration" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("OS App Reconcile Duration widget query should exist");
-        assert_eq!(
-            reconcile_duration_query,
-            "default_zero(avg:temper_os_app_reconcile_duration_ms{service:temperpaw} by {app,result}.rollup(avg, 60))"
-        );
-
-        let startup_restore_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Startup Live Restore Entities" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Startup Live Restore Entities widget query should exist");
-        assert_eq!(
-            startup_restore_query,
-            "default_zero(sum:temper_startup_live_restore_entities_total{service:temperpaw} by {tenant}.as_count().rollup(sum, 60))"
-        );
-
-        let session_context_tokens_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Session Context Tokens" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Session Context Tokens widget query should exist");
-        assert_eq!(
-            session_context_tokens_query,
-            "avg:temper_session_context_tokens{service:temperpaw} by {provider}.rollup(avg, 60)"
-        );
-
-        let session_context_bytes_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Session Context Bytes" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Session Context Bytes widget query should exist");
-        assert_eq!(
-            session_context_bytes_query,
-            "avg:temper_session_context_bytes{service:temperpaw} by {provider}.rollup(avg, 60)"
-        );
-
-        let provider_request_bytes_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Provider Request Bytes" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Provider Request Bytes widget query should exist");
-        assert_eq!(
-            provider_request_bytes_query,
-            "avg:temper_session_provider_request_bytes{service:temperpaw} by {provider}.rollup(avg, 60)"
-        );
-
-        let memory_budget_exceeded_query = dashboard["widgets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|widget| {
-                let widgets = widget["definition"]["widgets"].as_array()?;
-                widgets.iter().find_map(|inner| {
-                    let definition = &inner["definition"];
-                    if definition["title"].as_str()? == "Session Memory Budget Exceeded" {
-                        definition["requests"][0]["q"].as_str()
-                    } else {
-                        None
-                    }
-                })
-            })
-            .expect("Session Memory Budget Exceeded widget query should exist");
-        assert_eq!(
-            memory_budget_exceeded_query,
-            "default_zero(sum:temper_session_memory_limit_exceeded_total{service:temperpaw}.as_count().rollup(sum, 60))"
-        );
-
-        let indexed_entities_drop_query = monitors
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|monitor| {
-                if monitor["name"].as_str()? == "[Temper] Indexed Entities Drop" {
-                    monitor["query"].as_str()
-                } else {
-                    None
-                }
-            })
-            .expect("Indexed Entities Drop monitor query should exist");
-        assert_eq!(
-            indexed_entities_drop_query,
-            "avg(last_15m):sum:temper_indexed_entities{service:temperpaw,tenant:*} < 1"
-        );
-
-        let startup_regression_query = monitors
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|monitor| {
-                if monitor["name"].as_str()? == "[Temper] Startup Time Regression" {
-                    monitor["query"].as_str()
-                } else {
-                    None
-                }
-            })
-            .expect("Startup Time Regression monitor query should exist");
-        assert_eq!(
-            startup_regression_query,
-            "avg(last_15m):avg:temper_startup_time_to_healthy_ms{service:temperpaw} > 120000"
-        );
-
-        let reconcile_regression_query = monitors
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|monitor| {
-                if monitor["name"].as_str()? == "[Temper] OS App Reconcile Regression" {
-                    monitor["query"].as_str()
-                } else {
-                    None
-                }
-            })
-            .expect("OS App Reconcile Regression monitor query should exist");
-        assert_eq!(
-            reconcile_regression_query,
-            "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6_os_app_reconcile} > 60000"
-        );
-
-        let wasm_failure_monitor_query = monitors
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|monitor| {
-                if monitor["name"].as_str()? == "[Temper] Required WASM Load Failures" {
-                    monitor["query"].as_str()
-                } else {
-                    None
-                }
-            })
-            .expect("Required WASM Load Failures monitor query should exist");
-        assert_eq!(
-            wasm_failure_monitor_query,
-            "sum(last_15m):default_zero(sum:temper_wasm_module_load_failures_total{service:temperpaw}.as_count()) > 0"
-        );
-
-        let session_memory_monitor_query = monitors
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|monitor| {
-                if monitor["name"].as_str()? == "[Temper] Session Memory Budget Exceeded" {
-                    monitor["query"].as_str()
-                } else {
-                    None
-                }
-            })
-            .expect("Session Memory Budget Exceeded monitor query should exist");
-        assert_eq!(
-            session_memory_monitor_query,
-            "sum(last_15m):default_zero(sum:temper_session_memory_limit_exceeded_total{service:temperpaw}.as_count()) > 0"
-        );
-
-        let dashboard_json = dashboard.to_string();
-        let monitors_json = monitors.to_string();
-        assert!(
-            monitors_json.contains(
-                "sum(last_15m):default_zero(sum:temper_session_phase_budget_exceeded_total{service:temperpaw}.as_count()) >= 1"
-            ),
-            "Monitors should alert on session phase budget failures."
-        );
-        assert!(
-            monitors_json.contains(
-                "sum(last_15m):default_zero(sum:temper_query_projection_update_error_total{service:temperpaw}.as_count()) >= 1"
-            ),
-            "Monitors should alert on background query projection update errors."
-        );
-        assert!(
-            dashboard_json.contains("avg:temper_up{service:temperpaw}"),
-            "Dashboard should include the metrics pipeline canary."
-        );
-        assert!(
-            dashboard_json.contains(
-                "sum:temper_cedar_evaluations_total{service:temperpaw}.as_count().rollup(sum, 60)"
-            ),
-            "Dashboard should include Cedar evaluation volume."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_turso_query_duration{service:temperpaw} by {operation}.rollup(avg, 60)"
-            ),
-            "Dashboard should include Turso query duration."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_query_projection_update_duration_ms{service:temperpaw} by {operation,result}.rollup(avg, 60)"
-            ),
-            "Dashboard should include background query projection update duration."
-        );
-        assert!(
-            dashboard_json.contains(
-                "default_zero(sum:temper_query_projection_update_error_total{service:temperpaw} by {operation}.as_count().rollup(sum, 60))"
-            ),
-            "Dashboard should include background query projection update errors."
-        );
-        assert!(
-            dashboard_json.contains(
-                "sum:temper_wasm_host_http_requests_total{service:temperpaw} by {call_kind,status_code_class}.as_count().rollup(sum, 60)"
-            ),
-            "Dashboard should include WASM host HTTP request volume."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_wasm_host_http_duration_ms{service:temperpaw} by {call_kind,status_code_class}.rollup(avg, 60)"
-            ),
-            "Dashboard should include WASM host HTTP latency."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_event_replay_duration{service:temperpaw} by {tenant,entity_type}.rollup(avg, 60)"
-            ),
-            "Dashboard should include event replay duration."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_session_context_prepare_duration_ms{service:temperpaw}.rollup(avg, 60)"
-            ),
-            "Dashboard should include session context prepare duration."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_session_phase_duration_ms{service:temperpaw} by {phase,result}.rollup(avg, 60)"
-            ),
-            "Dashboard should include session phase duration."
-        );
-        assert!(
-            dashboard_json.contains(
-                "default_zero(sum:temper_session_phase_budget_exceeded_total{service:temperpaw} by {phase,last_step}.as_count().rollup(sum, 60))"
-            ),
-            "Dashboard should include session phase budget failures."
-        );
-        assert!(
-            dashboard_json.contains(
-                "avg:temper_session_provider_response_bytes{service:temperpaw} by {provider}.rollup(avg, 60)"
-            ),
-            "Dashboard should include provider response bytes."
-        );
-        assert!(
-            dashboard_json.contains("temper_startup_phase_duration_ms"),
-            "Dashboard should include startup phase duration."
-        );
-        assert!(
-            dashboard_json.contains("temper_startup_time_to_healthy_ms"),
-            "Dashboard should include startup time to ready."
-        );
-        assert!(
-            dashboard_json.contains("temper_wasm_module_load_failures_total"),
-            "Dashboard should include required WASM load failures."
-        );
-        assert!(
-            !dashboard_json.contains("temper_wasm_module_skipped_total"),
-            "Dashboard should not reference the stale WASM skipped metric."
-        );
     }
 
     #[test]
@@ -5148,6 +5032,48 @@ mod tests {
         )
         .await
         .expect("runtime server should be reachable before transport boot");
+
+        server_handle.abort();
+    }
+
+    /// The auth edge reads the peer address the real server records: a
+    /// TemperPaw client's loopback call with principal headers alone passes,
+    /// the same request without them does not.
+    #[tokio::test]
+    async fn the_served_edge_sees_loopback_peers() {
+        use axum::{Router, routing::get};
+        use std::time::Duration;
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let state = crate::auth::AuthState::for_tests(tempdir.path()).await;
+        let app = crate::auth::layer(
+            Router::new()
+                .route("/readyz", get(|| async { "ok" }))
+                .route("/paw/setup/secrets/{key}", get(|| async { "secret" })),
+            state,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = spawn_runtime_server(listener, app);
+        wait_for_runtime_server(
+            format!("http://{addr}/readyz").as_str(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/paw/setup/secrets/x");
+        let with_headers = client
+            .get(&url)
+            .header("x-temper-principal-id", "temperpaw-transport")
+            .header("x-temper-principal-kind", "admin")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(with_headers.status(), reqwest::StatusCode::OK);
+        let without = client.get(&url).send().await.unwrap();
+        assert_eq!(without.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         server_handle.abort();
     }

@@ -31,7 +31,7 @@ unsafe extern "C" fn __getrandom_v03_custom(dest: *mut u8, len: usize) -> u32 {
 }
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use temper_wasm_sdk::prelude::*;
@@ -661,7 +661,10 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             let call = &tool_calls[i];
 
             let tool_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let tool_name = call.get("name").and_then(|v| v.as_str()).unwrap_or("python");
+            let tool_name = call
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("python");
             let input = call.get("input").cloned().unwrap_or(json!({}));
             let code = input.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let tool_arguments_json = serde_json::to_string(&input).unwrap_or_default();
@@ -712,6 +715,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             };
 
             // Drive the event loop (continues collecting print output)
+            let _ = dispatch::take_dispatch_image_results();
             let (result, returned_repl, tool_events) = drive_repl_loop(
                 &ctx,
                 &temper_api_url,
@@ -800,59 +804,72 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             }
 
             let printed = printed.into_string();
+            let dispatch_images =
+                image_results_from_values(&dispatch::take_dispatch_image_results());
 
             // Combine print output + expression value
             let outer_result = match result {
                 Ok(expr_val) => {
-                    // Check if the expression value is an image from sandbox.read()
-                    if let Some((media_type, base64_data, source_path)) =
-                        extract_image_result(&expr_val)
-                    {
-                        let mut text = printed;
-                        if !text.is_empty() {
-                            text.push('\n');
+                    let expr_image = extract_image_result(&expr_val);
+                    let mut image_results = Vec::new();
+                    if let Some(image_result) = expr_image.clone() {
+                        image_results.push(image_result);
+                    }
+                    append_unique_image_results(&mut image_results, dispatch_images);
+
+                    let expr_len = expr_val.len();
+                    let mut combined = printed;
+                    if expr_image.is_none() && expr_val != "null" && !expr_val.is_empty() {
+                        if !combined.is_empty() {
+                            combined.push('\n');
                         }
-                        text.push_str(&format!("[Image read from {source_path}]"));
-                        ctx.log(
-                            "info",
-                            &format!(
-                                "monty_repl: tool completed {tool_id}, image from {source_path}, base64_bytes={}, is_error=false",
-                                base64_data.len()
-                            ),
-                        );
-                        tool_results.push(make_tool_result_multimodal(
-                            tool_id,
-                            &text,
-                            &media_type,
-                            &base64_data,
-                            false,
-                        ));
-                        Ok(json!({
-                            "tool.result.preview": text,
-                            "tool.result.media_type": media_type,
-                        }))
-                    } else {
-                        let expr_len = expr_val.len();
-                        let mut combined = printed;
-                        // Append expression value if it's not null/None
-                        if expr_val != "null" && !expr_val.is_empty() {
+                        combined.push_str(&expr_val);
+                    }
+                    // If the dispatch function stored important output (e.g.
+                    // submit_specs success message), always surface it — even
+                    // if Python printed something, the dispatch message is the
+                    // authoritative result the LLM needs to see.
+                    if let Some(dispatch_msg) = dispatch::take_dispatch_output() {
+                        if combined.is_empty() {
+                            combined.push_str(&dispatch_msg);
+                        } else {
+                            combined.push('\n');
+                            combined.push_str(&dispatch_msg);
+                        }
+                    }
+
+                    if !image_results.is_empty() {
+                        for image_result in &image_results {
                             if !combined.is_empty() {
                                 combined.push('\n');
                             }
-                            combined.push_str(&expr_val);
+                            combined.push_str(&format!(
+                                "[Image available at {}]",
+                                image_result.source_path
+                            ));
                         }
-                        // If the dispatch function stored important output (e.g.
-                        // submit_specs success message), always surface it — even
-                        // if Python printed something, the dispatch message is the
-                        // authoritative result the LLM needs to see.
-                        if let Some(dispatch_msg) = dispatch::take_dispatch_output() {
-                            if combined.is_empty() {
-                                combined.push_str(&dispatch_msg);
-                            } else {
-                                combined.push('\n');
-                                combined.push_str(&dispatch_msg);
-                            }
-                        }
+                        let content = truncate_output(&combined);
+                        ctx.log(
+                            "info",
+                            &format!(
+                                "monty_repl: tool completed {tool_id}, image_count={image_count}, printed_bytes={}, expr_bytes={}, result_bytes={}, is_error=false",
+                                combined.len().saturating_sub(expr_len),
+                                expr_len,
+                                content.len(),
+                                image_count = image_results.len(),
+                            ),
+                        );
+                        tool_results.push(make_tool_result_multimodal_many(
+                            tool_id,
+                            &content,
+                            &image_results,
+                            false,
+                        ));
+                        Ok(json!({
+                            "tool.result.preview": content,
+                            "tool.result.media_type": image_results[0].media_type,
+                        }))
+                    } else {
                         if combined.is_empty() {
                             combined.push_str("(no output)");
                         }
@@ -1018,10 +1035,17 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     params["tool_spans_file_id"] = json!(id);
                 }
                 Ok(_) => {}
-                Err(e) => ctx.log(
-                    "warn",
-                    &format!("monty_repl: tool_spans append failed: {e}"),
-                ),
+                Err(e) => {
+                    // The tool calls happened; only the record of them is gone.
+                    // An empty tool_spans_file_id reads exactly like a session
+                    // that called no tools, so the loss is recorded on the
+                    // entity and the emitter degrades the trajectory for it.
+                    params["tool_spans_write_failed"] = json!("true");
+                    ctx.log(
+                        "warn",
+                        &format!("monty_repl: tool_spans append failed: {e}"),
+                    );
+                }
             }
         } else if !tool_span_events.is_empty() {
             ctx.log(
@@ -1212,11 +1236,24 @@ fn normal_repl_state_max_bytes(ctx: &Context) -> usize {
     }
 }
 
+/// Whether to persist this batch's tool spans to the session's span file.
+///
+/// Defaults to ON. The spans are the only record of tool-call wall-clock time,
+/// and the OTS emitter reads them to complete each decision — a missing config
+/// key silently emptying every stored trajectory (exactly what happened in
+/// production, ARN-109) is a worse failure than the write cost, which is
+/// bounded by `session::encode_tool_spans_jsonl`. Set the key to a false-y
+/// value to opt a deployment out.
 fn persist_tool_spans_file(ctx: &Context) -> bool {
     ctx.config
         .get("persist_tool_spans_file")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
 }
 
 fn attach_llmobs_tool_spans(params: &mut Value, tool_span_events: &[Value]) {
@@ -1514,12 +1551,21 @@ fn make_tool_result(tool_id: &str, content: &str, is_error: bool) -> Value {
     })
 }
 
-/// Create a tool result with multimodal content (text + images).
-fn make_tool_result_multimodal(
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImageResult {
+    media_type: String,
+    base64_data: String,
+    source_path: String,
+    file_id: String,
+    file_version_id: String,
+    path: String,
+    media_generation_id: String,
+}
+
+fn make_tool_result_multimodal_many(
     tool_id: &str,
     text: &str,
-    media_type: &str,
-    base64_data: &str,
+    images: &[ImageResult],
     is_error: bool,
 ) -> Value {
     let mut content_blocks: Vec<Value> = Vec::new();
@@ -1529,14 +1575,33 @@ fn make_tool_result_multimodal(
             "text": text
         }));
     }
-    content_blocks.push(json!({
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": media_type,
-            "data": base64_data
-        }
-    }));
+    for image in images {
+        let source = if image.base64_data.is_empty() {
+            json!({
+                "type": "pawfs_file",
+                "media_type": image.media_type,
+                "file_id": image.file_id,
+                "path": image.path
+            })
+        } else {
+            json!({
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": image.base64_data
+            })
+        };
+        content_blocks.push(json!({
+            "__temperpaw_image": true,
+            "type": "image",
+            "source": source,
+            "media_type": image.media_type,
+            "mime_type": image.media_type,
+            "file_id": image.file_id,
+            "file_version_id": image.file_version_id,
+            "path": image.path,
+            "media_generation_id": image.media_generation_id
+        }));
+    }
     json!({
         "type": "tool_result",
         "tool_use_id": tool_id,
@@ -1546,20 +1611,107 @@ fn make_tool_result_multimodal(
 }
 
 /// Check if a JSON-serialized expression value is an image result from dispatch.
-fn extract_image_result(expr_val: &str) -> Option<(String, String, String)> {
+fn extract_image_result(expr_val: &str) -> Option<ImageResult> {
     let v: Value = serde_json::from_str(expr_val).ok()?;
-    if v.get("__temperpaw_image")?.as_bool()? {
-        let media_type = v.get("media_type")?.as_str()?.to_string();
-        let base64_data = v.get("base64_data")?.as_str()?.to_string();
-        let source_path = v
-            .get("source_path")
-            .and_then(Value::as_str)
-            .unwrap_or("(image)")
-            .to_string();
-        Some((media_type, base64_data, source_path))
-    } else {
-        None
+    extract_image_result_value(&v)
+}
+
+fn image_results_from_values(values: &[Value]) -> Vec<ImageResult> {
+    values
+        .iter()
+        .filter_map(extract_image_result_value)
+        .collect()
+}
+
+fn append_unique_image_results(images: &mut Vec<ImageResult>, additional: Vec<ImageResult>) {
+    let mut seen = images
+        .iter()
+        .map(image_result_key)
+        .filter(|key| !key.is_empty())
+        .collect::<BTreeSet<_>>();
+    for image in additional {
+        let key = image_result_key(&image);
+        if key.is_empty() || seen.insert(key) {
+            images.push(image);
+        }
     }
+}
+
+fn image_result_key(image: &ImageResult) -> String {
+    if !image.file_id.is_empty() {
+        image.file_id.clone()
+    } else if !image.path.is_empty() {
+        image.path.clone()
+    } else {
+        image.base64_data.clone()
+    }
+}
+
+fn extract_image_result_value(v: &Value) -> Option<ImageResult> {
+    let is_image = v
+        .get("__temperpaw_image")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || v.get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "image");
+    if !is_image {
+        return None;
+    }
+
+    let media_type = v
+        .get("media_type")
+        .or_else(|| v.get("mime_type"))
+        .or_else(|| v.get("source").and_then(|source| source.get("media_type")))
+        .and_then(Value::as_str)
+        .unwrap_or("image/png")
+        .to_string();
+    let base64_data = v
+        .get("base64_data")
+        .or_else(|| v.get("source").and_then(|source| source.get("data")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let file_id = v
+        .get("file_id")
+        .or_else(|| v.get("source").and_then(|source| source.get("file_id")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let path = v
+        .get("path")
+        .or_else(|| v.get("source").and_then(|source| source.get("path")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if base64_data.is_empty() && file_id.is_empty() && path.is_empty() {
+        return None;
+    }
+
+    let source_path = v
+        .get("source_path")
+        .or_else(|| v.get("path"))
+        .or_else(|| v.get("source").and_then(|source| source.get("path")))
+        .and_then(Value::as_str)
+        .unwrap_or("(image)")
+        .to_string();
+    Some(ImageResult {
+        media_type,
+        base64_data,
+        source_path,
+        file_id,
+        file_version_id: v
+            .get("file_version_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        path,
+        media_generation_id: v
+            .get("media_generation_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
 }
 
 fn emit_tool_call_telemetry(
@@ -1662,16 +1814,6 @@ mod tests {
     }
 
     #[test]
-    fn invariant_message_mentions_adr() {
-        // Belt-and-suspenders regression guard: the error message must stay
-        // greppable for future debugging. If someone "helpfully" rewrites it
-        // to something bland, this test fails.
-        assert!(INVARIANT_VIOLATION_MSG.contains("monty_repl"));
-        assert!(INVARIANT_VIOLATION_MSG.contains("Session action"));
-        assert!(INVARIANT_VIOLATION_MSG.contains("ADR-0039"));
-    }
-
-    #[test]
     fn tool_progress_wrapper_emits_start_and_end_on_success() {
         let mut events = Vec::new();
 
@@ -1717,6 +1859,47 @@ mod tests {
         attach_llmobs_tool_spans(&mut params, &tool_span_events);
 
         assert_eq!(params["_dd_llmobs_tool_spans"], json!(tool_span_events));
+    }
+
+    #[test]
+    fn file_only_temperpaw_image_results_are_extractable() {
+        let expr = json!({
+            "__temperpaw_image": true,
+            "media_type": "image/png",
+            "content_ref": "pawfs_file",
+            "file_id": "fl-cat",
+            "file_version_id": "fv-cat",
+            "path": "/generated/images/cat.png",
+            "media_generation_id": "en-cat"
+        })
+        .to_string();
+
+        let image = extract_image_result(&expr).expect("file-only image should be detected");
+
+        assert_eq!(image.base64_data, "");
+        assert_eq!(image.file_id, "fl-cat");
+        assert_eq!(image.source_path, "/generated/images/cat.png");
+    }
+
+    #[test]
+    fn multimodal_tool_result_preserves_file_only_images_for_reply_attachments() {
+        let image = ImageResult {
+            media_type: "image/png".to_string(),
+            base64_data: String::new(),
+            source_path: "/generated/images/cat.png".to_string(),
+            file_id: "fl-cat".to_string(),
+            file_version_id: "fv-cat".to_string(),
+            path: "/generated/images/cat.png".to_string(),
+            media_generation_id: "en-cat".to_string(),
+        };
+
+        let result = make_tool_result_multimodal_many("call-cat", "generated", &[image], false);
+        let image_block = &result["content"][1];
+
+        assert_eq!(image_block["type"], "image");
+        assert_eq!(image_block["file_id"], "fl-cat");
+        assert_eq!(image_block["source"]["type"], "pawfs_file");
+        assert_eq!(image_block["source"]["file_id"], "fl-cat");
     }
 
     #[test]

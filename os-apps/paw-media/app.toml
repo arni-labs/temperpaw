@@ -8,3 +8,8 @@ dependencies = ["paw-agent", "paw-fs"]
 name = "openai_codex_image_generate"
 criticality = "app-required"
 startup_loading = "lazy"
+
+[[wasm_modules]]
+name = "openrouter_image_generate"
+criticality = "app-required"
+startup_loading = "lazy"

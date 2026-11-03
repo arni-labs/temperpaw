@@ -61,6 +61,7 @@
   // Keys that should be masked (actual secrets). Non-secret config values show plain.
   const SENSITIVE_KEYS = new Set([
     'anthropic_api_key', 'openai_api_key', 'openai_codex_access_token', 'openai_codex_refresh_token', 'openai_codex_token', 'openrouter_api_key',
+    'huggingface_api_key', 'hf_token', 'fireworks_api_key', 'sakana_fugu_api_key', 'openai_compatible_api_key', 'openai_compatible_headers_json',
     'discord_bot_token', 'slack_app_token', 'slack_bot_token', 'slack_signing_secret',
     'github_token', 'exa_api_key', 'tensorlake_api_key', 'modal_token_id', 'modal_token_secret', 'dd_api_key', 'dd_app_key', 'temper_api_key',
   ]);

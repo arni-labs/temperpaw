@@ -22,10 +22,6 @@ TemperPaw is a **single-user, self-hosted** platform. Each deployment serves one
          |    port 3467                 |
          |    /healthz liveness check   |
          |                              |
-         |  otel-collector (sidecar)    |
-         |    port 4318 (internal)      |
-         |    portable-otel fallback    |
-         |                              |
          |  datadog-runtime-agent       |
          |    4318 OTLP, 8126 APM       |
          |    Datadog-enhanced profile  |
@@ -69,14 +65,13 @@ This command:
 2. Authenticates with each service (interactive browser flows)
 3. Creates a Turso database named `temperpaw-<username>`
 4. Creates an R2 bucket named `temperpaw-fs-<username>`
-5. Creates a Railway project named `temperpaw-<username>` with the app,
-   collector fallback, and Datadog services when Datadog credentials are present
+5. Creates a Railway project named `temperpaw-<username>` with the app
+   and, when Datadog credentials are present, the Datadog services
 6. Seeds all environment variables (DB credentials, blob keys, LLM keys, OTEL config)
-7. Deploys the OTEL collector fallback and Datadog Runtime Agent/DBM services
-   when configured
+7. Deploys the Datadog Runtime Agent/DBM services when configured
 8. Deploys the pre-built Docker image from GHCR
 9. Assigns a public domain and polls `/healthz` until the new deployment is live,
-   then verifies `/readyz` for application/transport readiness
+   then verifies `/readyz` for core readiness (Discord state is in its body)
 10. Prints the dashboard URL
 
 Existing Railway deployments can enable the Datadog Runtime Agent path without
@@ -90,7 +85,7 @@ curl -fsS -X POST \
 ```
 
 That governed endpoint creates or reuses `datadog-runtime-agent` from
-`datadog/agent:7`, sets Agent and app Datadog variables, stores the Runtime
+`datadog/agent:7.84.5` (an exact version: a redeploy never upgrades it), sets Agent and app Datadog variables, stores the Runtime
 Agent service id, and redeploys the Agent plus the app. It does not return the
 Railway token or Datadog API key.
 
@@ -157,14 +152,13 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 ```
 
-Railway builds the Docker image from the repo's Dockerfile. The deployment health check hits `/healthz` on the service's assigned port so cutover is based on process liveness. `/readyz` remains the stronger application readiness probe and reports external transport readiness, including Discord reconnect state, after traffic has moved. TemperPaw cold boots can take a long time while the server restores state and reconciles apps, so the health window is intentionally set to one hour.
+Railway builds the Docker image from the repo's Dockerfile. The production `railway.toml` health check hits `/readyz`, so Railway moves traffic only after the new process has finished booting; `/healthz` answers as soon as the listener binds, while every other route still returns 503. `/readyz` is core readiness only: it reports Discord reconnect state in its body but never fails on it (ADR-0066). `overlapSeconds = 0` stops the old copy at cutover: a request in flight on it is cut off, which is preferred to two copies both answering Discord. TemperPaw cold boots can take a long time while the server restores state and reconciles apps, so the health window is intentionally set to one hour.
 
 ### Railway service architecture
 
 1. **`temperpaw`** — The main application. Serves the dashboard, OData API, and agent runtime.
-2. **`otel-collector`** — Portable OpenTelemetry fallback. Receives traces/metrics from temperpaw via Railway's private network (`otel-collector.railway.internal:4318`) and exports to Datadog (or debug logs if no DD_API_KEY).
-3. **`datadog-runtime-agent`** — Datadog-enhanced Railway runtime Agent. Receives OTLP HTTP/gRPC from temperpaw via `datadog-runtime-agent.railway.internal`, exposes APM intake on `8126`, and handles Datadog logs/process/APM setup status.
-4. **`datadog-postgres-agent`** — Datadog Postgres DBM Agent. Kept separate from runtime intake so database monitoring does not hide APM/OTLP setup state.
+2. **`datadog-runtime-agent`** — Datadog-enhanced Railway runtime Agent. Receives OTLP HTTP/gRPC from temperpaw via `datadog-runtime-agent.railway.internal`, exposes APM intake on `8126`, and handles Datadog logs/process/APM setup status.
+3. **`datadog-postgres-agent`** — Datadog Postgres DBM Agent. Kept separate from runtime intake so database monitoring does not hide APM/OTLP setup state.
 
 ### Pre-built image deploy
 
@@ -225,14 +219,14 @@ Turso remains available only as an explicit legacy mode by setting
 
 | Variable | Description |
 |----------|-------------|
-| `OTEL_ENABLED` | Set to `true` to enable OTEL export |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://datadog-runtime-agent.railway.internal:4318` in `datadog-enhanced-railway`, or `http://otel-collector.railway.internal:4318` in `portable-otel` |
-| `TEMPER_DATADOG_RAILWAY_PROFILE` | `datadog-enhanced-railway` when the Runtime Agent is active; `portable-otel` otherwise |
+| `OTEL_ENABLED` | `true` when Datadog is enabled; `false` for a deploy without a Datadog key, which turns telemetry export off |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://datadog-runtime-agent.railway.internal:4318` in `datadog-enhanced-railway`; not set without Datadog |
+| `TEMPER_DATADOG_RAILWAY_PROFILE` | `datadog-enhanced-railway` when the Runtime Agent is active; not set otherwise |
 | `DD_AGENT_HOST` | `datadog-runtime-agent.railway.internal` in Datadog-enhanced Railway mode |
 | `DD_TRACE_AGENT_URL` | `http://datadog-runtime-agent.railway.internal:8126` in Datadog-enhanced Railway mode |
-| `DD_LLMOBS_API_ENABLED` | Enables direct Datadog LLMObs export when runtime OTLP bypasses the collector |
+| `DD_LLMOBS_API_ENABLED` | Enables direct Datadog LLMObs export alongside runtime OTLP |
 | `OTEL_RESOURCE_ATTRIBUTES` | Includes service identity plus `dd_llmobs_enabled=false` in Datadog-enhanced Railway mode so APM OTLP spans remain in APM while direct LLMObs API spans are the only LLMObs source |
-| `DD_API_KEY` | Datadog API key (set on `temperpaw`, `datadog-runtime-agent`, and Datadog collector/DBM services when enabled) |
+| `DD_API_KEY` | Datadog API key (set on `temperpaw`, `datadog-runtime-agent`, and the DBM service when enabled) |
 | `DD_SITE` | Datadog site (e.g., `datadoghq.com`) |
 
 ### Railway Integration (for dashboard redeploy)
@@ -243,7 +237,6 @@ Turso remains available only as an explicit legacy mode by setting
 | `RAILWAY_PROJECT_ID` | Railway project UUID |
 | `RAILWAY_ENVIRONMENT_ID` | Railway environment UUID |
 | `RAILWAY_SERVICE_ID` | Railway service UUID for the temperpaw service |
-| `RAILWAY_OTEL_SERVICE_ID` | Railway service UUID for the otel-collector |
 | `RAILWAY_DATADOG_RUNTIME_AGENT_SERVICE_ID` | Railway service UUID for `datadog-runtime-agent` when Datadog is enabled |
 
 These enable the dashboard's "Deploy latest build" and "Update" buttons to trigger redeployments without leaving the browser.
@@ -274,6 +267,18 @@ The dashboard sidebar shows:
 ---
 
 ## Manual Deployment
+
+### A CI-built image, checked, with the way back
+
+The **Railway Redeploy** workflow (`.github/workflows/railway-redeploy.yml`, run by hand) deploys one `sha-*` image from GHCR to the staging or production main Temper and runs `scripts/railway_release.sh`:
+
+1. **snapshot**: what runs now (its deployment and image), its route count from its log, and one answer from each probe in `PROBE_ROUTES`.
+2. **forward**, only for the Factory's `stage` and `go_live` deploys: when the commit `/paw/version` reported in the snapshot already contains the release's commit (GitHub's compare), the release is live already: nothing deploys or restarts, and the result is `already_live`. A release deploys only when its commit contains the commit that serves, so a branch that forked before it deploys nothing; production also requires `main` to contain the release. Production `roll_back` and manual runs with an empty `step` on either environment skip both the backward-deploy protection and the production main-membership check, allowing deliberate deploys of older images or commits outside `main`.
+3. **deploy**: the service's source set to the image, with the `railway.toml` deploy settings (`/readyz`, one hour, overlap and draining 0, three restarts), and a new deployment. Railway keeps the old one serving until `/readyz` answers.
+4. **check**: `/healthz` and `/readyz`, `/paw/version` naming the tag's commit, the new boot's route count, every probe and the guest read against the snapshot. The guest read may gain records; it misses if a thing disappears, its count falls, or an id from before is missing when both reads returned the whole thing. Reads cut at their page limit compare counts only. Memory (Railway's figure and the build's Datadog gauges) is reported after a soak.
+5. **rollback**, on any miss: a deployment that never took over is stopped and nothing restarts; one that took over is replaced by the image that ran before, checked against the snapshot.
+
+`mode: check` runs the checks against what runs now, deploying nothing. `drill` (staging only) fails the check on purpose to prove the rollback. Each run ends with a release record (job outputs and run summary). An image whose kernel adds a storage migration has a way back only when the migration is listed in `scripts/additive_migrations.txt`. A kernel whose migrator ignores unknown migrations then boots on the migrated database as it is. An older one refuses it (on staging, `sha-3d79f6e` after `sha-6f410a8`: "migration 19 was previously applied but is missing"), so the way back first deletes the newer rows from `_sqlx_migrations` where `MIGRATION_ROLLBACK` is `auto`, and otherwise stops and names them.
 
 ### Using Railway CLI directly
 
@@ -317,14 +322,11 @@ After the server starts:
 
 ---
 
-## OTEL Collector And Runtime Agent
+## Runtime Agent And Telemetry
 
-The collector runs as a separate Railway service with two modes:
-
-- **Datadog mode** (when `DD_API_KEY` is set): Exports traces, metrics, and logs to Datadog
-- **Debug mode** (no `DD_API_KEY`): Logs traces to stdout for troubleshooting
-
-The collector is reachable from the temperpaw service via Railway's private network at `otel-collector.railway.internal:4318`. It remains the `portable-otel` fallback.
+Telemetry goes to Datadog only. A deploy without a Datadog key sets
+`OTEL_ENABLED=false`, so TemperPaw exports nothing and no telemetry service is
+created. Redeploy with a Datadog API key to turn it on.
 
 When Datadog credentials are present, the deploy flow also creates
 `datadog-runtime-agent` and points TemperPaw at

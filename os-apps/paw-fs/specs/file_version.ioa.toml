@@ -5,14 +5,17 @@
 
 [automaton]
 name = "FileVersion"
-states = ["Current", "Superseded"]
+states = ["Current", "Superseded", "Orphaned"]
 initial = "Current"
 
 # ADR-0050 migration TODO: each state below needs either a
 # [[state_timeout]] declaration or a domain-specific justification
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Current"]
+# Superseded is a kept version: it stays until its File is deleted, or until
+# Orphan finds its File gone.
+allow_indefinite_states = ["Current", "Superseded"]
+terminal = ["Orphaned"]
 
 # --- State Variables ---
 
@@ -24,7 +27,7 @@ initial = ""
 [[state]]
 name = "version_number"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "content_hash"
@@ -39,7 +42,7 @@ initial = ""
 [[state]]
 name = "size_bytes"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "previous_version_id"
@@ -59,10 +62,7 @@ kind = "input"
 from = ["Current"]
 to = "Current"
 params = ["file_id", "version_number", "content_hash", "mime_type", "size_bytes", "previous_version_id", "created_by"]
-effect = [
-  { type = "set_counter_from_param", var = "version_number", param = "version_number" },
-  { type = "set_counter_from_param", var = "size_bytes", param = "size_bytes" },
-]
+effect = ["version_number = params.version_number", "size_bytes = params.size_bytes"]
 hint = "Create a new file version record with content metadata."
 
 [[action.triggers]]
@@ -72,19 +72,39 @@ principal = "file-service"
 target_entity = "File"
 target_action = "RecordVersion"
 
-[action.triggers.params_from]
+[action.triggers.args]
 last_version_id = "Id"
 
 [action.triggers.resolve_target]
-type = "field"
-field = "file_id"
+kind = "field"
+id_field = "file_id"
 
+# StreamUpdated supersedes the File's last_version_id, which RecordVersion
+# moves only after the new version exists: two writes close together both
+# supersede the same version. A second Supersede of a Superseded version is
+# a no-op; from Current alone the joint walk dropped it.
 [[action]]
 name = "Supersede"
 kind = "internal"
-from = ["Current"]
+from = ["Current", "Superseded"]
 to = "Superseded"
 hint = "Mark this version as superseded by a newer version."
+
+# Files deleted before FileVersion.File cascaded (#590) left their versions
+# behind. A version moves here only when its File reads as the kernel's
+# tombstone of a deleted File (File has no Deleted state of its own), and the
+# operator may delete only a version here (policies/file_version.cedar): Cedar
+# sees a version's own fields alone, so it cannot ask whether its File still
+# exists, and the kernel's delete has no guard. A File read that fails gives
+# null, and a File id that was never created reads as Created, so neither
+# moves a version.
+[[action]]
+name = "Orphan"
+kind = "input"
+from = ["Current", "Superseded"]
+to = "Orphaned"
+guard = "File[file_id].status == 'Deleted'"
+hint = "Mark a version whose File no longer exists, so the operator can delete it."
 
 # --- Output Actions ---
 
@@ -93,19 +113,10 @@ name = "FileVersionSupersededEvent"
 kind = "output"
 hint = "Emitted when a file version is superseded."
 
-# --- Safety Invariants ---
-
-[[invariant]]
-name = "SupersededIsFinal"
-when = ["Superseded"]
-assert = "no_further_transitions"
-
 [[invariant]]
 name = "VersionNumberNonNegative"
-when = ["Current", "Superseded"]
-assert = "version_number >= 0"
+assert = "status in ['Current', 'Superseded'] => version_number >= 0"
 
 [[invariant]]
 name = "SizeBytesNonNegative"
-when = ["Current", "Superseded"]
-assert = "size_bytes >= 0"
+assert = "status in ['Current', 'Superseded'] => size_bytes >= 0"

@@ -6,6 +6,7 @@ members = [
     "crates/paw-transport",
     "crates/paw-codex-worker",
 ]
+exclude = ["os-apps"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,3 +28,17 @@ opentelemetry-appender-tracing = "0.28"
 tracing-opentelemetry = "0.29"
 axum = { version = "0.8", features = ["macros"] }
 anyhow = "1"
+
+# These dependencies are compilers the tests run, not just build-time code: the root tests compile packaged os-app
+# modules through temper-wasm, and unoptimized Cranelift took 159 of the 265 seconds the root tests ran (44 dsf-twin
+# modules in one test). Temper's workspace sets the same two. Application code stays unoptimized.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+
+[profile.dev.package.regalloc2]
+opt-level = 3
+
+# Full debug information across dozens of integration-test executables produces about 30 GiB of build artifacts.
+# Omit it to keep test builds within the CI runner's disk budget.
+[profile.test]
+debug = 0

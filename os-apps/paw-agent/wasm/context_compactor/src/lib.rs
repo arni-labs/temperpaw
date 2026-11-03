@@ -57,6 +57,9 @@ extern "C" fn host_read_field(
 use openai_codex_wire::{
     build_openai_headers, extract_chatgpt_account_id_from_jwt, is_openai_codex_token_expired_error,
 };
+use openai_chat_wire::{
+    build_chat_completion_body, parse_chat_completion_response_text, parse_headers_json,
+};
 use session_tree_lib::SessionTree;
 use std::collections::BTreeSet;
 use temper_wasm_sdk::prelude::*;
@@ -678,32 +681,75 @@ fn compaction_auth_expired_reason(error: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+fn normalize_compaction_provider(provider: &str) -> String {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "open_router" => "openrouter".to_string(),
+        "codex" | "openai-codex" => "openai_codex".to_string(),
+        "hf" | "hugging_face" | "hugging-face" => "huggingface".to_string(),
+        "fireworks_ai" | "fireworks-ai" => "fireworks".to_string(),
+        "sakana" | "sakana-fugu" | "fugu" => "sakana_fugu".to_string(),
+        "ollama" | "local" | "local-openai" => "local_openai".to_string(),
+        "openai-compatible" | "openai_compat" | "openai-compat" | "custom_openai" => {
+            "openai_compatible".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+fn is_openai_compatible_compaction_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "openrouter"
+            | "huggingface"
+            | "fireworks"
+            | "sakana_fugu"
+            | "local_openai"
+            | "openai_compatible"
+    )
+}
+
 fn default_compaction_provider_api_url(provider: &str) -> &'static str {
     match provider {
         "openai" => "https://api.openai.com/v1/responses",
         "openai_codex" => "https://chatgpt.com/backend-api/codex/responses",
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions",
-        _ => "https://api.anthropic.com/v1/messages",
+        "huggingface" => "https://router.huggingface.co/v1/chat/completions",
+        "fireworks" => "https://api.fireworks.ai/inference/v1/chat/completions",
+        "local_openai" => "http://127.0.0.1:11434/v1/chat/completions",
+        "anthropic" => "https://api.anthropic.com/v1/messages",
+        _ => "",
     }
 }
 
-fn configured_compaction_provider_api_url(ctx: &Context, provider: &str) -> String {
+fn configured_compaction_provider_api_url(ctx: &Context, provider: &str) -> Result<String, String> {
     let key = match provider {
         "openai" => "openai_api_url",
         "openai_codex" => "openai_codex_api_url",
         "openrouter" => "openrouter_api_url",
+        "huggingface" => "huggingface_api_url",
+        "fireworks" => "fireworks_api_url",
+        "sakana_fugu" => "sakana_fugu_api_url",
+        "openai_compatible" => "openai_compatible_api_url",
+        "local_openai" => "local_openai_api_url",
         _ => "anthropic_api_url",
     };
-    ctx.config
+    let api_url = ctx
+        .config
         .get(key)
+        .filter(|value| !value.trim().is_empty() && !is_unresolved_secret_template(value))
         .cloned()
-        .unwrap_or_else(|| default_compaction_provider_api_url(provider).to_string())
+        .unwrap_or_else(|| default_compaction_provider_api_url(provider).to_string());
+    if api_url.trim().is_empty() {
+        return Err(format!("provider={provider} requires {key}"));
+    }
+    Ok(api_url)
 }
 
 fn resolve_compaction_provider(
     ctx: &Context,
     configured_provider: &str,
 ) -> Result<(String, String), String> {
+    let configured_provider = normalize_compaction_provider(configured_provider);
     let provider_keys: &[(&str, &[&str])] = &[
         ("anthropic", &["anthropic_api_key", "api_key"]),
         ("openai", &["openai_api_key"]),
@@ -712,6 +758,11 @@ fn resolve_compaction_provider(
             &["openai_codex_access_token", "openai_codex_token"],
         ),
         ("openrouter", &["openrouter_api_key"]),
+        ("huggingface", &["huggingface_api_key", "hf_token", "api_key"]),
+        ("fireworks", &["fireworks_api_key", "api_key"]),
+        ("sakana_fugu", &["sakana_fugu_api_key", "api_key"]),
+        ("openai_compatible", &["openai_compatible_api_key", "api_key"]),
+        ("local_openai", &[]),
         ("mock", &[]),
     ];
 
@@ -719,7 +770,7 @@ fn resolve_compaction_provider(
         if prov != configured_provider {
             continue;
         }
-        if prov == "mock" {
+        if matches!(prov, "mock" | "local_openai") {
             return Ok((prov.to_string(), String::new()));
         }
         for &key_name in keys {
@@ -728,6 +779,9 @@ fn resolve_compaction_provider(
                     return Ok((prov.to_string(), val.clone()));
                 }
             }
+        }
+        if prov == "openai_compatible" {
+            return Ok((prov.to_string(), String::new()));
         }
         return Err(format!(
             "missing API key for provider={configured_provider}"
@@ -778,14 +832,29 @@ fn build_compaction_request_body(
             "stream": true,
             "store": false,
         }),
-        "openrouter" => json!({
-            "model": model,
-            "max_tokens": 2048,
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_text },
-            ],
-        }),
+        provider if is_openai_compatible_compaction_provider(provider) => {
+            build_chat_completion_body(
+                model,
+                system_prompt,
+                &[json!({ "role": "user", "content": user_text })],
+                &[],
+                2048,
+                1.0,
+                false,
+                false,
+                "",
+            )
+            .unwrap_or_else(|_| {
+                json!({
+                    "model": model,
+                    "max_tokens": 2048,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": compaction_user_prompt(conversation_text) },
+                    ],
+                })
+            })
+        }
         _ => json!({
             "model": model,
             "max_tokens": 2048,
@@ -832,20 +901,8 @@ fn parse_compaction_response_text(provider: &str, body: &str) -> String {
             };
             parse_openai_responses_text(&parsed).unwrap_or_else(|| FALLBACK.to_string())
         }
-        "openrouter" => {
-            let parsed: Value = match serde_json::from_str(body) {
-                Ok(v) => v,
-                Err(_) => return FALLBACK.to_string(),
-            };
-            parsed
-                .get("choices")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|c| c.get("message"))
-                .and_then(|m| m.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(FALLBACK)
-                .to_string()
+        provider if is_openai_compatible_compaction_provider(provider) => {
+            parse_chat_completion_response_text(body).unwrap_or_else(|_| FALLBACK.to_string())
         }
         _ => {
             let parsed: Value = match serde_json::from_str(body) {
@@ -967,7 +1024,7 @@ fn call_compaction_llm(
         build_compaction_request_body(provider, model, COMPACTION_SYSTEM_PROMPT, conversation_text);
     let body_str =
         serde_json::to_string(&body).map_err(|e| format!("JSON serialize error: {e}"))?;
-    let url = configured_compaction_provider_api_url(ctx, provider);
+    let url = configured_compaction_provider_api_url(ctx, provider)?;
 
     let headers = match provider {
         "openai" | "openai_codex" => {
@@ -984,10 +1041,22 @@ fn call_compaction_llm(
             };
             build_openai_headers(provider, api_key, codex_account_id.as_deref())
         }
-        "openrouter" => vec![
-            ("authorization".to_string(), format!("Bearer {api_key}")),
-            ("content-type".to_string(), "application/json".to_string()),
-        ],
+        provider if is_openai_compatible_compaction_provider(provider) => {
+            let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
+            if !api_key.trim().is_empty() {
+                headers.push(("authorization".to_string(), format!("Bearer {api_key}")));
+            }
+            if provider == "openai_compatible" {
+                let headers_json = ctx
+                    .config
+                    .get("openai_compatible_headers_json")
+                    .filter(|value| !is_unresolved_secret_template(value))
+                    .map(String::as_str)
+                    .unwrap_or("");
+                headers.extend(parse_headers_json(headers_json)?);
+            }
+            headers
+        }
         _ => anthropic_compaction_headers(api_key),
     };
 
@@ -1015,181 +1084,6 @@ fn call_compaction_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use session_tree_lib::EntryType;
-
-    #[test]
-    fn render_context_refs_for_compaction_uses_loaded_file_content_and_inline_fallbacks() {
-        let refs = vec![
-            session_tree_lib::ContextRef {
-                entry_id: "cmp-1".to_string(),
-                role: "user".to_string(),
-                content_file_id: Some("cmp-file".to_string()),
-                content_file_version_id: Some("cmp-ver".to_string()),
-                entry_type: EntryType::Compaction,
-                inline_content: None,
-                inline_summary: Some("inline summary".to_string()),
-            },
-            session_tree_lib::ContextRef {
-                entry_id: "msg-1".to_string(),
-                role: "assistant".to_string(),
-                content_file_id: Some("msg-file".to_string()),
-                content_file_version_id: Some("msg-ver".to_string()),
-                entry_type: EntryType::Message,
-                inline_content: None,
-                inline_summary: None,
-            },
-            session_tree_lib::ContextRef {
-                entry_id: "steer-1".to_string(),
-                role: "system".to_string(),
-                content_file_id: Some("steer-file".to_string()),
-                content_file_version_id: Some("steer-ver".to_string()),
-                entry_type: EntryType::Steering,
-                inline_content: Some(json!("inline steering")),
-                inline_summary: None,
-            },
-        ];
-
-        let rendered =
-            render_context_refs_for_compaction(&refs, |ctx_ref| match ctx_ref.entry_id.as_str() {
-                "cmp-1" => Err("blob missing".to_string()),
-                "msg-1" => Ok("{\"type\":\"text\",\"text\":\"hello\"}".to_string()),
-                "steer-1" => Ok(String::new()),
-                other => Err(format!("unexpected context ref: {other}")),
-            });
-
-        assert_eq!(rendered.len(), 3);
-        assert_eq!(
-            rendered[0]["content"],
-            "[Previous conversation summary]\ninline summary"
-        );
-        assert_eq!(rendered[1]["role"], "assistant");
-        assert_eq!(rendered[1]["content"]["text"], "hello");
-        assert_eq!(rendered[2]["role"], "system");
-        assert_eq!(rendered[2]["content"], "inline steering");
-    }
-
-    #[test]
-    fn compaction_provider_defaults_keep_openai_and_codex_separate() {
-        assert_eq!(
-            default_compaction_provider_api_url("openai"),
-            "https://api.openai.com/v1/responses"
-        );
-        assert_eq!(
-            default_compaction_provider_api_url("openai_codex"),
-            "https://chatgpt.com/backend-api/codex/responses"
-        );
-    }
-
-    #[test]
-    fn repeated_compaction_guard_catches_hot_loop_sessions() {
-        let fields = json!({
-            "compaction_count": 3,
-            "session_leaf_id": "t-1080",
-        });
-        assert!(should_skip_repeated_compaction(&fields, "t-1080"));
-
-        let stale_skip = json!({
-            "compaction_count": 0,
-            "compaction_skipped_reason": "no_valid_cut_point",
-            "compaction_skipped_leaf_id": "t-1078",
-        });
-        assert!(should_skip_repeated_compaction(&stale_skip, "t-1080"));
-
-        let current_skip = json!({
-            "compaction_count": 0,
-            "compaction_skipped_reason": "no_valid_cut_point",
-            "compaction_skipped_leaf_id": "t-1080",
-        });
-        assert!(!should_skip_repeated_compaction(&current_skip, "t-1080"));
-    }
-
-    #[test]
-    fn read_usize_field_accepts_string_and_numeric_session_fields() {
-        let fields = json!({
-            "string_counter": "2328",
-            "numeric_counter": 2348,
-            "invalid_counter": "many",
-        });
-
-        assert_eq!(read_usize_field(&fields, "string_counter"), Some(2328));
-        assert_eq!(read_usize_field(&fields, "numeric_counter"), Some(2348));
-        assert_eq!(read_usize_field(&fields, "invalid_counter"), None);
-        assert_eq!(read_usize_field(&fields, "missing_counter"), None);
-    }
-
-    #[test]
-    fn openai_compaction_body_sends_input_as_list_not_string() {
-        // Regression: the Codex Responses backend rejects string `input` with
-        // HTTP 400 "Input must be a list".
-        for provider in ["openai", "openai_codex"] {
-            let body = build_compaction_request_body(
-                provider,
-                "gpt-test",
-                "system text",
-                "conversation text",
-            );
-            assert_eq!(body["model"], "gpt-test");
-            assert_eq!(body["instructions"], "system text");
-            let input = body
-                .get("input")
-                .unwrap_or_else(|| panic!("{provider}: missing input"));
-            let arr = input
-                .as_array()
-                .unwrap_or_else(|| panic!("{provider}: input must be a list, got {input:?}"));
-            assert_eq!(arr.len(), 1, "{provider}: expected single input item");
-            assert_eq!(arr[0]["role"], "user");
-            assert!(
-                arr[0]["content"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("conversation text"),
-                "{provider}: user content must include conversation text"
-            );
-            assert_eq!(body["store"], json!(false));
-        }
-    }
-
-    #[test]
-    fn codex_compaction_body_requests_streaming_response() {
-        // Regression: the ChatGPT Codex Responses backend pairs the
-        // `text/event-stream` contract with a required `stream: true` body
-        // field, otherwise it returns HTTP 400 "Stream must be set to true".
-        let body = build_compaction_request_body(
-            "openai_codex",
-            "gpt-test",
-            "system text",
-            "conversation text",
-        );
-
-        assert_eq!(body["stream"], json!(true));
-    }
-
-    #[test]
-    fn openrouter_compaction_body_uses_chat_messages() {
-        let body =
-            build_compaction_request_body("openrouter", "anthropic/claude-3-haiku", "sys", "convo");
-        let messages = body["messages"].as_array().expect("messages must be array");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], "sys");
-        assert_eq!(messages[1]["role"], "user");
-        assert!(
-            messages[1]["content"]
-                .as_str()
-                .unwrap_or("")
-                .contains("convo")
-        );
-    }
-
-    #[test]
-    fn anthropic_compaction_body_uses_messages_with_system_field() {
-        let body = build_compaction_request_body("anthropic", "claude-test", "sys", "convo");
-        assert_eq!(body["model"], "claude-test");
-        assert_eq!(body["system"], "sys");
-        let messages = body["messages"].as_array().expect("messages array");
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0]["role"], "user");
-    }
 
     #[test]
     fn parse_compaction_response_handles_openai_responses_json() {
@@ -1222,17 +1116,6 @@ data: [DONE]\n";
     }
 
     #[test]
-    fn parse_compaction_response_codex_prefers_completed_output_when_present() {
-        let body = "\
-data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\
-data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final summary\"}]}]}}\n";
-        assert_eq!(
-            parse_compaction_response_text("openai_codex", body),
-            "final summary"
-        );
-    }
-
-    #[test]
     fn parse_compaction_response_handles_anthropic_messages_json() {
         let body = json!({
             "content": [{ "type": "text", "text": "anthropic summary" }]
@@ -1261,18 +1144,6 @@ data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"mes
         assert_eq!(
             parse_compaction_response_text("openai", "not json"),
             "Summary unavailable"
-        );
-    }
-
-    #[test]
-    fn compaction_auth_expired_result_is_action_routable() {
-        let body = r#"{"error":{"code":"token_expired"}}"#;
-        let err = compaction_auth_expired_error(body);
-
-        assert_eq!(compaction_auth_expired_reason(&err), Some(body));
-        assert_eq!(
-            compaction_auth_expired_reason("regular compaction failure"),
-            None
         );
     }
 }

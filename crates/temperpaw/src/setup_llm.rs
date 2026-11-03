@@ -1,16 +1,31 @@
 //! LLM calls during setup — multi-provider support for soul generation.
 //!
 //! Detects provider from API key prefix and uses the appropriate API format.
-//! Supports Anthropic, OpenRouter, and OpenAI.
+//! Supports Anthropic, OpenRouter, OpenAI, and OpenAI-compatible endpoints.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Detected LLM provider with its configuration.
 pub enum LlmProvider {
-    Anthropic { api_key: String, model: String },
-    OpenRouter { api_key: String, model: String },
-    OpenAi { api_key: String, model: String },
+    Anthropic {
+        api_key: String,
+        model: String,
+    },
+    OpenRouter {
+        api_key: String,
+        model: String,
+    },
+    OpenAi {
+        api_key: String,
+        model: String,
+    },
+    OpenAiCompatible {
+        provider: String,
+        api_key: String,
+        api_url: String,
+        model: String,
+    },
 }
 
 impl LlmProvider {
@@ -19,6 +34,7 @@ impl LlmProvider {
         if model.trim().is_empty() {
             anyhow::bail!("LLM model is required for setup LLM calls");
         }
+        let provider_hint = normalize_provider_hint(provider_hint);
         if api_key.starts_with("sk-ant-") || provider_hint == "anthropic" {
             Ok(LlmProvider::Anthropic {
                 api_key: api_key.to_string(),
@@ -29,12 +45,39 @@ impl LlmProvider {
                 api_key: api_key.to_string(),
                 model: model.to_string(),
             })
+        } else if let Some(api_url) = default_openai_compatible_url(&provider_hint) {
+            Ok(LlmProvider::OpenAiCompatible {
+                provider: provider_hint,
+                api_key: api_key.to_string(),
+                api_url: api_url.to_string(),
+                model: model.to_string(),
+            })
         } else {
             Ok(LlmProvider::OpenAi {
                 api_key: api_key.to_string(),
                 model: model.to_string(),
             })
         }
+    }
+
+    pub fn openai_compatible(
+        provider: &str,
+        api_key: &str,
+        api_url: &str,
+        model: &str,
+    ) -> Result<Self> {
+        if model.trim().is_empty() {
+            anyhow::bail!("LLM model is required for setup LLM calls");
+        }
+        if api_url.trim().is_empty() {
+            anyhow::bail!("{provider} requires an OpenAI-compatible API URL");
+        }
+        Ok(Self::OpenAiCompatible {
+            provider: normalize_provider_hint(provider),
+            api_key: api_key.to_string(),
+            api_url: api_url.to_string(),
+            model: model.to_string(),
+        })
     }
 
     /// Make an LLM call and return the text response.
@@ -137,7 +180,69 @@ impl LlmProvider {
                     .map(|s| s.to_string())
                     .context("No content in OpenAI response")
             }
+            LlmProvider::OpenAiCompatible {
+                provider,
+                api_key,
+                api_url,
+                model,
+            } => {
+                let body = serde_json::json!({
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_msg}
+                    ]
+                });
+                let mut request = client
+                    .post(api_url)
+                    .header("content-type", "application/json")
+                    .json(&body);
+                if !api_key.trim().is_empty() {
+                    request = request.header("Authorization", format!("Bearer {api_key}"));
+                }
+                let resp = request
+                    .send()
+                    .await
+                    .with_context(|| format!("{provider} API call failed"))?;
+
+                let status = resp.status();
+                let data: serde_json::Value = resp
+                    .json()
+                    .await
+                    .with_context(|| format!("Failed to parse {provider} response"))?;
+                if !status.is_success() {
+                    let msg = data["error"]["message"].as_str().unwrap_or("Unknown error");
+                    anyhow::bail!("{provider} API error ({}): {}", status, msg);
+                }
+                data["choices"][0]["message"]["content"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .with_context(|| format!("No content in {provider} response"))
+            }
         }
+    }
+}
+
+fn normalize_provider_hint(provider: &str) -> String {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "hf" | "hugging_face" | "hugging-face" => "huggingface".to_string(),
+        "fireworks_ai" | "fireworks-ai" => "fireworks".to_string(),
+        "sakana" | "sakana-fugu" | "fugu" => "sakana_fugu".to_string(),
+        "ollama" | "local" | "local-openai" => "local_openai".to_string(),
+        "openai-compatible" | "openai_compat" | "openai-compat" | "custom_openai" => {
+            "openai_compatible".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+fn default_openai_compatible_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "huggingface" => Some("https://router.huggingface.co/v1/chat/completions"),
+        "fireworks" => Some("https://api.fireworks.ai/inference/v1/chat/completions"),
+        "local_openai" => Some("http://127.0.0.1:11434/v1/chat/completions"),
+        _ => None,
     }
 }
 

@@ -12,12 +12,37 @@ name = "Endpoint"
 states = ["Sampled", "Written", "UnderRepair", "Scored", "Weighted", "Discarded", "Failed"]
 initial = "Sampled"
 
-# ADR-0050/ADR-006: Sampled (writer running), Written (bundle written, awaiting
-# the diversity gate), and UnderRepair are bounded in practice by writer/repairer
-# session timeouts + heartbeat monitoring; Scored and Weighted persist for the
-# life of the world (re-weighed on update). Revisit with state_timeout once
-# corridor run-time envelopes are measured.
-allow_indefinite_states = ["Sampled", "Written", "UnderRepair", "Scored", "Weighted"]
+# ADR-0050/ADR-006/ADR-007: Sampled (writer running) self-heals via the
+# state_timeout below — a writer that dies, or a server restart that orphans its
+# in-flight provider call, re-spawns the writer rather than wedging the endpoint
+# (observed live, prod world en-019ed392, 2026-06-16: 3 writers hung on their
+# first model call, and the diversity-gate barrier never fired because one
+# sibling bundle was never written). Written (awaiting the gate) and UnderRepair
+# stay indefinite — Written is bounded by the gate barrier that fires once every
+# sibling reaches it (now guaranteed by the Sampled self-heal), UnderRepair by
+# the decomposer/Claim session timeouts. Scored and Weighted persist for the
+# life of the world (re-weighed on update).
+allow_indefinite_states = ["Written", "UnderRepair", "Scored", "Weighted"]
+terminal = ["Discarded", "Failed"]
+
+# Self-heal (ADR-007): when every claim on this endpoint is terminal but the
+# endpoint is still UnderRepair (world aggregate missed or ScoreComplete failed),
+# re-derive weight and dispatch ScoreComplete. reset_on progress actions.
+[[state_timeout]]
+state = "UnderRepair"
+after_seconds = 600
+on_timeout = "ResumeEndpointScoring"
+reset_on = ["ScoreComplete", "Discard", "Fail"]
+
+# Self-heal (ADR-0050/ADR-007), mirroring Path's Solving/Repaired/Challenged: if
+# the endpoint is still Sampled after a writer's healthy wall-clock (~3 min
+# observed), re-spawn the writer. Budget sits well above a live writer so a
+# working session is never double-spawned; whichever writer reports BundleWritten
+# first wins and a late duplicate's report no-ops (endpoint no longer Sampled).
+[[state_timeout]]
+state = "Sampled"
+after_seconds = 900
+on_timeout = "ResumeWriter"
 
 # --- State Variables ---
 
@@ -108,7 +133,6 @@ from = ["Sampled"]
 to = "Written"
 params = ["bundle_file_id", "summary", "author_agent_id"]
 hint = "Writer self-reports the bundle. Parks in Written for the diversity gate (ADR-006); the gate, not the writer, starts repair."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -132,7 +156,6 @@ from = ["Written"]
 to = "UnderRepair"
 params = []
 hint = "Diversity gate released this endpoint into repair (ADR-006). Spawns decomposer then repairer sessions. System principals only."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -154,7 +177,6 @@ from = ["Written"]
 to = "Sampled"
 params = ["revision_brief"]
 hint = "Diversity gate re-steers a collapsed world (ADR-006): rewrite to diverge from the named sibling. System principals only."
-effect = [{ type = "trigger", name = "sample_endpoints" }]
 
 [[action.triggers]]
 name = "sample_endpoints"
@@ -168,13 +190,56 @@ embedding_endpoint = "{secret:embedding_endpoint}"
 embedding_model = "{secret:embedding_model}"
 
 
+# Self-heal (ADR-0050/ADR-007): the Sampled state_timeout fires this when a
+# writer died mid-write. A self-loop (Sampled -> Sampled) that re-spawns the
+# writer with the endpoint's existing stance and any revision_brief — the same
+# spawn the gate's ReSteer uses, so it serves both the gate re-steer and the
+# dead-writer recovery. System principals only (timeout-dispatched).
+[[action]]
+name = "ResumeWriter"
+kind = "input"
+from = ["Sampled"]
+to = "Sampled"
+params = []
+hint = "Self-heal: re-spawn a dead/orphaned endpoint writer. Fires on the Sampled state_timeout. System principals only."
+
+[[action.triggers]]
+name = "sample_endpoints"
+kind = "wasm"
+module = "sample_endpoints"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+embedding_endpoint = "{secret:embedding_endpoint}"
+embedding_model = "{secret:embedding_model}"
+
+
+# Self-heal (ADR-007): the UnderRepair state_timeout fires this when all claims
+# on the endpoint are terminal but scoring never landed. System principals only.
+[[action]]
+name = "ResumeEndpointScoring"
+kind = "input"
+from = ["UnderRepair"]
+to = "UnderRepair"
+params = []
+hint = "Self-heal: re-score an endpoint whose claims are all terminal but ScoreComplete never fired. Fires on the UnderRepair state_timeout."
+
+[[action.triggers]]
+name = "aggregate_costs_endpoint_scoring"
+kind = "wasm"
+module = "aggregate_costs"
+on_failure = "Fail"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+
 [[action]]
 name = "DecompositionComplete"
 kind = "input"
 from = ["UnderRepair"]
 params = ["claims_json"]
 hint = "Decomposer self-reports 3-8 separable load-bearing claims. Re-enters decompose_endpoint to create Claim entities and start the chunked bridge fan-out."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -192,7 +257,6 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["check_count"]
 hint = "Bounded self-loop: dispatch SubmitForBridge for the next chunk of claims under session admission caps (ADR-0005: no Rust loops over sessions)."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -210,7 +274,6 @@ kind = "input"
 from = ["UnderRepair"]
 params = ["claim_ids"]
 hint = "Callback after Claim entities are created from claims_json. Starts the chunked bridge fan-out."
-effect = [{ type = "trigger", name = "decompose_endpoint" }]
 
 [[action.triggers]]
 name = "decompose_endpoint"
@@ -268,15 +331,3 @@ from = ["Sampled", "UnderRepair"]
 to = "Failed"
 params = ["error_message"]
 hint = "Unrecoverable error during writing or repair."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "DiscardedIsFinal"
-when = ["Discarded"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"

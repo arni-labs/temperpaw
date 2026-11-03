@@ -1,0 +1,247 @@
+# Exec — one governed shell command on a Computer's sandbox.
+#
+# Third-party harnesses execute commands on a Computer through this entity
+# instead of talking to the sandbox provider directly. Every invocation is
+# Cedar-gated at Run, and the record — command, exit code, output tails —
+# persists on the row as the audit trail.
+#
+# ASYNC lifecycle (ARN-443 D): Created → Starting → Running → Succeeded | Failed.
+# A single WASM invocation is capped at ~120s, but a panel/review command can run
+# far longer. So Run only STARTS the process (computer_exec_start returns a
+# run_id); a state_timeout on Running drives a Poll loop (computer_exec_poll)
+# across many short invocations until the command finishes or its deadline
+# passes. LatencyDiag's quick canned command stays on the SYNCHRONOUS computer_exec
+# path — this async path is for Exec.
+
+[automaton]
+name = "Exec"
+states = ["Created", "Starting", "Running", "Succeeded", "Failed"]
+initial = "Created"
+
+# Created waits for Run (user-driven, indefinite). Starting and Running each carry
+# a state_timeout (start-safety and the poll loop), so they are bounded, not
+# indefinite.
+allow_indefinite_states = ["Created"]
+terminal = ["Succeeded", "Failed"]
+
+# -- State variables ----------------------------------------------------------
+
+[[state]]
+name = "computer_id"
+type = "string"
+initial = ""
+
+[[state]]
+name = "command"
+type = "string"
+initial = ""
+
+[[state]]
+name = "exit_code"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stdout_tail"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stderr_tail"
+type = "string"
+initial = ""
+
+# On-box capture retention (async path): the launch wrapper writes bounded
+# `.tail` files (≤256KB) that the poll reads, and — on SUCCESS ONLY — deletes the
+# full stdout/stderr on the box so a durable computer never accumulates unbounded
+# output. On FAILURE the full files are KEPT for debugging (the exit code and the
+# bounded tail are on the row either way). See wasm-helpers `tensorlake_exec_start`.
+#
+# Kept for compatibility with the sync path's full-output paging; the async path
+# leaves them empty (it carries only bounded tails).
+[[state]]
+name = "stdout_path"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stdout_bytes"
+type = "string"
+initial = ""
+
+[[state]]
+name = "error"
+type = "string"
+initial = ""
+
+# The capture id of the started process (/tmp/.paw-{out,err,rc}-<run_id>), set by
+# computer_exec_start and read by computer_exec_poll to poll for completion.
+[[state]]
+name = "run_id"
+type = "string"
+initial = ""
+
+# Host wall-clock (ms) when the process was started. Real-exec path only, never DST.
+[[state]]
+name = "started_at_ms"
+type = "string"
+initial = ""
+
+# The SINGLE poll deadline (host wall-clock ms), stamped once by computer_exec_start
+# (started + run limit + margin). The poll only READS and compares this — it never
+# re-derives a budget of its own, so the two modules cannot disagree. The
+# sandbox-side `timeout` is the real command bound; this guards a poll that never
+# sees an rc file. Real-exec path only, never DST.
+[[state]]
+name = "deadline_at_ms"
+type = "string"
+initial = ""
+
+# -- Actions -------------------------------------------------------------------
+
+[[action]]
+name = "Run"
+kind = "input"
+from = ["Created"]
+to = "Starting"
+params = ["computer_id", "command"]
+hint = "Start the command on the named computer's sandbox (Ready, Leased, or Sleeping — Sleeping resumes first). Returns immediately; completion is driven by the Poll loop."
+
+[[action.triggers]]
+name = "computer_exec_start"
+kind = "wasm"
+module = "computer_exec_start"
+on_failure = "RunFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+# computer_exec_start callback: the process is running; record run_id + start time.
+# Wake the Computer so a Sleeping source becomes Ready and the 180s idle
+# clock starts from this activity (ARN-466). Wake from Ready is a self-loop.
+[[action]]
+name = "ExecStarted"
+kind = "input"
+from = ["Starting"]
+to = "Running"
+params = ["run_id", "started_at_ms", "deadline_at_ms"]
+hint = "Callback from computer_exec_start — the process was launched; the Poll loop now drives it to completion."
+
+[[action.triggers]]
+name = "exec_started_wakes_computer"
+kind = "entity"
+principal = "system"
+target_entity = "Computer"
+target_action = "Wake"
+guard = "status == 'Running'"
+
+[action.triggers.resolve_target]
+kind = "field"
+id_field = "computer_id"
+
+# The poll loop: while Running, fire Poll every N seconds; each Poll re-enters
+# Running, re-arming this timeout.
+[[state_timeout]]
+state = "Running"
+after_seconds = 10
+on_timeout = "Poll"
+# A self-loop re-arms a state_timeout ONLY via reset_on (kernel state_timeouts.rs:
+# is_reset = !state_changed && reset_on.contains(action); a same-state transition
+# with no reset_on match falls through and does NOT re-arm). So Poll — the on_timeout
+# action, a Running self-loop — must list itself here, or the poll loop would fire
+# exactly once and then stall. This is what keeps the loop alive across the ~120s
+# WASM cap: each fired Poll re-arms the next 10s tick.
+reset_on = ["Poll"]
+
+# Safety: if computer_exec_start never reports ExecStarted, do not hang in
+# Starting.
+[[state_timeout]]
+state = "Starting"
+after_seconds = 120
+on_timeout = "RunFailed"
+args = { error = "'exec did not start within 120s'", exit_code = "''", stdout_tail = "''", stderr_tail = "''" }
+
+[[action]]
+name = "Poll"
+kind = "input"
+from = ["Running"]
+to = "Running"
+hint = "Poll the started process once (computer_exec_poll). Self-loop listed in the Running timeout's reset_on, so each Poll re-arms the next tick. On a not-done poll the module reports success with an EMPTY callback action — the kernel accepts that (engine/mod.rs: callback_action defaults to \"\"; wasm.rs: dispatch is skipped when empty → Ok(None)), so no KeepRunning callback is needed; the loop rides the reset_on re-arm alone."
+
+# A long exec must keep the source's 180s Sleep clock from firing mid-run.
+[[action.triggers]]
+name = "exec_poll_heartbeats_computer"
+kind = "entity"
+principal = "system"
+target_entity = "Computer"
+target_action = "Heartbeat"
+guard = "status == 'Running'"
+
+[action.triggers.resolve_target]
+kind = "field"
+id_field = "computer_id"
+
+[[action.triggers]]
+name = "computer_exec_poll"
+kind = "wasm"
+module = "computer_exec_poll"
+on_failure = "RunFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+modal_bridge_url = "{secret:modal_bridge_url}"
+
+[[action]]
+name = "RunSucceeded"
+kind = "input"
+from = ["Running"]
+to = "Succeeded"
+params = ["exit_code", "stdout_tail", "stderr_tail", "stdout_path", "stdout_bytes"]
+hint = "Callback from computer_exec_poll — the command finished; record exit code and output tails."
+
+[[action.triggers]]
+name = "exec_succeeded_heartbeats_computer"
+kind = "entity"
+principal = "system"
+target_entity = "Computer"
+target_action = "Heartbeat"
+guard = "status == 'Succeeded'"
+
+[action.triggers.resolve_target]
+kind = "field"
+id_field = "computer_id"
+
+[[action]]
+name = "RunFailed"
+kind = "input"
+from = ["Running", "Starting"]
+to = "Failed"
+params = ["error", "exit_code", "stdout_tail", "stderr_tail"]
+hint = "Execution failed (start error, poll error, or deadline). Result fields cleared so a failure never leaves stale output."
+
+[[action.triggers]]
+name = "exec_failed_heartbeats_computer"
+kind = "entity"
+principal = "system"
+target_entity = "Computer"
+target_action = "Heartbeat"
+guard = "status == 'Failed'"
+
+[action.triggers.resolve_target]
+kind = "field"
+id_field = "computer_id"
+
+[[action]]
+name = "Cancel"
+kind = "input"
+from = ["Running", "Starting"]
+to = "Failed"
+params = ["error"]
+hint = "Cancel a running exec. The governed exec stops (the row goes Failed, the poll loop ends); the sandbox process is bounded by its own timeout wrapper."

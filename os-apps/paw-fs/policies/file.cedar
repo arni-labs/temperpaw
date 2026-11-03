@@ -8,12 +8,11 @@ permit(
 );
 
 // Session tool reads (temper.read) authorize content access through a
-// family of capitalized action names relayed as service:wasm-runtime —
-// without this permit every session file read dies in WaitingForApproval
-// (found live: the hindcast surveyor could not read its own frozen
-// corpus). Scoped to the relay principal, mirroring the write permit below.
+// family of capitalized action names. They are reads like `read` above,
+// so any principal may make them; without this permit every session file
+// read dies in WaitingForApproval.
 permit(
-    principal == Agent::"service:wasm-runtime",
+    principal,
     action in [
         Action::"Read", Action::"Download", Action::"GetContent",
         Action::"GetValue", Action::"Stream", Action::"Open",
@@ -21,19 +20,6 @@ permit(
     ],
     resource is File
 );
-
-// Agents can create, update, lock, and unlock files in their own workspace.
-// Resource attributes are the entity's raw fields (snake_case): an earlier
-// form of this permit compared resource.workspaceId, which never exists at
-// evaluation time, so the permit was dead code — found when corridor
-// sessions hit 403 on their first workspace-scoped write.
-permit(
-    principal is Agent,
-    action in [Action::"StreamUpdated", Action::"Create", Action::"create", Action::"update", Action::"Lock", Action::"Unlock"],
-    resource is File
-) when {
-    resource.workspace_id == principal.workspaceid
-};
 
 // System agents execute Temper-native PawFS workflows such as ArtifactBatch and
 // Monty write helpers; their target workspace is carried in the entity fields.
@@ -62,21 +48,20 @@ forbid(
     resource.status == "Locked"
 };
 
-// Archive requires workspace admin
+// Sessions write files for the caller that started them (turn artifacts,
+// agent temper.write via the directory tree): through a module's call
+// (`context.module`) or a move the kernel makes for the caller (a module's
+// answer, a reaction or a timer: `context.via` other than "request"). A
+// caller's own direct requests do not pass this permit. The relay
+// principal service:wasm-runtime keeps it until every deployment sends
+// these moves as the caller. Without this permit every fresh tenant needs
+// a runtime decision approval before any session can persist content.
 permit(
-    principal is Agent,
-    action == Action::"FileArchive",
-    resource is File
-) when {
-    principal in Group::"WorkspaceAdmins" && resource.workspaceId == principal.workspaceid
-};
-
-// The wasm-runtime service writes files on behalf of sessions (turn
-// artifacts, agent temper.write via the directory tree). Without this
-// permit every fresh tenant needs a runtime decision approval before any
-// session can persist content — found live, twice, in corridor e2e runs.
-permit(
-    principal == Agent::"service:wasm-runtime",
+    principal,
     action in [Action::"create", Action::"Create", Action::"StreamUpdated", Action::"update"],
     resource is File
-);
+) when {
+    principal == Agent::"service:wasm-runtime" ||
+    (context has via && context.via != "request") ||
+    context has module
+};

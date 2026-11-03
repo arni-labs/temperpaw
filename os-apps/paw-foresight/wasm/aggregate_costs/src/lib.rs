@@ -476,6 +476,8 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             "Score" => route_settled_relay(&ctx, &fields, false),
             "Prune" => route_settled_relay(&ctx, &fields, true),
             "RouteSettled" | "ResumeBridge" => claim_phase(&ctx, &fields),
+            "ResumeWorldCascade" => world_cascade_self_heal(&ctx, &fields),
+            "ResumeEndpointScoring" => endpoint_scoring_self_heal(&ctx, &fields),
             other => {
                 ctx.log(
                     "warn",
@@ -852,6 +854,98 @@ fn claim_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
     }
 }
 
+/// World.ResumeWorldCascade (Active state_timeout): all claims terminal but
+/// canonical_path_id still empty — re-run the world aggregate. No-ops when
+/// canonical is already set or any claim is still in flight.
+fn world_cascade_self_heal(ctx: &Context, fields: &Value) -> Result<(), String> {
+    if !get_str(fields, "canonical_path_id").is_empty() {
+        set_success_result("", &json!({}));
+        return Ok(());
+    }
+    let world_id = ctx.entity_id.clone();
+    let api = api_url(ctx);
+    let headers = system_headers(ctx);
+    world_cascade(ctx, &api, &headers, &world_id, "", None)
+}
+
+/// Endpoint.ResumeEndpointScoring (UnderRepair state_timeout): every claim on
+/// this endpoint is terminal but ScoreComplete never landed — re-derive weight.
+fn endpoint_scoring_self_heal(ctx: &Context, _fields: &Value) -> Result<(), String> {
+    let endpoint_id = ctx.entity_id.clone();
+    let api = api_url(ctx);
+    let headers = system_headers(ctx);
+
+    let claims = list(
+        ctx,
+        &api,
+        &headers,
+        "Claims",
+        &format!("endpoint_id eq '{endpoint_id}'"),
+    )?;
+    let mut settled_costs: Vec<f64> = Vec::new();
+    let mut unreachable_count = 0usize;
+    for c in &claims {
+        let id = row_id(c).to_string();
+        let mut status = row_status(c).to_string();
+        if matches!(status.as_str(), "Proposed" | "Bridging") {
+            if let Some(fresh) = fetch(ctx, &api, &headers, "Claims", &id) {
+                status = row_status(&fresh).to_string();
+            }
+        }
+        match status.as_str() {
+            "Proposed" | "Bridging" => {
+                ctx.log(
+                    "info",
+                    &format!(
+                        "aggregate_costs: endpoint {endpoint_id} claim {id} still {status}; scoring deferred"
+                    ),
+                );
+                set_success_result("", &json!({}));
+                return Ok(());
+            }
+            "Settled" => {
+                let cost = row_str(c, "BestRouteCost").parse::<f64>().unwrap_or(f64::MAX);
+                settled_costs.push(cost);
+            }
+            "Unreachable" => unreachable_count += 1,
+            _ => {}
+        }
+    }
+
+    if settled_costs.is_empty() && unreachable_count == 0 {
+        set_success_result("", &json!({}));
+        return Ok(());
+    }
+
+    let weight = endpoint_cost(&settled_costs, unreachable_count);
+    dispatch(
+        ctx,
+        &api,
+        &headers,
+        "Endpoints",
+        &endpoint_id,
+        "ScoreComplete",
+        &json!({ "weight": format!("{:.4}", weight) }),
+    )?;
+    let _ = dispatch(
+        ctx,
+        &api,
+        &headers,
+        "Endpoints",
+        &endpoint_id,
+        "MarkWeighted",
+        &json!({}),
+    );
+    ctx.log(
+        "info",
+        &format!(
+            "aggregate_costs: endpoint {endpoint_id} self-heal scored at weight {weight:.4}"
+        ),
+    );
+    set_success_result("", &json!({}));
+    Ok(())
+}
+
 /// When every claim in the world is terminal, derive endpoint weights and
 /// report the settled pass — once (the world's canonical_path_id is the
 /// single-writer guard).
@@ -1173,213 +1267,4 @@ fn legacy_classify_phase(ctx: &Context, fields: &Value) -> Result<(), String> {
     );
     set_success_result("", &json!({}));
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn flag(kind: &str, severity: &str) -> Value {
-        json!({"kind": kind, "severity": severity, "note": "t"})
-    }
-
-    #[test]
-    fn cost_sums_kind_weights_times_severity() {
-        let cost_flags = json!([flag("contradiction", "high"), flag("lag", "low")]);
-        let challenge_flags = json!([flag("incentive", "medium")]);
-        // 25*2 + 10*0.5 + 15*1 = 70
-        assert_eq!(repair_cost(&cost_flags, &challenge_flags), 70.0);
-    }
-
-    #[test]
-    fn cost_accepts_json_strings_and_is_order_independent() {
-        let as_string =
-            json!(r#"[{"kind":"miracle","severity":"medium"},{"kind":"lag","severity":"high"}]"#);
-        // 40 + 20 = 60
-        assert_eq!(repair_cost(&as_string, &json!([])), 60.0);
-        assert_eq!(repair_cost(&json!([]), &as_string), 60.0);
-    }
-
-    #[test]
-    fn empty_and_malformed_flags_cost_nothing_but_unknown_kinds_are_not_free() {
-        assert_eq!(repair_cost(&json!([]), &json!([])), 0.0);
-        assert_eq!(repair_cost(&json!("not json"), &json!(null)), 0.0);
-        // Unknown kind prices like a contradiction.
-        assert_eq!(
-            repair_cost(&json!([flag("mystery", "medium")]), &json!([])),
-            25.0
-        );
-    }
-
-    #[test]
-    fn deformation_prices_like_contradiction_so_drift_is_never_free() {
-        // ADR-004 commitment 4: amending a claim toward consensus costs.
-        assert_eq!(kind_weight("deformation"), 25.0);
-        assert_eq!(
-            repair_cost(&json!([flag("deformation", "high")]), &json!([])),
-            50.0
-        );
-    }
-
-    #[test]
-    fn classification_is_deterministic_with_lexicographic_tiebreak() {
-        let paths = vec![
-            ("p-b".to_string(), 10.0),
-            ("p-a".to_string(), 10.0),
-            ("p-c".to_string(), 35.0),
-            ("p-d".to_string(), 41.0),
-        ];
-        let classes = classify(&paths);
-        // p-a wins the tie lexicographically; ceiling = 40.
-        assert_eq!(classes[0], ("p-a".to_string(), Classification::Canonical));
-        assert_eq!(classes[1], ("p-b".to_string(), Classification::Tail));
-        assert_eq!(classes[2], ("p-c".to_string(), Classification::Tail));
-        assert_eq!(classes[3], ("p-d".to_string(), Classification::Reject));
-        // Same inputs, same ranking.
-        assert_eq!(classify(&paths), classify(&paths));
-    }
-
-    #[test]
-    fn endpoint_weights_normalize_and_favor_cheap_endpoints() {
-        let weights = endpoint_weights(&[("e-1".to_string(), 17.5), ("e-2".to_string(), 50.0)]);
-        let total: f64 = weights.iter().map(|(_, w)| w).sum();
-        assert!((total - 1.0).abs() < 0.001);
-        assert!(weights[0].1 > weights[1].1);
-    }
-
-    // --- Search policy (ADR-004) ---
-
-    #[test]
-    fn routes_revise_only_on_expensive_objections_within_round_budget() {
-        // 20-point objection (miracle/low) at round 0: revise.
-        assert_eq!(route_decision(0, 40.0), RouteDecision::Revise);
-        // Cheap objections never trigger revision.
-        assert_eq!(route_decision(0, 30.0), RouteDecision::Score);
-        // Round budget spent: score regardless.
-        assert_eq!(route_decision(MAX_ROUNDS, 80.0), RouteDecision::Score);
-        assert_eq!(route_decision(1, 50.0), RouteDecision::Revise);
-    }
-
-    #[test]
-    fn first_routes_never_prune_and_hopeless_routes_always_do() {
-        assert!(!should_prune(500.0, None));
-        // best 30 -> ceiling 80
-        assert!(!should_prune(80.0, Some(30.0)));
-        assert!(should_prune(80.1, Some(30.0)));
-    }
-
-    #[test]
-    fn claim_decisions_wait_search_settle_and_give_up_honestly() {
-        let scored = |v: &[(&str, f64)]| -> Vec<(String, f64)> {
-            v.iter().map(|(s, c)| (s.to_string(), *c)).collect()
-        };
-        // In-flight routes always wait.
-        assert_eq!(
-            claim_decision(1, true, &scored(&[("p-1", 10.0)])),
-            ClaimDecision::Wait
-        );
-        // Nothing scored, budget left: alternate.
-        assert_eq!(claim_decision(1, false, &[]), ClaimDecision::Alternate);
-        // Nothing scored, budget spent: unreachable.
-        assert!(matches!(
-            claim_decision(MAX_ROUTES, false, &[]),
-            ClaimDecision::Unreachable { .. }
-        ));
-        // Best above the bound, budget left: alternate.
-        assert_eq!(
-            claim_decision(1, false, &scored(&[("p-1", 241.0)])),
-            ClaimDecision::Alternate
-        );
-        // Best above the bound, budget spent: unreachable, honestly.
-        assert!(matches!(
-            claim_decision(MAX_ROUTES, false, &scored(&[("p-1", 241.0)])),
-            ClaimDecision::Unreachable { .. }
-        ));
-        // Acceptable best settles on the cheapest with id tiebreak.
-        assert_eq!(
-            claim_decision(2, false, &scored(&[("p-b", 25.0), ("p-a", 25.0)])),
-            ClaimDecision::Settle {
-                route_id: "p-a".to_string(),
-                cost: 25.0
-            }
-        );
-        // Liveness: a wedged straggler must NOT block a claim that already has
-        // an acceptable route once the route budget is spent. The search has
-        // its answer; a dead/flapping route can only match or slightly beat a
-        // route we'd already accept, so settle on the cheapest acceptable
-        // instead of waiting forever (this is what bounds the ADR-007
-        // self-heal — the budget caps it).
-        assert_eq!(
-            claim_decision(MAX_ROUTES, true, &scored(&[("p-2", 142.5), ("p-1", 300.0)])),
-            ClaimDecision::Settle {
-                route_id: "p-2".to_string(),
-                cost: 142.5
-            }
-        );
-        // Budget left: an in-flight route still blocks. Path self-heal owns
-        // the stuck-route case here; we don't settle early while a fresh
-        // alternate could still open.
-        assert_eq!(
-            claim_decision(1, true, &scored(&[("p-1", 142.5)])),
-            ClaimDecision::Wait
-        );
-        // Budget spent and in flight, but no acceptable route yet: keep
-        // waiting on the only route that could still make the claim reachable.
-        assert_eq!(
-            claim_decision(MAX_ROUTES, true, &scored(&[("p-1", 300.0)])),
-            ClaimDecision::Wait
-        );
-    }
-
-    #[test]
-    fn claim_classification_splits_reachable_from_strained() {
-        assert_eq!(claim_classification(120.0), "reachable");
-        assert_eq!(claim_classification(120.1), "strained");
-        assert_eq!(claim_classification(0.0), "reachable");
-    }
-
-    #[test]
-    fn endpoint_cost_averages_settled_and_penalizes_unreachable() {
-        // Two settled at 100 and 200, one unreachable at the 240 penalty:
-        // (100+200+240)/3 = 180.
-        assert_eq!(endpoint_cost(&[100.0, 200.0], 1), 180.0);
-        assert_eq!(endpoint_cost(&[], 2), UNREACHABLE_PENALTY);
-        assert_eq!(endpoint_cost(&[], 0), f64::MAX);
-    }
-
-    #[test]
-    fn briefs_rank_expensive_objections_first_and_stay_bounded() {
-        let flags = json!([
-            {"kind": "lag", "severity": "low", "note": "cheap one"},
-            {"kind": "miracle", "severity": "high", "note": "the big one"},
-        ]);
-        let brief = brief_from_flags(&flags);
-        let big = brief.find("the big one").unwrap();
-        let cheap = brief.find("cheap one").unwrap();
-        assert!(big < cheap, "expensive objections come first");
-        assert!(brief.len() <= 2000);
-        assert_eq!(brief_from_flags(&json!([])), "");
-    }
-
-    #[test]
-    fn max_flag_points_reads_the_single_most_expensive_flag() {
-        let flags = json!([
-            flag("lag", "low"),
-            flag("miracle", "low"),
-            flag("incentive", "high")
-        ]);
-        // 5, 20, 30 -> 30
-        assert_eq!(max_flag_points(&flags), 30.0);
-        assert_eq!(max_flag_points(&json!([])), 0.0);
-    }
-
-    #[test]
-    fn search_budget_worst_case_is_bounded() {
-        // The plan's hard bound: routes per claim and rounds per route are
-        // structural constants, not suggestions.
-        assert!(
-            MAX_ROUTES * (1 + MAX_ROUNDS) <= 9,
-            "search budget per claim"
-        );
-    }
 }

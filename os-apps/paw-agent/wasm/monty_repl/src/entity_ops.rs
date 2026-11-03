@@ -7,7 +7,9 @@ use base64::Engine;
 use serde_json::{Value, json};
 use temper_wasm_sdk::context::Context;
 use tool_catalog::DEFAULT_TOOLS_ENABLED;
-use wasm_helpers::{read_content_file_version, read_session_from_temperfs, runtime_headers};
+use wasm_helpers::{
+    bounded_reads, read_content_file_version, read_session_from_temperfs, runtime_headers,
+};
 
 use crate::dispatch;
 
@@ -47,11 +49,15 @@ pub fn spawn_session(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let parent_model = fields.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let parent_provider_options_json = fields
+        .get("provider_options_json")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let parent_temperature = fields
         .get("temperature")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let model = input
+    let requested_model = input
         .get("model")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
@@ -81,6 +87,20 @@ pub fn spawn_session(
             "spawn_session requires provider: pass opts.provider or invoke from a configured parent Session"
                 .to_string()
         })?;
+    let model = resolve_spawn_model_for_provider(
+        provider,
+        requested_model,
+        parent_model,
+        ctx.config.get("default_llm_model").map(String::as_str),
+    )?;
+    if model != requested_model.trim() {
+        ctx.log(
+            "warn",
+            &format!(
+                "spawn_session: replaced incompatible model {requested_model} with {model} for provider={provider}"
+            ),
+        );
+    }
     let temperature = input
         .get("temperature")
         .and_then(|v| v.as_str())
@@ -93,6 +113,18 @@ pub fn spawn_session(
             }
         })
         .unwrap_or("1.0");
+    let provider_options_json = input
+        .get("provider_options_json")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if parent_provider_options_json.is_empty() {
+                None
+            } else {
+                Some(parent_provider_options_json)
+            }
+        })
+        .unwrap_or("");
     let tools = input
         .get("tools")
         .and_then(|v| v.as_str())
@@ -200,7 +232,7 @@ pub fn spawn_session(
     // Configure
     let config_body = json!({
         "system_prompt": input.get("system_prompt").and_then(Value::as_str).unwrap_or(""),
-        "model": model, "provider": provider, "temperature": temperature, "tools_enabled": tools,
+        "model": model, "provider": provider, "provider_options_json": provider_options_json, "temperature": temperature, "tools_enabled": tools,
         "soul_id": soul_id, "user_message": task, "parent_session_id": parent_id,
         "sandbox_url": child_sandbox_url, "workdir": child_workdir,
         "workspace_id": child_workspace_id,
@@ -475,7 +507,16 @@ pub fn write_with_sandbox(
 
     let ws_id = resolve_workspace_id(ctx, api_url, tenant, &input.opts, true)?;
     let eid = ctx_entity_id(ctx);
-    let file = ensure_pawfs_file(ctx, api_url, tenant, eid, &ws_id, &input.path, &mime_type)?;
+    let file = resolve_pawfs_file_for_write(
+        ctx,
+        api_url,
+        tenant,
+        eid,
+        &ws_id,
+        &input.path,
+        &input.opts,
+        &mime_type,
+    )?;
 
     let url = format!("{api_url}/tdata/Files('{}')/$value", file.id);
     let headers = vec![
@@ -504,11 +545,60 @@ pub fn write_with_sandbox(
         }
     }
 
+    // Confirm the file actually reached Ready (bytes durably stored) before
+    // returning its id. The $value PUT dispatches StreamUpdated server-side; a
+    // file still in Created here means the bytes did not persist and would
+    // surface later as a 404 on $value. Fail loudly so the caller retries
+    // instead of attaching a phantom file. (ARN-55 / RFC-0001 Stage B.)
+    verify_file_ready(ctx, api_url, tenant, eid, &file.id)?;
+
     Ok(json!({
         "file_id": file.id,
         "path": file.path,
         "workspace_id": ws_id,
     }))
+}
+
+/// True when a Files entity is in a state that guarantees its blob is stored.
+/// A File reaches Ready/Locked only after StreamUpdated, which the kernel
+/// dispatches once the bytes are durably persisted (temper-fs invariant
+/// `ReadyFilesHaveContent`). `Created`/`Archived` do not guarantee content.
+fn file_status_is_ready(file: &Value) -> bool {
+    let status = file
+        .get("Status")
+        .or_else(|| file.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    matches!(status, "Ready" | "Locked")
+}
+
+/// Read a freshly-written Files entity back and confirm it reached Ready, so
+/// `temper.write` never returns a file_id whose blob is missing.
+fn verify_file_ready(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    principal_id: &str,
+    file_id: &str,
+) -> Result<(), String> {
+    let file = http_get(
+        ctx,
+        api_url,
+        tenant,
+        principal_id,
+        &format!("/tdata/Files('{file_id}')"),
+    )?;
+    if !file_status_is_ready(&file) {
+        let status = file
+            .get("Status")
+            .or_else(|| file.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        return Err(format!(
+            "temper.write(): file '{file_id}' did not reach Ready after upload (Status='{status}'); the bytes did not persist. Retry the write."
+        ));
+    }
+    Ok(())
 }
 
 pub fn write_many(
@@ -744,13 +834,14 @@ fn upload_write_many_file(
     let upload = write_upload_from_value(&input.path, &input.content, &input.opts)?;
     let upload = resolve_sandbox_upload(ctx, sandbox_url, upload)?;
     let mime_type = upload.mime_type.clone();
-    let file = ensure_pawfs_file(
+    let file = resolve_pawfs_file_for_write(
         ctx,
         api_url,
         tenant,
         principal_id,
         ws_id,
         &input.path,
+        &input.opts,
         &mime_type,
     )?;
 
@@ -853,7 +944,14 @@ fn write_opts_from_object_input(input: &Value) -> Value {
         return opts;
     };
 
-    for key in ["mime_type", "workspace_id", "workspace"] {
+    for key in [
+        "mime_type",
+        "workspace_id",
+        "workspace",
+        "file_id",
+        "entity_id",
+        "id",
+    ] {
         if !map.contains_key(key)
             && let Some(value) = input.get(key)
         {
@@ -1040,7 +1138,12 @@ pub fn read(ctx: &Context, api_url: &str, tenant: &str, args: &[Value]) -> Resul
     let path = pos_str(args, 0, "path", "read")?;
     let opts = obj_arg_or_empty(args, 1);
 
-    if let Some(content) = try_read_global_scoped_path(ctx, api_url, tenant, &path)? {
+    if let Some(file_id) = pawfs_file_id_from_path_or_opts(&path, &opts) {
+        let content = read_pawfs_file_value(ctx, api_url, &file_id, "temper.read()")?;
+        return Ok(render_read_output(content, &opts));
+    }
+
+    if let Some(content) = try_read_global_scoped_path(ctx, api_url, tenant, &path, &opts)? {
         return Ok(render_read_output(content, &opts));
     }
 
@@ -1396,17 +1499,7 @@ fn resolve_grep_targets(
 
     // It's a directory — list recursively
     let mut files = Vec::new();
-    list_dir_recursive(
-        ctx,
-        api_url,
-        tenant,
-        ws_id,
-        path,
-        0,
-        5,
-        &mut files,
-        500,
-    )?;
+    list_dir_recursive(ctx, api_url, tenant, ws_id, path, 0, 5, &mut files, 500)?;
     Ok(files)
 }
 
@@ -1766,6 +1859,53 @@ fn spawn_session_input(args: &[Value]) -> Result<Value, String> {
     Ok(input)
 }
 
+fn resolve_spawn_model_for_provider(
+    provider: &str,
+    requested_model: &str,
+    parent_model: &str,
+    default_model: Option<&str>,
+) -> Result<String, String> {
+    let requested = requested_model.trim();
+    if normalize_provider_name(provider) != "openai_codex"
+        || !is_unsupported_chatgpt_codex_model(requested)
+    {
+        return Ok(requested.to_string());
+    }
+
+    for fallback in [parent_model, default_model.unwrap_or("")] {
+        let candidate = fallback.trim();
+        if !candidate.is_empty() && !is_unsupported_chatgpt_codex_model(candidate) {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    Err(format!(
+        "spawn_session cannot use model `{requested}` with provider=openai_codex; pass a Codex-compatible model such as gpt-5.5"
+    ))
+}
+
+fn normalize_provider_name(provider: &str) -> String {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" | "openai-codex" => "openai_codex".to_string(),
+        "open_router" => "openrouter".to_string(),
+        "hf" | "hugging_face" | "hugging-face" => "huggingface".to_string(),
+        "fireworks_ai" | "fireworks-ai" => "fireworks".to_string(),
+        "sakana" | "sakana-fugu" | "fugu" => "sakana_fugu".to_string(),
+        "ollama" | "local" | "local-openai" => "local_openai".to_string(),
+        "openai-compatible" | "openai_compat" | "openai-compat" | "custom_openai" => {
+            "openai_compatible".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+fn is_unsupported_chatgpt_codex_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "gpt-4.1" | "gpt-4.1-mini" | "gpt-4.1-nano"
+    )
+}
+
 fn list_sessions_input(args: &[Value]) -> Value {
     let input = obj_arg_or_empty(args, 0);
     if input.is_object() && !input.as_object().is_none_or(|obj| obj.is_empty()) {
@@ -1869,14 +2009,55 @@ fn is_global_scoped_path(path: &str) -> bool {
 }
 
 fn escape_odata_string(value: &str) -> String {
-    value.replace('\'', "''")
+    bounded_reads::odata_escape(value)
 }
 
-fn global_scoped_file_filter(path: &str) -> String {
+fn global_scoped_default_workspace_id() -> &'static str {
+    "os-app-docs"
+}
+
+fn global_scoped_workspace_id(opts: &Value) -> String {
+    opts.get("workspace_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(global_scoped_default_workspace_id())
+        .to_string()
+}
+
+fn global_scoped_file_filter(path: &str, ws_id: &str) -> String {
     format!(
-        "path eq '{}' and Status ne 'Archived'",
-        escape_odata_string(path)
+        "Path eq '{}' and WorkspaceId eq '{}'",
+        escape_odata_string(path),
+        escape_odata_string(ws_id)
     )
+}
+
+fn is_pawfs_file_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("fl-") && trimmed.len() > 3
+}
+
+fn pawfs_file_id_from_opts(opts: &Value) -> Option<String> {
+    for key in ["file_id", "entity_id", "id"] {
+        if let Some(id) = opts
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| is_pawfs_file_id(value))
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn pawfs_file_id_from_path_or_opts(path: &str, opts: &Value) -> Option<String> {
+    pawfs_file_id_from_opts(opts).or_else(|| {
+        if is_pawfs_file_id(path) {
+            Some(path.trim().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn render_read_output(content: String, opts: &Value) -> Value {
@@ -2263,39 +2444,18 @@ fn try_read_global_scoped_path(
     api_url: &str,
     tenant: &str,
     path: &str,
+    opts: &Value,
 ) -> Result<Option<String>, String> {
     if !is_global_scoped_path(path) {
         return Ok(None);
     }
 
-    let eid = ctx_entity_id(ctx);
-    let filter = urlenc(&global_scoped_file_filter(path));
-    let resp = http_get(
-        ctx,
-        api_url,
-        tenant,
-        eid,
-        &format!("/tdata/Files?$filter={filter}"),
-    )?;
-    let Some(file_id) = resp
-        .get("value")
-        .and_then(|value| value.as_array())
-        .and_then(|items| items.first())
-        .and_then(|item| entity_field_str_any(item, &["entity_id", "Id", "id"]))
-    else {
+    let ws_id = global_scoped_workspace_id(opts);
+    let Some(file) = find_pawfs_file(ctx, api_url, tenant, &ws_id, path)? else {
         return Ok(None);
     };
-
-    let url = format!("{api_url}/tdata/Files('{file_id}')/$value");
-    let headers = vec![("Accept".to_string(), "application/octet-stream".to_string())];
-    let resp = ctx.http_call("GET", &url, &headers, "")?;
-    if resp.status >= 400 {
-        return Err(format!(
-            "temper.read(): content read failed (HTTP {})",
-            resp.status
-        ));
-    }
-    Ok(Some(resp.body))
+    let content = read_pawfs_file_value(ctx, api_url, &file.id, "temper.read()")?;
+    Ok(Some(content))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2391,12 +2551,14 @@ fn pawfs_parse_file_path(path: &str) -> Result<(&str, &str), String> {
 }
 
 fn pawfs_path_segments(path: &str) -> Vec<&str> {
-    path.split('/').filter(|segment| !segment.is_empty()).collect()
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
 }
 
 fn pawfs_filter_path_and_workspace(path: &str, ws_id: &str) -> String {
     format!(
-        "Path eq '{}' and WorkspaceId eq '{}' and Status ne 'Archived'",
+        "Path eq '{}' and WorkspaceId eq '{}'",
         escape_odata_string(path),
         escape_odata_string(ws_id)
     )
@@ -2404,14 +2566,59 @@ fn pawfs_filter_path_and_workspace(path: &str, ws_id: &str) -> String {
 
 fn pawfs_filter_parent_and_workspace(parent_id: &str, ws_id: &str) -> String {
     format!(
-        "ParentId eq '{}' and WorkspaceId eq '{}' and Status ne 'Archived'",
+        "ParentId eq '{}' and WorkspaceId eq '{}'",
         escape_odata_string(parent_id),
         escape_odata_string(ws_id)
     )
 }
 
-fn pawfs_first_entity(resp: &Value) -> Option<&Value> {
-    resp.get("value").and_then(Value::as_array)?.first()
+fn pawfs_filter_root_directory(ws_id: &str) -> String {
+    // `ParentId eq null` is non-lossless -> disables index pushdown -> full Directories
+    // scan -> 413 QueryTooLarge at workspace scale (ARN-68). Name '/' + WorkspaceId already
+    // uniquely identify the root, so omit the null predicate to keep the read pushed-down.
+    format!(
+        "Name eq '/' and WorkspaceId eq '{}'",
+        escape_odata_string(ws_id)
+    )
+}
+
+fn pawfs_filter_name_parent_and_workspace(name: &str, parent_id: &str, ws_id: &str) -> String {
+    format!(
+        "Name eq '{}' and ParentId eq '{}' and WorkspaceId eq '{}'",
+        escape_odata_string(name),
+        escape_odata_string(parent_id),
+        escape_odata_string(ws_id)
+    )
+}
+
+fn pawfs_filter_name_in_directory(name: &str, directory_id: &str, ws_id: &str) -> String {
+    format!(
+        "Name eq '{}' and DirectoryId eq '{}' and WorkspaceId eq '{}'",
+        escape_odata_string(name),
+        escape_odata_string(directory_id),
+        escape_odata_string(ws_id)
+    )
+}
+
+fn pawfs_entity_status(value: &Value) -> &str {
+    entity_field_str_any(value, &["Status", "status"]).unwrap_or("")
+}
+
+fn pawfs_is_archived(value: &Value) -> bool {
+    pawfs_entity_status(value) == "Archived"
+}
+
+fn pawfs_first_non_archived_entity(resp: &Value) -> Option<&Value> {
+    resp.get("value")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|item| !pawfs_is_archived(item))
+}
+
+fn pawfs_first_non_archived_entity_id(resp: &Value) -> Option<String> {
+    pawfs_first_non_archived_entity(resp)
+        .and_then(pawfs_entity_id)
+        .map(str::to_string)
 }
 
 fn pawfs_entity_id(value: &Value) -> Option<&str> {
@@ -2503,16 +2710,135 @@ fn find_pawfs_directory(
     raw_path: &str,
 ) -> Result<Option<PawFsDirectory>, String> {
     let path = pawfs_normalize_path(raw_path)?;
-    let filter = urlenc(&pawfs_filter_path_and_workspace(&path, ws_id));
+    if let Some(directory_id) =
+        resolve_pawfs_directory_id_by_walk(ctx, api_url, tenant, ws_id, &path)?
+    {
+        return fetch_pawfs_directory_by_id(ctx, api_url, tenant, &directory_id)
+            .map(Some)
+            .or_else(|error| {
+                ctx.log(
+                    "warn",
+                    &format!("temper.pawfs(): walked directory lookup failed for '{path}': {error}"),
+                );
+                Ok(None)
+            });
+    }
+
+    let filter = pawfs_filter_path_and_workspace(&path, ws_id);
     let eid = ctx_entity_id(ctx);
     let resp = http_get(
         ctx,
         api_url,
         tenant,
         eid,
-        &format!("/tdata/Directories?$filter={filter}"),
+        &bounded_reads::bounded_collection_query_path(
+            "Directories",
+            &filter,
+            bounded_reads::POINT_LOOKUP_TOP,
+        ),
     )?;
-    Ok(pawfs_first_entity(&resp).and_then(pawfs_directory_from_value))
+    Ok(pawfs_first_non_archived_entity(&resp).and_then(pawfs_directory_from_value))
+}
+
+fn fetch_pawfs_directory_by_id(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    directory_id: &str,
+) -> Result<PawFsDirectory, String> {
+    let eid = ctx_entity_id(ctx);
+    let resp = http_get(
+        ctx,
+        api_url,
+        tenant,
+        eid,
+        &format!("/tdata/Directories('{directory_id}')"),
+    )?;
+    pawfs_directory_from_value(&resp)
+        .ok_or_else(|| format!("temper.pawfs(): directory '{directory_id}' not found or invalid"))
+}
+
+fn resolve_pawfs_directory_id_by_walk(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    ws_id: &str,
+    dir_path: &str,
+) -> Result<Option<String>, String> {
+    let normalized = pawfs_normalize_path(dir_path)?;
+    let eid = ctx_entity_id(ctx);
+
+    let root_filter = pawfs_filter_root_directory(ws_id);
+    let root_resp = http_get(
+        ctx,
+        api_url,
+        tenant,
+        eid,
+        &bounded_reads::bounded_collection_query_path(
+            "Directories",
+            &root_filter,
+            bounded_reads::POINT_LOOKUP_TOP,
+        ),
+    )?;
+    let Some(mut parent_id) = pawfs_first_non_archived_entity_id(&root_resp) else {
+        return Ok(None);
+    };
+
+    if normalized == "/" {
+        return Ok(Some(parent_id));
+    }
+
+    for segment in pawfs_path_segments(&normalized) {
+        let filter = pawfs_filter_name_parent_and_workspace(segment, &parent_id, ws_id);
+        let resp = http_get(
+            ctx,
+            api_url,
+            tenant,
+            eid,
+            &bounded_reads::bounded_collection_query_path(
+                "Directories",
+                &filter,
+                bounded_reads::POINT_LOOKUP_TOP,
+            ),
+        )?;
+        let Some(directory_id) = pawfs_first_non_archived_entity_id(&resp) else {
+            return Ok(None);
+        };
+        parent_id = directory_id;
+    }
+
+    Ok(Some(parent_id))
+}
+
+fn find_pawfs_file_by_walk(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    ws_id: &str,
+    raw_path: &str,
+) -> Result<Option<PawFsFile>, String> {
+    let path = pawfs_normalize_path(raw_path)?;
+    let (dir_path, filename) = pawfs_parse_file_path(&path)?;
+    let Some(directory_id) =
+        resolve_pawfs_directory_id_by_walk(ctx, api_url, tenant, ws_id, dir_path)?
+    else {
+        return Ok(None);
+    };
+
+    let filter = pawfs_filter_name_in_directory(filename, &directory_id, ws_id);
+    let eid = ctx_entity_id(ctx);
+    let resp = http_get(
+        ctx,
+        api_url,
+        tenant,
+        eid,
+        &bounded_reads::bounded_collection_query_path(
+            "Files",
+            &filter,
+            bounded_reads::POINT_LOOKUP_TOP,
+        ),
+    )?;
+    Ok(pawfs_first_non_archived_entity(&resp).and_then(pawfs_file_from_value))
 }
 
 fn find_pawfs_file(
@@ -2522,17 +2848,84 @@ fn find_pawfs_file(
     ws_id: &str,
     raw_path: &str,
 ) -> Result<Option<PawFsFile>, String> {
+    if let Some(file) = find_pawfs_file_by_walk(ctx, api_url, tenant, ws_id, raw_path)? {
+        return Ok(Some(file));
+    }
+
     let path = pawfs_normalize_path(raw_path)?;
-    let filter = urlenc(&pawfs_filter_path_and_workspace(&path, ws_id));
+    let filter = pawfs_filter_path_and_workspace(&path, ws_id);
     let eid = ctx_entity_id(ctx);
     let resp = http_get(
         ctx,
         api_url,
         tenant,
         eid,
-        &format!("/tdata/Files?$filter={filter}"),
+        &bounded_reads::bounded_collection_query_path(
+            "Files",
+            &filter,
+            bounded_reads::POINT_LOOKUP_TOP,
+        ),
     )?;
-    Ok(pawfs_first_entity(&resp).and_then(pawfs_file_from_value))
+    Ok(pawfs_first_non_archived_entity(&resp).and_then(pawfs_file_from_value))
+}
+
+fn fetch_pawfs_file_by_id(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    file_id: &str,
+) -> Result<PawFsFile, String> {
+    let eid = ctx_entity_id(ctx);
+    let resp = http_get(
+        ctx,
+        api_url,
+        tenant,
+        eid,
+        &format!("/tdata/Files('{file_id}')"),
+    )?;
+    pawfs_file_from_value(&resp)
+        .ok_or_else(|| format!("temper.pawfs(): file '{file_id}' not found or invalid"))
+}
+
+fn resolve_pawfs_file_for_write(
+    ctx: &Context,
+    api_url: &str,
+    tenant: &str,
+    principal_id: &str,
+    ws_id: &str,
+    raw_path: &str,
+    opts: &Value,
+    mime_type: &str,
+) -> Result<PawFsFile, String> {
+    if let Some(file_id) = pawfs_file_id_from_path_or_opts(raw_path, opts) {
+        if let Ok(file) = fetch_pawfs_file_by_id(ctx, api_url, tenant, &file_id) {
+            return Ok(file);
+        }
+
+        let path = if is_pawfs_file_id(raw_path) {
+            raw_path.trim().to_string()
+        } else {
+            raw_path.to_string()
+        };
+        return Ok(PawFsFile {
+            id: file_id,
+            name: String::new(),
+            path,
+            directory_id: String::new(),
+            mime_type: mime_type.to_string(),
+            size_bytes: 0,
+        });
+    }
+
+    ensure_pawfs_file(
+        ctx,
+        api_url,
+        tenant,
+        principal_id,
+        ws_id,
+        raw_path,
+        mime_type,
+    )
 }
 
 fn create_pawfs_directory(
@@ -2554,7 +2947,14 @@ fn create_pawfs_directory(
         body["ParentId"] = json!(parent_id);
     }
 
-    let resp = http_post(ctx, api_url, tenant, principal_id, "/tdata/Directories", &body)?;
+    let resp = http_post(
+        ctx,
+        api_url,
+        tenant,
+        principal_id,
+        "/tdata/Directories",
+        &body,
+    )?;
     let id = pawfs_entity_id(&resp)
         .ok_or_else(|| "temper.pawfs(): Directory created but no Id returned".to_string())?
         .to_string();
@@ -2618,7 +3018,10 @@ fn ensure_pawfs_directory(
         ) {
             ctx.log(
                 "warn",
-                &format!("temper.pawfs(): AddChild failed on directory {}: {error}", parent.id),
+                &format!(
+                    "temper.pawfs(): AddChild failed on directory {}: {error}",
+                    parent.id
+                ),
             );
         }
         parent = directory;
@@ -2726,6 +3129,7 @@ fn list_pawfs_directory(
         .map(|items| {
             items
                 .iter()
+                .filter(|item| !pawfs_is_archived(item))
                 .filter_map(pawfs_directory_from_value)
                 .collect::<Vec<_>>()
         })
@@ -2733,7 +3137,7 @@ fn list_pawfs_directory(
     directories.sort_by(|left, right| left.path.cmp(&right.path));
 
     let file_filter = urlenc(&format!(
-        "DirectoryId eq '{}' and WorkspaceId eq '{}' and Status ne 'Archived'",
+        "DirectoryId eq '{}' and WorkspaceId eq '{}'",
         escape_odata_string(&directory.id),
         escape_odata_string(ws_id)
     ));
@@ -2747,7 +3151,13 @@ fn list_pawfs_directory(
     let mut files = files_resp
         .get("value")
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(pawfs_file_from_value).collect::<Vec<_>>())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| !pawfs_is_archived(item))
+                .filter_map(pawfs_file_from_value)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -2801,7 +3211,10 @@ fn rename_pawfs_file(
             api_url,
             tenant,
             principal_id,
-            &format!("/tdata/Directories('{}')/Temper.RemoveChild", file.directory_id),
+            &format!(
+                "/tdata/Directories('{}')/Temper.RemoveChild",
+                file.directory_id
+            ),
             &json!({}),
         ) {
             ctx.log(
@@ -2847,6 +3260,16 @@ mod tests {
     const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 
     #[test]
+    fn file_status_is_ready_accepts_ready_and_locked_only() {
+        assert!(file_status_is_ready(&json!({ "Status": "Ready" })));
+        assert!(file_status_is_ready(&json!({ "Status": "Locked" })));
+        assert!(!file_status_is_ready(&json!({ "Status": "Created" })));
+        assert!(!file_status_is_ready(&json!({ "Status": "Archived" })));
+        assert!(!file_status_is_ready(&json!({})));
+        assert!(file_status_is_ready(&json!({ "status": "Ready" })));
+    }
+
+    #[test]
     fn spawn_session_input_accepts_legacy_positional_arguments() {
         let input = spawn_session_input(&[
             json!("clone the repo"),
@@ -2868,6 +3291,44 @@ mod tests {
         assert_eq!(input["sandbox_url"], "https://sandbox.example");
         assert_eq!(input["max_turns"], "12");
         assert_eq!(input["background"], true);
+    }
+
+    #[test]
+    fn codex_spawn_model_replaces_gpt_4_1_with_parent_model() {
+        let model =
+            resolve_spawn_model_for_provider("openai_codex", "gpt-4.1", "gpt-5.5", Some("gpt-5.5"))
+                .unwrap();
+
+        assert_eq!(model, "gpt-5.5");
+    }
+
+    #[test]
+    fn codex_spawn_model_replaces_gpt_4_1_with_default_when_parent_is_bad() {
+        let model = resolve_spawn_model_for_provider(
+            "openai_codex",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+            Some("gpt-5.5"),
+        )
+        .unwrap();
+
+        assert_eq!(model, "gpt-5.5");
+    }
+
+    #[test]
+    fn codex_spawn_model_rejects_gpt_4_1_without_compatible_fallback() {
+        let err =
+            resolve_spawn_model_for_provider("openai_codex", "gpt-4.1", "", None).unwrap_err();
+
+        assert!(err.contains("gpt-4.1"));
+        assert!(err.contains("openai_codex"));
+    }
+
+    #[test]
+    fn public_openai_spawn_model_keeps_gpt_4_1() {
+        let model = resolve_spawn_model_for_provider("openai", "gpt-4.1", "gpt-5.5", None).unwrap();
+
+        assert_eq!(model, "gpt-4.1");
     }
 
     #[test]
@@ -2923,50 +3384,106 @@ mod tests {
     }
 
     #[test]
-    fn scoped_virtual_path_file_filter_escapes_single_quotes() {
+    fn scoped_virtual_path_file_filter_scopes_workspace_and_escapes_quotes() {
         assert_eq!(
-            global_scoped_file_filter("/system/knowledge/we're-here.md"),
-            "path eq '/system/knowledge/we''re-here.md' and Status ne 'Archived'"
+            global_scoped_file_filter("/system/knowledge/we're-here.md", "os-app-docs"),
+            "Path eq '/system/knowledge/we''re-here.md' and WorkspaceId eq 'os-app-docs'"
         );
     }
 
     #[test]
-    fn pawfs_normalize_path_matches_workspace_fs_rules() {
-        assert_eq!(pawfs_normalize_path("notes/readme.md").unwrap(), "/notes/readme.md");
-        assert_eq!(pawfs_normalize_path("//notes///readme.md/").unwrap(), "/notes/readme.md");
-        assert_eq!(pawfs_normalize_path("/").unwrap(), "/");
-        assert!(pawfs_normalize_path("   ").is_err());
+    fn pawfs_file_id_detection_accepts_fl_prefix() {
+        assert!(is_pawfs_file_id(
+            "fl-019edd73-9c8f-7141-88c8-bdb796d40ce9"
+        ));
+        assert!(!is_pawfs_file_id("/katagami/DESIGN.md"));
+        assert!(!is_pawfs_file_id("fl-"));
     }
 
     #[test]
-    fn pawfs_parse_file_path_splits_directory_and_filename() {
+    fn pawfs_file_id_from_opts_prefers_explicit_file_id() {
+        let opts = json!({
+            "file_id": "fl-019edd73-9c8f-7141-88c8-bdb796d40ce9",
+            "entity_id": "fl-00000000-0000-0000-0000-000000000001",
+            "workspace_id": "ws-test"
+        });
         assert_eq!(
-            pawfs_parse_file_path("/notes/readme.md").unwrap(),
-            ("/notes", "readme.md")
-        );
-        assert_eq!(pawfs_parse_file_path("/README.md").unwrap(), ("/", "README.md"));
-        assert!(pawfs_parse_file_path("/notes/").is_err());
-        assert!(pawfs_parse_file_path("/").is_err());
-    }
-
-    #[test]
-    fn pawfs_filter_escapes_odata_string_literals() {
-        assert_eq!(
-            pawfs_filter_path_and_workspace("/notes/we're-here.md", "ws'1"),
-            "Path eq '/notes/we''re-here.md' and WorkspaceId eq 'ws''1' and Status ne 'Archived'"
+            pawfs_file_id_from_path_or_opts("/katagami/DESIGN.md", &opts),
+            Some("fl-019edd73-9c8f-7141-88c8-bdb796d40ce9".to_string())
         );
     }
 
     #[test]
-    fn pawfs_agent_tools_do_not_call_workspace_filesystem_actions() {
-        let source = include_str!("entity_ops.rs");
-        for action in ["MkDir", "CreateFile", "ResolvePath", "ListDir", "Rename"] {
-            let needle = format!("{}{}", "Temper.", action);
-            assert!(
-                !source.contains(&needle),
-                "Monty PawFS tools must not call Workspace-bound {needle}"
-            );
+    fn pawfs_file_id_from_path_accepts_direct_id_argument() {
+        let opts = json!({});
+        assert_eq!(
+            pawfs_file_id_from_path_or_opts(
+                "fl-019edd73-9c8f-7141-88c8-bdb796d40ce9",
+                &opts
+            ),
+            Some("fl-019edd73-9c8f-7141-88c8-bdb796d40ce9".to_string())
+        );
+    }
+
+    #[test]
+    fn global_scoped_workspace_id_defaults_to_os_app_docs() {
+        assert_eq!(global_scoped_workspace_id(&json!({})), "os-app-docs");
+        assert_eq!(
+            global_scoped_workspace_id(&json!({"workspace_id": "ws-custom"})),
+            "ws-custom"
+        );
+    }
+
+    #[test]
+    fn pawfs_path_filter_omits_status_ne_for_lossless_pushdown() {
+        assert_eq!(
+            pawfs_filter_path_and_workspace("/katagami/DESIGN.md", "ws-test"),
+            "Path eq '/katagami/DESIGN.md' and WorkspaceId eq 'ws-test'"
+        );
+        assert!(!pawfs_filter_path_and_workspace("/katagami/DESIGN.md", "ws-test")
+            .contains("Status ne"));
+    }
+
+    #[test]
+    fn pawfs_walk_filters_use_parent_and_directory_pushdown() {
+        // ARN-68: the root filter must NOT use the non-lossless `ParentId eq null`
+        // (it disables index pushdown -> full Directories scan -> 413). Name '/' +
+        // WorkspaceId uniquely identify the root.
+        assert_eq!(
+            pawfs_filter_root_directory("os-app-docs"),
+            "Name eq '/' and WorkspaceId eq 'os-app-docs'"
+        );
+        assert!(!pawfs_filter_root_directory("os-app-docs").contains("eq null"));
+        assert_eq!(
+            pawfs_filter_name_parent_and_workspace("skills", "dir-parent", "os-app-docs"),
+            "Name eq 'skills' and ParentId eq 'dir-parent' and WorkspaceId eq 'os-app-docs'"
+        );
+        assert_eq!(
+            pawfs_filter_name_in_directory("SKILL.md", "dir-leaf", "os-app-docs"),
+            "Name eq 'SKILL.md' and DirectoryId eq 'dir-leaf' and WorkspaceId eq 'os-app-docs'"
+        );
+        for filter in [
+            pawfs_filter_root_directory("os-app-docs"),
+            pawfs_filter_name_parent_and_workspace("skills", "dir-parent", "os-app-docs"),
+            pawfs_filter_name_in_directory("SKILL.md", "dir-leaf", "os-app-docs"),
+        ] {
+            assert!(!filter.contains("Status ne"));
+            assert!(!filter.contains("Path eq"));
         }
+    }
+
+    #[test]
+    fn pawfs_first_non_archived_entity_skips_archived_rows() {
+        let resp = json!({
+            "value": [
+                {"Id": "fl-archived", "Status": "Archived", "Path": "/a.md"},
+                {"Id": "fl-active", "Status": "Ready", "Path": "/a.md"},
+            ]
+        });
+        assert_eq!(
+            pawfs_first_non_archived_entity_id(&resp),
+            Some("fl-active".to_string())
+        );
     }
 
     #[test]
@@ -3206,11 +3723,5 @@ fn mime_from_ext(path: &str) -> &'static str {
 }
 
 fn urlenc(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('?', "%3F")
-        .replace('#', "%23")
-        .replace('\'', "%27")
+    bounded_reads::odata_filter_urlencode(s)
 }

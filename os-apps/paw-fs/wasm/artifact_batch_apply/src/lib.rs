@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use temper_wasm_sdk::prelude::*;
+use wasm_helpers::bounded_reads;
 
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -178,9 +179,9 @@ fn ensure_file(
         tenant,
         "Files",
         &format!(
-            "Path eq '{}' and WorkspaceId eq '{}' and Status ne 'Archived'",
-            escape_odata(path),
-            escape_odata(workspace_id)
+            "Path eq '{}' and WorkspaceId eq '{}'",
+            bounded_reads::odata_escape(path),
+            bounded_reads::odata_escape(workspace_id)
         ),
     )? {
         return Ok(file_id);
@@ -287,9 +288,9 @@ fn find_directory(
         tenant,
         "Directories",
         &format!(
-            "Path eq '{}' and WorkspaceId eq '{}' and Status ne 'Archived'",
-            escape_odata(path),
-            escape_odata(workspace_id)
+            "Path eq '{}' and WorkspaceId eq '{}'",
+            bounded_reads::odata_escape(path),
+            bounded_reads::odata_escape(workspace_id)
         ),
     )
 }
@@ -301,27 +302,15 @@ fn find_entity_id(
     set_name: &str,
     filter: &str,
 ) -> Result<Option<String>, String> {
-    let encoded = urlenc(filter);
-    let resp = get(
+    bounded_reads::find_first_non_archived_entity_id(
         ctx,
         api_url,
-        tenant,
-        &format!("/tdata/{set_name}?$filter={encoded}"),
-    )?;
-    Ok(resp
-        .get("value")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(entity_id))
-}
-
-fn get(ctx: &Context, api_url: &str, tenant: &str, path: &str) -> Result<Value, String> {
-    let url = format!("{api_url}{path}");
-    let resp = ctx.http_call("GET", &url, &headers(tenant), "")?;
-    if resp.status >= 400 {
-        return Err(format!("GET {path}: HTTP {} {}", resp.status, resp.body));
-    }
-    serde_json::from_str(&resp.body).map_err(|error| format!("parse GET {path}: {error}"))
+        &headers(tenant),
+        set_name,
+        filter,
+        bounded_reads::POINT_LOOKUP_TOP,
+        "artifact_batch_apply: bounded entity lookup",
+    )
 }
 
 fn post(
@@ -418,19 +407,4 @@ fn mime_from_ext(path: &str) -> &'static str {
         "csv" => "text/csv",
         _ => "application/octet-stream",
     }
-}
-
-fn escape_odata(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
-fn urlenc(value: &str) -> String {
-    value
-        .replace('%', "%25")
-        .replace(' ', "%20")
-        .replace('&', "%26")
-        .replace('=', "%3D")
-        .replace('?', "%3F")
-        .replace('#', "%23")
-        .replace('\'', "%27")
 }

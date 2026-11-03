@@ -10,7 +10,7 @@ use std::{env, fs};
 
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
@@ -18,7 +18,9 @@ use axum::{Json, Router};
 use opentelemetry::trace::{Span as _, SpanKind, Status, Tracer as _};
 use opentelemetry::{KeyValue, global};
 use serde::{Deserialize, Serialize};
+use temper_authz::{AuthenticatedRequestContext, PrincipalKind};
 use temper_platform::PlatformState;
+use temper_platform::genesis_install::GenesisRegistryInstallRequest;
 use temper_runtime::tenant::TenantId;
 use temper_server::request_context::AgentContext;
 use temper_server::state::DispatchExtOptions;
@@ -45,8 +47,11 @@ const OPENAI_CODEX_EXPIRES_AT_MS: &str = "openai_codex_expires_at_ms";
 const OPENAI_CODEX_ACCOUNT_ID: &str = "openai_codex_account_id";
 const RAILWAY_GRAPHQL_URL: &str = "https://backboard.railway.com/graphql/v2";
 const DATADOG_RUNTIME_AGENT_SERVICE_NAME: &str = "datadog-runtime-agent";
-const DATADOG_RUNTIME_AGENT_IMAGE: &str = "datadog/agent:7";
+// An exact Agent version, never the floating `7`: on 22 Oct 2026 a routine redeploy pulled 7.78.4 -> 7.84.5 unreviewed and
+// moved what Datadog reports for Temper's histogram percentiles. An upgrade is a change to this line (and the CLI's).
+const DATADOG_RUNTIME_AGENT_IMAGE: &str = "datadog/agent:7.84.5";
 const DATADOG_RUNTIME_AGENT_HOST: &str = "datadog-runtime-agent.railway.internal";
+const DEFAULT_GENESIS_REGISTRY_URL: &str = "https://genesis-production-164d.up.railway.app";
 
 /// Shared state for the setup API.
 #[derive(Clone)]
@@ -72,6 +77,18 @@ fn allowed_secret_keys() -> HashSet<&'static str> {
         "openai_codex_account_id",
         "openai_codex_token",
         "openrouter_api_key",
+        "openrouter_api_url",
+        "huggingface_api_key",
+        "hf_token",
+        "huggingface_api_url",
+        "fireworks_api_key",
+        "fireworks_api_url",
+        "sakana_fugu_api_key",
+        "sakana_fugu_api_url",
+        "openai_compatible_api_key",
+        "openai_compatible_api_url",
+        "openai_compatible_headers_json",
+        "local_openai_api_url",
         "discord_bot_token",
         "discord_public_key",
         "discord_guild_id",
@@ -81,6 +98,7 @@ fn allowed_secret_keys() -> HashSet<&'static str> {
         "slack_bot_token",
         "slack_signing_secret",
         "github_token",
+        "genesis_token",
         "exa_api_key",
         "tensorlake_api_key",
         "temper_api_key",
@@ -94,12 +112,42 @@ fn allowed_secret_keys() -> HashSet<&'static str> {
         // not dashboard secrets. They're set by `temperpaw deploy` and changed in Railway.
         "railway_project_id",
         "railway_environment_id",
-        "railway_otel_service_id",
         "railway_datadog_runtime_agent_service_id",
         "railway_service_id",
     ]
     .into_iter()
     .collect()
+}
+
+fn validate_setup_secret_key(key: &str) -> Result<(), String> {
+    if allowed_secret_keys().contains(key) {
+        return Ok(());
+    }
+    if key.is_empty() {
+        return Err("Secret key cannot be empty".to_string());
+    }
+    if key.trim() != key {
+        return Err("Secret key cannot contain leading or trailing whitespace".to_string());
+    }
+    if key.len() > 128 {
+        return Err("Secret key must be 128 characters or fewer".to_string());
+    }
+    if key.contains("..") {
+        return Err("Secret key cannot contain '..'".to_string());
+    }
+    if key.starts_with('.') || key.starts_with('-') {
+        return Err("Secret key cannot start with '.' or '-'".to_string());
+    }
+    if !key
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'))
+    {
+        return Err(
+            "Secret key may only contain ASCII letters, numbers, underscores, dashes, dots, and colons"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Metadata for a known secret key — used by the dashboard to render templates.
@@ -143,11 +191,88 @@ fn secrets_schema() -> Vec<SecretSchema> {
             description: "Multi-provider routing — openrouter.ai/keys",
         },
         SecretSchema {
+            key: "openrouter_api_url",
+            category: "llm",
+            label: "OpenRouter API URL",
+            required: false,
+            description: "Optional endpoint override; defaults to OpenRouter chat completions",
+        },
+        SecretSchema {
+            key: "huggingface_api_key",
+            category: "llm",
+            label: "Hugging Face API Key",
+            required: false,
+            description: "Hugging Face Inference Providers — supports open-weight hosted models",
+        },
+        SecretSchema {
+            key: "huggingface_api_url",
+            category: "llm",
+            label: "Hugging Face API URL",
+            required: false,
+            description: "Optional endpoint override; defaults to Hugging Face router chat completions",
+        },
+        SecretSchema {
+            key: "fireworks_api_key",
+            category: "llm",
+            label: "Fireworks API Key",
+            required: false,
+            description: "Fireworks AI hosted open-weight models",
+        },
+        SecretSchema {
+            key: "fireworks_api_url",
+            category: "llm",
+            label: "Fireworks API URL",
+            required: false,
+            description: "Optional endpoint override; defaults to Fireworks chat completions",
+        },
+        SecretSchema {
+            key: "sakana_fugu_api_key",
+            category: "llm",
+            label: "Sakana Fugu API Key",
+            required: false,
+            description: "Sakana Fugu beta key",
+        },
+        SecretSchema {
+            key: "sakana_fugu_api_url",
+            category: "llm",
+            label: "Sakana Fugu API URL",
+            required: false,
+            description: "Required beta OpenAI-compatible chat completions URL for provider=sakana_fugu",
+        },
+        SecretSchema {
+            key: "openai_compatible_api_key",
+            category: "llm",
+            label: "OpenAI-Compatible API Key",
+            required: false,
+            description: "Bearer token for an arbitrary OpenAI-compatible endpoint",
+        },
+        SecretSchema {
+            key: "openai_compatible_api_url",
+            category: "llm",
+            label: "OpenAI-Compatible API URL",
+            required: false,
+            description: "Required chat completions URL for provider=openai_compatible",
+        },
+        SecretSchema {
+            key: "openai_compatible_headers_json",
+            category: "llm",
+            label: "OpenAI-Compatible Headers JSON",
+            required: false,
+            description: "Optional JSON object of extra string headers for custom OpenAI-compatible endpoints",
+        },
+        SecretSchema {
+            key: "local_openai_api_url",
+            category: "llm",
+            label: "Local OpenAI API URL",
+            required: false,
+            description: "No-key local endpoint for provider=local_openai; defaults to Ollama at 127.0.0.1:11434",
+        },
+        SecretSchema {
             key: "llm_provider",
             category: "llm",
             label: "Active LLM Provider",
             required: false,
-            description: "anthropic, openai, openai_codex, or openrouter",
+            description: "anthropic, openai, openai_codex, openrouter, huggingface, fireworks, sakana_fugu, local_openai, or openai_compatible",
         },
         SecretSchema {
             key: "llm_model",
@@ -254,6 +379,13 @@ fn secrets_schema() -> Vec<SecretSchema> {
             required: false,
             description: "For repo cloning and PR flows",
         },
+        SecretSchema {
+            key: "genesis_token",
+            category: "integrations",
+            label: "Genesis Token",
+            required: false,
+            description: "For pushing app bundles to the Genesis registry (Basic-auth username)",
+        },
         // DD_* keys are infrastructure config set via Railway env vars (by `temperpaw deploy`).
         // They don't belong in the dashboard — change them in Railway if needed.
     ]
@@ -276,6 +408,10 @@ pub fn router(state: SetupApiState) -> Router {
         .route(
             "/paw/setup/openai-codex/device-login",
             post(start_openai_codex_device_login),
+        )
+        .route(
+            "/paw/apps/install-from-genesis",
+            post(install_app_from_genesis),
         )
         .route(
             "/paw/setup/openai-codex/poll",
@@ -563,14 +699,22 @@ async fn ensure_openai_codex_auth_entity(state: &SetupApiState) -> Result<()> {
     Ok(())
 }
 
+/// Runs one OpenAICodexAuth move as `caller`, the setup route's caller, and
+/// answers with the status the move and its callbacks leave.
+///
+/// The move acts for the caller, never as System. Its module saves the tokens
+/// through this server's own `/paw/setup/secrets`, and the kernel gives the
+/// module of a System dispatch no internal capability for that call
+/// (`SystemContextNotDelegable`), so the save fails before it is sent.
 async fn dispatch_openai_codex_auth_action(
     state: &SetupApiState,
     action: &str,
+    caller: &AuthenticatedRequestContext,
 ) -> Result<OpenAICodexAuthStatus> {
     ensure_openai_codex_auth_entity(state).await?;
     let tenant_id = TenantId::new(&state.tenant);
-    let system = AgentContext::system();
-    state
+    let agent_ctx = caller_agent_context(caller);
+    let response = state
         .platform
         .server
         .dispatch_tenant_action_ext(
@@ -580,13 +724,45 @@ async fn dispatch_openai_codex_auth_action(
             action,
             serde_json::json!({}),
             DispatchExtOptions {
-                agent_ctx: &system,
+                agent_ctx: &agent_ctx,
                 await_integration: true,
                 await_reactions: true,
             },
         )
         .await
         .map_err(|error| anyhow!("OpenAICodexAuth.{action} failed: {error}"))?;
+    // Which kind of caller moved the sign-in, and through which module (the
+    // provider gate's calls name it), without naming the person.
+    let security_context = caller.security_context();
+    let caller_kind = format!("{:?}", security_context.principal.kind);
+    let caller_agent_type = security_context
+        .principal
+        .agent_type
+        .as_deref()
+        .unwrap_or("");
+    let via_module = security_context
+        .context_attrs
+        .get("module")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if response.success {
+        tracing::info!(
+            action,
+            caller_kind,
+            caller_agent_type,
+            via_module,
+            "OpenAICodexAuth move made as its caller"
+        );
+    } else {
+        tracing::warn!(
+            action,
+            caller_kind,
+            caller_agent_type,
+            via_module,
+            error = response.error.as_deref().unwrap_or("refused"),
+            "OpenAICodexAuth move refused; answering with the status as it stands"
+        );
+    }
 
     let snapshot = openai_codex_auth_snapshot(state).await;
     Ok(openai_codex_status_from_snapshot(
@@ -595,25 +771,22 @@ async fn dispatch_openai_codex_auth_action(
     ))
 }
 
-fn discord_readyz_response(
+/// `/readyz` once startup is ready. Readiness is core readiness only (the
+/// startup gate answers 503 until boot finishes); Discord is optional, so its
+/// state is reported in the body but never fails readiness (ADR-0066).
+fn readyz_response(
     configured: bool,
     runtime: &TransportStatus,
     desired_state: Option<&str>,
     connection_state: Option<&str>,
 ) -> (StatusCode, serde_json::Value) {
     let report = transport_status_report(configured, runtime, desired_state, connection_state);
-    let ready = !configured || report.connected;
-    let status = if ready {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
     let body = serde_json::json!({
-        "status": if ready { "ready" } else { "degraded" },
+        "status": "ready",
         "healthz": "/healthz",
         "discord": report,
     });
-    (status, body)
+    (StatusCode::OK, body)
 }
 
 fn discord_start_error_is_retryable(error: &str) -> bool {
@@ -772,6 +945,13 @@ async fn get_setup_status(State(state): State<SetupApiState>) -> Json<SetupStatu
                 .or_else(|| v.get_secret(&state.tenant, OPENAI_CODEX_ACCESS_TOKEN))
                 .or_else(|| v.get_secret(&state.tenant, "openai_codex_token"))
                 .or_else(|| v.get_secret(&state.tenant, "openrouter_api_key"))
+                .or_else(|| v.get_secret(&state.tenant, "huggingface_api_key"))
+                .or_else(|| v.get_secret(&state.tenant, "hf_token"))
+                .or_else(|| v.get_secret(&state.tenant, "fireworks_api_key"))
+                .or_else(|| v.get_secret(&state.tenant, "sakana_fugu_api_key"))
+                .or_else(|| v.get_secret(&state.tenant, "openai_compatible_api_key"))
+                .or_else(|| v.get_secret(&state.tenant, "openai_compatible_api_url"))
+                .or_else(|| v.get_secret(&state.tenant, "local_openai_api_url"))
         })
         .is_some();
     let llm_provider = vault.and_then(|v| v.get_secret(&state.tenant, "llm_provider"));
@@ -879,10 +1059,10 @@ async fn get_secret(
     State(state): State<SetupApiState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
-    if !allowed_secret_keys().contains(key.as_str()) {
+    if let Err(error) = validate_setup_secret_key(&key) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("Unknown secret key: {key}") })),
+            Json(serde_json::json!({ "error": error })),
         );
     }
 
@@ -928,8 +1108,157 @@ async fn get_openai_codex_status(
     ))
 }
 
-async fn start_openai_codex_device_login(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "StartDeviceLogin").await {
+#[derive(Debug, Deserialize)]
+struct InstallFromGenesisRequest {
+    /// Pinned ref `owner/name@hash`, e.g. `katagami/katagami-curation@<hash>`.
+    app_ref: String,
+    #[serde(default)]
+    registry_url: String,
+    #[serde(default)]
+    registry_tenant: String,
+    #[serde(default)]
+    follow_policy: String,
+}
+
+fn setup_genesis_registry_url(raw: &str) -> Result<String, String> {
+    let fallback = env::var("TEMPERPAW_GENESIS_REGISTRY_URL")
+        .or_else(|_| env::var("TEMPER_GENESIS_REGISTRY_URL"))
+        .unwrap_or_else(|_| DEFAULT_GENESIS_REGISTRY_URL.to_string());
+    let value = if raw.trim().is_empty() {
+        fallback.as_str()
+    } else {
+        raw
+    }
+    .trim()
+    .trim_end_matches('/');
+
+    if !(value.starts_with("http://") || value.starts_with("https://")) {
+        return Err("registry_url must start with http:// or https://".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn setup_genesis_registry_tenant(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        "default".to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+fn setup_genesis_follow_policy(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() || normalized == "pinned" {
+        return Ok("pinned".to_string());
+    }
+    if normalized == "follow_latest" || normalized == "follow-latest" {
+        return Ok("follow_latest".to_string());
+    }
+    Err(format!(
+        "follow_policy must be 'pinned' or 'follow_latest', got '{raw}'"
+    ))
+}
+
+fn pinned_genesis_app_ref(raw: &str) -> Option<String> {
+    let app_ref = raw.trim();
+    let (owner_and_name, hash) = app_ref.split_once('@')?;
+    if hash.trim().is_empty() || hash.contains('@') {
+        return None;
+    }
+    let (owner, name) = owner_and_name.split_once('/')?;
+    if owner.trim().is_empty() || name.trim().is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(format!(
+        "{}/{}@{}",
+        owner.trim(),
+        name.trim(),
+        hash.trim().trim_start_matches('@')
+    ))
+}
+
+fn genesis_install_request_from_setup(
+    tenant: &str,
+    req: InstallFromGenesisRequest,
+) -> Result<GenesisRegistryInstallRequest, String> {
+    let app_ref = pinned_genesis_app_ref(&req.app_ref)
+        .ok_or_else(|| "app_ref must be a pinned Genesis ref owner/name@hash".to_string())?;
+    Ok(GenesisRegistryInstallRequest {
+        tenant: tenant.to_string(),
+        app_ref,
+        registry_url: setup_genesis_registry_url(&req.registry_url)?,
+        registry_tenant: setup_genesis_registry_tenant(&req.registry_tenant),
+        follow_policy: setup_genesis_follow_policy(&req.follow_policy)?,
+    })
+}
+
+/// `POST /paw/apps/install-from-genesis` — reconcile an OS app from a pinned Genesis
+/// ref on a running pod, without a Docker rebuild. Privileged setup endpoint on the
+/// same `/paw/` admin surface as secret/agent management. Lets katagami (and any
+/// os-app) be updated by publishing to Genesis + hitting this endpoint, instead of a
+/// full image rebuild (ARN-69).
+async fn install_app_from_genesis(
+    State(state): State<SetupApiState>,
+    Json(req): Json<InstallFromGenesisRequest>,
+) -> impl IntoResponse {
+    let request = match genesis_install_request_from_setup(&state.tenant, req) {
+        Ok(request) => request,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            );
+        }
+    };
+    match temper_platform::genesis_install::install_genesis_app_from_registry(
+        &state.platform,
+        request,
+    )
+    .await
+    {
+        Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": error })),
+        ),
+    }
+}
+
+/// The dispatch context a setup request acts with: its caller's own
+/// authority, attached the way the kernel's OData routes attach it.
+fn caller_agent_context(caller: &AuthenticatedRequestContext) -> AgentContext {
+    let security_context = caller.security_context();
+    let principal = &security_context.principal;
+    let named = matches!(principal.kind, PrincipalKind::Agent | PrincipalKind::Admin);
+    AgentContext {
+        security_ctx: Some(security_context.clone()),
+        agent_id: named.then(|| principal.id.clone()),
+        agent_type: if named {
+            principal.agent_type.clone()
+        } else {
+            None
+        },
+        ..AgentContext::default()
+    }
+}
+
+/// Answers a setup route that makes one OpenAICodexAuth move: the status the
+/// move leaves, or why it could not run. Every caller the edge admits to these
+/// routes arrives with its authority attached.
+async fn openai_codex_auth_move(
+    state: &SetupApiState,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+    action: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(Extension(caller)) = caller else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": format!("OpenAICodexAuth.{action} needs an authenticated caller")
+            })),
+        );
+    };
+    match dispatch_openai_codex_auth_action(state, action, &caller).await {
         Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -938,54 +1267,46 @@ async fn start_openai_codex_device_login(State(state): State<SetupApiState>) -> 
     }
 }
 
-async fn poll_openai_codex_device_login(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "PollDeviceLogin").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn start_openai_codex_device_login(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "StartDeviceLogin").await
 }
 
-async fn refresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "Refresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn poll_openai_codex_device_login(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "PollDeviceLogin").await
 }
 
-async fn ensure_fresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "EnsureFresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn refresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "Refresh").await
 }
 
-async fn force_refresh_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "ForceRefresh").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn ensure_fresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "EnsureFresh").await
 }
 
-async fn disconnect_openai_codex_auth(State(state): State<SetupApiState>) -> impl IntoResponse {
-    match dispatch_openai_codex_auth_action(&state, "Disconnect").await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        ),
-    }
+async fn force_refresh_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "ForceRefresh").await
+}
+
+async fn disconnect_openai_codex_auth(
+    State(state): State<SetupApiState>,
+    caller: Option<Extension<AuthenticatedRequestContext>>,
+) -> impl IntoResponse {
+    openai_codex_auth_move(&state, caller, "Disconnect").await
 }
 
 #[derive(Deserialize)]
@@ -1064,10 +1385,10 @@ async fn upsert_secret(
     State(state): State<SetupApiState>,
     Json(req): Json<UpsertSecretRequest>,
 ) -> impl IntoResponse {
-    if !allowed_secret_keys().contains(req.key.as_str()) {
+    if let Err(error) = validate_setup_secret_key(&req.key) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("Unknown secret key: {}", req.key) })),
+            Json(serde_json::json!({ "error": error })),
         );
     }
 
@@ -1089,7 +1410,7 @@ async fn upsert_secret(
     );
 
     // Cache in memory + persist to Turso
-    let _ = vault.cache_secret(&state.tenant, &req.key, req.value.clone());
+    vault.cache_secret(&state.tenant, &req.key, req.value.clone());
 
     if let Ok((ciphertext, nonce)) = vault.encrypt(req.value.as_bytes()) {
         let _ = state
@@ -1117,6 +1438,13 @@ async fn delete_secret(
     State(state): State<SetupApiState>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(error) = validate_setup_secret_key(&key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error })),
+        );
+    }
+
     if let Some(vault) = state.platform.server.secrets_vault.as_ref() {
         vault.remove_secret(&state.tenant, &key);
     }
@@ -1209,8 +1537,7 @@ async fn save_soul(
     match save_soul_to_temper(&client, &state.base_url, &state.tenant, &generated, &auth).await {
         Ok(()) => {
             if let Some(vault) = state.platform.server.secrets_vault.as_ref() {
-                let _ =
-                    vault.cache_secret(&state.tenant, "paw_personalized_soul", "true".to_string());
+                vault.cache_secret(&state.tenant, "paw_personalized_soul", "true".to_string());
                 if let Ok((ciphertext, nonce)) = vault.encrypt(b"true") {
                     let _ = state
                         .storage
@@ -1243,19 +1570,91 @@ async fn resolve_llm_provider(state: &SetupApiState) -> Result<LlmProvider> {
     let model = vault
         .get_secret(&state.tenant, "llm_model")
         .context("Configure llm_model before personalizing Paw")?;
+    let provider = normalize_setup_provider(&provider_hint);
 
-    let api_key = [
-        "anthropic_api_key",
-        "openrouter_api_key",
-        "openai_api_key",
-        OPENAI_CODEX_ACCESS_TOKEN,
-        "openai_codex_token",
-    ]
-    .into_iter()
-    .find_map(|key| vault.get_secret(&state.tenant, key))
-    .context("Configure an LLM API key before personalizing Paw")?;
+    match provider.as_str() {
+        "local_openai" => {
+            let api_url = vault
+                .get_secret(&state.tenant, "local_openai_api_url")
+                .unwrap_or_else(|| "http://127.0.0.1:11434/v1/chat/completions".to_string());
+            LlmProvider::openai_compatible(&provider, "", &api_url, &model)
+        }
+        "huggingface" => {
+            let api_key = vault
+                .get_secret(&state.tenant, "huggingface_api_key")
+                .or_else(|| vault.get_secret(&state.tenant, "hf_token"))
+                .context("Configure huggingface_api_key before personalizing Paw")?;
+            let api_url = vault
+                .get_secret(&state.tenant, "huggingface_api_url")
+                .unwrap_or_else(|| "https://router.huggingface.co/v1/chat/completions".to_string());
+            LlmProvider::openai_compatible(&provider, &api_key, &api_url, &model)
+        }
+        "fireworks" => {
+            let api_key = vault
+                .get_secret(&state.tenant, "fireworks_api_key")
+                .context("Configure fireworks_api_key before personalizing Paw")?;
+            let api_url = vault
+                .get_secret(&state.tenant, "fireworks_api_url")
+                .unwrap_or_else(|| {
+                    "https://api.fireworks.ai/inference/v1/chat/completions".to_string()
+                });
+            LlmProvider::openai_compatible(&provider, &api_key, &api_url, &model)
+        }
+        "sakana_fugu" => {
+            let api_key = vault
+                .get_secret(&state.tenant, "sakana_fugu_api_key")
+                .context("Configure sakana_fugu_api_key before personalizing Paw")?;
+            let api_url = vault
+                .get_secret(&state.tenant, "sakana_fugu_api_url")
+                .context("Configure sakana_fugu_api_url before personalizing Paw")?;
+            LlmProvider::openai_compatible(&provider, &api_key, &api_url, &model)
+        }
+        "openai_compatible" => {
+            let api_key = vault
+                .get_secret(&state.tenant, "openai_compatible_api_key")
+                .unwrap_or_default();
+            let api_url = vault
+                .get_secret(&state.tenant, "openai_compatible_api_url")
+                .context("Configure openai_compatible_api_url before personalizing Paw")?;
+            LlmProvider::openai_compatible(&provider, &api_key, &api_url, &model)
+        }
+        _ => {
+            let api_key = match provider.as_str() {
+                "anthropic" => vault.get_secret(&state.tenant, "anthropic_api_key"),
+                "openrouter" => vault.get_secret(&state.tenant, "openrouter_api_key"),
+                "openai" => vault.get_secret(&state.tenant, "openai_api_key"),
+                "openai_codex" => vault
+                    .get_secret(&state.tenant, OPENAI_CODEX_ACCESS_TOKEN)
+                    .or_else(|| vault.get_secret(&state.tenant, "openai_codex_token")),
+                _ => [
+                    "anthropic_api_key",
+                    "openrouter_api_key",
+                    "openai_api_key",
+                    OPENAI_CODEX_ACCESS_TOKEN,
+                    "openai_codex_token",
+                ]
+                .into_iter()
+                .find_map(|key| vault.get_secret(&state.tenant, key)),
+            }
+            .with_context(|| format!("Configure an LLM API key for provider {provider}"))?;
+            LlmProvider::detect(&api_key, &provider, &model)
+        }
+    }
+}
 
-    LlmProvider::detect(&api_key, &provider_hint, &model)
+fn normalize_setup_provider(provider: &str) -> String {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" | "openai-codex" => "openai_codex".to_string(),
+        "open_router" => "openrouter".to_string(),
+        "hf" | "hugging_face" | "hugging-face" => "huggingface".to_string(),
+        "fireworks_ai" | "fireworks-ai" => "fireworks".to_string(),
+        "sakana" | "sakana-fugu" | "fugu" => "sakana_fugu".to_string(),
+        "ollama" | "local" | "local-openai" => "local_openai".to_string(),
+        "openai-compatible" | "openai_compat" | "openai-compat" | "custom_openai" => {
+            "openai_compatible".to_string()
+        }
+        other => other.to_string(),
+    }
 }
 
 async fn load_current_paw_soul(
@@ -1446,7 +1845,6 @@ struct RailwayStatus {
     project_id: Option<String>,
     environment_id: Option<String>,
     service_id: Option<String>,
-    otel_service_id: Option<String>,
     datadog_runtime_agent_service_id: Option<String>,
 }
 
@@ -1458,8 +1856,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
     let project_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_project_id"));
     let environment_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_environment_id"));
     let service_id = vault.and_then(|v| v.get_secret(&state.tenant, "railway_service_id"));
-    let otel_service_id =
-        vault.and_then(|v| v.get_secret(&state.tenant, "railway_otel_service_id"));
     let datadog_runtime_agent_service_id =
         vault.and_then(|v| v.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id"));
     let configured = has_token && project_id.is_some() && environment_id.is_some();
@@ -1470,7 +1866,6 @@ async fn get_railway_status(State(state): State<SetupApiState>) -> Json<RailwayS
         project_id,
         environment_id,
         service_id,
-        otel_service_id,
         datadog_runtime_agent_service_id,
     })
 }
@@ -1485,8 +1880,6 @@ struct SetRailwayVarRequest {
 /// Allowlist of (service, key) pairs that can be set via this endpoint.
 fn allowed_railway_vars() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("otel-collector", "DD_API_KEY"),
-        ("otel-collector", "DD_SITE"),
         ("datadog-runtime-agent", "DD_API_KEY"),
         ("datadog-runtime-agent", "DD_SITE"),
     ]
@@ -1536,9 +1929,8 @@ async fn set_railway_var(
             .into_response();
     };
 
-    // Resolve service ID — for otel-collector, read from vault
+    // Resolve the service ID from the vault
     let service_id = match req.service.as_str() {
-        "otel-collector" => vault.get_secret(&state.tenant, "railway_otel_service_id"),
         "datadog-runtime-agent" => {
             vault.get_secret(&state.tenant, "railway_datadog_runtime_agent_service_id")
         }
@@ -1707,7 +2099,13 @@ async fn ensure_datadog_runtime_agent(State(state): State<SetupApiState>) -> imp
             .await?;
         }
 
-        let app_vars = datadog_enhanced_app_railway_vars(&dd_key, &dd_site, &state.build_sha);
+        let current_otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+        let app_vars = datadog_enhanced_app_railway_vars(
+            &dd_key,
+            &dd_site,
+            &state.build_sha,
+            current_otlp_endpoint.as_deref(),
+        );
         for (name, value) in &app_vars {
             railway_upsert_variable(&client, &token, &project, &env, &app_svc, name, value).await?;
         }
@@ -2142,10 +2540,22 @@ fn datadog_runtime_agent_railway_vars(
     ]
 }
 
+/// Whether this service already sends OTLP somewhere it chose. Startup fills in
+/// the localhost default when none is set, so that one counts as no choice.
+fn otlp_endpoint_is_chosen(endpoint: Option<&str>) -> bool {
+    endpoint.is_some_and(|endpoint| {
+        let endpoint = endpoint.trim();
+        !endpoint.is_empty()
+            && !endpoint.contains("://localhost")
+            && !endpoint.contains("://127.0.0.1")
+    })
+}
+
 fn datadog_enhanced_app_railway_vars(
     dd_api_key: &str,
     dd_site: &str,
     build_sha: &str,
+    current_otlp_endpoint: Option<&str>,
 ) -> Vec<(&'static str, String)> {
     let version = if build_sha.trim().is_empty() {
         "unknown".to_string()
@@ -2154,7 +2564,7 @@ fn datadog_enhanced_app_railway_vars(
     };
     let otel_resource_attributes = datadog_app_otel_resource_attributes(&version);
 
-    vec![
+    let mut vars = vec![
         ("DD_API_KEY", dd_api_key.to_string()),
         ("DD_SITE", dd_site.to_string()),
         ("DD_SERVICE", "temperpaw".to_string()),
@@ -2169,18 +2579,24 @@ fn datadog_enhanced_app_railway_vars(
         ),
         ("DD_LLMOBS_ENABLED", "true".to_string()),
         ("DD_LLMOBS_API_ENABLED", "true".to_string()),
+        ("OTEL_ENABLED", "true".to_string()),
         ("OTEL_RESOURCE_ATTRIBUTES", otel_resource_attributes),
-        (
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            format!("http://{DATADOG_RUNTIME_AGENT_HOST}:4318"),
-        ),
         ("DD_AGENT_HOST", DATADOG_RUNTIME_AGENT_HOST.to_string()),
         ("DD_TRACE_AGENT_PORT", "8126".to_string()),
         (
             "DD_TRACE_AGENT_URL",
             format!("http://{DATADOG_RUNTIME_AGENT_HOST}:8126"),
         ),
-    ]
+    ];
+    // Ensuring the agent exists must not take a service off another OTLP route,
+    // such as a collector that needs its own ingest header.
+    if !otlp_endpoint_is_chosen(current_otlp_endpoint) {
+        vars.push((
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            format!("http://{DATADOG_RUNTIME_AGENT_HOST}:4318"),
+        ));
+    }
+    vars
 }
 
 fn datadog_app_otel_resource_attributes(version: &str) -> String {
@@ -2346,8 +2762,8 @@ async fn persist_infra_secret(
     key: &str,
     value: &str,
 ) {
-    let _ = vault.cache_secret(tenant, key, value.to_string());
-    let _ = vault.cache_platform_secret(key, value.to_string());
+    vault.cache_secret(tenant, key, value.to_string());
+    vault.cache_platform_secret(key, value.to_string());
     if let Ok((ciphertext, nonce)) = vault.encrypt(value.as_bytes()) {
         let _ = storage
             .upsert_secret(tenant, key, &ciphertext, &nonce)
@@ -2775,7 +3191,7 @@ pub(crate) async fn get_readyz(State(state): State<SetupApiState>) -> impl IntoR
     let connection_state = discord_connection
         .as_ref()
         .map(|snapshot| snapshot.status.as_str());
-    let (status, mut body) = discord_readyz_response(
+    let (status, mut body) = readyz_response(
         has_discord,
         &runtime.discord,
         desired_state,
@@ -2951,7 +3367,7 @@ async fn persist_discord_public_key(
     tenant: &str,
     public_key: &str,
 ) {
-    let _ = vault.cache_secret(tenant, "discord_public_key", public_key.to_string());
+    vault.cache_secret(tenant, "discord_public_key", public_key.to_string());
     if let Ok((ct, nc)) = vault.encrypt(public_key.as_bytes()) {
         let _ = storage
             .upsert_secret(tenant, "discord_public_key", &ct, &nc)
@@ -3125,14 +3541,14 @@ async fn connect_discord(
         }
     };
 
-    let _ = vault.cache_secret(&state.tenant, "discord_bot_token", req.bot_token.clone());
+    vault.cache_secret(&state.tenant, "discord_bot_token", req.bot_token.clone());
     if let Ok((ct, nc)) = vault.encrypt(req.bot_token.as_bytes()) {
         let _ = state
             .storage
             .upsert_secret(&state.tenant, "discord_bot_token", &ct, &nc)
             .await;
     }
-    let _ = vault.cache_secret(
+    vault.cache_secret(
         &state.tenant,
         "discord_public_key",
         resolved_public_key.clone(),
@@ -3144,7 +3560,7 @@ async fn connect_discord(
         ("discord_forum_channel_id", req.forum_channel_id.clone()),
     ] {
         if let Some(value) = value {
-            let _ = vault.cache_secret(&state.tenant, key, value.clone());
+            vault.cache_secret(&state.tenant, key, value.clone());
             if let Ok((ct, nc)) = vault.encrypt(value.as_bytes()) {
                 let _ = state
                     .storage
@@ -3193,8 +3609,8 @@ async fn connect_slack(
 ) -> impl IntoResponse {
     // Save tokens to vault + Turso
     if let Some(vault) = state.platform.server.secrets_vault.as_ref() {
-        let _ = vault.cache_secret(&state.tenant, "slack_bot_token", req.bot_token.clone());
-        let _ = vault.cache_secret(&state.tenant, "slack_app_token", req.app_token.clone());
+        vault.cache_secret(&state.tenant, "slack_bot_token", req.bot_token.clone());
+        vault.cache_secret(&state.tenant, "slack_app_token", req.app_token.clone());
         if let Ok((ct, nc)) = vault.encrypt(req.bot_token.as_bytes()) {
             let _ = state
                 .storage
@@ -3229,11 +3645,11 @@ async fn disconnect_slack(State(state): State<SetupApiState>) -> Json<serde_json
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_secret_keys, datadog_enhanced_app_railway_vars, datadog_runtime_agent_railway_vars,
-        discord_connect_params_for_secret_update, discord_readyz_response,
-        discord_start_error_is_retryable, is_discord_ping, persist_discord_public_key,
-        personalized_soul_flag_value, secrets_schema, transport_status_report,
-        verify_discord_signature,
+        InstallFromGenesisRequest, allowed_secret_keys, datadog_enhanced_app_railway_vars,
+        datadog_runtime_agent_railway_vars, discord_connect_params_for_secret_update,
+        discord_start_error_is_retryable, genesis_install_request_from_setup, is_discord_ping,
+        persist_discord_public_key, personalized_soul_flag_value, readyz_response, secrets_schema,
+        transport_status_report, validate_setup_secret_key, verify_discord_signature,
     };
     use crate::transport_manager::TransportStatus;
     use axum::http::StatusCode;
@@ -3241,6 +3657,115 @@ mod tests {
     use std::sync::Arc;
     use temper_server::secrets::SecretsVault;
     use temper_store_turso::TursoEventStore;
+
+    fn genesis_install_setup_request(
+        app_ref: &str,
+        registry_url: &str,
+        registry_tenant: &str,
+        follow_policy: &str,
+    ) -> InstallFromGenesisRequest {
+        InstallFromGenesisRequest {
+            app_ref: app_ref.to_string(),
+            registry_url: registry_url.to_string(),
+            registry_tenant: registry_tenant.to_string(),
+            follow_policy: follow_policy.to_string(),
+        }
+    }
+
+    #[test]
+    fn genesis_install_request_from_setup_maps_valid_request() {
+        let request = genesis_install_request_from_setup(
+            "tenant-a",
+            genesis_install_setup_request(
+                " katagami/katagami-curation@sha-123 ",
+                "https://genesis.example.test/",
+                " registry-team ",
+                "follow-latest",
+            ),
+        )
+        .expect("valid pinned Genesis setup request");
+
+        assert_eq!(request.tenant, "tenant-a");
+        assert_eq!(request.app_ref, "katagami/katagami-curation@sha-123");
+        assert_eq!(request.registry_url, "https://genesis.example.test");
+        assert_eq!(request.registry_tenant, "registry-team");
+        assert_eq!(request.follow_policy, "follow_latest");
+    }
+
+    #[test]
+    fn genesis_install_request_from_setup_defaults_tenant_and_policy() {
+        let request = genesis_install_request_from_setup(
+            "tenant-a",
+            genesis_install_setup_request(
+                "katagami/katagami-curation@sha-123",
+                "https://genesis.example.test",
+                "",
+                "",
+            ),
+        )
+        .expect("valid pinned Genesis setup request");
+
+        assert_eq!(request.registry_tenant, "default");
+        assert_eq!(request.follow_policy, "pinned");
+    }
+
+    #[test]
+    fn genesis_install_request_from_setup_rejects_unpinned_refs() {
+        let error = genesis_install_request_from_setup(
+            "tenant-a",
+            genesis_install_setup_request(
+                "katagami/katagami-curation",
+                "https://genesis.example.test",
+                "default",
+                "pinned",
+            ),
+        )
+        .expect_err("unpinned Genesis ref must fail at setup boundary");
+
+        assert!(error.contains("owner/name@hash"));
+    }
+
+    #[test]
+    fn genesis_install_request_from_setup_rejects_bad_registry_url_and_policy() {
+        let bad_url = genesis_install_request_from_setup(
+            "tenant-a",
+            genesis_install_setup_request(
+                "katagami/katagami-curation@sha-123",
+                "genesis.example.test",
+                "default",
+                "pinned",
+            ),
+        )
+        .expect_err("registry URL must include scheme");
+        assert!(bad_url.contains("registry_url"));
+
+        let bad_policy = genesis_install_request_from_setup(
+            "tenant-a",
+            genesis_install_setup_request(
+                "katagami/katagami-curation@sha-123",
+                "https://genesis.example.test",
+                "default",
+                "latest",
+            ),
+        )
+        .expect_err("unsupported follow policy must fail at setup boundary");
+        assert!(bad_policy.contains("follow_policy"));
+    }
+
+    #[test]
+    fn genesis_token_is_a_known_integration_secret() {
+        // Genesis push credential for Paw agents: it must be both an allowed
+        // secret key and present in the setup schema (mirrors github_token), so
+        // `temper.get_secret("genesis_token")` resolves the seeded value.
+        assert!(
+            allowed_secret_keys().contains(&"genesis_token"),
+            "genesis_token must be an allowed secret key"
+        );
+        assert!(
+            secrets_schema().iter().any(|s| s.key == "genesis_token"),
+            "genesis_token must appear in the setup secrets schema"
+        );
+    }
 
     #[test]
     fn discord_secret_update_builds_reconnect_params_when_config_is_complete() {
@@ -3304,24 +3829,23 @@ mod tests {
     }
 
     #[test]
-    fn discord_readyz_reports_degraded_without_changing_liveness() {
-        let (status, body) = discord_readyz_response(
+    fn readyz_reports_degraded_discord_without_failing_readiness() {
+        let (status, body) = readyz_response(
             true,
             &TransportStatus::Disconnected,
             Some("connected"),
             Some("Retrying"),
         );
 
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body["status"], "degraded");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ready");
         assert_eq!(body["healthz"], "/healthz");
         assert_eq!(body["discord"]["configured"], true);
         assert_eq!(body["discord"]["connected"], false);
         assert_eq!(body["discord"]["desired_state"], "connected");
         assert_eq!(body["discord"]["connection_state"], "Retrying");
 
-        let (status, body) =
-            discord_readyz_response(false, &TransportStatus::Disconnected, None, None);
+        let (status, body) = readyz_response(false, &TransportStatus::Disconnected, None, None);
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ready");
@@ -3452,7 +3976,8 @@ mod tests {
             "Datadog Agent DD_TAGS uses whitespace-separated list values"
         );
 
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha");
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let app_tags = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "DD_TAGS").then_some(value.as_str()))
@@ -3466,7 +3991,8 @@ mod tests {
 
     #[test]
     fn datadog_enhanced_app_vars_disable_otel_llmobs_auto_conversion() {
-        let app_vars = datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha");
+        let app_vars =
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", None);
         let resource_attributes = app_vars
             .iter()
             .find_map(|(name, value)| (*name == "OTEL_RESOURCE_ATTRIBUTES").then_some(value))
@@ -3476,6 +4002,144 @@ mod tests {
             resource_attributes,
             "service.name=temperpaw,service.version=build-sha,deployment.environment=prod,dd_llmobs_enabled=false"
         );
+    }
+
+    /// A deploy with no Datadog key saves OTEL_ENABLED=false, and startup then
+    /// drops the endpoint, so adding Datadog later has to turn export back on.
+    #[test]
+    fn ensuring_the_agent_turns_export_on() {
+        const EXPECTED_ENDPOINT: &str = "TEMPERPAW_TEST_EXPECTED_OTLP_ENDPOINT";
+        if let Ok(endpoint) = std::env::var(EXPECTED_ENDPOINT) {
+            let config = crate::config::Config::from_env().expect("startup config");
+            assert!(config.otel_enabled, "Datadog setup must re-enable export");
+            assert_eq!(config.otel_endpoint, endpoint);
+            return;
+        }
+
+        for current_endpoint in [None, Some("https://collector.example.com")] {
+            // Railway upserts the setup variables over the no-key deploy's
+            // persisted off switch before restarting the app.
+            let mut persisted =
+                std::collections::HashMap::from([("OTEL_ENABLED", "false".to_string())]);
+            if let Some(endpoint) = current_endpoint {
+                persisted.insert("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.to_string());
+            }
+            persisted.extend(datadog_enhanced_app_railway_vars(
+                "api-key",
+                "datadoghq.com",
+                "build-sha",
+                current_endpoint,
+            ));
+
+            // Read the actual startup config in a fresh process, without
+            // changing the environment of other tests or loading a local .env.
+            let workdir = tempfile::tempdir().expect("isolated startup directory");
+            std::fs::write(workdir.path().join(".env"), "").expect("empty local env");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "setup_api::tests::ensuring_the_agent_turns_export_on",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .envs(std::env::vars_os().filter(|(name, _)| {
+                    name == "LD_LIBRARY_PATH" || name == "DYLD_FALLBACK_LIBRARY_PATH"
+                }))
+                .envs(persisted)
+                .env(
+                    EXPECTED_ENDPOINT,
+                    current_endpoint
+                        .unwrap_or("http://datadog-runtime-agent.railway.internal:4318"),
+                )
+                .current_dir(workdir.path())
+                .output()
+                .expect("restart with the updated Railway variables");
+            assert!(
+                output.status.success(),
+                "startup failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    fn ensuring_the_agent_leaves_a_chosen_otlp_route_alone() {
+        let endpoint_set = |current: Option<&str>| {
+            datadog_enhanced_app_railway_vars("api-key", "datadoghq.com", "build-sha", current)
+                .iter()
+                .find_map(|(name, value)| {
+                    (*name == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| value.clone())
+                })
+        };
+        let agent = Some("http://datadog-runtime-agent.railway.internal:4318".to_string());
+
+        assert_eq!(endpoint_set(None), agent);
+        assert_eq!(endpoint_set(Some("")), agent);
+        assert_eq!(endpoint_set(Some("http://localhost:4318")), agent);
+        assert_eq!(endpoint_set(Some("https://collector.example.com")), None);
+    }
+
+    /// The sign-in's module saves its tokens through this server's own
+    /// `/paw/setup/secrets`, on a capability the kernel issues for the context
+    /// its move carries. So the move carries its caller, never System.
+    #[test]
+    fn a_codex_move_carries_its_caller_so_its_module_can_save() {
+        use temper_authz::{
+            AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext,
+        };
+        use temper_runtime::tenant::TenantId;
+        use temper_server::internal_invocation::InternalInvocationCredentialStore;
+
+        let store = InternalInvocationCredentialStore::runtime();
+        let tenant = TenantId::new("default");
+        let save = "http://127.0.0.1:8080/paw/setup/secrets";
+        let issues_save = |security_context: SecurityContext| {
+            store
+                .issue_for_url(
+                    AuthenticatedRequestContext::new(tenant.clone(), security_context),
+                    "POST",
+                    save,
+                )
+                .is_ok()
+        };
+
+        let mut dashboard = SecurityContext::anonymous();
+        dashboard.principal = Principal {
+            id: "dashboard-person".to_string(),
+            kind: PrincipalKind::Admin,
+            role: None,
+            acting_for: None,
+            agent_type: None,
+            label: None,
+            attributes: Default::default(),
+        };
+        let operator = SecurityContext::from_resolved_identity("operator-1", "operator", None);
+        for caller in [dashboard, operator] {
+            let caller = AuthenticatedRequestContext::new(tenant.clone(), caller);
+            let agent_ctx = super::caller_agent_context(&caller);
+            let carried = agent_ctx
+                .security_ctx
+                .clone()
+                .expect("the move carries its caller");
+            let principal = &caller.security_context().principal;
+            assert_eq!(carried.principal.id, principal.id);
+            assert_eq!(carried.principal.kind, principal.kind);
+            assert_eq!(agent_ctx.agent_id.as_deref(), Some(principal.id.as_str()));
+            assert_eq!(agent_ctx.agent_type, principal.agent_type);
+            assert!(
+                issues_save(carried),
+                "{:?} gets a capability",
+                principal.kind
+            );
+        }
+
+        // System, what these routes dispatched as before, gets none: its
+        // module's save failed before it was sent.
+        let system = temper_server::request_context::AgentContext::system()
+            .security_ctx
+            .expect("System names itself");
+        assert!(!issues_save(system));
     }
 
     #[test]
@@ -3492,6 +4156,56 @@ mod tests {
                 "{key} must be settable by Codex auth flow"
             );
         }
+    }
+
+    #[test]
+    fn open_weight_llm_secret_keys_are_allowed_and_rendered() {
+        let allowed = allowed_secret_keys();
+        let schema = secrets_schema();
+
+        for key in [
+            "openrouter_api_key",
+            "openrouter_api_url",
+            "huggingface_api_key",
+            "hf_token",
+            "huggingface_api_url",
+            "fireworks_api_key",
+            "fireworks_api_url",
+            "sakana_fugu_api_key",
+            "sakana_fugu_api_url",
+            "openai_compatible_api_key",
+            "openai_compatible_api_url",
+            "openai_compatible_headers_json",
+            "local_openai_api_url",
+        ] {
+            assert!(
+                allowed.contains(key),
+                "{key} should be accepted by setup API"
+            );
+        }
+
+        for key in [
+            "huggingface_api_key",
+            "fireworks_api_key",
+            "sakana_fugu_api_url",
+            "openai_compatible_api_url",
+            "local_openai_api_url",
+        ] {
+            assert!(
+                schema.iter().any(|secret| secret.key == key),
+                "{key} should be visible in dashboard schema"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_api_accepts_safe_custom_secret_names() {
+        assert!(validate_setup_secret_key("vendor_x_api_key").is_ok());
+        assert!(validate_setup_secret_key("team.provider:header").is_ok());
+        assert!(validate_setup_secret_key("").is_err());
+        assert!(validate_setup_secret_key("../oops").is_err());
+        assert!(validate_setup_secret_key(" bad").is_err());
+        assert!(validate_setup_secret_key("bad/key").is_err());
     }
 
     #[test]

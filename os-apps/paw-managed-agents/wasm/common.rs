@@ -375,7 +375,16 @@ pub fn managed_agent_provider(managed_agent: &Value) -> String {
                 .filter(|value| {
                     matches!(
                         value.as_str(),
-                        "anthropic" | "openai" | "openai_codex" | "openrouter" | "mock"
+                        "anthropic"
+                            | "openai"
+                            | "openai_codex"
+                            | "openrouter"
+                            | "huggingface"
+                            | "fireworks"
+                            | "sakana_fugu"
+                            | "local_openai"
+                            | "openai_compatible"
+                            | "mock"
                     )
                 })
             {
@@ -385,6 +394,25 @@ pub fn managed_agent_provider(managed_agent: &Value) -> String {
     }
 
     String::new()
+}
+
+pub fn managed_agent_provider_options_json(managed_agent: &Value) -> String {
+    let direct = field_string(
+        managed_agent,
+        &["ProviderOptionsJson", "provider_options_json"],
+    );
+    if !direct.trim().is_empty() {
+        return direct;
+    }
+
+    let metadata = field_string(managed_agent, &["Metadata", "metadata"]);
+    if metadata.trim().is_empty() {
+        return String::new();
+    }
+    serde_json::from_str::<Value>(&metadata)
+        .ok()
+        .map(|parsed| json_string(&parsed, &["provider_options_json", "providerOptionsJson"]))
+        .unwrap_or_default()
 }
 
 pub fn escape_odata_string(value: &str) -> String {

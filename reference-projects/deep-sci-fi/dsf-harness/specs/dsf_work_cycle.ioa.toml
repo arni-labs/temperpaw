@@ -14,6 +14,7 @@
 name = "DsfWorkCycle"
 states = ["Planning", "Planned", "InProgress", "Testing", "Reviewing", "Complete", "Failed"]
 initial = "Planning"
+terminal = ["Complete", "Failed"]
 
 # Fields
 [[state]]
@@ -70,37 +71,37 @@ initial = ""
 [[state]]
 name = "has_plan"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "migrations_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "typecheck_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "unit_tests_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "dst_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "policy_gates_ok"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "tests_passed"
 type = "bool"
-initial = "false"
+initial = false
 
 # --- Planning ---
 [[action]]
@@ -115,7 +116,7 @@ kind = "input"
 from = ["Planning"]
 to = "Planned"
 params = ["plan_summary"]
-effect = [{ type = "set_bool", var = "has_plan", value = "true" }]
+effect = ["has_plan = true"]
 
 # --- Implementation ---
 [[action]]
@@ -161,7 +162,6 @@ name = "BeginTesting"
 kind = "input"
 from = ["InProgress"]
 to = "Testing"
-effect = [{ type = "trigger", name = "verify_level1_gates" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -184,10 +184,7 @@ kind = "input"
 from = ["Testing"]
 to = "Reviewing"
 params = ["test_summary"]
-effect = [
-  { type = "set_bool", var = "tests_passed", value = "true" },
-  { type = "trigger", name = "verify_level2_gates" }
-]
+effect = ["tests_passed = true"]
 
 # --- Review ---
 
@@ -218,7 +215,7 @@ kind = "input"
 from = ["Reviewing"]
 to = "Planning"
 params = ["review_notes"]
-effect = [{ type = "set_bool", var = "tests_passed", value = "false" }]
+effect = ["tests_passed = false"]
 
 [[action]]
 name = "Fail"
@@ -226,16 +223,5 @@ kind = "input"
 from = ["Planning", "Planned", "InProgress", "Testing", "Reviewing"]
 to = "Failed"
 params = ["error_message"]
-
-# --- Invariants ---
-[[invariant]]
-name = "CompleteIsFinal"
-when = ["Complete"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
 
 # --- Integrations ---

@@ -1,0 +1,37 @@
+{
+  "row": {
+    "id": "api-1",
+    "status": "Active",
+    "project_id": "project-1",
+    "service_id": "service-1",
+    "environment_id": "env-1",
+    "config_ref": "api-config",
+    "config_sha256": "0c11b0574df262b308f4a229169f2abb0c5298d60031972331e816da5ba2d01c"
+  },
+  "configuration": "{\"version\":3,\"resource_id\":\"api-1\",\"target\":{\"project_id\":\"project-1\",\"service_id\":\"service-1\",\"environment_id\":\"env-1\",\"token_secret\":\"railway_token\"},\"verification\":{\"application\":{\"kind\":\"unbound\"},\"flow\":{\"kind\":\"provider_configuration\"},\"datadog\":{\"site\":\"datadoghq.com\",\"service\":\"backend\",\"environment\":\"production\",\"api_key_secret\":\"dd_api\",\"app_key_secret\":\"dd_app\"}}}",
+  "domains": {
+    "data": {
+      "service": {
+        "id": "service-1",
+        "projectId": "project-1"
+      },
+      "serviceInstance": {
+        "serviceId": "service-1",
+        "environmentId": "env-1",
+        "domains": {
+          "customDomains": [
+            {
+              "id": "domain-1",
+              "domain": "api.deep-sci-fi.world",
+              "projectId": "project-1",
+              "serviceId": "service-1",
+              "environmentId": "env-1",
+              "deletedAt": null
+            }
+          ],
+          "serviceDomains": []
+        }
+      }
+    }
+  }
+}

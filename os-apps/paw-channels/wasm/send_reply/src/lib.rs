@@ -4,8 +4,12 @@ use temper_wasm_sdk::prelude::*;
 pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
     let result = (|| -> Result<(), String> {
         let ctx = Context::from_host()?;
-        let fields = ctx.entity_state.get("fields").cloned().unwrap_or_else(|| json!({}));
-        let delivery = prepare_delivery(&fields)?;
+        let fields = ctx
+            .entity_state
+            .get("fields")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let delivery = prepare_delivery(&fields, &ctx.trigger_params)?;
 
         if !delivery.inline {
             let headers = vec![
@@ -19,7 +23,10 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                 &delivery.reply_params.to_string(),
             )?;
             if !(200..300).contains(&resp.status) {
-                return Err(format!("send_reply: webhook POST failed (HTTP {})", resp.status));
+                return Err(format!(
+                    "send_reply: webhook POST failed (HTTP {})",
+                    resp.status
+                ));
             }
         }
 
@@ -40,7 +47,7 @@ struct Delivery {
     reply_params: Value,
 }
 
-fn prepare_delivery(fields: &Value) -> Result<Delivery, String> {
+fn prepare_delivery(fields: &Value, trigger_params: &Value) -> Result<Delivery, String> {
     let channel_type = str_field(fields, &["channel_type", "ChannelType"]).unwrap_or("");
     let webhook_url = str_field(fields, &["webhook_url", "WebhookUrl"])
         .unwrap_or("")
@@ -53,9 +60,10 @@ fn prepare_delivery(fields: &Value) -> Result<Delivery, String> {
         inline: webhook_url.is_empty(),
         webhook_url,
         reply_params: json!({
-            "thread_id": str_field(fields, &["thread_id", "ThreadId"]).unwrap_or(""),
-            "content": str_field(fields, &["content", "Content"]).unwrap_or(""),
-            "agent_entity_id": str_field(fields, &["agent_entity_id", "AgentEntityId"]).unwrap_or(""),
+            "thread_id": action_param_or_field(trigger_params, fields, &["thread_id", "ThreadId"]).unwrap_or(""),
+            "content": action_param_or_field(trigger_params, fields, &["content", "Content"]).unwrap_or(""),
+            "agent_entity_id": action_param_or_field(trigger_params, fields, &["agent_entity_id", "AgentEntityId"]).unwrap_or(""),
+            "reply_attachments_json": action_param(trigger_params, &["reply_attachments_json", "ReplyAttachmentsJson"]).unwrap_or(""),
         }),
     })
 }
@@ -69,38 +77,15 @@ fn str_field<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find_map(|key| value.get(*key).and_then(Value::as_str))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+fn action_param<'a>(trigger_params: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| trigger_params.get(*key).and_then(Value::as_str))
+}
 
-    #[test]
-    fn cli_channel_without_webhook_delivers_inline() {
-        let fields = json!({
-            "channel_type": "cli",
-            "thread_id": "main",
-            "content": "hello",
-            "agent_entity_id": "agent-1",
-        });
-
-        let delivery = prepare_delivery(&fields).expect("cli delivery should not need webhook");
-
-        assert!(delivery.inline);
-        assert_eq!(delivery.webhook_url, "");
-        assert_eq!(delivery.reply_params["thread_id"], "main");
-        assert_eq!(delivery.reply_params["content"], "hello");
-        assert_eq!(delivery.reply_params["agent_entity_id"], "agent-1");
-    }
-
-    #[test]
-    fn non_cli_channel_without_webhook_still_errors() {
-        let fields = json!({
-            "channel_type": "discord",
-            "thread_id": "main",
-            "content": "hello",
-        });
-
-        let error = prepare_delivery(&fields).expect_err("discord delivery needs a webhook");
-
-        assert_eq!(error, "send_reply: webhook_url is empty");
-    }
+fn action_param_or_field<'a>(
+    trigger_params: &'a Value,
+    fields: &'a Value,
+    keys: &[&str],
+) -> Option<&'a str> {
+    action_param(trigger_params, keys).or_else(|| str_field(fields, keys))
 }

@@ -32,6 +32,8 @@
         <Property Name="Description" Type="Edm.String"/>
         <Property Name="System" Type="Edm.String"/>
         <Property Name="ModelId" Type="Edm.String"/>
+        <Property Name="Provider" Type="Edm.String"/>
+        <Property Name="ProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ModelSpeed" Type="Edm.String"/>
         <Property Name="Version" Type="Edm.Int64"/>
         <Property Name="InnerAgentId" Type="Edm.String"/>
@@ -57,6 +59,8 @@
         <Parameter Name="Description" Type="Edm.String" Nullable="true"/>
         <Parameter Name="System" Type="Edm.String" Nullable="true"/>
         <Parameter Name="ModelId" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="Provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="ProviderOptionsJson" Type="Edm.String" Nullable="true"/>
         <Parameter Name="ModelSpeed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="Metadata" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="ManagedAgents.ManagedAgent"/>

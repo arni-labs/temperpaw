@@ -9,14 +9,22 @@
 
 [automaton]
 name = "Computer"
-states = ["Created", "Provisioning", "Ready", "Checkpointing", "Sleeping", "Destroyed"]
+# Leased is the CHILD-COPY lifecycle state (ARN-443 C): a live copy of a source
+# computer lands in Leased (never Ready), so a lease `state_timeout` can reap
+# copies without ever touching a source — sources stay in Ready
+# (allow_indefinite) and are structurally unreapable. State carries the "this is
+# a leased copy" semantics; there is no is_copy flag.
+# ARN-443 D (DONE): panel execs route through Exec rows, and computer_exec_start's
+# live-gate accepts Ready, Leased, and Sleeping (Sleeping resumes first).
+# ARN-466: Ready is not indefinite — 180s idle → Sleep, which actually
+# suspends Tensorlake. Sleeping is indefinite (suspended, not billing).
+states = ["Created", "Provisioning", "CopyUnknown", "Copying", "Ready", "Checkpointing", "Sleeping", "Leased", "Terminating", "Destroyed"]
 initial = "Created"
 
-# ADR-0050 migration TODO: each state below needs either a
-# [[state_timeout]] declaration or a domain-specific justification
-# for being indefinite. Added as a migration allowlist to unblock
-# TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
-allow_indefinite_states = ["Created", "Provisioning", "Ready", "Checkpointing", "Sleeping"]
+# ADR-0050 migration TODO: Created / Provisioning / Checkpointing still need
+# a timeout or a tighter justification. Ready is no longer on this list.
+allow_indefinite_states = ["Created", "Provisioning", "CopyUnknown", "Checkpointing", "Sleeping"]
+terminal = ["Destroyed"]
 
 # -- State variables ----------------------------------------------------------
 
@@ -112,6 +120,28 @@ name = "project_harness_id"
 type = "string"
 initial = ""
 
+# The source computer's machine id this row is a live copy of (ARN-443 C). Set
+# by computer_copy_start on a child at CopyStarted; empty on a source. Together with
+# the Leased state and the copy's own machine_id this is the governed-child audit
+# trail ("a leased copy of machine <source_machine_id>, running on <machine_id>")
+# — so no separate parent_computer_id / is_copy flag is needed. The parent's
+# ENTITY id, on the rare read that wants it, is derivable by query (the Computer
+# whose machine_id == this source_machine_id); we do not precompute it (a
+# query-per-copy loopback in the wasm would be machinery for a nicety). See
+# docs/efforts/ARN-443/decisions.md C2.
+[[state]]
+name = "source_machine_id"
+type = "string"
+initial = ""
+
+# The poll deadline (host wall-clock ms) for the async copy, stamped once by
+# computer_copy_start; computer_copy_poll only reads it. A copy that never becomes
+# ready by this time is torn down (CopyExpired). Real-copy path only, never DST.
+[[state]]
+name = "copy_deadline_at_ms"
+type = "string"
+initial = ""
+
 # -- Actions -------------------------------------------------------------------
 
 [[action]]
@@ -159,28 +189,282 @@ from = ["Checkpointing"]
 to = "Ready"
 hint = "Checkpoint completed."
 
+# Sleep actually suspends the sandbox (computer_sleep → Tensorlake
+# /suspend). The 180s Ready timeout fires this. on_failure returns the
+# row to Ready so Temper never says Sleeping while the box is still up.
 [[action]]
 name = "Sleep"
 kind = "input"
 from = ["Ready"]
 to = "Sleeping"
-hint = "Put the VM to sleep."
+hint = "Suspend the VM. Tensorlake stops compute; the disk stays so Wake can resume."
 
+[[action.triggers]]
+name = "computer_sleep"
+kind = "wasm"
+module = "computer_sleep"
+on_failure = "SleepFailed"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+[[action]]
+name = "SleepFailed"
+kind = "input"
+from = ["Sleeping"]
+to = "Ready"
+hint = "Callback: suspend failed. The box is still up; stay Ready."
+
+# Wake actually resumes the sandbox (computer_wake → Tensorlake /resume).
+# Allowed from Ready as well as Sleeping so ExecStarted can fire it on a
+# warm box (idempotent 200) and reset the 180s idle clock.
 [[action]]
 name = "Wake"
 kind = "input"
-from = ["Sleeping"]
-to = "Provisioning"
-hint = "Wake the VM from sleep."
+from = ["Sleeping", "Ready"]
+to = "Ready"
+hint = "Resume the VM. ~1s if it was suspended; no-op if it is already running."
 
+[[action.triggers]]
+name = "computer_wake"
+kind = "wasm"
+module = "computer_wake"
+on_failure = "WakeFailed"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+[[action]]
+name = "WakeFailed"
+kind = "input"
+from = ["Ready"]
+to = "Sleeping"
+hint = "Callback: resume failed. Do not claim Ready while the box is still suspended."
+
+# Idle source: 180s with no Heartbeat / Wake / Copy → Sleep (real suspend).
+# A self-loop re-arms only via reset_on.
+[[state_timeout]]
+state = "Ready"
+after_seconds = 180
+on_timeout = "Sleep"
+reset_on = ["Heartbeat", "Wake", "Copy"]
+
+# Destroy → Terminating fires computer_terminate to actually tear the sandbox
+# down; the module reports TerminateComplete → Destroyed.
+#
+# PRODUCTION-SAFETY GUARD — Provisioning and CopyUnknown are NOT Destroy `from`
+# states: while a child copy is unresolved, its machine_id field still holds the
+# SOURCE's machine (carried in by the Copy spawn's copy_fields; computer_copy_start
+# only overwrites it with the copy's machine at CopyStarted). If Destroy were
+# allowed from Provisioning, computer_terminate would run on that source machine
+# id and terminate the SOURCE's sandbox — e.g. destroying a provisioning copy of
+# arni-big would kill arni-big itself. A failed START remains in CopyUnknown for
+# GET-only reconciliation; CopyFailed does not terminate. After CopyStarted,
+# machine_id is the copy's own, so Destroy / CopyExpired / the lease timeout tear
+# down the COPY. The e2e asserts a Provisioning child refuses Destroy.
 [[action]]
 name = "Destroy"
 kind = "input"
-from = ["Ready", "Sleeping", "Created"]
-to = "Destroyed"
-hint = "Permanently destroy the VM."
+from = ["Ready", "Sleeping", "Created", "Leased", "Copying"]
+to = "Terminating"
+hint = "Tear the VM down: fires computer_terminate on the sandbox (was a bare transition before — the VM was never actually torn down)."
 
-[[invariant]]
-name = "DestroyedIsFinal"
-when = ["Destroyed"]
-assert = "no_further_transitions"
+[[action.triggers]]
+name = "computer_terminate"
+kind = "wasm"
+module = "computer_terminate"
+on_failure = "TerminateComplete"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+# computer_terminate callback. Best-effort: even if the provider terminate
+# errored (on_failure also routes here), the row still reaches Destroyed — a
+# leaked sandbox is caught by the panel's stale-copy reaper. Terminating is not
+# in any `from` for a re-terminate, so it cannot loop.
+[[action]]
+name = "TerminateComplete"
+kind = "input"
+from = ["Terminating"]
+to = "Destroyed"
+hint = "Callback from computer_terminate — teardown attempted; the row is destroyed."
+
+# -- Copy lifecycle (ARN-443 C: copies as governed children) -------------------
+
+# On a SOURCE (Ready), spawn a child Computer that is a live copy. copy_fields
+# carries the source's machine_id (the copy source) + spec into the child's
+# ProvisionFromCopy params. It deliberately does NOT carry `name`: a child must
+# not inherit the source's name, which is an attach/resolution key (a copy named
+# "arni-big" would collide with the source on attach-by-name and in box_resolve).
+# computer_copy_start uses the complete child and source IDs as the name. Self-loop:
+# the source stays Ready.
+[[action]]
+name = "Copy"
+kind = "input"
+from = ["Ready"]
+to = "Ready"
+hint = "Spawn a governed child Computer that is a live copy of this one (e.g. a per-review copy of arni-big)."
+effect = ["spawn('Computer', 'ProvisionFromCopy', copy(machine_id, provider, cpu_cores, memory_gb, storage_gb, base_image, project_harness_id, description))"]
+
+# The child starts one named provider copy. The API may time out after creating
+# it, so failure preserves an uncertain state for GET-only reconciliation. The
+# machine_id remains the source until a verified destination callback lands.
+[[action]]
+name = "ProvisionFromCopy"
+kind = "input"
+from = ["Created"]
+to = "Provisioning"
+params = ["machine_id", "provider", "cpu_cores", "memory_gb", "storage_gb", "base_image", "project_harness_id", "description"]
+hint = "Child copy: record the source machine + inherited spec, then START the live copy (async)."
+
+[[action.triggers]]
+name = "computer_copy_start"
+kind = "wasm"
+module = "computer_copy_start"
+on_failure = "CopyFailed"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+# An uncertain copy never resubmits the provider POST. This action reads the
+# exact deterministic provider name and keeps CopyUnknown when evidence is missing.
+[[action]]
+name = "ReconcileCopy"
+kind = "input"
+from = ["CopyUnknown"]
+to = "CopyUnknown"
+hint = "Read the named copy after an uncertain response; never create a second copy or terminate the source."
+
+[[action.triggers]]
+name = "computer_copy_start"
+kind = "wasm"
+module = "computer_copy_start"
+on_failure = "CopyFailed"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+# computer_copy_start callback: the copy sandbox exists (still booting). machine_id
+# is now the COPY's own; source_machine_id records what it was copied from; name is
+# the child's distinct copy name; copy_deadline_at_ms bounds the readiness poll.
+[[action]]
+name = "CopyStarted"
+kind = "input"
+from = ["Provisioning", "CopyUnknown"]
+to = "Copying"
+params = ["machine_id", "sandbox_url", "source_machine_id", "name", "copy_deadline_at_ms"]
+constraints = [
+  { kind = "param_nonempty", param = "machine_id" },
+  { kind = "param_nonempty", param = "source_machine_id" },
+  { kind = "param_equals_field", param = "source_machine_id", field = "machine_id" },
+  { kind = "param_not_equals_field", param = "machine_id", field = "machine_id" },
+]
+hint = "Callback from computer_copy_start — the copy sandbox was created; poll it to readiness from Copying."
+
+# The copy poll loop: while Copying, fire CopyPoll every 10s until the copy is
+# ready (CopyComplete -> Leased) or its deadline passes (CopyExpired). Self-loop,
+# so it re-arms ONLY via reset_on (kernel state_timeouts.rs).
+[[state_timeout]]
+state = "Copying"
+after_seconds = 10
+on_timeout = "CopyPoll"
+reset_on = ["CopyPoll"]
+
+[[action]]
+name = "CopyPoll"
+kind = "input"
+from = ["Copying"]
+to = "Copying"
+hint = "Poll the copy once (computer_copy_poll). Self-loop in reset_on so each poll re-arms the next tick; a not-ready poll reports an empty callback (no transition)."
+
+[[action.triggers]]
+name = "computer_copy_poll"
+kind = "wasm"
+module = "computer_copy_poll"
+on_failure = "CopyExpired"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+# computer_copy_poll callback: the copy is ready and leased. Its machine_id /
+# sandbox_url / source_machine_id / name were all set at CopyStarted.
+[[action]]
+name = "CopyComplete"
+kind = "input"
+from = ["Copying"]
+to = "Leased"
+hint = "Callback from computer_copy_poll — the copy is ready; the child is live and leased."
+
+# A failed/unknown provider response does not prove that no copy was created.
+# Keep the source untouched and require explicit read-only reconciliation.
+[[action]]
+name = "CopyFailed"
+kind = "input"
+from = ["Provisioning", "CopyUnknown"]
+to = "CopyUnknown"
+params = ["error_message"]
+hint = "The copy result is uncertain. Reconcile the exact named destination; do not resubmit Copy or terminate the stored source machine."
+
+# CopyExpired: the copy started but never became ready by its deadline, OR the
+# poll module failed (on_failure). machine_id is the COPY's here, so tear the
+# leaked copy sandbox down through Terminating.
+[[action]]
+name = "CopyExpired"
+kind = "input"
+from = ["Copying"]
+to = "Terminating"
+hint = "The copy never became ready — terminate the leaked copy sandbox (machine_id is the copy's, not the source's)."
+
+[[action.triggers]]
+name = "computer_terminate"
+kind = "wasm"
+module = "computer_terminate"
+on_failure = "TerminateComplete"
+
+[action.triggers.config]
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+modal_token_id = "{secret:modal_token_id}"
+modal_token_secret = "{secret:modal_token_secret}"
+
+# Keep-alive. On a leased copy this renews the hour lease. On a Ready
+# source this resets the 180s idle Sleep clock. No WASM — the clock is
+# the transition.
+[[action]]
+name = "Heartbeat"
+kind = "input"
+from = ["Leased", "Ready"]
+hint = "Reset the idle / lease clock. Leased stays Leased; Ready stays Ready."
+
+# Orphan reaping: a leased copy not renewed within the lease is auto-Destroyed
+# (which fires computer_terminate). Only Leased has this timeout, so sources
+# (Ready) are never reaped.
+[[state_timeout]]
+state = "Leased"
+after_seconds = 3600
+on_timeout = "Destroy"
+# Heartbeat (a Leased self-loop) renews the lease. A self-loop re-arms a
+# state_timeout ONLY when the action is in reset_on (kernel state_timeouts.rs:
+# is_reset = !state_changed && reset_on.contains(action)); without this line
+# Heartbeat would be a silent no-op and the lease would fire 3600s after the
+# copy went live regardless of renewals. With it, each Heartbeat pushes the
+# reap out another hour; a copy whose owner stops heart-beating is reaped.
+reset_on = ["Heartbeat"]
+
+# Safety: if computer_terminate never reports (host-level failure), force the row
+# to Destroyed rather than hang in Terminating. TerminateComplete is idempotent.
+[[state_timeout]]
+state = "Terminating"
+after_seconds = 300
+on_timeout = "TerminateComplete"

@@ -1,0 +1,77 @@
+# LatencyDiag — learned diagnostic tool (usecase step 6).
+# One constrained action: run a canned, read-only Datadog p95 latency query
+# ON the computer (credentials never leave it). RunScan takes no parameters —
+# there is nothing to inject at dispatch time, and the command/computer_id are
+# spec-pinned entity fields that caller params cannot override (computer_exec
+# reads entity fields first).
+#
+# TECH DEBT: the `command` below is a hardcoded Datadog p95 query for one
+# service (deep-sci-fi-backend). It was the prototype's proof that a learned,
+# constrained tool can be pinned to a computer; it is NOT a general diagnostic.
+# A real LatencyDiag would parameterize the service/metric (as pinned fields set
+# at create, still un-overridable at RunScan). Left as-is here deliberately.
+
+[automaton]
+name = "LatencyDiag"
+states = ["Idle", "Scanning", "Ready", "Failed"]
+initial = "Idle"
+allow_indefinite_states = ["Idle", "Scanning"]
+
+# NOTE: computer_id and command are NOT state variables. They are pinned in the
+# trigger config below (spec-defined, trusted), so a RunScan request can never
+# influence them. Temper merges arbitrary request-body keys into entity fields,
+# so a caller-writable command/computer_id field would be an injection surface;
+# putting them in the trigger config (which the request cannot touch) closes it.
+# computer_exec reads config first for these keys.
+
+[[state]]
+name = "exit_code"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stdout_tail"
+type = "string"
+initial = ""
+
+[[state]]
+name = "stderr_tail"
+type = "string"
+initial = ""
+
+[[action]]
+name = "RunScan"
+kind = "input"
+from = ["Idle", "Ready", "Failed"]
+to = "Scanning"
+hint = "Run the canned p95 latency diagnostic on the computer. No parameters."
+
+[[action.triggers]]
+name = "computer_exec"
+kind = "wasm"
+module = "computer_exec"
+on_failure = "RunFailed"
+
+[action.triggers.config]
+temper_api_url = "{secret:temper_api_url}"
+tensorlake_api_key = "{secret:tensorlake_api_key}"
+# Pinned target + command (trusted; not caller-writable). computer_exec reads
+# these from config first, so a RunScan request cannot override them.
+computer_id = "dsf"
+command = "sh -c '. ~/.config/pup/dd.env 2>/dev/null; NOW=$(date +%s); curl -s \"https://api.datadoghq.com/api/v1/query?from=$((NOW-3600))&to=$NOW&query=p95:trace.fastapi.request%7Bservice:deep-sci-fi-backend,env:production%7D\" -H \"DD-API-KEY: $DD_API_KEY\" -H \"DD-APPLICATION-KEY: $DD_APP_KEY\" | head -c 2000'"
+
+[[action]]
+name = "RunSucceeded"
+kind = "input"
+from = ["Scanning"]
+to = "Ready"
+params = ["exit_code", "stdout_tail", "stderr_tail"]
+hint = "Callback from computer_exec."
+
+[[action]]
+name = "RunFailed"
+kind = "input"
+from = ["Scanning"]
+to = "Failed"
+params = ["error", "exit_code", "stdout_tail", "stderr_tail"]
+hint = "Callback from computer_exec. The result fields are cleared (sent empty) so a failed re-scan never leaves a previous scan's output on the row."

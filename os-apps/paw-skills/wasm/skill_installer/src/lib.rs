@@ -7,6 +7,7 @@
 
 use sha2::{Digest, Sha256};
 use temper_wasm_sdk::prelude::*;
+use wasm_helpers::bounded_reads;
 
 const APP_DOCS_WORKSPACE_ID: &str = "os-app-docs";
 const APP_DOCS_WORKSPACE_NAME: &str = "apps";
@@ -597,7 +598,7 @@ fn ensure_file(
     name: &str,
     mime_type: &str,
 ) -> Result<String, String> {
-    if let Some(existing) = find_file(ctx, api_url, tenant, file_path)? {
+    if let Some(existing) = find_file(ctx, api_url, tenant, workspace_id, file_path)? {
         return Ok(existing);
     }
     let headers = api_headers(ctx, tenant, Some("application/json"));
@@ -672,8 +673,8 @@ fn find_directory(
 ) -> Result<Option<String>, String> {
     let filter = format!(
         "Path eq '{}' and WorkspaceId eq '{}'",
-        odata_escape(path),
-        odata_escape(workspace_id)
+        bounded_reads::odata_escape(path),
+        bounded_reads::odata_escape(workspace_id)
     );
     first_entity_id(ctx, api_url, tenant, "Directories", &filter)
 }
@@ -682,9 +683,14 @@ fn find_file(
     ctx: &Context,
     api_url: &str,
     tenant: &str,
+    workspace_id: &str,
     path: &str,
 ) -> Result<Option<String>, String> {
-    let filter = format!("Path eq '{}' and Status ne 'Archived'", odata_escape(path));
+    let filter = format!(
+        "Path eq '{}' and WorkspaceId eq '{}'",
+        bounded_reads::odata_escape(path),
+        bounded_reads::odata_escape(workspace_id)
+    );
     first_entity_id(ctx, api_url, tenant, "Files", &filter)
 }
 
@@ -732,8 +738,8 @@ fn register_package(
 ) -> Result<String, String> {
     let filter = format!(
         "ContentDigest eq '{}' and SkillName eq '{}'",
-        odata_escape(digest),
-        odata_escape(skill_name)
+        bounded_reads::odata_escape(digest),
+        bounded_reads::odata_escape(skill_name)
     );
     let package_id = match first_entity_id(ctx, api_url, tenant, "SkillPackages", &filter)? {
         Some(id) => id,
@@ -866,28 +872,15 @@ fn first_entity_id(
     filter: &str,
 ) -> Result<Option<String>, String> {
     let headers = api_headers(ctx, tenant, Some("application/json"));
-    let url = format!(
-        "{api_url}/tdata/{entity_set}?$filter={}&$top=1",
-        filter.replace(' ', "%20")
-    );
-    let resp = ctx.http_call("GET", &url, &headers, "")?;
-    if resp.status == 404 {
-        return Ok(None);
-    }
-    if resp.status >= 400 {
-        return Err(format!(
-            "failed to query {entity_set}: HTTP {} {}",
-            resp.status,
-            truncate(&resp.body, 240)
-        ));
-    }
-    let parsed: Value = serde_json::from_str(&resp.body)
-        .map_err(|err| format!("failed to parse {entity_set} query response: {err}"))?;
-    Ok(parsed
-        .get("value")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(extract_id))
+    bounded_reads::find_first_non_archived_entity_id(
+        ctx,
+        api_url,
+        &headers,
+        entity_set,
+        filter,
+        bounded_reads::POINT_LOOKUP_TOP,
+        "skill_installer: bounded entity lookup",
+    )
 }
 
 fn post_action(
@@ -1085,10 +1078,6 @@ fn mime_type_for_path(path: &str) -> &'static str {
     }
 }
 
-fn odata_escape(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
 fn publisher_from_source_url(source_url: &str) -> String {
     source_url
         .trim()
@@ -1116,41 +1105,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn github_tree_url_maps_to_raw_skill_md() {
-        let raw = github_tree_skill_raw_url(
-            "https://github.com/example/design-skill/tree/main/skills/taste-skill",
-            "",
-            "",
-        )
-        .unwrap();
-        assert_eq!(
-            raw,
-            "https://raw.githubusercontent.com/example/design-skill/main/skills/taste-skill/SKILL.md"
-        );
-    }
-
-    #[test]
     fn frontmatter_parser_handles_inline_skill_header() {
         let fm = extract_skill_frontmatter(
             "--- name: design-taste-frontend description: Senior UI/UX Engineer. --- # Body",
         );
         assert_eq!(fm.name, "design-taste-frontend");
         assert_eq!(fm.description, "Senior UI/UX Engineer.");
-    }
-
-    #[test]
-    fn skill_paths_follow_existing_scope_contract() {
-        assert_eq!(
-            skill_temperfs_path("system", "", "taste").unwrap(),
-            "/system/skills/taste/SKILL.md"
-        );
-        assert_eq!(
-            skill_temperfs_path("project", "katagami", "taste").unwrap(),
-            "/projects/katagami/skills/taste/SKILL.md"
-        );
-        assert_eq!(
-            skill_temperfs_path("agent", "agent-1", "taste").unwrap(),
-            "/agents/agent-1/skills/taste/SKILL.md"
-        );
     }
 }

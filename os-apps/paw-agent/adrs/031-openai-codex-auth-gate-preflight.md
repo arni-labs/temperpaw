@@ -1,6 +1,6 @@
 # ADR-031: OpenAI Codex Auth Gate Status Preflight
 
-- Status: Accepted
+- Status: Accepted; its handling of human-login states is amended by ADR-038
 - Date: 2026-06-08
 
 ## Context

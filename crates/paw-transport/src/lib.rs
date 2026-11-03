@@ -76,6 +76,32 @@ fn current_traceparent_header() -> Option<String> {
     ))
 }
 
+fn encode_odata_filter(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('&', "%26")
+        .replace('=', "%3D")
+        .replace('?', "%3F")
+        .replace('#', "%23")
+        .replace('\'', "%27")
+}
+
+pub(crate) fn entity_field_str<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+        .or_else(|| {
+            value.get("fields").and_then(|fields| {
+                keys.iter()
+                    .find_map(|key| fields.get(*key).and_then(serde_json::Value::as_str))
+            })
+        })
+}
+
+pub(crate) fn entity_is_archived(value: &serde_json::Value) -> bool {
+    entity_field_str(value, &["Status", "status"]) == Some("Archived")
+}
+
 pub(crate) fn apply_current_trace_context(body: &mut serde_json::Value) {
     let Some(object) = body.as_object_mut() else {
         return;
@@ -257,6 +283,26 @@ impl PawApiClient {
             .map_err(|e| format!("parse response: {e}"))
     }
 
+    /// GET arbitrary bytes with tenant/auth headers.
+    pub async fn raw_get_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+        let resp = self
+            .build_request(reqwest::Method::GET, url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url} failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("GET {url} returned {status}: {body}"));
+        }
+
+        resp.bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("read response bytes: {e}"))
+    }
+
     /// Dispatch a bound action on an entity via OData.
     ///
     /// `action_path` should be the full OData action path including namespace,
@@ -316,15 +362,26 @@ impl PawApiClient {
             .map_err(|e| format!("parse create response: {e}"))
     }
 
-    /// Query entities via OData GET with $filter.
+    /// Query entities via OData GET with a bounded $filter.
     pub async fn query_entities(
         &self,
         entity_set: &str,
         filter: &str,
+        top: usize,
     ) -> Result<Vec<serde_json::Value>, String> {
+        if top == 0 {
+            return Err(format!("query {entity_set} requires $top > 0"));
+        }
+        if filter.contains("Status ne 'Archived'") {
+            return Err(format!(
+                "query {entity_set} must not filter with Status ne 'Archived'; query bounded candidates and filter archived rows client-side"
+            ));
+        }
         let url = format!(
-            "{}/tdata/{}?$filter={}",
-            self.config.base_url, entity_set, filter
+            "{}/tdata/{}?$filter={}&$top={top}",
+            self.config.base_url,
+            entity_set,
+            encode_odata_filter(filter)
         );
         let resp = self
             .build_request(reqwest::Method::GET, &url)
@@ -348,6 +405,19 @@ impl PawApiClient {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default())
+    }
+
+    pub async fn query_first_non_archived_entity(
+        &self,
+        entity_set: &str,
+        filter: &str,
+        top: usize,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(self
+            .query_entities(entity_set, filter, top)
+            .await?
+            .into_iter()
+            .find(|entity| !entity_is_archived(entity)))
     }
 
     /// Get a single entity by ID.
@@ -420,7 +490,7 @@ impl PawApiClient {
 #[cfg(test)]
 mod tests {
     use axum::extract::State;
-    use axum::http::{HeaderMap, StatusCode};
+    use axum::http::{HeaderMap, StatusCode, Uri};
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use opentelemetry::trace::{TraceContextExt, TracerProvider as _};
@@ -431,7 +501,7 @@ mod tests {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
     use tracing_subscriber::prelude::*;
 
-    use super::{ApprovalScope, PawApiClient, PawApiConfig, approval_body_for_scope};
+    use super::{PawApiClient, PawApiConfig};
 
     #[derive(Clone, Default)]
     struct HeaderProbe {
@@ -440,6 +510,11 @@ mod tests {
         last_tenant: Arc<std::sync::Mutex<Option<String>>>,
         last_auth: Arc<std::sync::Mutex<Option<String>>>,
         last_traceparent: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct QueryProbe {
+        last_uri: Arc<std::sync::Mutex<Option<String>>>,
     }
 
     async fn spawn_test_server(app: Router) -> String {
@@ -603,13 +678,63 @@ mod tests {
         });
 
         let error = client
-            .query_entities("Channels", "ChannelType eq 'discord'")
+            .query_entities("Channels", "ChannelType eq 'discord'", 20)
             .await
             .expect_err("401 responses should surface as real bootstrap errors");
 
         assert!(
             error.contains("query Channels returned 401"),
             "expected status-bearing error, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paw_api_query_entities_requires_bounded_encoded_filters() {
+        let probe = QueryProbe::default();
+        let app = Router::new()
+            .route(
+                "/tdata/Channels",
+                get(|State(probe): State<QueryProbe>, uri: Uri| async move {
+                    *probe.last_uri.lock().unwrap() = Some(uri.to_string());
+                    Json(json!({
+                        "value": [
+                            {"Id": "archived", "Status": "Archived"},
+                            {"Id": "active", "Status": "Connected"}
+                        ]
+                    }))
+                }),
+            )
+            .with_state(probe.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = PawApiClient::new(PawApiConfig {
+            base_url,
+            tenant: "default".to_string(),
+            api_key: None,
+        });
+
+        let found = client
+            .query_first_non_archived_entity(
+                "Channels",
+                "ChannelType eq 'cli' and ChannelId eq 'cli:local'",
+                20,
+            )
+            .await
+            .expect("bounded query should succeed")
+            .expect("non-archived channel should be selected");
+
+        assert_eq!(
+            found.get("Id").and_then(|value| value.as_str()),
+            Some("active")
+        );
+        let uri = probe
+            .last_uri
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("query URI should be captured");
+        assert_eq!(
+            uri,
+            "/tdata/Channels?$filter=ChannelType%20eq%20%27cli%27%20and%20ChannelId%20eq%20%27cli:local%27&$top=20"
         );
     }
 
@@ -649,58 +774,6 @@ mod tests {
         assert!(
             error.contains("missing manage_policies"),
             "expected response body in error, got: {error}"
-        );
-    }
-
-    #[test]
-    fn approval_body_for_scope_includes_required_cedar_dimensions() {
-        let decision = json!({
-            "id": "PD-123",
-            "session_id": "ss-123",
-            "agent_type": "swe",
-        });
-
-        let always = approval_body_for_scope(
-            ApprovalScope::AlwaysForAgent,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("always approval body");
-        assert_eq!(always["scope"]["principal"], "this_agent");
-        assert_eq!(always["scope"]["action"], "this_action");
-        assert_eq!(always["scope"]["resource"], "any_of_type");
-        assert_eq!(always["scope"]["duration"], "always");
-        assert_eq!(always["scope"]["agent_type_value"], "swe");
-
-        let session = approval_body_for_scope(
-            ApprovalScope::Session,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("session approval body");
-        assert_eq!(session["scope"]["resource"], "any_of_type");
-        assert_eq!(session["scope"]["duration"], "session");
-        assert_eq!(session["scope"]["session_id"], "ss-123");
-
-        let once = approval_body_for_scope(
-            ApprovalScope::Once,
-            Some(&decision),
-            "test:user".to_string(),
-        )
-        .expect("once approval body");
-        assert_eq!(once["scope"]["resource"], "this_resource");
-        assert_eq!(once["scope"]["duration"], "session");
-        assert_eq!(once["scope"]["session_id"], "ss-123");
-    }
-
-    #[test]
-    fn session_limited_approval_body_requires_decision_session_id() {
-        let error = approval_body_for_scope(ApprovalScope::Session, None, "test:user".to_string())
-            .expect_err("session approval without decision session id should fail");
-
-        assert!(
-            error.contains("decision.session_id"),
-            "expected actionable session id error, got: {error}"
         );
     }
 

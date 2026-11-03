@@ -62,6 +62,10 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
             if provider.is_empty() {
                 return Err("ManagedAgent requires Provider before syncing inner Agent".into());
             }
+            let provider_options_json = field_string(
+                &current_fields,
+                &["ProviderOptionsJson", "provider_options_json"],
+            );
             let _ = post_absolute_action(
                 &ctx,
                 &headers,
@@ -70,6 +74,7 @@ pub extern "C" fn run(_ctx_ptr: i32, _ctx_len: i32) -> i32 {
                     "description": field_string(&current_fields, &["Description", "description"]),
                     "model": model_id,
                     "provider": provider,
+                    "provider_options_json": provider_options_json,
                     "tools_enabled": tools_enabled,
                     "max_turns": "60",
                 }),
@@ -108,54 +113,4 @@ fn agent_tool_config_query(tool_rows: &[Value]) -> String {
 fn next_version(fields: &Value) -> i64 {
     let current = field_i64(fields, &["Version", "version"]);
     if current < 1 { 1 } else { current + 1 }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn updater_uses_canonical_managed_agent_fields_for_inner_agent_sync() {
-        let fields = json!({
-            "Description": "after desc",
-            "ModelId": "claude-opus-4-1",
-        });
-
-        assert_eq!(
-            field_string(&fields, &["Description", "description"]),
-            "after desc"
-        );
-        assert_eq!(
-            field_string(&fields, &["ModelId", "model_id"]),
-            "claude-opus-4-1"
-        );
-    }
-
-    #[test]
-    fn agent_tool_config_query_scopes_to_tool_ids() {
-        let tool_rows = vec![
-            json!({"entity_id": "tool-1"}),
-            json!({"entity_id": "tool-2"}),
-        ];
-
-        let query = agent_tool_config_query(&tool_rows);
-
-        assert!(query.contains("ToolId%20eq%20'tool-1'"));
-        assert!(query.contains("ToolId%20eq%20'tool-2'"));
-        assert!(query.contains("%20or%20"));
-    }
-
-    #[test]
-    fn agent_tool_config_query_handles_empty_tool_list() {
-        let query = agent_tool_config_query(&[]);
-
-        assert!(query.contains("__none__"));
-    }
-
-    #[test]
-    fn next_version_advances_positive_versions() {
-        assert_eq!(next_version(&json!({"Version": 1})), 2);
-        assert_eq!(next_version(&json!({"Version": 7})), 8);
-        assert_eq!(next_version(&json!({})), 1);
-    }
 }

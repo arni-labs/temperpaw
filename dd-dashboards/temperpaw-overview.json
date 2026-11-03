@@ -557,11 +557,11 @@
           },
           {
             "definition": {
-              "title": "Turso Query Duration",
+              "title": "Turso Operation Duration (ms)",
               "type": "timeseries",
               "requests": [
                 {
-                  "q": "avg:temper_turso_query_duration{service:temperpaw} by {operation}.rollup(avg, 60)",
+                  "q": "avg:temper_turso_operation_duration{service:temperpaw} by {operation}.rollup(avg, 60)",
                   "display_type": "line"
                 }
               ]

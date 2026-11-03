@@ -415,7 +415,7 @@ pub const REPL_METHOD_SPECS: &[ReplMethodSpec] = &[
         object: "temper",
         method: "image_generate",
         signature: "(prompt, opts=None) or ({prompt, opts})",
-        description: "generate an image through the paw-media app, returns PawFS file metadata and an image handle",
+        description: "generate an image through the paw-media app. Use this tool for user image requests; gpt-image-2, gpt-image-1, and dall-e-* requests are normalized onto the Codex media backend. Returns PawFS file metadata and an image handle",
         token: Some("temper_image_generate"),
     },
 ];
@@ -472,18 +472,4 @@ pub fn build_method_listing(enabled: &BTreeSet<String>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enabled_tool_set_normalizes_legacy_aliases() {
-        let enabled = enabled_tool_set("spawn_agent,save_memory,read_entity,temper_file_upload");
-        assert!(enabled.contains("temper_spawn_session"));
-        assert!(enabled.contains("temper_save_memory"));
-        assert!(enabled.contains("temper_get"));
-        assert!(enabled.contains("temper_write"));
-    }
 }

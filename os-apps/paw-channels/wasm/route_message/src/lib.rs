@@ -1,8 +1,9 @@
 use session_tree_lib::SessionTree;
 use temper_wasm_sdk::prelude::*;
 use wasm_helpers::{
-    create_content_file_ref, create_session_entry, is_session_entries_ref, runtime_headers,
-    runtime_headers_for_workspace, session_id_from_entries_ref, timestamp_millis_string,
+    bounded_reads, create_content_file_ref, create_initial_session_entries, create_session_entry,
+    is_session_entries_ref, runtime_headers, runtime_headers_for_workspace,
+    session_id_from_entries_ref, timestamp_millis_string,
 };
 
 const DEFAULT_TOOLS_ENABLED: &str = "temper_create,temper_get,temper_list,temper_action,temper_patch,temper_submit_specs,temper_show_spec,temper_specs,temper_upload_wasm,temper_get_trajectories,temper_get_insights,temper_get_decisions,temper_poll_decision,temper_approve_decision,temper_deny_decision,temper_submit_policy,temper_list_policies,temper_get_policy,temper_update_policy,temper_delete_policy,temper_search_apps,temper_install_app,temper_publish_app,temper_update_app,temper_list_apps,temper_spawn_session,temper_list_sessions,temper_abort_session,temper_steer_session,temper_save_memory,temper_recall_memory,temper_write,temper_read,temper_run_coding_agent,temper_get_secret,temper_datadog_query,temper_railway,temper_vercel,temper_web_search,temper_web_fetch,temper_image_generate,read,write,edit,bash";
@@ -53,6 +54,17 @@ extern "C" fn host_http_call(
     _headers_len: i32,
     _body_ptr: i32,
     _body_len: i32,
+    _result_buf_ptr: i32,
+    _result_buf_len: i32,
+) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+extern "C" fn host_http_call_batch(
+    _requests_ptr: i32,
+    _requests_len: i32,
     _result_buf_ptr: i32,
     _result_buf_len: i32,
 ) -> i32 {
@@ -603,6 +615,19 @@ fn list_entities(ctx: &Context, url: &str, tenant: &str) -> Result<Vec<Value>, S
         .unwrap_or_default())
 }
 
+fn escape_odata_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn active_session_query(channel_id: &str, thread_id: &str, author_id: &str) -> String {
+    let channel_id = escape_odata_literal(channel_id);
+    let thread_id = escape_odata_literal(thread_id);
+    let author_id = escape_odata_literal(author_id);
+    format!(
+        "$filter=Status eq 'Active' and channel_id eq '{channel_id}' and thread_id eq '{thread_id}' and author_id eq '{author_id}'&$top=1"
+    )
+}
+
 fn find_active_session(
     ctx: &Context,
     temper_api_url: &str,
@@ -611,13 +636,10 @@ fn find_active_session(
     thread_id: &str,
     author_id: &str,
 ) -> Result<Option<Value>, String> {
-    let filter = format!(
-        "$filter=Status eq 'Active' and channel_id eq '{}' and thread_id eq '{}' and author_id eq '{}'",
-        channel_id, thread_id, author_id
-    );
+    let query = active_session_query(channel_id, thread_id, author_id);
     let sessions = list_entities(
         ctx,
-        &format!("{temper_api_url}/tdata/ChannelSessions?{filter}"),
+        &format!("{temper_api_url}/tdata/ChannelSessions?{query}"),
         tenant,
     )?;
     Ok(sessions.into_iter().next())
@@ -663,32 +685,25 @@ fn find_route(
     tenant: &str,
     channel_id: &str,
 ) -> Result<Option<Value>, String> {
-    let routes = list_entities(ctx, &format!("{temper_api_url}/tdata/AgentRoutes"), tenant)?;
-    let mut best_route: Option<(i32, Value)> = None;
-    for route in routes {
-        if nested_str_field(&route, &["Status", "status"]) != Some("Active") {
-            continue;
-        }
-        let route_channel_id = nested_str_field(&route, &["ChannelId", "channel_id"]).unwrap_or("");
-        if !route_channel_id.is_empty() && route_channel_id != channel_id {
-            continue;
-        }
-
-        // Prefer channel-specific routes over the global fallback route.
-        let score = if route_channel_id == channel_id {
-            10
-        } else {
-            0
-        };
-        if best_route
-            .as_ref()
-            .map(|(best_score, _)| score > *best_score)
-            .unwrap_or(true)
-        {
-            best_route = Some((score, route));
+    for query in agent_route_queries(channel_id) {
+        let routes = list_entities(
+            ctx,
+            &format!("{temper_api_url}/tdata/AgentRoutes?{query}"),
+            tenant,
+        )?;
+        if let Some(route) = routes.into_iter().next() {
+            return Ok(Some(route));
         }
     }
-    Ok(best_route.map(|(_, route)| route))
+    Ok(None)
+}
+
+fn agent_route_queries(channel_id: &str) -> Vec<String> {
+    let channel_id = escape_odata_literal(channel_id);
+    vec![
+        format!("$filter=Status eq 'Active' and channel_id eq '{channel_id}'&$top=1"),
+        "$filter=Status eq 'Active' and channel_id eq ''&$top=1".to_string(),
+    ]
 }
 
 /// Fetch the persistent Agent entity and extract its configuration.
@@ -723,8 +738,15 @@ fn create_session_for_agent(
     let config: Value = serde_json::from_str(route_config).unwrap_or_else(|_| json!({}));
 
     // If route points to a persistent Agent, fetch its config
-    let (agent_id, agent_soul_id, agent_model, agent_provider, agent_tools, agent_max_turns) =
-        if !route_agent_id.is_empty() {
+    let (
+        agent_id,
+        agent_soul_id,
+        agent_model,
+        agent_provider,
+        agent_provider_options_json,
+        agent_tools,
+        agent_max_turns,
+    ) = if !route_agent_id.is_empty() {
             let agent = fetch_agent_config(ctx, temper_api_url, tenant, route_agent_id)?;
             let soul_id = nested_str_field(&agent, &["SoulId", "soul_id"])
                 .unwrap_or("")
@@ -744,11 +766,19 @@ fn create_session_for_agent(
             let max_turns = nested_str_field(&agent, &["MaxTurns", "max_turns"])
                 .unwrap_or("200")
                 .to_string();
+            let provider_options_json = config
+                .get("provider_options_json")
+                .or_else(|| config.get("providerOptionsJson"))
+                .and_then(Value::as_str)
+                .or_else(|| nested_str_field(&agent, &["ProviderOptionsJson", "provider_options_json"]))
+                .unwrap_or("")
+                .to_string();
             (
                 route_agent_id.to_string(),
                 soul_id,
                 model,
                 provider,
+                provider_options_json,
                 tools,
                 max_turns,
             )
@@ -781,7 +811,21 @@ fn create_session_for_agent(
                 .and_then(Value::as_str)
                 .unwrap_or("200")
                 .to_string();
-            (String::new(), soul_id, model, provider, tools, max_turns)
+            let provider_options_json = config
+                .get("provider_options_json")
+                .or_else(|| config.get("providerOptionsJson"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            (
+                String::new(),
+                soul_id,
+                model,
+                provider,
+                provider_options_json,
+                tools,
+                max_turns,
+            )
         };
 
     // Create blank Session entity
@@ -799,6 +843,7 @@ fn create_session_for_agent(
         "user_message": user_message,
         "model": agent_model,
         "provider": agent_provider,
+        "provider_options_json": agent_provider_options_json,
         "tools_enabled": tools_enabled,
         "max_turns": agent_max_turns,
         "workdir": config.get("workdir").and_then(Value::as_str).unwrap_or(DEFAULT_WORKDIR),
@@ -951,7 +996,14 @@ fn continue_with_new_session(
     let new_session_id = create_blank_session(ctx, temper_api_url, tenant)?;
 
     // Fetch Agent entity to get soul_id and config (if we have a persistent Agent)
-    let (soul_id, agent_model, agent_provider, agent_tools, agent_max_turns) =
+    let (
+        soul_id,
+        agent_model,
+        agent_provider,
+        agent_provider_options_json,
+        agent_tools,
+        agent_max_turns,
+    ) =
         if !agent_entity_id.is_empty() {
             match fetch_agent_config(ctx, temper_api_url, tenant, agent_entity_id) {
                 Ok(agent) => {
@@ -964,15 +1016,20 @@ fn continue_with_new_session(
                     let provider = nested_str_field(&agent, &["Provider", "provider"])
                         .unwrap_or("")
                         .to_string();
+                    let provider_options_json =
+                        nested_str_field(&agent, &["ProviderOptionsJson", "provider_options_json"])
+                            .unwrap_or("")
+                            .to_string();
                     let tools = nested_str_field(&agent, &["ToolsEnabled", "tools_enabled"])
                         .unwrap_or("")
                         .to_string();
                     let max_turns = nested_str_field(&agent, &["MaxTurns", "max_turns"])
                         .unwrap_or("")
                         .to_string();
-                    (sid, model, provider, tools, max_turns)
+                    (sid, model, provider, provider_options_json, tools, max_turns)
                 }
                 Err(_) => (
+                    String::new(),
                     String::new(),
                     String::new(),
                     String::new(),
@@ -982,6 +1039,7 @@ fn continue_with_new_session(
             }
         } else {
             (
+                String::new(),
                 String::new(),
                 String::new(),
                 String::new(),
@@ -1009,6 +1067,11 @@ fn continue_with_new_session(
         str_field(&fields, &["provider", "Provider"])
             .filter(|value| !value.trim().is_empty())
             .ok_or("route_message requires a configured provider from AgentRoute, Agent, or prior Session")?
+    };
+    let effective_provider_options_json = if !agent_provider_options_json.is_empty() {
+        agent_provider_options_json.as_str()
+    } else {
+        str_field(&fields, &["provider_options_json", "ProviderOptionsJson"]).unwrap_or("")
     };
     let effective_tools = if !agent_tools.is_empty() {
         &agent_tools
@@ -1043,6 +1106,7 @@ fn continue_with_new_session(
         effective_soul_id,
         effective_model,
         effective_provider,
+        effective_provider_options_json,
         effective_tools,
         effective_max_turns,
         &workspace_id,
@@ -1113,6 +1177,7 @@ fn configure_session_from_prior(
     soul_id: &str,
     model: &str,
     provider: &str,
+    provider_options_json: &str,
     tools_enabled: &str,
     max_turns: &str,
     workspace_id: &str,
@@ -1147,6 +1212,7 @@ fn configure_session_from_prior(
         "user_message": user_message,
         "model": model,
         "provider": provider,
+        "provider_options_json": provider_options_json,
         "tools_enabled": effective_tools,
         "max_turns": max_turns,
         "workdir": str_field(fields, &["workdir", "Workdir"]).unwrap_or(DEFAULT_WORKDIR),
@@ -1246,6 +1312,7 @@ fn should_start_fresh_after_session_append_failure(error: &str) -> bool {
         || error.contains("VerificationRequired")
         || error.contains("SessionEntry creation failed")
         || error.contains("session entries continuation missing parent leaf")
+        || error.contains("session_leaf_id is missing; starting clean continuation")
 }
 
 fn should_start_clean_continuation_from_prior(fields: &Value) -> bool {
@@ -1402,7 +1469,18 @@ fn append_user_message_to_session_entries(
 ) -> Result<String, String> {
     let session_id = session_id_from_entries_ref(session_file_id)
         .ok_or("session entries reference missing Session id")?;
-    let latest = latest_session_entry(ctx, temper_api_url, tenant, session_id, session_leaf_id)?;
+    let latest = match unwritten_first_turn(fields, session_id, session_leaf_id) {
+        Some(first_message) => Some(write_unwritten_first_turn(
+            ctx,
+            temper_api_url,
+            tenant,
+            fields,
+            session_id,
+            session_leaf_id,
+            first_message,
+        )?),
+        None => latest_session_entry(ctx, temper_api_url, tenant, session_id, session_leaf_id)?,
+    };
     // Trust the database, not the entity field. The Session.session_leaf_id
     // field can drift past the actual db tip when an upstream writer
     // advances the field but its SessionEntry POST didn't durably land
@@ -1455,6 +1533,64 @@ fn append_user_message_to_session_entries(
     Ok(created.entry_id)
 }
 
+/// The prior Session's first message when its first turn never wrote its
+/// SessionEntries, else None. A first turn writes them when its provider
+/// response is applied, so one that failed before then (on an expired
+/// provider login, say) leaves `session_entries_materialized` "false", its
+/// leaf at the virtual `u-<session>-0` and no entries. Continuing from that
+/// leaf would find no parent and start the thread over.
+fn unwritten_first_turn<'a>(
+    fields: &'a Value,
+    session_id: &str,
+    session_leaf_id: &str,
+) -> Option<&'a str> {
+    let unwritten = str_field(
+        fields,
+        &["session_entries_materialized", "SessionEntriesMaterialized"],
+    )
+    .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"));
+    if !unwritten || session_leaf_id != format!("u-{session_id}-0") {
+        return None;
+    }
+    str_field(fields, &["user_message", "UserMessage"]).filter(|message| !message.trim().is_empty())
+}
+
+/// Writes the header and first user message a continuation builds on, unless
+/// they landed after all. Returns the user entry's id and sequence.
+fn write_unwritten_first_turn(
+    ctx: &Context,
+    temper_api_url: &str,
+    tenant: &str,
+    fields: &Value,
+    session_id: &str,
+    session_leaf_id: &str,
+    first_message: &str,
+) -> Result<(String, i64), String> {
+    let leaf_url = session_entry_lookup_url(temper_api_url, session_id, session_leaf_id);
+    if let Some(written) = list_entities(ctx, &leaf_url, tenant)?
+        .first()
+        .and_then(session_entry_identity)
+    {
+        return Ok(written);
+    }
+    let (_header, user) = create_initial_session_entries(
+        ctx,
+        temper_api_url,
+        tenant,
+        fields,
+        session_id,
+        first_message,
+    )?;
+    ctx.log(
+        "info",
+        &format!(
+            "append_user_message: wrote the unwritten first turn of SessionId={session_id} before continuing it"
+        ),
+    );
+    // create_initial_session_entries writes the user entry at sequence 1.
+    Ok((user.entry_id, 1))
+}
+
 fn latest_session_entry(
     ctx: &Context,
     temper_api_url: &str,
@@ -1462,26 +1598,19 @@ fn latest_session_entry(
     session_id: &str,
     session_leaf_id: &str,
 ) -> Result<Option<(String, i64)>, String> {
-    let escaped = session_id.replace('\'', "''");
     if !session_leaf_id.is_empty() {
         let leaf_url = session_entry_lookup_url(temper_api_url, session_id, session_leaf_id);
         if let Some(entry) = list_entities(ctx, &leaf_url, tenant)?.into_iter().next() {
             return Ok(session_entry_identity(&entry));
         }
-        ctx.log(
-            "warn",
-            &format!(
-                "append_user_message: Session.session_leaf_id={session_leaf_id} missing for SessionId={session_id}; falling back to bounded unordered SessionEntry scan"
-            ),
-        );
+        return Err(format!(
+            "session entries continuation missing parent leaf: Session.session_leaf_id={session_leaf_id} missing for SessionId={session_id}"
+        ));
     }
 
-    let url =
-        format!("{temper_api_url}/tdata/SessionEntries?$filter=SessionId eq '{escaped}'&$top=1000");
-    Ok(list_entities(ctx, &url, tenant)?
-        .into_iter()
-        .filter_map(|entry| session_entry_identity(&entry))
-        .max_by_key(|(_, sequence)| *sequence))
+    Err(format!(
+        "session_leaf_id is missing; starting clean continuation for SessionId={session_id}"
+    ))
 }
 
 fn session_entry_identity(entry: &Value) -> Option<(String, i64)> {
@@ -1491,10 +1620,10 @@ fn session_entry_identity(entry: &Value) -> Option<(String, i64)> {
 }
 
 fn session_entry_lookup_url(temper_api_url: &str, session_id: &str, entry_id: &str) -> String {
-    let escaped_session = session_id.replace('\'', "''");
-    let escaped_entry = entry_id.replace('\'', "''");
-    format!(
-        "{temper_api_url}/tdata/SessionEntries?$filter=SessionId eq '{escaped_session}' and EntryId eq '{escaped_entry}'&$top=1"
+    bounded_reads::composite_entity_url(
+        temper_api_url,
+        "SessionEntries",
+        &[("SessionId", session_id), ("EntryId", entry_id)],
     )
 }
 
@@ -1977,6 +2106,50 @@ fn nested_i64_field(value: &Value, keys: &[&str]) -> Option<i64> {
 mod tests {
     use super::*;
 
+    // --- Continuing a first turn that never wrote its entries ------------
+
+    #[test]
+    fn a_continuation_writes_the_first_turn_a_failed_session_left_unwritten() {
+        let prior = json!({
+            "user_message": "What changed in last night's deploy?",
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(
+            unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+            Some("What changed in last night's deploy?")
+        );
+        let odata_spelling = json!({
+            "UserMessage": "What changed?",
+            "SessionEntriesMaterialized": "FALSE",
+        });
+        assert_eq!(
+            unwritten_first_turn(&odata_spelling, "ss-1", "u-ss-1-0"),
+            Some("What changed?")
+        );
+    }
+
+    #[test]
+    fn a_continuation_writes_no_first_turn_unless_the_session_says_it_never_did() {
+        let message = "What changed in last night's deploy?";
+        for prior in [
+            json!({"user_message": message, "session_entries_materialized": "true"}),
+            json!({"user_message": message, "session_entries_materialized": ""}),
+            json!({"user_message": message}),
+            json!({"user_message": " ", "session_entries_materialized": "false"}),
+        ] {
+            assert_eq!(
+                unwritten_first_turn(&prior, "ss-1", "u-ss-1-0"),
+                None,
+                "{prior}"
+            );
+        }
+        let past_first_turn = json!({
+            "user_message": message,
+            "session_entries_materialized": "false",
+        });
+        assert_eq!(unwritten_first_turn(&past_first_turn, "ss-1", "a-3"), None);
+    }
+
     // --- Stale-session wake-up (ADR-0039) -------------------------------
 
     #[test]
@@ -2302,6 +2475,25 @@ mod tests {
     }
 
     #[test]
+    fn active_session_lookup_is_bounded_and_escapes_literals() {
+        assert_eq!(
+            active_session_query("discord-gateway", "thread'one", "author'one"),
+            "$filter=Status eq 'Active' and channel_id eq 'discord-gateway' and thread_id eq 'thread''one' and author_id eq 'author''one'&$top=1"
+        );
+    }
+
+    #[test]
+    fn agent_route_lookup_prefers_specific_route_then_global_fallback() {
+        assert_eq!(
+            agent_route_queries("discord'gateway"),
+            vec![
+                "$filter=Status eq 'Active' and channel_id eq 'discord''gateway'&$top=1",
+                "$filter=Status eq 'Active' and channel_id eq ''&$top=1",
+            ]
+        );
+    }
+
+    #[test]
     fn continued_externalized_user_messages_preserve_file_version() {
         let mut tree = SessionTree::new("route-message-file-ref");
         let parent_id = tree.last_entry_id().unwrap().to_string();
@@ -2326,11 +2518,11 @@ mod tests {
 
         assert_eq!(
             url,
-            "http://127.0.0.1:8080/tdata/SessionEntries?$filter=SessionId eq 'ss-1' and EntryId eq 'a-2'&$top=1"
+            "http://127.0.0.1:8080/tdata/SessionEntries(SessionId='ss-1',EntryId='a-2')"
         );
         assert!(
-            !url.contains("$orderby"),
-            "route_message must not use the production-failing ordered SessionEntries scan"
+            !url.contains("$filter") && !url.contains("$orderby"),
+            "route_message should use direct composite-key SessionEntry reads"
         );
     }
 }

@@ -237,6 +237,84 @@ pub async fn send_discord_message_with_components(
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct DiscordFileUpload {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Send a message with file attachments to a Discord channel via multipart upload.
+pub async fn send_discord_message_with_files(
+    http: &reqwest::Client,
+    bot_token: &str,
+    channel_id: &str,
+    content: &str,
+    files: &[DiscordFileUpload],
+) -> Result<(), DiscordApiError> {
+    if files.is_empty() {
+        return send_discord_message(http, bot_token, channel_id, content).await;
+    }
+
+    let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+    let payload_json = serde_json::json!({
+        "content": content,
+        "attachments": files
+            .iter()
+            .enumerate()
+            .map(|(idx, file)| serde_json::json!({
+                "id": idx.to_string(),
+                "filename": file.filename.as_str(),
+            }))
+            .collect::<Vec<_>>(),
+    });
+
+    let mut form = reqwest::multipart::Form::new().text("payload_json", payload_json.to_string());
+    for (idx, file) in files.iter().enumerate() {
+        let part = reqwest::multipart::Part::bytes(file.bytes.clone())
+            .file_name(file.filename.clone())
+            .mime_str(&file.content_type)
+            .map_err(|err| {
+                DiscordApiError::RequestFailed(format!(
+                    "invalid Discord upload content type {}: {err}",
+                    file.content_type
+                ))
+            })?;
+        let field_name = if idx == 0 {
+            "files[0]".to_string()
+        } else {
+            format!("files[{idx}]")
+        };
+        form = form.part(field_name, part);
+    }
+
+    let resp = http
+        .post(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|err| DiscordApiError::RequestFailed(format!("Discord API error: {err}")))?;
+
+    if resp.status().is_success() {
+        return Ok(());
+    }
+
+    let status = resp.status();
+    let body_text = resp.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE
+        || (status == reqwest::StatusCode::BAD_REQUEST && is_payload_too_large_body(&body_text))
+    {
+        return Err(DiscordApiError::PayloadTooLarge(format!(
+            "Discord API returned {status}: {body_text}"
+        )));
+    }
+
+    Err(DiscordApiError::RequestFailed(format!(
+        "Discord API returned {status}: {body_text}"
+    )))
+}
+
 async fn discord_post_message<T: serde::Serialize>(
     http: &reqwest::Client,
     bot_token: &str,

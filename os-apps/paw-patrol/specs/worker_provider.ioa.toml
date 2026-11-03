@@ -23,7 +23,7 @@ initial = "local_codex"
 [[state]]
 name = "enabled"
 type = "bool"
-initial = "false"
+initial = false
 
 [[state]]
 name = "risk_ceiling"
@@ -49,7 +49,7 @@ kind = "input"
 from = ["Registered", "Disabled"]
 to = "Active"
 params = ["status_summary"]
-effect = "set enabled true"
+effect = ["enabled = true"]
 hint = "Enable this provider for worker selection."
 
 [[action]]
@@ -58,5 +58,5 @@ kind = "input"
 from = ["Registered", "Active"]
 to = "Disabled"
 params = ["status_summary"]
-effect = "set enabled false"
+effect = ["enabled = false"]
 hint = "Disable this provider."

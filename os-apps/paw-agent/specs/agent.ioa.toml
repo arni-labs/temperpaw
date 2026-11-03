@@ -18,6 +18,7 @@ initial = "Created"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Created", "Active"]
+terminal = ["Archived"]
 
 # Identity
 [[state]]
@@ -67,6 +68,12 @@ type = "string"
 initial = ""
 
 [[state]]
+name = "provider_options_json"
+type = "string"
+initial = ""
+query_indexed = false
+
+[[state]]
 name = "temperature"
 type = "string"
 initial = "1.0"
@@ -87,14 +94,14 @@ name = "Configure"
 kind = "input"
 from = ["Created"]
 to = "Active"
-params = ["name", "role", "description", "soul_id", "instructions_file_id", "team_id", "source_app_id", "model", "provider", "temperature", "tools_enabled", "max_turns"]
+params = ["name", "role", "description", "soul_id", "instructions_file_id", "team_id", "source_app_id", "model", "provider", "provider_options_json", "temperature", "tools_enabled", "max_turns"]
 hint = "Set up the agent identity and session configuration."
 
 [[action]]
 name = "Update"
 kind = "input"
 from = ["Active"]
-params = ["description", "instructions_file_id", "model", "provider", "temperature", "tools_enabled", "max_turns"]
+params = ["description", "soul_id", "instructions_file_id", "model", "provider", "provider_options_json", "temperature", "tools_enabled", "max_turns"]
 hint = "Update agent configuration."
 
 [[action]]
@@ -103,8 +110,3 @@ kind = "input"
 from = ["Active"]
 to = "Archived"
 hint = "Archive this agent."
-
-[[invariant]]
-name = "ArchivedIsFinal"
-when = ["Archived"]
-assert = "no_further_transitions"

@@ -19,6 +19,7 @@ initial = "Draft"
 # for being indefinite. Added as a migration allowlist to unblock
 # TEMPER_LIVENESS_ENFORCE=true; revisit and tune per state.
 allow_indefinite_states = ["Draft", "UnderReview", "Escalated", "Active", "Paused"]
+terminal = ["Completed", "Failed"]
 
 # --- State Variables ---
 
@@ -50,7 +51,7 @@ initial = ""
 [[state]]
 name = "task_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "last_task_id"
@@ -75,12 +76,12 @@ initial = ""
 [[state]]
 name = "iteration_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 [[state]]
 name = "exploration_count"
 type = "counter"
-initial = "0"
+initial = 0
 
 # --- Actions: Review Workflow ---
 
@@ -90,7 +91,7 @@ kind = "input"
 from = ["Draft"]
 params = ["plan_file_id", "plan_text", "description"]
 hint = "Update plan content — file or inline text. Self-loop in Draft for iterative refinement."
-effect = [{ type = "increment", var = "iteration_count" }]
+effect = ["iteration_count += 1"]
 
 [[action]]
 name = "AddExplorationNote"
@@ -98,7 +99,7 @@ kind = "input"
 from = ["Draft"]
 params = ["exploration_file_id"]
 hint = "Set/update exploration notes file. Self-loop."
-effect = [{ type = "increment", var = "exploration_count" }]
+effect = ["exploration_count += 1"]
 
 [[action]]
 name = "SubmitForReview"
@@ -114,7 +115,6 @@ kind = "input"
 from = ["UnderReview", "Escalated"]
 to = "Active"
 hint = "Lead or human approves the plan. Implementation can proceed."
-effect = [{ type = "trigger", name = "plan_approved_switch" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -136,7 +136,6 @@ from = ["UnderReview", "Escalated"]
 to = "Draft"
 params = ["review_notes"]
 hint = "Reviewer requests changes. Plan returns to Draft with feedback."
-effect = [{ type = "trigger", name = "plan_changes_requested_switch" }]
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
 # Post-parse expansion re-synthesizes the equivalent Integration so
@@ -173,9 +172,7 @@ name = "AddTask"
 kind = "input"
 from = ["Active"]
 hint = "Add a task to the plan."
-effect = [
-  { type = "increment", var = "task_count" },
-]
+effect = ["task_count += 1"]
 
 [[action]]
 name = "Pause"
@@ -206,17 +203,5 @@ from = ["Active", "Paused", "UnderReview", "Escalated"]
 to = "Failed"
 params = ["review_notes"]
 hint = "Mark plan as failed with reason."
-
-# --- Invariants ---
-
-[[invariant]]
-name = "CompletedIsFinal"
-when = ["Completed"]
-assert = "no_further_transitions"
-
-[[invariant]]
-name = "FailedIsFinal"
-when = ["Failed"]
-assert = "no_further_transitions"
 
 # --- Integrations (ADR-004: Plan Mode) ---

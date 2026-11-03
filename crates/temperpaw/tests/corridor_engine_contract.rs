@@ -39,6 +39,18 @@ fn states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+fn terminal_states(spec: &toml::Value, path: &Path) -> BTreeSet<String> {
+    automaton(spec, path)
+        .get("terminal")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn actions(spec: &toml::Value) -> Vec<&toml::value::Table> {
     spec.get("action")
         .and_then(|v| v.as_array())
@@ -104,6 +116,22 @@ const CORRIDOR_SPECS: &[(&str, &str)] = &[
     ("forecast.ioa.toml", "Forecast"),
     ("hindcast.ioa.toml", "Hindcast"),
     ("lens.ioa.toml", "Lens"),
+];
+
+const CORRIDOR_WASM_MODULES: &[&str] = &[
+    "seed_world",
+    "sample_endpoints",
+    "decompose_endpoint",
+    "spawn_repairers",
+    "spawn_adversaries",
+    "aggregate_costs",
+    "evidence_ingest",
+    "register_forecasts",
+    "render_artifacts",
+    "consistency_gate",
+    "grade_hindcast",
+    "animate_dwellers",
+    "adjudicate_nodes",
 ];
 
 #[test]
@@ -226,10 +254,9 @@ fn forecast_is_immutable_once_registered() {
         );
     }
 
-    let text = read(&path);
     assert!(
-        text.contains("no_further_transitions"),
-        "Forecast spec must pin Scored as final via invariant"
+        terminal_states(&spec, &path).contains("Scored"),
+        "Forecast spec must pin Scored as terminal"
     );
 }
 
@@ -288,10 +315,10 @@ fn event_node_confirmation_is_peer_gated_and_resolution_is_final() {
         );
     }
 
-    let text = read(&path);
+    let terminal = terminal_states(&spec, &path);
     assert!(
-        text.contains("no_further_transitions"),
-        "EventNode Resolved/Retired must be final"
+        terminal.contains("Resolved") && terminal.contains("Retired"),
+        "EventNode Resolved/Retired must be terminal"
     );
 }
 
@@ -470,7 +497,6 @@ fn csdl_serves_all_corridor_entity_sets() {
         "Projections",
         "ForesightModels",
         "Observations",
-        "Directions",
     ] {
         assert!(
             csdl.contains(&format!("EntitySet Name=\"{set}\"")),
@@ -494,23 +520,9 @@ fn app_manifest_declares_corridor_wasm_modules() {
         })
         .unwrap_or_default();
 
-    for module in [
-        "seed_world",
-        "sample_endpoints",
-        "decompose_endpoint",
-        "spawn_repairers",
-        "spawn_adversaries",
-        "aggregate_costs",
-        "evidence_ingest",
-        "register_forecasts",
-        "render_artifacts",
-        "consistency_gate",
-        "grade_hindcast",
-        "animate_dwellers",
-        "adjudicate_nodes",
-    ] {
+    for module in CORRIDOR_WASM_MODULES {
         assert!(
-            declared.contains(module),
+            declared.contains(*module),
             "app.toml must declare wasm module {module}"
         );
         let crate_dir = repo_root().join(format!(
@@ -523,4 +535,216 @@ fn app_manifest_declares_corridor_wasm_modules() {
             "wasm crate for {module} must exist"
         );
     }
+}
+
+#[test]
+fn endpoint_sampled_self_heals_so_a_dead_writer_re_spawns() {
+    // ADR-0050/ADR-007: the writer phase (Endpoint.Sampled) used to sit in
+    // allow_indefinite_states with no state_timeout. A writer session that died
+    // — or a server restart that orphaned its in-flight provider call — wedged
+    // the endpoint forever, and the diversity-gate barrier never fired because
+    // one sibling bundle was never written (observed live, prod world
+    // en-019ed392, 2026-06-16). Sampled must self-heal like Path's
+    // Solving/Repaired/Challenged do.
+    let path = spec_path("endpoint.ioa.toml");
+    let spec = parse_spec(&path);
+
+    // Sampled is no longer treated as indefinitely parked.
+    let indefinite: BTreeSet<String> = automaton(&spec, &path)
+        .get("allow_indefinite_states")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !indefinite.contains("Sampled"),
+        "Endpoint.Sampled must not be indefinite — a dead writer would wedge the world"
+    );
+
+    // A state_timeout re-drives the writer.
+    let timeouts = spec
+        .get("state_timeout")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{} missing [[state_timeout]]", path.display()));
+    let sampled = timeouts
+        .iter()
+        .filter_map(|v| v.as_table())
+        .find(|t| t.get("state").and_then(|v| v.as_str()) == Some("Sampled"))
+        .unwrap_or_else(|| panic!("{} missing state_timeout for Sampled", path.display()));
+    assert_eq!(
+        sampled.get("on_timeout").and_then(|v| v.as_str()),
+        Some("ResumeWriter"),
+        "Sampled timeout must re-spawn the writer via ResumeWriter"
+    );
+
+    // ResumeWriter is a Sampled self-loop (re-spawn the writer, stay in Sampled).
+    let resume = action(&spec, "ResumeWriter", &path);
+    assert!(
+        action_from(resume).contains("Sampled"),
+        "ResumeWriter must fire from Sampled"
+    );
+    assert_eq!(
+        resume.get("to").and_then(|v| v.as_str()),
+        Some("Sampled"),
+        "ResumeWriter is a self-loop"
+    );
+}
+
+#[test]
+fn world_active_self_heals_when_claims_terminal_but_canonical_unset() {
+    // Gap #4 (en-019ed392): world aggregate only fired off Bridging claim
+    // RouteSettled; operator MarkUnreachable bypassed it. Active must re-run the
+    // cascade when canonical_path_id is still empty.
+    let path = spec_path("world.ioa.toml");
+    let spec = parse_spec(&path);
+    let timeouts = spec
+        .get("state_timeout")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{} missing [[state_timeout]]", path.display()));
+    let active = timeouts
+        .iter()
+        .filter_map(|v| v.as_table())
+        .find(|t| t.get("state").and_then(|v| v.as_str()) == Some("Active"))
+        .unwrap_or_else(|| panic!("{} missing state_timeout for Active", path.display()));
+    assert_eq!(
+        active.get("on_timeout").and_then(|v| v.as_str()),
+        Some("ResumeWorldCascade"),
+        "Active timeout must re-run world aggregate via ResumeWorldCascade"
+    );
+    let resume = action(&spec, "ResumeWorldCascade", &path);
+    assert!(
+        action_from(resume).contains("Active"),
+        "ResumeWorldCascade must fire from Active"
+    );
+    assert_eq!(
+        resume.get("to").and_then(|v| v.as_str()),
+        Some("Active"),
+        "ResumeWorldCascade is an Active self-loop"
+    );
+    let trigger = resume
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("name").and_then(|v| v.as_str()));
+    assert_eq!(
+        trigger,
+        Some("aggregate_costs_world_cascade"),
+        "ResumeWorldCascade must trigger aggregate_costs"
+    );
+}
+
+#[test]
+fn world_seeding_self_heals_when_surveyor_never_reports_seed_complete() {
+    // ARN-65 / ARN-64: a surveyor session can complete or stall without
+    // dispatching SeedComplete. Seeding must re-enter seed_world instead of
+    // parking forever with no active work.
+    let path = spec_path("world.ioa.toml");
+    let spec = parse_spec(&path);
+
+    let indefinite: BTreeSet<String> = automaton(&spec, &path)
+        .get("allow_indefinite_states")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !indefinite.contains("Seeding"),
+        "World.Seeding must not be indefinite — a surveyor missing SeedComplete would wedge the world"
+    );
+
+    let timeouts = spec
+        .get("state_timeout")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{} missing [[state_timeout]]", path.display()));
+    let seeding = timeouts
+        .iter()
+        .filter_map(|v| v.as_table())
+        .find(|t| t.get("state").and_then(|v| v.as_str()) == Some("Seeding"))
+        .unwrap_or_else(|| panic!("{} missing state_timeout for Seeding", path.display()));
+    assert_eq!(
+        seeding.get("on_timeout").and_then(|v| v.as_str()),
+        Some("ResumeSeed"),
+        "Seeding timeout must re-spawn the surveyor via ResumeSeed"
+    );
+
+    let resume = action(&spec, "ResumeSeed", &path);
+    assert!(
+        action_from(resume).contains("Seeding"),
+        "ResumeSeed must fire from Seeding"
+    );
+    assert_eq!(
+        resume.get("to").and_then(|v| v.as_str()),
+        Some("Seeding"),
+        "ResumeSeed is a Seeding self-loop"
+    );
+    let trigger = resume
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("name").and_then(|v| v.as_str()));
+    assert_eq!(
+        trigger,
+        Some("seed_world"),
+        "ResumeSeed must trigger seed_world"
+    );
+
+    let csdl = read(repo_root().join("os-apps/paw-foresight/specs/model.csdl.xml"));
+    assert!(
+        csdl.contains("<Action Name=\"ResumeSeed\" IsBound=\"true\">"),
+        "model.csdl.xml must serve World.ResumeSeed"
+    );
+
+    let cedar = read(repo_root().join("os-apps/paw-foresight/policies/foresight.cedar"));
+    assert!(
+        cedar.contains("Action::\"ResumeSeed\""),
+        "foresight Cedar policy must permit system-dispatched ResumeSeed"
+    );
+}
+
+#[test]
+fn endpoint_under_repair_self_heals_when_claims_terminal_but_unscored() {
+    // Gap #3: Endpoint.UnderRepair with all claims terminal but ScoreComplete
+    // never fired (world aggregate missed).
+    let path = spec_path("endpoint.ioa.toml");
+    let spec = parse_spec(&path);
+    let timeouts = spec
+        .get("state_timeout")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("{} missing [[state_timeout]]", path.display()));
+    let under_repair = timeouts
+        .iter()
+        .filter_map(|v| v.as_table())
+        .find(|t| t.get("state").and_then(|v| v.as_str()) == Some("UnderRepair"))
+        .unwrap_or_else(|| panic!("{} missing state_timeout for UnderRepair", path.display()));
+    assert_eq!(
+        under_repair.get("on_timeout").and_then(|v| v.as_str()),
+        Some("ResumeEndpointScoring"),
+        "UnderRepair timeout must re-score via ResumeEndpointScoring"
+    );
+    let resume = action(&spec, "ResumeEndpointScoring", &path);
+    assert!(
+        action_from(resume).contains("UnderRepair"),
+        "ResumeEndpointScoring must fire from UnderRepair"
+    );
+    assert_eq!(
+        resume.get("to").and_then(|v| v.as_str()),
+        Some("UnderRepair"),
+        "ResumeEndpointScoring is an UnderRepair self-loop"
+    );
+    let trigger = resume
+        .get("triggers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("name").and_then(|v| v.as_str()));
+    assert_eq!(
+        trigger,
+        Some("aggregate_costs_endpoint_scoring"),
+        "ResumeEndpointScoring must trigger aggregate_costs"
+    );
 }

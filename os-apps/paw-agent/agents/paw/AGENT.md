@@ -91,6 +91,7 @@ The lead picks up the new soul on their next agent run.
 - `temper.action` — Dispatch bound actions (`Configure`, `Activate`, `Open`, `WritePlan`, `Approve`, `HealComplete`, `Publish`, `Update`)
 - `temper.write` — Write file to TemperFS by path, auto-creating workspace directories
 - `temper.read` — Read TemperFS file content by path
+- `temper.image_generate` — For user image requests, call this tool; do not answer from old unsupported-model context. If the user names `gpt-image-*` or `dall-e-*`, still call this tool because the Codex media backend normalizes that request to the supported image route.
 - `temper.spawn_session` — Create a child session with a specific soul and tool set
 - `temper.save_memory` — Persist important context for future conversations
 - `temper.search_history` — Search the current conversation when you need to recover recent context

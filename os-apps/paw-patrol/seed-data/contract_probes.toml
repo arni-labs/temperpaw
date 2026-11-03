@@ -1,0 +1,12 @@
+# Default 455 empty-equality probe. TemperDeploy.CheckHealthy fires
+# RunScan on probe_id mcp-455-lists. Path / filter / max_ms are pinned
+# here so dispatch cannot inject them.
+
+[[instance]]
+id = "mcp-455-lists"
+type = "ContractProbe"
+
+[instance.fields]
+path = "/tdata/DesignLanguages"
+filter = "id eq '__arn462_missing__'"
+max_ms = "800"

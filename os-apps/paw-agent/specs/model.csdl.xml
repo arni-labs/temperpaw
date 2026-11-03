@@ -9,6 +9,7 @@
         <Property Name="Status" Type="Edm.String"/>
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
+        <Property Name="ProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ConversationFileId" Type="Edm.String"/>
         <Property Name="WorkspaceId" Type="Edm.String"/>
         <Property Name="PendingToolCalls" Type="Edm.String"/>
@@ -18,6 +19,7 @@
         <Property Name="OutputTokens" Type="Edm.Int64"/>
         <Property Name="CostCents" Type="Edm.String"/>
         <Property Name="Result" Type="Edm.String"/>
+        <Property Name="ReplyAttachmentsJson" Type="Edm.String"/>
         <Property Name="HasResult" Type="Edm.Boolean"/>
         <Property Name="ErrorMessage" Type="Edm.String"/>
         <Property Name="SandboxUrl" Type="Edm.String"/>
@@ -184,8 +186,12 @@
         <Property Name="SoulId" Type="Edm.String"/>
         <Property Name="SystemPrompt" Type="Edm.String"/>
         <Property Name="UserMessageTemplate" Type="Edm.String"/>
+        <Property Name="UserMessage" Type="Edm.String"/>
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
+        <Property Name="DefaultModel" Type="Edm.String"/>
+        <Property Name="DefaultProvider" Type="Edm.String"/>
+        <Property Name="ProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ToolsEnabled" Type="Edm.String"/>
         <Property Name="SandboxUrl" Type="Edm.String"/>
         <Property Name="MaxTurns" Type="Edm.String"/>
@@ -212,6 +218,7 @@
         <Parameter Name="user_message" Type="Edm.String" Nullable="false"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="max_turns" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tools_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="workdir" Type="Edm.String" Nullable="true"/>
@@ -254,6 +261,9 @@
         <Parameter Name="session_mode" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_trace_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_span_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="agent_name" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_choice" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="sandbox_image" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -346,6 +356,7 @@
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_inline_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_trace_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="gen_ai_parent_span_id" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
@@ -364,6 +375,7 @@
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -431,6 +443,7 @@
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_inline_json" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -450,6 +463,7 @@
         <Parameter Name="pending_tool_calls" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -461,6 +475,7 @@
         <Parameter Name="pending_tool_calls" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -474,6 +489,7 @@
         <Parameter Name="bindingParameter" Type="TemperPaw.Session"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -529,6 +545,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
@@ -536,6 +553,7 @@
         <Parameter Name="pending_tool_calls" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -549,6 +567,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
@@ -556,6 +575,7 @@
         <Parameter Name="pending_tool_calls" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -569,6 +589,7 @@
         <Parameter Name="session_entries_materialized" Type="Edm.String" Nullable="true"/>
         <Parameter Name="repl_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tool_spans_file_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="tool_spans_write_failed" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_hash" Type="Edm.String" Nullable="true"/>
         <Parameter Name="system_prompt_file_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider_response_file_id" Type="Edm.String" Nullable="true"/>
@@ -576,6 +597,7 @@
         <Parameter Name="pending_tool_calls" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_tool_context" Type="Edm.String" Nullable="true"/>
         <Parameter Name="pending_decision_id" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.Session"/>
       </Action>
 
@@ -745,6 +767,7 @@
         <Parameter Name="user_message_template" Type="Edm.String" Nullable="false"/>
         <Parameter Name="model" Type="Edm.String" Nullable="true"/>
         <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tools_enabled" Type="Edm.String" Nullable="true"/>
         <Parameter Name="sandbox_url" Type="Edm.String" Nullable="true"/>
         <Parameter Name="max_turns" Type="Edm.String" Nullable="true"/>
@@ -775,8 +798,12 @@
 
       <Action Name="TriggerComplete" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
-        <Parameter Name="last_session_id" Type="Edm.String" Nullable="true"/>
-        <Parameter Name="last_result" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="next_run_at" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="user_message" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="provider" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="default_model" Type="Edm.String" Nullable="true"/>
+        <Parameter Name="default_provider" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 
@@ -788,6 +815,12 @@
       <Action Name="TriggerFailed" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
         <Parameter Name="error_message" Type="Edm.String" Nullable="false"/>
+        <ReturnType Type="TemperPaw.CronJob"/>
+      </Action>
+
+      <Action Name="RecordLastSession" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.CronJob"/>
+        <Parameter Name="last_session_id" Type="Edm.String" Nullable="false"/>
         <ReturnType Type="TemperPaw.CronJob"/>
       </Action>
 
@@ -859,6 +892,7 @@
         <Property Name="SourceAppId" Type="Edm.String"/>
         <Property Name="Model" Type="Edm.String"/>
         <Property Name="Provider" Type="Edm.String"/>
+        <Property Name="ProviderOptionsJson" Type="Edm.String"/>
         <Property Name="ToolsEnabled" Type="Edm.String"/>
         <Property Name="MaxTurns" Type="Edm.String"/>
       </EntityType>
@@ -874,6 +908,7 @@
         <Parameter Name="source_app_id" Type="Edm.String"/>
         <Parameter Name="model" Type="Edm.String"/>
         <Parameter Name="provider" Type="Edm.String"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tools_enabled" Type="Edm.String"/>
         <Parameter Name="max_turns" Type="Edm.String"/>
         <ReturnType Type="TemperPaw.Agent"/>
@@ -882,9 +917,11 @@
       <Action Name="Update" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Agent"/>
         <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="soul_id" Type="Edm.String" Nullable="true"/>
         <Parameter Name="instructions_file_id" Type="Edm.String"/>
         <Parameter Name="model" Type="Edm.String"/>
         <Parameter Name="provider" Type="Edm.String"/>
+        <Parameter Name="provider_options_json" Type="Edm.String" Nullable="true"/>
         <Parameter Name="tools_enabled" Type="Edm.String"/>
         <Parameter Name="max_turns" Type="Edm.String"/>
         <ReturnType Type="TemperPaw.Agent"/>
@@ -916,6 +953,54 @@
       <Action Name="Archive" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.Team"/>
         <ReturnType Type="TemperPaw.Team"/>
+      </Action>
+
+      <!-- Project — coordinated effort container (ADR-0018); paw-pm's
+           issues and cycles point here by ProjectId -->
+      <EntityType Name="Project">
+        <Key><PropertyRef Name="Id"/></Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false"/>
+        <Property Name="Status" Type="Edm.String"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Description" Type="Edm.String"/>
+        <Property Name="OwnerAgentId" Type="Edm.String"/>
+        <Property Name="AppIds" Type="Edm.String"/>
+      </EntityType>
+
+      <Action Name="Configure" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <Parameter Name="name" Type="Edm.String"/>
+        <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="owner_agent_id" Type="Edm.String"/>
+        <Parameter Name="app_ids" Type="Edm.String"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Update" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="app_ids" Type="Edm.String"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Pause" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Resume" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Complete" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Archive" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
       </Action>
 
       <EntityType Name="Plan">
@@ -982,6 +1067,12 @@
         <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
       </Action>
 
+      <Action Name="SignInRequired" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.OpenAICodexAuth"/>
+        <Parameter Name="last_error" Type="Edm.String" Nullable="true"/>
+        <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
+      </Action>
+
       <Action Name="PollDeviceLogin" IsBound="true">
         <Parameter Name="bindingParameter" Type="TemperPaw.OpenAICodexAuth"/>
         <ReturnType Type="TemperPaw.OpenAICodexAuth"/>
@@ -1029,6 +1120,7 @@
         <EntitySet Name="Apps" EntityType="TemperPaw.App"/>
         <EntitySet Name="Agents" EntityType="TemperPaw.Agent"/>
         <EntitySet Name="Teams" EntityType="TemperPaw.Team"/>
+        <EntitySet Name="Projects" EntityType="TemperPaw.Project"/>
         <EntitySet Name="Souls" EntityType="TemperPaw.Soul"/>
         <EntitySet Name="Memories" EntityType="TemperPaw.Memory"/>
         <EntitySet Name="ToolHooks" EntityType="TemperPaw.ToolHook"/>

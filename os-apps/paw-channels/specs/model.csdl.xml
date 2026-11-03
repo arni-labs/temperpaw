@@ -92,6 +92,7 @@
         <Parameter Name="thread_id" Type="Edm.String" Nullable="false"/>
         <Parameter Name="content" Type="Edm.String" Nullable="false"/>
         <Parameter Name="agent_entity_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="Paw.Channel.Channel"/>
       </Action>
 
@@ -100,6 +101,7 @@
         <Parameter Name="thread_id" Type="Edm.String" Nullable="false"/>
         <Parameter Name="content" Type="Edm.String" Nullable="false"/>
         <Parameter Name="agent_entity_id" Type="Edm.String" Nullable="false"/>
+        <Parameter Name="reply_attachments_json" Type="Edm.String" Nullable="true"/>
         <ReturnType Type="Paw.Channel.Channel"/>
       </Action>
 

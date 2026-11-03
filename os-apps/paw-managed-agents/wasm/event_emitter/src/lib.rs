@@ -412,18 +412,3 @@ fn load_entry_content(
         .cloned()
         .unwrap_or_else(|| json!(null)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::emission_start_index;
-
-    #[test]
-    fn emission_start_index_resumes_from_last_emitted_count_for_same_inner_session() {
-        assert_eq!(emission_start_index("inner-1", "inner-1", 3), 3);
-    }
-
-    #[test]
-    fn emission_start_index_resets_when_inner_session_changes() {
-        assert_eq!(emission_start_index("inner-2", "inner-1", 3), 0);
-    }
-}

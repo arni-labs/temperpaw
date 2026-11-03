@@ -3,9 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../../../wasm-build-env.sh"
-cd "$SCRIPT_DIR"
-cargo build --target wasm32-unknown-unknown --release
 
-cp target/wasm32-unknown-unknown/release/artifact_batch_apply.wasm "$SCRIPT_DIR/artifact_batch_apply.wasm"
-cp target/wasm32-unknown-unknown/release/artifact_batch_apply.wasm "$SCRIPT_DIR/../artifact_batch_apply.wasm"
-echo "Built: target/wasm32-unknown-unknown/release/artifact_batch_apply.wasm"
+src="$(temperpaw_build_wasm "$SCRIPT_DIR" wasm32-unknown-unknown)"
+cp "$src" "$SCRIPT_DIR/artifact_batch_apply.wasm"
+cp "$src" "$SCRIPT_DIR/../artifact_batch_apply.wasm"
+echo "Built and packaged: $SCRIPT_DIR/artifact_batch_apply.wasm and $SCRIPT_DIR/../artifact_batch_apply.wasm"

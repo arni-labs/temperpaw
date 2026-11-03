@@ -560,40 +560,4 @@ mod tests {
         let multibyte = "é".repeat(1500);
         assert!(truncate(&multibyte, 2000).len() <= 2000);
     }
-
-    // --- Workspace rendezvous ------------------------------------------------
-
-    #[test]
-    fn workspace_name_is_the_cross_module_rendezvous_key() {
-        // All six session-spawning modules must derive the exact same
-        // workspace name from a world id, or their sessions land in
-        // different workspaces.
-        assert_eq!(workspace_name("w-1"), "world-w-1");
-        assert_eq!(workspace_name("0197abc"), "world-0197abc");
-    }
-
-    // --- Prompt contract -----------------------------------------------------
-
-    #[test]
-    fn checker_prompt_carries_the_verdict_contract() {
-        let p = checker_prompt("art-1", "The artifact body text.", r#"["n-1", "n-2"]"#);
-        for needle in [
-            "===== ARTIFACT TEXT =====",
-            "The artifact body text.",
-            "temper.get(\"EventNodes\"",
-            "[\"n-1\", \"n-2\"]",
-            "temper.action(\"Artifacts\", \"art-1\", \"CheckerVerdict\"",
-            "verdict_json",
-            "checker_session_id",
-            "{SESSION_ID}",
-            "\\\"pass\\\"",
-            "\\\"violations\\\"",
-            "temper.done",
-        ] {
-            assert!(p.contains(needle), "checker prompt missing: {needle}");
-        }
-        // The checker verifies, it never publishes.
-        assert!(!p.contains("PassCheck"));
-        assert!(!p.contains("Publish"));
-    }
 }

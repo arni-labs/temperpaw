@@ -74,6 +74,12 @@ impl SetupRequestAuth {
 fn has_llm_credentials(config: &Config) -> bool {
     config.anthropic_api_key.is_some()
         || config.openrouter_api_key.is_some()
+        || config.huggingface_api_key.is_some()
+        || config.fireworks_api_key.is_some()
+        || config.sakana_fugu_api_key.is_some()
+        || config.openai_compatible_api_key.is_some()
+        || config.openai_compatible_api_url.is_some()
+        || config.local_openai_api_url.is_some()
         || config.openai_api_key.is_some()
         || config.openai_codex_token.is_some()
 }

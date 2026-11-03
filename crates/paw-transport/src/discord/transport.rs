@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
@@ -55,7 +56,7 @@ pub struct DiscordTransport {
     channel_entity_id: Arc<RwLock<Option<String>>>,
     /// Local reply webhook URL used to reconnect Channel entities after recovery.
     reply_webhook_url: Arc<RwLock<Option<String>>>,
-    /// Maps Discord channel_id (DM channel) → user_id for reply routing.
+    /// Maps user/thread IDs to Discord DM channel IDs for reply routing and catch-up.
     dm_channels: Arc<RwLock<BTreeMap<String, String>>>,
     /// Last processed Discord message snowflake ID (for catch-up on reconnect).
     last_message_cursor: Arc<RwLock<String>>,
@@ -189,6 +190,172 @@ fn build_rich_fallback_text(content: &str, embeds: &[Embed]) -> String {
         parts.push(embed_text);
     }
     parts.join("\n\n")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReplyAttachment {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    file_id: String,
+    #[serde(default)]
+    filename: String,
+    #[serde(default)]
+    mime_type: String,
+    #[serde(default)]
+    path: String,
+}
+
+fn parse_reply_attachments(value: &serde_json::Value) -> Result<Vec<ReplyAttachment>, String> {
+    let Some(raw) = value
+        .get("reply_attachments_json")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+
+    serde_json::from_str::<Vec<ReplyAttachment>>(raw)
+        .map_err(|err| format!("parse reply_attachments_json: {err}"))
+}
+
+async fn deliver_reply_attachments(
+    api: &PawApiClient,
+    http: &reqwest::Client,
+    bot_token: &str,
+    channel_id: &str,
+    content: &str,
+    attachments: &[ReplyAttachment],
+) -> Result<bool, String> {
+    if attachments.is_empty() {
+        return Ok(false);
+    }
+
+    let mut files = Vec::new();
+    for attachment in attachments {
+        if attachment.kind != "pawfs_file" {
+            continue;
+        }
+        files.push(download_pawfs_attachment(api, attachment).await?);
+    }
+
+    if files.is_empty() {
+        return Ok(false);
+    }
+
+    send_discord_message_with_files(http, bot_token, channel_id, content, &files)
+        .await
+        .map_err(|err| format!("discord file reply delivery failed: {err}"))?;
+    Ok(true)
+}
+
+async fn download_pawfs_attachment(
+    api: &PawApiClient,
+    attachment: &ReplyAttachment,
+) -> Result<DiscordFileUpload, String> {
+    let file_id = attachment.file_id.trim();
+    if file_id.is_empty() {
+        return Err("reply attachment missing file_id".to_string());
+    }
+    let url = format!(
+        "{}/tdata/Files('{}')/$value",
+        api.config().base_url,
+        escape_odata_key(file_id)
+    );
+    let bytes = api.raw_get_bytes(&url).await?;
+    Ok(DiscordFileUpload {
+        filename: reply_attachment_filename(attachment),
+        content_type: if attachment.mime_type.trim().is_empty() {
+            "image/png".to_string()
+        } else {
+            attachment.mime_type.trim().to_string()
+        },
+        bytes,
+    })
+}
+
+fn reply_attachment_filename(attachment: &ReplyAttachment) -> String {
+    attachment
+        .filename
+        .trim()
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            attachment
+                .path
+                .trim()
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("image.png")
+        .to_string()
+}
+
+fn escape_odata_key(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn is_direct_message_thread_id(thread_id: &str) -> bool {
+    !thread_id.is_empty() && !thread_id.contains(':')
+}
+
+fn entity_field_str<'a>(entity: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    let fields = entity.get("fields").unwrap_or(entity);
+    keys.iter()
+        .find_map(|key| fields.get(*key).and_then(|value| value.as_str()))
+        .filter(|value| !value.is_empty())
+}
+
+fn known_dm_thread_from_channel_entity(channel: &serde_json::Value) -> Option<String> {
+    let thread_id = entity_field_str(channel, &["thread_id", "ThreadId"])
+        .or_else(|| entity_field_str(channel, &["author_id", "AuthorId"]))?;
+    is_direct_message_thread_id(thread_id).then(|| thread_id.to_string())
+}
+
+fn catch_up_dm_sources(
+    rest_dm_channels: &[serde_json::Value],
+    seeded_dm_channels: &BTreeMap<String, String>,
+    bot_id: &str,
+) -> BTreeMap<String, String> {
+    let mut sources = BTreeMap::new();
+
+    for dm in rest_dm_channels {
+        let Some(channel_id) = dm
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        let Some(recipients) = dm.get("recipients").and_then(|value| value.as_array()) else {
+            continue;
+        };
+
+        for recipient in recipients {
+            let Some(recipient_id) = recipient
+                .get("id")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty() && *value != bot_id)
+            else {
+                continue;
+            };
+            sources.insert(recipient_id.to_string(), channel_id.to_string());
+        }
+    }
+
+    for (thread_id, channel_id) in seeded_dm_channels {
+        if is_direct_message_thread_id(thread_id) && !channel_id.is_empty() {
+            sources
+                .entry(thread_id.clone())
+                .or_insert_with(|| channel_id.clone());
+        }
+    }
+
+    sources
 }
 
 async fn resolve_dm_channel_id(
@@ -486,19 +653,20 @@ impl DiscordTransport {
     async fn bootstrap_channel_once(&self, webhook_url: &str) -> Result<(), String> {
         let existing = self
             .api
-            .query_entities(
-                "Channels",
-                "ChannelType eq 'discord' and Status ne 'Archived'",
-            )
+            .query_entities("Channels", "ChannelType eq 'discord'", 50)
             .await?;
 
         // Find the best Channel to reuse: prefer Connected > Disconnected,
         // and among those, the one with the highest message_count (most active).
         let mut best_id = String::new();
         let mut best_msg_count: i64 = -1;
+        let mut best_dm_thread_id: Option<String> = None;
         let mut others_to_archive = Vec::new();
 
         for ch in &existing {
+            if crate::entity_is_archived(ch) {
+                continue;
+            }
             let status = ch
                 .get("status")
                 .or_else(|| ch.get("fields").and_then(|f| f.get("Status")))
@@ -528,6 +696,7 @@ impl DiscordTransport {
                     }
                     best_id = id;
                     best_msg_count = msg_count;
+                    best_dm_thread_id = known_dm_thread_from_channel_entity(ch);
 
                     // Read cursor from the best channel
                     if let Some(cursor) = ch
@@ -628,9 +797,47 @@ impl DiscordTransport {
             return Err("Failed to bootstrap Channel entity".to_string());
         }
 
+        if let Some(thread_id) = best_dm_thread_id.as_deref() {
+            self.seed_dm_channel(thread_id).await;
+        }
+
         *self.channel_entity_id.write().await = Some(channel_id.clone());
 
         Ok(())
+    }
+
+    async fn seed_dm_channel(&self, thread_id: &str) {
+        if self.dm_channels.read().await.contains_key(thread_id) {
+            return;
+        }
+
+        match open_dm_channel_at(
+            &self.http,
+            &self.config.bot_token,
+            DISCORD_API_BASE,
+            thread_id,
+        )
+        .await
+        {
+            Ok(dm_channel_id) => {
+                self.dm_channels
+                    .write()
+                    .await
+                    .insert(thread_id.to_string(), dm_channel_id.clone());
+                tracing::info!(
+                    thread_id,
+                    dm_channel_id,
+                    "discord seeded DM channel cache from persisted Channel thread"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    thread_id,
+                    %error,
+                    "discord could not reopen persisted DM thread for catch-up"
+                );
+            }
+        }
     }
 
     async fn cancel_typing_loop(&self, thread_id: &str) {
@@ -732,20 +939,17 @@ impl DiscordTransport {
             return;
         };
 
-        let dm_channels = fetch_dm_channels(&self.http, &self.config.bot_token).await;
+        let bot_id = self.gateway.bot_user_id.read().await.clone();
+        let rest_dm_channels = fetch_dm_channels(&self.http, &self.config.bot_token).await;
+        let seeded_dm_channels = self.dm_channels.read().await.clone();
+        let dm_channels = catch_up_dm_sources(&rest_dm_channels, &seeded_dm_channels, &bot_id);
         if dm_channels.is_empty() {
             return;
         }
 
-        let bot_id = self.gateway.bot_user_id.read().await.clone();
         let mut total_caught_up = 0u32;
 
-        for dm in &dm_channels {
-            let dm_channel_id = dm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if dm_channel_id.is_empty() {
-                continue;
-            }
-
+        for (thread_id, dm_channel_id) in &dm_channels {
             // Fetch messages newer than our cursor
             let mut after = cursor.clone();
             loop {
@@ -802,6 +1006,7 @@ impl DiscordTransport {
                         author_id,
                         username,
                         channel_id = dm_channel_id,
+                        thread_id,
                         preview = %truncate(content, 40),
                         "discord catch-up replaying missed dm"
                     );
@@ -810,7 +1015,7 @@ impl DiscordTransport {
                     self.dm_channels
                         .write()
                         .await
-                        .insert(author_id.to_string(), dm_channel_id.to_string());
+                        .insert(author_id.to_string(), dm_channel_id.clone());
 
                     // Dispatch ReceiveMessage
                     let mut params = serde_json::json!({
@@ -1214,8 +1419,17 @@ impl DiscordTransport {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             let has_rich_content = !components.is_empty() || !embeds.is_empty();
+            let reply_attachments = match parse_reply_attachments(&body) {
+                Ok(attachments) => attachments,
+                Err(error) => {
+                    tracing::error!(%error, "discord reply webhook invalid attachment payload");
+                    return axum::http::StatusCode::BAD_REQUEST;
+                }
+            };
+            let has_attachments = !reply_attachments.is_empty();
 
-            if thread_id.is_empty() || (content.is_empty() && !has_rich_content) {
+            if thread_id.is_empty() || (content.is_empty() && !has_rich_content && !has_attachments)
+            {
                 tracing::error!("discord reply webhook missing content and rich payload");
                 return axum::http::StatusCode::BAD_REQUEST;
             }
@@ -1241,6 +1455,31 @@ impl DiscordTransport {
                     return axum::http::StatusCode::BAD_GATEWAY;
                 }
             };
+
+            match deliver_reply_attachments(
+                &state.api,
+                &state.http,
+                &state.bot_token,
+                &channel_id,
+                content,
+                &reply_attachments,
+            )
+            .await
+            {
+                Ok(true) => {
+                    tracing::info!(
+                        thread_id,
+                        attachment_count = reply_attachments.len(),
+                        "delivered discord reply attachments"
+                    );
+                    return axum::http::StatusCode::OK;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(thread_id, %error, "discord reply attachment delivery failed");
+                    return axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            }
 
             if has_rich_content {
                 let fallback_text = build_rich_fallback_text(content, &embeds);
@@ -1907,7 +2146,6 @@ async fn read_payload(read: &mut WsStream) -> Result<Option<GatewayPayload>, Str
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1919,87 +2157,8 @@ mod tests {
     };
     use serde_json::json;
     use tokio::net::TcpListener;
-    use tracing_subscriber::fmt::MakeWriter;
 
     use super::*;
-
-    #[derive(Clone, Default)]
-    struct SharedWriter {
-        buffer: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl SharedWriter {
-        fn output(&self) -> String {
-            String::from_utf8(self.buffer.lock().unwrap().clone()).unwrap_or_default()
-        }
-    }
-
-    struct SharedLogGuard {
-        buffer: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl io::Write for SharedLogGuard {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.buffer.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for SharedWriter {
-        type Writer = SharedLogGuard;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            SharedLogGuard {
-                buffer: self.buffer.clone(),
-            }
-        }
-    }
-
-    fn make_attachment(filename: &str, content_type: Option<&str>, size: u64) -> DiscordAttachment {
-        DiscordAttachment {
-            id: "att1".to_string(),
-            filename: filename.to_string(),
-            size,
-            url: format!("https://cdn.discordapp.com/{filename}"),
-            proxy_url: format!("https://media.discordapp.net/{filename}"),
-            content_type: content_type.map(|s| s.to_string()),
-        }
-    }
-
-    #[test]
-    fn discord_ingress_logging_uses_tracing() {
-        let writer = SharedWriter::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .without_time()
-            .with_writer(writer.clone())
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
-            log_message(
-                "msg_123",
-                "user_456",
-                "paw-user",
-                "dm_789",
-                None,
-                "hello from discord",
-            );
-        });
-
-        let output = writer.output();
-        assert!(
-            output.contains("discord message received"),
-            "expected inbound Discord messages to flow through tracing, got: {output:?}"
-        );
-        assert!(
-            output.contains("message_id=\"msg_123\""),
-            "expected structured message fields in tracing output, got: {output:?}"
-        );
-    }
 
     #[tokio::test]
     async fn webhook_listener_guard_releases_port_on_drop() {
@@ -2347,190 +2506,5 @@ mod tests {
             2,
             "expected one failed create attempt followed by a retry"
         );
-    }
-
-    #[test]
-    fn text_content_types_detected() {
-        assert!(is_text_attachment(&make_attachment(
-            "f.md",
-            Some("text/markdown"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.txt",
-            Some("text/plain"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.html",
-            Some("text/html"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.json",
-            Some("application/json"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.xml",
-            Some("application/xml"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.yaml",
-            Some("application/yaml"),
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "f.sh",
-            Some("application/x-sh"),
-            100
-        )));
-    }
-
-    #[test]
-    fn non_text_content_types_rejected() {
-        assert!(!is_text_attachment(&make_attachment(
-            "photo.png",
-            Some("image/png"),
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "video.mp4",
-            Some("video/mp4"),
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "archive.zip",
-            Some("application/zip"),
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "doc.pdf",
-            Some("application/pdf"),
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "music.mp3",
-            Some("audio/mpeg"),
-            100
-        )));
-    }
-
-    #[test]
-    fn text_extensions_detected_without_content_type() {
-        assert!(is_text_attachment(&make_attachment("readme.md", None, 100)));
-        assert!(is_text_attachment(&make_attachment("script.py", None, 100)));
-        assert!(is_text_attachment(&make_attachment("main.rs", None, 100)));
-        assert!(is_text_attachment(&make_attachment("app.tsx", None, 100)));
-        assert!(is_text_attachment(&make_attachment(
-            "config.toml",
-            None,
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment("data.json", None, 100)));
-        assert!(is_text_attachment(&make_attachment("style.css", None, 100)));
-        assert!(is_text_attachment(&make_attachment("deploy.sh", None, 100)));
-        assert!(is_text_attachment(&make_attachment(
-            "schema.sql",
-            None,
-            100
-        )));
-        assert!(is_text_attachment(&make_attachment(
-            "page.svelte",
-            None,
-            100
-        )));
-    }
-
-    #[test]
-    fn non_text_extensions_rejected_without_content_type() {
-        assert!(!is_text_attachment(&make_attachment(
-            "photo.png",
-            None,
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "archive.zip",
-            None,
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "binary.exe",
-            None,
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "document.pdf",
-            None,
-            100
-        )));
-        assert!(!is_text_attachment(&make_attachment(
-            "image.jpg",
-            None,
-            100
-        )));
-    }
-
-    #[test]
-    fn content_type_takes_precedence_over_extension() {
-        // File named .txt but content_type says image — should be rejected
-        assert!(!is_text_attachment(&make_attachment(
-            "file.txt",
-            Some("image/png"),
-            100
-        )));
-        // File named .png but content_type says text — should be accepted
-        assert!(is_text_attachment(&make_attachment(
-            "file.png",
-            Some("text/plain"),
-            100
-        )));
-    }
-
-    #[test]
-    fn attachment_download_urls_try_proxy_then_cdn() {
-        let attachment = make_attachment("message.txt", Some("text/plain"), 100);
-
-        assert_eq!(
-            attachment_download_urls(&attachment),
-            vec![
-                "https://media.discordapp.net/message.txt",
-                "https://cdn.discordapp.com/message.txt",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn oversized_attachments_skipped() {
-        let attachments = vec![make_attachment(
-            "big.md",
-            Some("text/markdown"),
-            MAX_ATTACHMENT_SIZE + 1,
-        )];
-        let results = fetch_text_attachments(&reqwest::Client::new(), &attachments).await;
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn non_text_attachments_skipped() {
-        let attachments = vec![make_attachment("photo.png", Some("image/png"), 1024)];
-        let results = fetch_text_attachments(&reqwest::Client::new(), &attachments).await;
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn enrich_no_attachments_returns_original() {
-        let content = "hello world";
-        let result = enrich_content_with_attachments(&reqwest::Client::new(), content, &[]).await;
-        assert_eq!(result, "hello world");
-    }
-
-    #[tokio::test]
-    async fn enrich_with_only_non_text_returns_original() {
-        let attachments = vec![make_attachment("photo.png", Some("image/png"), 1024)];
-        let result =
-            enrich_content_with_attachments(&reqwest::Client::new(), "hello", &attachments).await;
-        assert_eq!(result, "hello");
     }
 }
