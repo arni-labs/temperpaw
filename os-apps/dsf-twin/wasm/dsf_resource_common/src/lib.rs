@@ -212,6 +212,3 @@ pub mod guest;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod application_tests;

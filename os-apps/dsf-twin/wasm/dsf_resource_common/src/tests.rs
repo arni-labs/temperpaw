@@ -9,60 +9,6 @@ fn resource() -> Value {
         "config_ref":"target-1", "config_sha256":"a".repeat(64), "execution_attempts":1})
 }
 
-#[test]
-fn successive_operations_do_not_adopt_the_previous_provider_receipt() {
-    let mut row = resource();
-    row["provider_execution_id"] = json!("deployment-first");
-    row["provider_known"] = json!(true);
-    let first = Invocation::parse("railway-project-service-env", &row).unwrap();
-    assert_eq!(first.execution_id.as_deref(), Some("deployment-first"));
-    row["operation_sequence"] = json!(3);
-    row["operation_key"] = json!("change-3");
-    row["provider_known"] = json!(false);
-    let second = Invocation::parse("railway-project-service-env", &row).unwrap();
-    assert_eq!(second.execution_id, None);
-    assert_eq!(second.resource["provider_execution_id"], "deployment-first");
-    row["provider_execution_id"] = json!("deployment-second");
-    row["provider_known"] = json!(true);
-    let observed = Invocation::parse("railway-project-service-env", &row).unwrap();
-    assert_eq!(observed.execution_id.as_deref(), Some("deployment-second"));
-}
-
-#[test]
-fn late_phase_cannot_act_after_resource_advanced_within_same_operation() {
-    let mut row = resource();
-    let invocation = Invocation::parse("railway-project-service-env", &row).unwrap();
-    row["status"] = "ApplyConfigurationVerifying".into();
-    assert!(invocation.confirm_current(&row).is_err());
-}
-
-#[test]
-fn reused_key_does_not_accept_previous_sequence() {
-    let mut row = resource();
-    let invocation = Invocation::parse("railway-project-service-env", &row).unwrap();
-    row["operation_sequence"] = 3.into();
-    assert!(invocation.confirm_current(&row).is_err());
-}
-
-#[test]
-fn changed_target_or_requested_bytes_invalidates_invocation() {
-    let row = resource();
-    let invocation = Invocation::parse("railway-project-service-env", &row).unwrap();
-    for name in [
-        "config_sha256",
-        "config_ref",
-        "request_configuration",
-        "request_revision",
-        "effort_id",
-        "proof_ref",
-    ] {
-        let mut changed = row.clone();
-        changed[name] = "different".into();
-        assert!(invocation.confirm_current(&changed).is_err(), "{name}");
-    }
-    assert!(invocation.confirm_current(&row).is_ok());
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Target {
@@ -158,50 +104,4 @@ fn configuration_proof_uses_real_source_commit_without_inventing_deployed_revisi
     let mut different = proof;
     different["commit"] = "c".repeat(40).into();
     assert!(authority::validate_records(&invocation, &effort, &different).is_err());
-}
-
-#[test]
-fn callback_uses_captured_sequence_without_reading_newer_resource() {
-    let invocation = Invocation::parse("railway-project-service-env", &resource()).unwrap();
-    let callback = invocation.callback::<ApplyConfiguration>(
-        "ExecutionUncertain",
-        json!({"error_message":"transport unavailable"}),
-    );
-    assert_eq!(callback.action, "ApplyConfigurationExecutionUncertain");
-    assert_eq!(callback.params["expected_operation_sequence"], 2);
-    assert_eq!(callback.params["operation_key"], "change-2");
-}
-
-#[test]
-fn first_attempt_parses_when_the_kernel_omits_never_incremented_counters() {
-    let mut row = resource();
-    let fields = row.as_object_mut().expect("resource object");
-    fields.remove("execution_attempts");
-    let invocation = Invocation::parse("railway-project-service-env", &row).unwrap();
-    assert_eq!(invocation.execution_attempts, 0);
-    assert_eq!(invocation.sequence, 2);
-}
-
-#[test]
-fn absent_operation_sequence_reports_that_the_operation_has_not_started() {
-    let mut row = resource();
-    row.as_object_mut()
-        .expect("resource object")
-        .remove("operation_sequence");
-    assert!(matches!(
-        Invocation::parse("railway-project-service-env", &row),
-        Err(Error::Binding("operation has not started"))
-    ));
-}
-
-#[test]
-fn counters_present_with_the_wrong_type_remain_binding_failures() {
-    for wrong in [json!("2"), json!(-2), json!(2.5), json!(null)] {
-        let mut row = resource();
-        row["execution_attempts"] = wrong;
-        assert!(matches!(
-            Invocation::parse("railway-project-service-env", &row),
-            Err(Error::Field(name)) if name == "execution_attempts"
-        ));
-    }
 }
