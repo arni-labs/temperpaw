@@ -3,6 +3,7 @@
 # .github/workflows/railway-redeploy.yml runs it; a person can run it the same way with the same environment.
 #
 #   scripts/railway_release.sh snapshot          what runs now: its deployment, image, routes and probe answers
+#   scripts/railway_release.sh forward           whether EXPECTED_SHA is live already, or goes on top of what serves
 #   scripts/railway_release.sh deploy <sha-tag>  point the service at ghcr.io/arni-labs/temperpaw:<tag>, wait for SUCCESS
 #   scripts/railway_release.sh check             the new deployment against the snapshot
 #   scripts/railway_release.sh rollback          back to the snapshot's image, checked against the snapshot
@@ -28,7 +29,8 @@
 #                    scripts/additive_migrations.txt (through a TCP proxy opened for that and removed). Otherwise the
 #                    way back stops and says which rows a person must remove. A kernel that ignores unknown migrations
 #                    needs neither: the rows stay.
-#   GH_TOKEN         reads the kernel pin and its migrations from GitHub
+#   GH_TOKEN         reads the kernel pin and its migrations, and which commit contains which, from GitHub
+#   DEPLOY_ENV       production: forward takes only a commit main contains
 # It prints statuses, counts and ids, never a key.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
@@ -321,11 +323,17 @@ datadog_max() { # the highest value of one gauge for this build over the last $2
 against_before() { # $1 deployment id
   local want got failed after key was now guest_now served lost
   wait_healthy || misses+=("healthz and readyz did not both answer 200")
-  # The logged count is extra evidence: a different count is a miss, a missing line is not, when a probe reaches a route.
-  want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
+  # The logged count is extra evidence: fewer routes than the deployment before ended with is a miss, a missing line is
+  # not, when a probe reaches a route. Both counts are of the same stored routes, read by each binary: the one before
+  # is its last rebuild (read again now, so a route installed after the snapshot counts on both sides; the snapshot's
+  # count when its logs are gone). A route installed after the old deployment's last rebuild adds one to the new
+  # count only, so more routes is reported, not a miss: the probes check that each named route answers as before.
+  want="$(route_count "$(jq -r '.deployment_id // empty' "$STATE_DIR/before.json")" || true)"
+  [ -n "$want" ] || want="$(jq -r '.route_count // empty' "$STATE_DIR/before.json")"
   got="$(route_count "$1")"
-  echo "route_count: ${got:-none} (before: ${want:-none})"
-  [ -z "$got" ] || [ -z "$want" ] || [ "$got" = "$want" ] || misses+=("route_count ${got}, before ${want}")
+  echo "route_count: ${got:-none} (the deployment before ended with ${want:-none})"
+  [ -z "$got" ] || [ -z "$want" ] || [ "$got" -ge "$want" ] ||
+    misses+=("route_count ${got}, fewer than the ${want} the deployment before ended with")
   failed="$(ask_failures "$1")"
   [ "${failed:-0}" = 0 ] || misses+=("${failed} route actor ask(s) failed during a rebuild")
   after="$(probe)"
@@ -487,6 +495,45 @@ report_misses() { # exits 1 when there are any
   fi
 }
 
+# GitHub's comparison of two commits: identical; ahead when the second contains the first; behind when the first
+# contains the second; diverged when neither contains the other.
+compared() { # $1 base, $2 head (a commit or main)
+  gh api "repos/arni-labs/temperpaw/compare/$1...$2" --jq .status
+}
+
+refuse() { # $1 why nothing deploys; it becomes the release record's miss
+  echo "$1: no deploy" | tee -a "$STATE_DIR/errors.txt" >&2
+}
+
+# A deploy never moves the Temper backwards. The release (EXPECTED_SHA) is live already when the commit that serves (the
+# snapshot's /paw/version) contains it: this prints already=true, and nothing deploys or restarts. It goes on top
+# (already=false) only when it contains the commit that serves, and on production only when main contains it. Anything
+# else would drop changes that serve, such as a branch that forked before them, so nothing deploys. Only the Factory's
+# stage and go_live run this; going back on purpose (roll_back, or a run started by hand) does not.
+forward() {
+  local served status
+  served="$(jq -r '.sha // empty' "$STATE_DIR/before.json")"
+  status="$(compared "$served" "$EXPECTED_SHA")" || { refuse "GitHub could not compare ${EXPECTED_SHA} with ${served:-nothing}, which serves"; return 1; }
+  case "$status" in
+    identical | behind)
+      echo "already=true"
+      echo "already live: ${served} serves, and it contains ${EXPECTED_SHA}" >&2
+      return 0
+      ;;
+    ahead) ;;
+    *) refuse "${EXPECTED_SHA} does not contain ${served}, which serves (GitHub: ${status:-no answer}), so it would drop changes that serve"; return 1 ;;
+  esac
+  if [ "${DEPLOY_ENV:-}" = production ]; then
+    status="$(compared "$EXPECTED_SHA" main)" || { refuse "GitHub could not compare ${EXPECTED_SHA} with main"; return 1; }
+    case "$status" in
+      identical | ahead) ;;
+      *) refuse "main does not contain ${EXPECTED_SHA}: only a commit on main goes to production"; return 1 ;;
+    esac
+  fi
+  echo "already=false"
+  echo "${EXPECTED_SHA} goes on top of ${served}" >&2
+}
+
 case "${1:-}" in
   snapshot)
     live="$(live_deployment)"
@@ -524,6 +571,11 @@ case "${1:-}" in
     guest_was="$(guest_baseline)"
     jq -n --arg id "$id" --arg tag "$tag" --arg routes "$routes" --arg sha "$sha" --argjson probes "$probes" --arg guest "$guest_was" \
       '{deployment_id: $id, image_tag: $tag, route_count: $routes, sha: $sha, probes: $probes, guest: $guest}' | tee "$STATE_DIR/before.json"
+    ;;
+
+  forward)
+    [[ "${EXPECTED_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "forward needs EXPECTED_SHA, a full commit" >&2; exit 64; }
+    forward
     ;;
 
   deploy)
@@ -614,7 +666,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "usage: railway_release.sh snapshot|deploy <sha-tag>|check|rollback" >&2
+    echo "usage: railway_release.sh snapshot|forward|deploy <sha-tag>|check|rollback" >&2
     exit 64
     ;;
 esac

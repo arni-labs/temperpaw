@@ -951,6 +951,54 @@
         <ReturnType Type="TemperPaw.Team"/>
       </Action>
 
+      <!-- Project — coordinated effort container (ADR-0018); paw-pm's
+           issues and cycles point here by ProjectId -->
+      <EntityType Name="Project">
+        <Key><PropertyRef Name="Id"/></Key>
+        <Property Name="Id" Type="Edm.String" Nullable="false"/>
+        <Property Name="Status" Type="Edm.String"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Description" Type="Edm.String"/>
+        <Property Name="OwnerAgentId" Type="Edm.String"/>
+        <Property Name="AppIds" Type="Edm.String"/>
+      </EntityType>
+
+      <Action Name="Configure" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <Parameter Name="name" Type="Edm.String"/>
+        <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="owner_agent_id" Type="Edm.String"/>
+        <Parameter Name="app_ids" Type="Edm.String"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Update" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <Parameter Name="description" Type="Edm.String"/>
+        <Parameter Name="app_ids" Type="Edm.String"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Pause" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Resume" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Complete" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
+      <Action Name="Archive" IsBound="true">
+        <Parameter Name="bindingParameter" Type="TemperPaw.Project"/>
+        <ReturnType Type="TemperPaw.Project"/>
+      </Action>
+
       <EntityType Name="Plan">
         <Key><PropertyRef Name="Id"/></Key>
         <Property Name="Id" Type="Edm.String" Nullable="false"/>
@@ -1068,6 +1116,7 @@
         <EntitySet Name="Apps" EntityType="TemperPaw.App"/>
         <EntitySet Name="Agents" EntityType="TemperPaw.Agent"/>
         <EntitySet Name="Teams" EntityType="TemperPaw.Team"/>
+        <EntitySet Name="Projects" EntityType="TemperPaw.Project"/>
         <EntitySet Name="Souls" EntityType="TemperPaw.Soul"/>
         <EntitySet Name="Memories" EntityType="TemperPaw.Memory"/>
         <EntitySet Name="ToolHooks" EntityType="TemperPaw.ToolHook"/>
