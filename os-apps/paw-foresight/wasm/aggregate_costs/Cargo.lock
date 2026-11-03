@@ -97,7 +97,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm-sdk"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1f7faed4932be3753422e936ba8d6be3acf2e2e3#1f7faed4932be3753422e936ba8d6be3acf2e2e3"
+source = "git+https://github.com/arni-labs/temper.git?rev=d1970395ea681173dacb2d1d0f83078ee0dd13f6#d1970395ea681173dacb2d1d0f83078ee0dd13f6"
 dependencies = [
  "serde",
  "serde_json",
