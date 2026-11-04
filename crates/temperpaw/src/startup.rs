@@ -1867,7 +1867,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     let transport_manager = Arc::new(crate::transport_manager::TransportManager::new(
         tenant.clone(),
         actual_port,
-        config.temper_api_key.clone(),
+        state.server.internal_invocation_credentials.clone(),
         config.public_base_url.clone(),
         config.ngrok_bin.clone(),
         config.ngrok_authtoken.clone(),
@@ -1908,11 +1908,11 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         build_version: config.build_version.clone(),
         build_sha: config.build_sha.clone(),
     };
-    let webhook_api = paw_transport::PawApiClient::new(paw_transport::PawApiConfig {
-        base_url: format!("http://127.0.0.1:{actual_port}"),
-        tenant: tenant.clone(),
-        api_key: config.temper_api_key.clone(),
-    });
+    let webhook_api = crate::auth::local_api_client(
+        &state.server.internal_invocation_credentials,
+        &tenant,
+        actual_port,
+    );
     let router = router
         .merge(crate::setup_api::router(setup_state.clone()))
         .merge(crate::auth::router(auth_state.clone()))
@@ -2187,7 +2187,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     spawn_webhook_trigger(
         &tenant,
         actual_port,
-        config.temper_api_key.clone(),
+        &state.server.internal_invocation_credentials,
         webhook_secrets,
     );
 
@@ -2251,11 +2251,11 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
             // Spawn Discord observer (SSE → Discord feed/forum).
             if feed_channel_id.is_some() || forum_channel_id.is_some() {
-                let observer_api = paw_transport::PawApiClient::new(paw_transport::PawApiConfig {
-                    base_url: format!("http://127.0.0.1:{actual_port}"),
-                    tenant: tenant.clone(),
-                    api_key: config.temper_api_key.clone(),
-                });
+                let observer_api = crate::auth::local_api_client(
+                    &state.server.internal_invocation_credentials,
+                    &tenant,
+                    actual_port,
+                );
                 let observer_config = paw_transport::discord::ObserverConfig {
                     bot_token: token,
                     feed_channel_id,
@@ -4068,23 +4068,16 @@ fn find_wasm_binary(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
 fn spawn_webhook_trigger(
     tenant: &str,
     port: u16,
-    api_key: Option<String>,
+    credentials: &temper_server::internal_invocation::InternalInvocationCredentialStore,
     secrets: paw_transport::webhook::WebhookSecretResolver,
 ) {
-    use paw_transport::PawApiConfig;
     use paw_transport::webhook::{WebhookTrigger, WebhookTriggerConfig};
 
-    let tenant = tenant.to_string();
-    let api_url = format!("http://127.0.0.1:{port}");
     let trigger_port = port + 12;
     tracing::info!("Webhook trigger: listening on port {trigger_port} (tenant={tenant})");
 
+    let api = crate::auth::local_api_client(credentials, tenant, port);
     tokio::spawn(async move {
-        let api = paw_transport::PawApiClient::new(PawApiConfig {
-            base_url: api_url,
-            tenant,
-            api_key,
-        });
         let config = WebhookTriggerConfig { port: trigger_port };
         let trigger = WebhookTrigger::new(config, api, secrets);
         if let Err(e) = trigger.run().await {

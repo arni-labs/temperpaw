@@ -22,13 +22,26 @@ pub struct PawApiConfig {
     pub api_key: Option<String>,
 }
 
+/// Mints the bearer one request presents, from its method and absolute URL.
+pub type RequestCredential = std::sync::Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+
 /// HTTP client for Paw OData API operations.
 ///
 /// Wraps reqwest::Client with tenant-scoped headers and authentication.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PawApiClient {
     http: reqwest::Client,
     config: PawApiConfig,
+    request_credential: Option<RequestCredential>,
+}
+
+impl std::fmt::Debug for PawApiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PawApiClient")
+            .field("config", &self.config)
+            .field("request_credential", &self.request_credential.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 pub(crate) fn current_trace_context_ids() -> Option<(String, String)> {
@@ -237,7 +250,16 @@ impl PawApiClient {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             config,
+            request_credential: None,
         }
+    }
+
+    /// Present a credential minted for each request, ahead of anything in the
+    /// config. A client inside the server uses this: the kernel takes a
+    /// caller's authority only from a credential it resolves.
+    pub fn with_request_credential(mut self, mint: RequestCredential) -> Self {
+        self.request_credential = Some(mint);
+        self
     }
 
     /// Access the API configuration.
@@ -461,9 +483,15 @@ impl PawApiClient {
 
     /// Build a request with tenant and auth headers.
     fn build_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let minted = self
+            .request_credential
+            .as_ref()
+            .and_then(|mint| mint(method.as_str(), url));
         let mut req = self.http.request(method, url);
         req = req.header("x-tenant-id", &self.config.tenant);
-        if self.uses_internal_loopback(url) {
+        if let Some(credential) = minted {
+            req = req.header("authorization", format!("Bearer {credential}"));
+        } else if self.uses_internal_loopback(url) {
             req = req.header("x-temper-principal-kind", "admin");
             req = req.header("x-temper-principal-id", "temperpaw-transport");
         } else if let Some(ref key) = self.config.api_key {
@@ -657,6 +685,48 @@ mod tests {
             None,
             "loopback requests should bypass bearer auth and use internal admin headers",
         );
+    }
+
+    #[tokio::test]
+    async fn a_minted_credential_is_presented_for_exactly_the_request_it_names() {
+        let probe = HeaderProbe::default();
+        let app = Router::new()
+            .route(
+                "/tdata/Channels",
+                get(
+                    |State(probe): State<HeaderProbe>, headers: HeaderMap| async move {
+                        *probe.last_kind.lock().unwrap() = headers
+                            .get("x-temper-principal-kind")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|v| v.to_string());
+                        *probe.last_auth.lock().unwrap() = headers
+                            .get("authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|v| v.to_string());
+                        Json(json!({"value": []}))
+                    },
+                ),
+            )
+            .with_state(probe.clone());
+        let base_url = spawn_test_server(app).await;
+        let client = PawApiClient::new(PawApiConfig {
+            base_url: base_url.clone(),
+            tenant: "default".to_string(),
+            api_key: Some("test-token".to_string()),
+        })
+        .with_request_credential(Arc::new(|method, url| Some(format!("{method} {url}"))));
+
+        client
+            .query_entities("Channels", "ChannelType eq 'discord'", 1)
+            .await
+            .unwrap();
+
+        let auth = probe.last_auth.lock().unwrap().clone().unwrap();
+        assert!(
+            auth.starts_with(&format!("Bearer GET {base_url}/tdata/Channels?$filter=")),
+            "{auth}"
+        );
+        assert_eq!(probe.last_kind.lock().unwrap().as_deref(), None);
     }
 
     #[tokio::test]

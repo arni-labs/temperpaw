@@ -25,7 +25,7 @@ pub struct TransportManager {
     ngrok: Arc<RwLock<Option<NgrokTunnel>>>,
     tenant: String,
     port: u16,
-    api_key: Option<String>,
+    credentials: temper_server::internal_invocation::InternalInvocationCredentialStore,
     public_base_url: Arc<RwLock<Option<String>>>,
     ngrok_bin: String,
     ngrok_authtoken: Option<String>,
@@ -102,7 +102,7 @@ impl TransportManager {
     pub fn new(
         tenant: String,
         port: u16,
-        api_key: Option<String>,
+        credentials: temper_server::internal_invocation::InternalInvocationCredentialStore,
         public_base_url: Option<String>,
         ngrok_bin: String,
         ngrok_authtoken: Option<String>,
@@ -121,7 +121,7 @@ impl TransportManager {
             ngrok: Arc::new(RwLock::new(None)),
             tenant,
             port,
-            api_key,
+            credentials,
             public_base_url: Arc::new(RwLock::new(
                 public_base_url.map(|url| url.trim_end_matches('/').to_string()),
             )),
@@ -280,24 +280,18 @@ impl TransportManager {
         let discord_handle = self.discord.clone();
         let tenant = self.tenant.clone();
         let port = self.port;
-        let api_key = self.api_key.clone();
+        let credentials = self.credentials.clone();
         let guild_id_for_status = params.guild_id.clone();
         let (ready_tx, mut ready_rx) = watch::channel(false);
         let (startup_tx, startup_rx) = oneshot::channel();
 
         let task = tokio::spawn(async move {
-            use paw_transport::PawApiConfig;
             use paw_transport::discord::types::intents;
             use paw_transport::discord::{DiscordConfig, DiscordTransport};
 
-            let api_url = format!("http://127.0.0.1:{port}");
             tracing::info!("Discord transport: connecting (tenant={tenant})...");
 
-            let api = paw_transport::PawApiClient::new(PawApiConfig {
-                base_url: api_url,
-                tenant,
-                api_key,
-            });
+            let api = crate::auth::local_api_client(&credentials, &tenant, port);
             let config = DiscordConfig {
                 bot_token: params.bot_token,
                 public_key,
@@ -404,20 +398,14 @@ impl TransportManager {
         let slack_handle = self.slack.clone();
         let tenant = self.tenant.clone();
         let port = self.port;
-        let api_key = self.api_key.clone();
+        let credentials = self.credentials.clone();
 
         let task = tokio::spawn(async move {
-            use paw_transport::PawApiConfig;
             use paw_transport::slack::{SlackConfig, SlackTransport};
 
-            let api_url = format!("http://127.0.0.1:{port}");
             tracing::info!("Slack transport: connecting (tenant={tenant})...");
 
-            let api = paw_transport::PawApiClient::new(PawApiConfig {
-                base_url: api_url,
-                tenant,
-                api_key,
-            });
+            let api = crate::auth::local_api_client(&credentials, &tenant, port);
             let config = SlackConfig {
                 app_token: params.app_token,
                 bot_token: params.bot_token,

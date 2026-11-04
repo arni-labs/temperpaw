@@ -194,8 +194,6 @@ pub async fn middleware(
         // routes have no edge but this one, so here the bearer resolves to the
         // caller its handlers act for: the internal capability a WASM module
         // presents over loopback, or the tenant's operator credential.
-        // TemperPaw's own local clients name themselves with principal
-        // headers instead, below.
         if !is_temperpaw_route(&path) {
             ensure_tenant_header(request.headers_mut(), state.tenant());
             return next.run(request).await;
@@ -226,11 +224,10 @@ pub async fn middleware(
         }
     }
 
-    // Internal WASM agent calls carry principal headers but no Bearer token
-    // or session cookie. Build the authenticated context from those headers so
-    // the kernel guard admits the request (the kernel strips the headers
-    // themselves at its edge). Per ADR-0157 this loopback path should move to
-    // minted credentials (follow-up).
+    // A local caller naming itself with principal headers and no credential.
+    // This admits it to TemperPaw's own routes only: the kernel's edge strips
+    // the headers and asks for a credential on its routes, so a client that
+    // needs those uses `local_api_client`.
     if let (Some(id), Some(kind)) = (
         header_value(request.headers(), "x-temper-principal-id"),
         header_value(request.headers(), "x-temper-principal-kind"),
@@ -347,6 +344,45 @@ fn authenticated_context(tenant: &str, principal: Principal) -> AuthenticatedReq
     let mut security_context = SecurityContext::anonymous();
     security_context.principal = principal;
     AuthenticatedRequestContext::new(TenantId::new(tenant), security_context)
+}
+
+/// This server's client for its own API: the transports, the observer and the
+/// webhook trigger. The kernel's edge takes a caller's authority only from a
+/// credential it resolves (ADR-0157), and these clients' writes are permitted
+/// to an Admin, which the operator credential is not. So each request presents
+/// a single-use capability, bound to that request, naming this client.
+pub(crate) fn local_api_client(
+    credentials: &temper_server::internal_invocation::InternalInvocationCredentialStore,
+    tenant: &str,
+    port: u16,
+) -> paw_transport::PawApiClient {
+    let credentials = credentials.clone();
+    let caller_tenant = tenant.to_string();
+    paw_transport::PawApiClient::new(paw_transport::PawApiConfig {
+        base_url: format!("http://127.0.0.1:{port}"),
+        tenant: tenant.to_string(),
+        api_key: None,
+    })
+    .with_request_credential(Arc::new(move |method: &str, url: &str| {
+        let caller = authenticated_context(
+            &caller_tenant,
+            Principal {
+                id: "temperpaw-transport".to_string(),
+                kind: PrincipalKind::Admin,
+                role: None,
+                acting_for: None,
+                agent_type: None,
+                label: None,
+                attributes: Default::default(),
+            },
+        );
+        credentials
+            .issue_for_url(caller, method, url)
+            .inspect_err(|error| {
+                tracing::warn!(%error, "no capability for a call to this server");
+            })
+            .ok()
+    }))
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -1438,6 +1474,67 @@ mod tests {
         );
     }
 
+    /// The deployed edge on a real socket: this middleware outside the kernel's
+    /// own router and TemperPaw's routes, with the kernel's credential store.
+    #[tokio::test]
+    async fn this_servers_own_client_passes_both_edges() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let platform = temper_platform::PlatformState::new(None);
+        temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
+            .await
+            .unwrap();
+        let credentials = platform.server.internal_invocation_credentials.clone();
+        let mut state = AuthState::for_tests(tempdir.path()).await;
+        state.server = platform.server.clone();
+        let app = layer(
+            temper_platform::router::build_platform_router(platform).merge(temperpaw_routes()),
+            state,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+        });
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        // Naming itself with headers is what the kernel's edge refuses.
+        let unminted = paw_transport::PawApiClient::new(paw_transport::PawApiConfig {
+            base_url: base_url.clone(),
+            tenant: "default".to_string(),
+            api_key: None,
+        });
+        let refused = unminted
+            .query_entities("AgentCredentials", "Status eq 'Active'", 1)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("401"), "{refused}");
+
+        let client = super::local_api_client(&credentials, "default", port);
+
+        // The filter is encoded, so this also proves the capability is bound
+        // to the same target the request sends.
+        let answer = client
+            .query_entities("AgentCredentials", "Status eq 'Active'", 1)
+            .await;
+        assert!(
+            !answer.as_ref().is_err_and(|error| error.contains("401")),
+            "{answer:?}"
+        );
+
+        let handler = client
+            .raw_get_bytes(&format!("{base_url}{SECRET}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&handler),
+            "temperpaw handler caller=Some(\"Admin temperpaw-transport\") bearer=false"
+        );
+    }
+
     #[tokio::test]
     async fn loopback_clients_still_name_themselves() {
         let tempdir = tempfile::tempdir().unwrap();
@@ -1457,7 +1554,9 @@ mod tests {
             "relayed by a tunnel"
         );
 
-        // TemperPaw's own clients: principal headers alone.
+        // A local caller naming itself: principal headers alone. The probe
+        // stands in for what is behind this edge; the kernel's own edge refuses
+        // this on its routes (`this_servers_own_client_passes_both_edges`).
         let response = app
             .clone()
             .oneshot(claiming_admin(local(anonymous("GET", SECRET))))
