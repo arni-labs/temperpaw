@@ -701,7 +701,7 @@ name = "ContextReady"
 kind = "input"
 from = ["PreparingContext"]
 to = "EnsuringProviderAuth"
-params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "context_tokens", "system_prompt_hash", "system_prompt_file_id"]
+params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id"]
 hint = "Prepared context artifact is ready. Persist artifact references and ensure provider auth before calling the provider."
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
@@ -725,7 +725,7 @@ name = "ContextReadyAuthSkipped"
 kind = "input"
 from = ["PreparingContext"]
 to = "CallingProvider"
-params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
+params = ["prepared_context_file_id", "prepared_context_inline_json", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id", "provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error"]
 hint = "Prepared context artifact is ready and this provider does not require Codex OAuth. Persist skipped auth fields and call the LLM provider."
 
 [[action.triggers]]
@@ -742,7 +742,7 @@ name = "ProviderAuthReady"
 kind = "input"
 from = ["EnsuringProviderAuth"]
 to = "CallingProvider"
-params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
+params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error"]
 hint = "Codex provider auth is fresh, or this provider does not need Codex OAuth. Call the LLM provider."
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
@@ -843,7 +843,7 @@ name = "ProcessToolCalls"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Executing"
-params = ["pending_tool_calls", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
+params = ["pending_tool_calls", "conversation", "session_leaf_id", "session_entries_materialized", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json", "gen_ai_parent_trace_id", "gen_ai_parent_span_id"]
 hint = "LLM returned tool_use blocks. Record token usage, transition to Executing, and run tools."
 effect = ["input_tokens += 1", "output_tokens += 1", "context_tokens += 1"]
 
@@ -926,7 +926,7 @@ name = "NeedsCompaction"
 kind = "input"
 from = ["PreparingContext"]
 to = "EnsuringCompactionAuth"
-params = ["input_tokens", "output_tokens", "context_tokens", "prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id"]
+params = ["prepared_context_bytes", "prepared_context_entries_loaded", "prepared_context_content_files_loaded", "system_prompt_hash", "system_prompt_file_id"]
 hint = "Context preparation detected that the bounded context budget was exceeded. Ensure provider auth before compaction."
 effect = ["input_tokens += 1", "output_tokens += 1"]
 
@@ -948,7 +948,7 @@ name = "CompactionAuthReady"
 kind = "input"
 from = ["EnsuringCompactionAuth"]
 to = "Compacting"
-params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error", "provider_auth_retry_count", "compaction_auth_retry_count"]
+params = ["provider_auth_status", "provider_auth_checked_at_ms", "provider_auth_error"]
 hint = "Codex compaction auth is fresh, or this provider does not need Codex OAuth. Trigger compaction."
 
 # ADR-0046: inline trigger — migrated from [[integration]] below.
@@ -1016,7 +1016,7 @@ name = "CompactionComplete"
 kind = "input"
 from = ["Compacting"]
 to = "PreparingContext"
-params = ["session_leaf_id", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "compaction_skipped_reason", "compaction_skipped_leaf_id"]
+params = ["session_leaf_id", "system_prompt_hash", "system_prompt_file_id", "compaction_skipped_reason", "compaction_skipped_leaf_id"]
 hint = "Compaction finished or explicitly skipped. Resume bounded context preparation with the compacted session tree, or with a skip marker that prevents re-running the same impossible compaction."
 effect = ["compaction_count += 1"]
 
@@ -1034,7 +1034,7 @@ name = "CheckSteering"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Steering"
-params = ["input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "context_tokens", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json"]
+params = ["session_leaf_id", "session_entries_materialized", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "reply_attachments_json"]
 hint = "LLM returned end_turn. Check for queued steering messages before completing."
 effect = ["input_tokens += 1", "output_tokens += 1", "context_tokens += 1"]
 
@@ -1242,7 +1242,7 @@ name = "RecordResult"
 kind = "input"
 from = ["ApplyingProviderResponse", "Executing"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Session complete. Triggered by LLM end_turn or agent calling temper.done(result)."
 effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
 
@@ -1264,7 +1264,7 @@ name = "RecordResultNoReply"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Direct no-route Session complete. Set result and emit trajectory without invoking terminal reply delivery."
 effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
 
@@ -1279,7 +1279,7 @@ name = "RecordResultInlineReply"
 kind = "input"
 from = ["ApplyingProviderResponse"]
 to = "Completed"
-params = ["result", "conversation", "input_tokens", "output_tokens", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
+params = ["result", "conversation", "session_leaf_id", "session_entries_materialized", "repl_file_id", "tool_spans_file_id", "tool_spans_write_failed", "system_prompt_hash", "system_prompt_file_id", "provider_response_file_id", "provider_response_inline_json", "pending_tool_calls", "pending_tool_context", "pending_decision_id", "reply_attachments_json"]
 hint = "Inline CLI/TUI reply already recorded on the Channel. Set result and emit trajectory without invoking terminal reply delivery."
 effect = ["input_tokens += 1", "output_tokens += 1", "has_result = true"]
 
