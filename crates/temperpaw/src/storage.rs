@@ -13,6 +13,26 @@ use temper_store_turso::TursoEventStore;
 
 use crate::config::{Config, StorageBackend};
 
+/// The longest one statement may run. A record handles one message at a time, so
+/// a write that waits holds every later read and move of that record. Temper's
+/// own Postgres pool uses the same 15 s.
+const STATEMENT_TIMEOUT: &str = "15s";
+/// The longest a statement may wait for a lock: under the statement's own bound,
+/// so a lock wait fails with its own error and says what it was.
+const LOCK_TIMEOUT: &str = "10s";
+
+/// Set the bounds on one new connection, whatever the database address says.
+async fn bound_statements(conn: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "SELECT set_config('statement_timeout', $1, false), set_config('lock_timeout', $2, false)",
+    )
+    .bind(STATEMENT_TIMEOUT)
+    .bind(LOCK_TIMEOUT)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) enum PawStorage {
     Turso(TursoEventStore),
@@ -44,16 +64,27 @@ impl PawStorage {
                     .ok()
                     .and_then(|value| value.parse::<u32>().ok())
                     .unwrap_or(10);
-                let pool = PgPoolOptions::new()
-                    .max_connections(max_connections)
+                // A migration may rewrite a large table, so it runs before the
+                // statement bounds below, on its own connection.
+                let migrations = PgPoolOptions::new()
+                    .max_connections(1)
                     .connect(database_url)
                     .await
                     .with_context(|| "Failed to connect to Postgres via DATABASE_URL")?;
-                run_migrations(&pool)
+                run_migrations(&migrations)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to run Postgres migrations: {e}"))?;
+                migrations.close().await;
+                let pool = PgPoolOptions::new()
+                    .max_connections(max_connections)
+                    .after_connect(|conn, _meta| Box::pin(bound_statements(conn)))
+                    .connect(database_url)
+                    .await
+                    .with_context(|| "Failed to connect to Postgres via DATABASE_URL")?;
                 tracing::info!(
                     max_connections,
+                    statement_timeout = STATEMENT_TIMEOUT,
+                    lock_timeout = LOCK_TIMEOUT,
                     "Storage: postgres (DATABASE_URL configured)"
                 );
                 Ok(Self::Postgres(PostgresEventStore::new(pool)))
