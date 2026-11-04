@@ -1650,7 +1650,7 @@ mod tests {
     }
 
     async fn pending_decision(server: &temper_server::ServerState, resource_id: &str) -> String {
-        let decision = temper_server::state::PendingDecision::from_denial(
+        let mut decision = temper_server::state::PendingDecision::from_denial(
             "default",
             "some-agent",
             "read",
@@ -1660,6 +1660,7 @@ mod tests {
             "no matching permit policy",
             None,
         );
+        decision.session_id = Some("session-1".to_string());
         server.persist_pending_decision(&decision).await.unwrap();
         decision.id
     }
@@ -1800,8 +1801,10 @@ mod tests {
         assert_eq!(left["decisions"], json!([]), "{left}");
     }
 
-    /// A kernel route the dashboard reads answers 401 to nobody and 200 to a
-    /// signed-in session, whichever way the target is spelled.
+    /// A kernel route the dashboard reads refuses nobody's session, whichever way
+    /// the target is spelled. This edge loads no app's policy, so a `/tdata` read
+    /// is admitted and then Cedar's to answer; the routes the owner's permit
+    /// covers answer 200.
     #[tokio::test]
     async fn a_signed_in_person_reaches_the_kernels_routes() {
         let tempdir = tempfile::tempdir().unwrap();
@@ -1827,8 +1830,6 @@ mod tests {
             .to_string();
 
         for target in [
-            "/tdata/AgentCredentials?$top=1",
-            "/tdata/AgentCredentials?$filter=Status%20eq%20'Active'",
             "/observe/os-apps",
             "/observe/agents/system/history",
             "/observe/events/stream",
@@ -1845,6 +1846,22 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(signed_in.status(), StatusCode::OK, "{target}");
+        }
+
+        for target in [
+            "/tdata/AgentCredentials?$top=1",
+            "/tdata/AgentCredentials?$filter=Status%20eq%20'Active'",
+        ] {
+            let url = format!("{base_url}{target}");
+            let anonymous = http.get(&url).send().await.unwrap();
+            assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{target}");
+            let signed_in = http
+                .get(&url)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(signed_in.status(), StatusCode::UNAUTHORIZED, "{target}");
         }
 
         // A route a tenant declared answers a signed-in person as it answers anyone.
