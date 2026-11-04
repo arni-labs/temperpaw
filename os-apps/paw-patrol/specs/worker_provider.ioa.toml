@@ -41,6 +41,7 @@ kind = "input"
 from = ["Registered"]
 to = "Registered"
 params = ["provider_kind", "display_name", "capabilities", "risk_ceiling", "enabled"]
+effect = ["enabled = params.enabled"]
 hint = "Register a worker provider such as local_codex, codex_cloud, openclaw, anthropic_managed, or temperpaw_agent."
 
 [[action]]
