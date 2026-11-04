@@ -31,6 +31,10 @@ type SecretsVault = temper_server::secrets::vault::SecretsVault;
 type HttpEndpointTables = temper_server::http_endpoint::HttpEndpointTables;
 
 const ACCOUNTS_SECRET_KEY: &str = "auth_accounts";
+
+/// The operator credential [`AuthState::for_tests`] holds, for a test's first account.
+#[cfg(test)]
+const TEST_OPERATOR_KEY: &str = "operator-key-for-a-first-account-test";
 const SESSION_COOKIE: &str = "paw_session";
 const SESSION_DURATION_SECS: usize = 60 * 60 * 24 * 7;
 
@@ -77,6 +81,17 @@ impl AuthState {
 
     #[cfg(test)]
     pub(crate) async fn for_tests(root: &std::path::Path) -> Self {
+        let platform = temper_platform::PlatformState::new(None);
+        temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
+            .await
+            .unwrap();
+        temper_platform::bootstrap::bootstrap_operator_credential(
+            &platform,
+            TEST_OPERATOR_KEY,
+            "default",
+        )
+        .await
+        .unwrap();
         let db_path = root.join("auth-test.db");
         let store = TursoEventStore::new(&format!("file:{}", db_path.display()), None)
             .await
@@ -89,7 +104,7 @@ impl AuthState {
             "default".to_string(),
             false,
             Arc::new(HttpEndpointTables::new()),
-            temper_platform::PlatformState::new(None).server,
+            platform.server,
         )
     }
 }
@@ -355,8 +370,9 @@ const OWNER_POLICY_ID: &str = "temperpaw-owner-approvals-and-reads";
 /// activity, and grants to nobody by default: the dashboard's approvals, app
 /// list and live events, and an owner's press through a transport.
 ///
-/// An Admin here is the one account this server registers (registration closes
-/// after the first) or one of this server's own in-process identities, the
+/// An Admin here is the one account this server registers (the first takes the
+/// operator credential, and registration closes after it) or one of this server's
+/// own in-process identities, the
 /// transports and the transport reconcile. That is one trust boundary: whoever
 /// runs this server, against everyone outside it. Agents hold no such permit.
 const OWNER_CEDAR: &str = r#"permit(
@@ -709,11 +725,50 @@ fn ensure_tenant_header(headers: &mut HeaderMap, tenant: &str) {
     }
 }
 
+/// What a first account's creator is told without the operator credential.
+const FIRST_ACCOUNT_ANSWER: &str = "This server has no account yet. Creating the first one needs its operator key (TEMPER_API_KEY).";
+
+/// The first account holds this server: it is an Admin over the kernel's routes,
+/// with policy authority. While there is none, anyone who reaches the URL could
+/// claim it, so it takes the operator credential, which only whoever runs the
+/// server holds. Once there is one, [`register_impl`] keeps registration closed.
+async fn refuse_first_account(state: &AuthState, headers: &HeaderMap) -> Option<Response> {
+    let answer = |status: StatusCode, message: &str| {
+        Some((status, Json(error_body(message))).into_response())
+    };
+    match load_accounts(state).await {
+        Ok(accounts) if !accounts.is_empty() => return None,
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(%error, "Register failed");
+            return answer(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not create account",
+            );
+        }
+    }
+    let Some(token) = bearer_token(headers) else {
+        return answer(StatusCode::UNAUTHORIZED, FIRST_ACCOUNT_ANSWER);
+    };
+    match operator_caller(state, &token).await {
+        Ok(_) => None,
+        Err(StatusCode::SERVICE_UNAVAILABLE) => answer(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "I can't check the operator key right now. Please try again shortly.",
+        ),
+        Err(_) => answer(StatusCode::UNAUTHORIZED, FIRST_ACCOUNT_ANSWER),
+    }
+}
+
 async fn register(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<Credentials>,
 ) -> Response {
+    if let Some(refusal) = refuse_first_account(&state, &headers).await {
+        return refusal;
+    }
     match register_impl(&state, request).await {
         Ok(claims) => {
             let cookie = build_session_cookie(&state, &claims);
@@ -1615,6 +1670,14 @@ mod tests {
         temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
             .await
             .unwrap();
+        temper_platform::bootstrap::bootstrap_operator_credential(
+            &platform,
+            super::TEST_OPERATOR_KEY,
+            "default",
+        )
+        .await
+        .unwrap();
+        issue_credential(&platform, "worker", WORKER_KEY).await;
         super::seed_owner_permit(&platform, "default")
             .await
             .unwrap();
@@ -1640,6 +1703,97 @@ mod tests {
             .await
         });
         (port, credentials, server)
+    }
+
+    /// While a server has no account, whoever creates the first presents the
+    /// operator credential, and nothing else opens it. After that registration
+    /// stays closed, with the credential or without.
+    #[tokio::test]
+    async fn the_first_account_takes_the_operator_credential() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, _, server) = deployed_edge(tempdir.path()).await;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let url = format!("{base_url}/auth/register");
+        let http = reqwest::Client::new();
+        let account = json!({
+            "email": "owner@example.com",
+            "password": "correct horse battery staple"
+        });
+        let registration_open = || async {
+            let providers: serde_json::Value = reqwest::get(format!("{base_url}/auth/providers"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            providers["registration_open"].as_bool().unwrap()
+        };
+
+        let capability = kernel_capability(&server, "someone", "POST", &url);
+        for (who, bearer) in [
+            ("nobody", None),
+            ("a made-up key", Some("not-the-operator-key")),
+            ("an agent's credential", Some(WORKER_KEY)),
+            ("an internal capability", Some(capability.as_str())),
+        ] {
+            let mut request = http.post(&url).json(&account);
+            if let Some(bearer) = bearer {
+                request = request.bearer_auth(bearer);
+            }
+            let refused = request.send().await.unwrap();
+            assert_eq!(refused.status(), StatusCode::UNAUTHORIZED, "{who}");
+            assert!(refused.headers().get("set-cookie").is_none(), "{who}");
+            let body: serde_json::Value = refused.json().await.unwrap();
+            assert_eq!(body["error"], super::FIRST_ACCOUNT_ANSWER, "{who}");
+            assert!(registration_open().await, "{who}");
+        }
+
+        let too_short = http
+            .post(&url)
+            .json(&json!({ "email": "owner@example.com", "password": "x" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(too_short.status(), StatusCode::UNAUTHORIZED);
+
+        let created = http
+            .post(&url)
+            .bearer_auth(super::TEST_OPERATOR_KEY)
+            .json(&account)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let cookie = created
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .unwrap()
+            .to_string();
+        let me = http
+            .get(format!("{base_url}/auth/me"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        assert!(!registration_open().await);
+
+        let second = json!({
+            "email": "another@example.com",
+            "password": "correct horse battery staple"
+        });
+        let without = http.post(&url).json(&second).send().await.unwrap();
+        assert_eq!(without.status(), StatusCode::FORBIDDEN);
+        let with = http
+            .post(&url)
+            .bearer_auth(super::TEST_OPERATOR_KEY)
+            .json(&second)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(with.status(), StatusCode::FORBIDDEN);
     }
 
     fn any_owner() -> paw_transport::owners::Owners {
@@ -1814,6 +1968,7 @@ mod tests {
 
         let registered = http
             .post(format!("{base_url}/auth/register"))
+            .bearer_auth(super::TEST_OPERATOR_KEY)
             .json(&json!({
                 "email": "owner@example.com",
                 "password": "correct horse battery staple"
@@ -1979,6 +2134,10 @@ mod tests {
         let register = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -2041,6 +2200,10 @@ mod tests {
         let first = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -2057,6 +2220,10 @@ mod tests {
         let second = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -2117,6 +2284,10 @@ mod tests {
         let register = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -2173,6 +2344,10 @@ mod tests {
         let register = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({
@@ -2233,6 +2408,10 @@ mod tests {
         let register = Request::builder()
             .method("POST")
             .uri("/auth/register")
+            .header(
+                "authorization",
+                format!("Bearer {}", super::TEST_OPERATOR_KEY),
+            )
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({

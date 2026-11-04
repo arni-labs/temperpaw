@@ -8,6 +8,7 @@
   let email = $state('');
   let password = $state('');
   let confirmPassword = $state('');
+  let operatorKey = $state('');
   let loading = $state(true);
   let submitting = $state(false);
   let error = $state('');
@@ -32,6 +33,10 @@
       error = 'Password is required';
       return;
     }
+    if (mode === 'register' && !operatorKey.trim()) {
+      error = 'Operator key is required';
+      return;
+    }
     if (mode === 'register' && password !== confirmPassword) {
       error = 'Passwords do not match';
       return;
@@ -42,7 +47,7 @@
 
     try {
       if (mode === 'register') {
-        await register(email, password);
+        await register(email, password, operatorKey.trim());
       } else {
         await login(email, password);
       }
@@ -70,7 +75,7 @@
     <h1>{mode === 'register' ? 'Create your account' : 'Welcome back'}</h1>
     <p class="lede">
       {mode === 'register'
-        ? 'This deployment is still unclaimed. Create the first admin account to unlock the dashboard.'
+        ? 'This deployment is still unclaimed. Enter its operator key, the TEMPER_API_KEY it runs with, to create the first admin account.'
         : 'Sign in with the admin account for this deployment.'}
     </p>
 
@@ -78,6 +83,13 @@
       <p class="status">Loading authentication options…</p>
     {:else}
       <form class="form" onsubmit={handleSubmit}>
+        {#if mode === 'register'}
+          <label>
+            <span>Operator key</span>
+            <input bind:value={operatorKey} autocomplete="off" placeholder="TEMPER_API_KEY" type="password" />
+          </label>
+        {/if}
+
         <label>
           <span>Email</span>
           <input bind:value={email} autocomplete="email" placeholder="you@example.com" type="email" />

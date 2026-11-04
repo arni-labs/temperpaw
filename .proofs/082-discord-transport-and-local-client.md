@@ -38,6 +38,9 @@
   `read_app_catalog`. An Admin here is the one account this server registers or
   one of its own in-process identities. The dashboard's approvals, app list and
   live events need these, and so does an owner's press on a decision.
+- The first account takes the operator credential. While a server has no account,
+  `/auth/register` answers 401 with a plain message unless the request presents
+  it, and the login page asks for it. Registration still closes after the first.
 
 No ADR: this applies the credential direction ADR-0157 already set.
 
@@ -112,6 +115,10 @@ serve. `/paw/infra/updates` answers 502 locally; it is not a kernel read.
   presses through the Discord handler, the client, the deployed edge and the
   kernel, on a real pending decision.
 - `an_owners_press_decides_a_real_decision`: deny and each approval scope.
+- `the_first_account_takes_the_operator_credential`: nobody, a made-up key, an
+  agent's credential and an internal capability are refused and leave registration
+  open; the operator credential creates the account; afterwards registration is
+  closed with the credential or without.
 - `a_signed_in_person_reaches_the_kernels_routes`: 401 with no session, 200 with
   one, and a route a tenant declared unchanged.
 - `owners::tests`, `discord::transport::tests`, `slack::transport::owner_tests`:

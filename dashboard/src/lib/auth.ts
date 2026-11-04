@@ -46,9 +46,10 @@ export async function checkAuth(): Promise<SessionUser> {
   return user;
 }
 
-export async function register(email: string, password: string): Promise<SessionUser> {
+export async function register(email: string, password: string, operatorKey: string): Promise<SessionUser> {
   const response = await authFetch('/auth/register', {
     method: 'POST',
+    headers: { authorization: `Bearer ${operatorKey}` },
     body: JSON.stringify({ email, password })
   });
   if (!response.ok) {
