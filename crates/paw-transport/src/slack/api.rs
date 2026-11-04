@@ -5,7 +5,7 @@
 use super::types::*;
 
 /// Slack API base URL.
-const SLACK_API_BASE: &str = "https://slack.com/api";
+pub(crate) const SLACK_API_BASE: &str = "https://slack.com/api";
 
 /// Call `auth.test` to verify the bot token and get the bot's user ID.
 pub(crate) async fn auth_test(

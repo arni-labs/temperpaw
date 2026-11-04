@@ -9,7 +9,7 @@
 
 pub mod types;
 
-mod api;
+pub(crate) mod api;
 mod socket;
 mod transport;
 

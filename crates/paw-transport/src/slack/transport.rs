@@ -13,9 +13,8 @@ use tokio::task::JoinHandle;
 use super::api;
 use super::socket;
 use super::types::*;
-use crate::{
-    PawApiClient, approval_body_for_scope, approval_scope_from_action, fetch_pending_decision,
-};
+use crate::owners::{Owners, apply_press};
+use crate::{PawApiClient, approval_scope_from_action};
 
 /// Configuration for the Slack transport.
 #[derive(Debug, Clone)]
@@ -39,6 +38,7 @@ pub struct SlackTransport {
     config: SlackConfig,
     api: PawApiClient,
     http: reqwest::Client,
+    owners: Owners,
     /// Channel entity ID in Paw (populated on startup).
     channel_entity_id: Arc<RwLock<Option<String>>>,
     /// Bot's own user ID (populated after auth.test call).
@@ -111,10 +111,12 @@ impl Drop for WebhookListenerGuard {
 impl SlackTransport {
     /// Create a new Slack transport.
     pub fn new(config: SlackConfig, api: PawApiClient) -> Self {
+        let http = reqwest::Client::new();
         Self {
+            owners: Owners::slack(http.clone(), config.bot_token.clone()),
             config,
             api,
-            http: reqwest::Client::new(),
+            http,
             channel_entity_id: Arc::new(RwLock::new(None)),
             bot_user_id: Arc::new(RwLock::new(String::new())),
         }
@@ -156,6 +158,7 @@ impl SlackTransport {
                     slack.user_name = %user_name,
                     "slack transport authenticated"
                 );
+                self.owners.report_source("slack", &user_id).await;
                 *self.bot_user_id.write().await = user_id;
             }
             Err(e) => {
@@ -339,11 +342,13 @@ impl SlackTransport {
         let api = self.api.clone();
         let http = self.http.clone();
         let bot_token = self.config.bot_token.clone();
+        let owners = self.owners.clone();
 
         socket::connect_and_run(url, |envelope| {
             let channel_entity_id = channel_entity_id.clone();
             let bot_user_id = bot_user_id.clone();
             let api = api.clone();
+            let owners = owners.clone();
             let http = http.clone();
             let bot_token = bot_token.clone();
 
@@ -354,6 +359,7 @@ impl SlackTransport {
                             envelope.payload,
                             &channel_entity_id,
                             &bot_user_id,
+                            &owners,
                             &api,
                             &http,
                             &bot_token,
@@ -361,10 +367,12 @@ impl SlackTransport {
                         .await;
                     }
                     "interactive" => {
-                        handle_interactive(envelope.payload, &api, &http, &bot_token).await;
+                        handle_interactive(envelope.payload, &owners, &api, &http, &bot_token)
+                            .await;
                     }
                     "slash_commands" => {
-                        handle_slash_command(envelope.payload, &channel_entity_id, &api).await;
+                        handle_slash_command(envelope.payload, &channel_entity_id, &owners, &api)
+                            .await;
                     }
                     other => {
                         log_slack_transport_event(SlackTransportEvent {
@@ -561,6 +569,7 @@ async fn handle_events_api(
     payload: serde_json::Value,
     channel_entity_id: &Arc<RwLock<Option<String>>>,
     bot_user_id: &Arc<RwLock<String>>,
+    owners: &Owners,
     api: &PawApiClient,
     http: &reqwest::Client,
     bot_token: &str,
@@ -644,6 +653,10 @@ async fn handle_events_api(
         return;
     }
 
+    let Some(owner) = owners.admit_or_answer(&user_id, &channel).await else {
+        return;
+    };
+
     // Dispatch Channel.ReceiveMessage — the WASM handles everything else.
     let entity_id = channel_entity_id.read().await.clone();
     let Some(entity_id) = entity_id else {
@@ -671,10 +684,7 @@ async fn handle_events_api(
         "content": text,
     });
 
-    match api
-        .dispatch_action("Channels", &entity_id, "Paw.Channel.ReceiveMessage", params)
-        .await
-    {
+    match api.receive_message(&owner, &entity_id, params).await {
         Ok(_) => {
             log_slack_transport_event(SlackTransportEvent {
                 operation: "receive_message",
@@ -717,6 +727,7 @@ async fn handle_events_api(
 /// Handle an interactive envelope (button clicks for approve/deny).
 async fn handle_interactive(
     payload: serde_json::Value,
+    owners: &Owners,
     api: &PawApiClient,
     http: &reqwest::Client,
     bot_token: &str,
@@ -784,6 +795,14 @@ async fn handle_interactive(
         .or(interaction.user.username.as_deref())
         .unwrap_or("unknown");
 
+    let admitted = match interaction.channel.as_ref() {
+        Some(channel) => owners.admit_or_answer(&reviewer_id, &channel.id).await,
+        None => owners.admit(&reviewer_id).await.ok(),
+    };
+    let Some(owner) = admitted else {
+        return;
+    };
+
     tracing::info!(
         observability_event = "temperpaw.transport",
         transport.name = "slack",
@@ -796,73 +815,7 @@ async fn handle_interactive(
         "slack approval interaction received"
     );
 
-    let base_url = api.config().base_url.clone();
-    let tenant = api.config().tenant.clone();
-    let (_success, status_line) = match action_type {
-        approval_action if approval_scope_from_action(approval_action).is_some() => {
-            let approve_url =
-                format!("{base_url}/api/tenants/{tenant}/decisions/{target_id}/approve");
-            let scope =
-                approval_scope_from_action(approval_action).expect("checked approval action above");
-            let decision = fetch_pending_decision(api, &base_url, &tenant, target_id)
-                .await
-                .ok()
-                .flatten();
-            match approval_body_for_scope(scope, decision.as_ref(), format!("slack:{reviewer_id}"))
-            {
-                Ok(body) => match api.raw_post(&approve_url, body).await {
-                    Ok(_) => (true, format!("Approval recorded by <@{reviewer_id}>")),
-                    Err(e) => (false, format!("Approval failed: {e}")),
-                },
-                Err(e) => (false, format!("Approval failed: {e}")),
-            }
-        }
-        "deny" => {
-            let deny_url = format!("{base_url}/api/tenants/{tenant}/decisions/{target_id}/deny");
-            let deny_body = serde_json::json!({
-                "decided_by": format!("slack:{reviewer_id}")
-            });
-            match api.raw_post(&deny_url, deny_body).await {
-                Ok(_) => (true, format!("Denial recorded by <@{reviewer_id}>")),
-                Err(e) => (false, format!("Deny failed: {e}")),
-            }
-        }
-        "plan_approve" => match api
-            .dispatch_action(
-                "Plans",
-                target_id,
-                "TemperPaw.Approve",
-                serde_json::json!({}),
-            )
-            .await
-        {
-            Ok(_) => (true, format!("Plan approved by <@{reviewer_id}>")),
-            Err(e) => (false, format!("Plan approval failed: {e}")),
-        },
-        "plan_request_changes" => {
-            let review_notes = format!(
-                "Changes requested by slack:{reviewer_id}. Review the plan, revise it, and resubmit for approval."
-            );
-            match api
-                .dispatch_action(
-                    "Plans",
-                    target_id,
-                    "TemperPaw.RequestChanges",
-                    serde_json::json!({ "review_notes": review_notes }),
-                )
-                .await
-            {
-                Ok(_) => (
-                    true,
-                    format!(
-                        "Plan changes requested by <@{reviewer_id}>. Additional details can be sent in-thread."
-                    ),
-                ),
-                Err(e) => (false, format!("Request changes failed: {e}")),
-            }
-        }
-        _ => (false, "Unknown action.".to_string()),
-    };
+    let (_success, status_line) = apply_press(api, &owner, "slack", action_type, target_id).await;
 
     // Session resume/fail is now handled by GovernanceDecision.DispatchCallback
     // effect — no transport-level orchestration needed.
@@ -937,6 +890,7 @@ async fn handle_interactive(
 async fn handle_slash_command(
     payload: serde_json::Value,
     channel_entity_id: &Arc<tokio::sync::RwLock<Option<String>>>,
+    owners: &Owners,
     api: &crate::PawApiClient,
 ) {
     let raw_command = payload
@@ -975,6 +929,10 @@ async fn handle_slash_command(
         return;
     }
 
+    let Some(owner) = owners.admit_or_answer(user_id, channel_id).await else {
+        return;
+    };
+
     let entity_id = channel_entity_id.read().await.clone();
     let Some(entity_id) = entity_id else {
         log_slack_transport_event(SlackTransportEvent {
@@ -1000,10 +958,7 @@ async fn handle_slash_command(
         "command": command,
     });
 
-    match api
-        .dispatch_action("Channels", &entity_id, "Paw.Channel.ReceiveMessage", params)
-        .await
-    {
+    match api.receive_message(&owner, &entity_id, params).await {
         Ok(_) => {
             log_slack_transport_event(SlackTransportEvent {
                 operation: "slash_command",
@@ -1032,5 +987,196 @@ async fn handle_slash_command(
                 error: Some(&e),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use std::sync::Mutex;
+
+    use axum::{Json, Router};
+    use serde_json::json;
+
+    use super::*;
+    use crate::owners::Refusal;
+    use crate::owners::tests::{Told, only, recording, unanswered};
+
+    #[derive(Clone, Default)]
+    struct CallLog(Arc<Mutex<Vec<String>>>);
+
+    impl CallLog {
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    async fn api_with_log() -> (PawApiClient, CallLog) {
+        let log = CallLog::default();
+        let recorded = log.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let recorded = recorded.clone();
+            async move {
+                recorded
+                    .0
+                    .lock()
+                    .unwrap()
+                    .push(format!("{} {}", request.method(), request.uri()));
+                Json(json!({}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (
+            PawApiClient::new(crate::PawApiConfig {
+                base_url: format!("http://{address}"),
+                tenant: "default".to_string(),
+                api_key: None,
+            }),
+            log,
+        )
+    }
+
+    fn dm_from(user: &str) -> serde_json::Value {
+        json!({
+            "event": {
+                "type": "message",
+                "user": user,
+                "text": "hello",
+                "channel": "D1",
+                "ts": "1.1",
+                "channel_type": "im"
+            }
+        })
+    }
+
+    fn press_by(user: &str, action_id: &str) -> serde_json::Value {
+        json!({
+            "type": "block_actions",
+            "user": { "id": user },
+            "actions": [{ "action_id": action_id, "type": "button" }],
+            "channel": { "id": "D1" }
+        })
+    }
+
+    fn slash_by(user: &str) -> serde_json::Value {
+        json!({
+            "command": "/plan",
+            "text": "do a thing",
+            "user_id": user,
+            "channel_id": "D1",
+            "trigger_id": "t1"
+        })
+    }
+
+    async fn send_dm(owners: &Owners, api: &PawApiClient, user: &str) {
+        let entity = Arc::new(RwLock::new(Some("ch-1".to_string())));
+        let bot = Arc::new(RwLock::new("bot".to_string()));
+        handle_events_api(
+            dm_from(user),
+            &entity,
+            &bot,
+            owners,
+            api,
+            &reqwest::Client::new(),
+            "token",
+        )
+        .await;
+    }
+
+    async fn press(owners: &Owners, api: &PawApiClient, user: &str, action_id: &str) {
+        handle_interactive(
+            press_by(user, action_id),
+            owners,
+            api,
+            &reqwest::Client::new(),
+            "token",
+        )
+        .await;
+    }
+
+    async fn slash(owners: &Owners, api: &PawApiClient, user: &str) {
+        let entity = Arc::new(tokio::sync::RwLock::new(Some("ch-1".to_string())));
+        handle_slash_command(slash_by(user), &entity, owners, api).await;
+    }
+
+    fn told_once(told: &Told, refusal: Refusal) {
+        assert_eq!(
+            told.lock().unwrap().clone(),
+            [("D1".to_string(), refusal.answer().to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dm_comes_only_from_an_owner() {
+        let (api, log) = api_with_log().await;
+
+        let (owners, told) = recording(only("U-owner"));
+        send_dm(&owners, &api, "U-else").await;
+        assert_eq!(log.calls(), Vec::<String>::new());
+        told_once(&told, Refusal::NotOwner);
+
+        let (owners, told) = recording(unanswered());
+        send_dm(&owners, &api, "U-owner").await;
+        assert_eq!(log.calls(), Vec::<String>::new());
+        told_once(&told, Refusal::OwnersUnknown);
+
+        send_dm(&only("U-owner"), &api, "U-owner").await;
+        assert!(
+            log.calls()[0].contains("ReceiveMessage"),
+            "{:?}",
+            log.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_press_applies_only_from_an_owner() {
+        let (api, log) = api_with_log().await;
+
+        for action_id in [
+            "approve_always:PD-1",
+            "approve_session:PD-1",
+            "approve_once:PD-1",
+            "deny:PD-1",
+            "plan_approve:plan-1",
+            "plan_request_changes:plan-1",
+        ] {
+            let (owners, told) = recording(only("U-owner"));
+            press(&owners, &api, "U-else", action_id).await;
+            told_once(&told, Refusal::NotOwner);
+
+            let (owners, told) = recording(unanswered());
+            press(&owners, &api, "U-owner", action_id).await;
+            told_once(&told, Refusal::OwnersUnknown);
+        }
+        assert_eq!(log.calls(), Vec::<String>::new());
+
+        press(&only("U-owner"), &api, "U-owner", "deny:PD-1").await;
+        assert!(
+            log.calls()[0].contains("/decisions/PD-1/deny"),
+            "{:?}",
+            log.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slash_command_comes_only_from_an_owner() {
+        let (api, log) = api_with_log().await;
+
+        let (owners, told) = recording(only("U-owner"));
+        slash(&owners, &api, "U-else").await;
+        told_once(&told, Refusal::NotOwner);
+
+        let (owners, told) = recording(unanswered());
+        slash(&owners, &api, "U-owner").await;
+        told_once(&told, Refusal::OwnersUnknown);
+        assert_eq!(log.calls(), Vec::<String>::new());
+
+        slash(&only("U-owner"), &api, "U-owner").await;
+        assert!(
+            log.calls()[0].contains("ReceiveMessage"),
+            "{:?}",
+            log.calls()
+        );
     }
 }

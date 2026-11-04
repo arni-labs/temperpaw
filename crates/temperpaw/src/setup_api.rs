@@ -927,6 +927,9 @@ fn discord_connect_params_from_vault(
 /// would stop the retry timer when their session ends, so the moves name their
 /// own principal. `RetryDue` fires as this principal too: a timer fires as
 /// whoever armed it.
+///
+/// Why Admin: it is this server acting on its own transport, and it never leaves
+/// this process. The moves it makes are the ones written in this file.
 fn discord_reconcile_agent_context() -> AgentContext {
     let mut security_context = SecurityContext::anonymous();
     security_context.principal = Principal {

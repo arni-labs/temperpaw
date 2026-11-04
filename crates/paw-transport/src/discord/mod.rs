@@ -9,7 +9,7 @@
 
 pub mod types;
 
-mod gateway;
+pub(crate) mod gateway;
 mod observer;
 mod transport;
 

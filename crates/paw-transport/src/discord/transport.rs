@@ -18,10 +18,8 @@ use tracing::Instrument;
 
 use super::gateway::*;
 use super::types::*;
-use crate::{
-    PawApiClient, apply_current_trace_context, approval_body_for_scope, approval_scope_from_action,
-    fetch_pending_decision,
-};
+use crate::owners::{Owner, Owners, apply_press};
+use crate::{PawApiClient, apply_current_trace_context, approval_scope_from_action};
 
 /// Configuration for the Discord transport.
 #[derive(Debug, Clone)]
@@ -51,6 +49,7 @@ pub struct DiscordTransport {
     config: DiscordConfig,
     api: PawApiClient,
     http: reqwest::Client,
+    owners: Owners,
     gateway: GatewayState,
     /// Channel entity ID in Paw (populated on startup).
     channel_entity_id: Arc<RwLock<Option<String>>>,
@@ -529,10 +528,12 @@ async fn enrich_content_with_attachments(
 impl DiscordTransport {
     /// Create a new Discord transport.
     pub fn new(config: DiscordConfig, api: PawApiClient) -> Self {
+        let http = reqwest::Client::new();
         Self {
+            owners: Owners::discord(http.clone(), config.bot_token.clone()),
             config,
             api,
-            http: reqwest::Client::new(),
+            http,
             gateway: GatewayState::new(),
             channel_entity_id: Arc::new(RwLock::new(None)),
             reply_webhook_url: Arc::new(RwLock::new(None)),
@@ -878,6 +879,7 @@ impl DiscordTransport {
 
     async fn dispatch_receive_message_with_recovery(
         &self,
+        by: &Owner,
         params: serde_json::Value,
     ) -> Result<String, String> {
         let channel_entity_id = self.channel_entity_id.read().await.clone().ok_or_else(|| {
@@ -886,12 +888,7 @@ impl DiscordTransport {
 
         match self
             .api
-            .dispatch_action(
-                "Channels",
-                &channel_entity_id,
-                "Paw.Channel.ReceiveMessage",
-                params.clone(),
-            )
+            .receive_message(by, &channel_entity_id, params.clone())
             .await
         {
             Ok(_) => Ok(channel_entity_id),
@@ -906,12 +903,7 @@ impl DiscordTransport {
                     })?;
 
                 self.api
-                    .dispatch_action(
-                        "Channels",
-                        &recovered_channel_entity_id,
-                        "Paw.Channel.ReceiveMessage",
-                        params,
-                    )
+                    .receive_message(by, &recovered_channel_entity_id, params)
                     .await
                     .map(|_| recovered_channel_entity_id)
                     .map_err(|retry_error| {
@@ -984,6 +976,9 @@ impl DiscordTransport {
                     if author_id == bot_id || is_bot || content.is_empty() {
                         continue;
                     }
+                    let Ok(owner) = self.owners.admit(author_id).await else {
+                        continue;
+                    };
 
                     let replay_span = tracing::info_span!(
                         "discord.receive",
@@ -1026,7 +1021,10 @@ impl DiscordTransport {
                     });
                     apply_current_trace_context(&mut params);
 
-                    match self.dispatch_receive_message_with_recovery(params).await {
+                    match self
+                        .dispatch_receive_message_with_recovery(&owner, params)
+                        .await
+                    {
                         Ok(_) => {
                             total_caught_up += 1;
                             let mut c = self.last_message_cursor.write().await;
@@ -1221,6 +1219,8 @@ impl DiscordTransport {
                         if let Some(ready_signal) = self.ready_signal.as_ref() {
                             let _ = ready_signal.send(true);
                         }
+                        let bot_id = self.gateway.bot_user_id.read().await.clone();
+                        self.owners.report_source("discord", &bot_id).await;
                         // Catch up on messages missed while offline.
                         self.catch_up_missed_dms().await;
                     }
@@ -1276,6 +1276,14 @@ impl DiscordTransport {
         if msg.guild_id.is_some() {
             return;
         }
+
+        let Some(owner) = self
+            .owners
+            .admit_or_answer(&msg.author.id, &msg.channel_id)
+            .await
+        else {
+            return;
+        };
 
         let receive_span = tracing::info_span!(
             "discord.receive",
@@ -1340,7 +1348,10 @@ impl DiscordTransport {
         });
         apply_current_trace_context(&mut params);
 
-        match self.dispatch_receive_message_with_recovery(params).await {
+        match self
+            .dispatch_receive_message_with_recovery(&owner, params)
+            .await
+        {
             Ok(channel_entity_id) => {
                 tracing::info!(
                     channel_entity_id = %channel_entity_id,
@@ -1397,6 +1408,7 @@ impl DiscordTransport {
             bot_token: String,
             dm_channels: Arc<RwLock<BTreeMap<String, String>>>,
             api: crate::PawApiClient,
+            owners: Owners,
             public_key: String,
             channel_entity_id: Arc<RwLock<Option<String>>>,
             typing_cancels: Arc<RwLock<BTreeMap<String, tokio::sync::watch::Sender<bool>>>>,
@@ -1579,28 +1591,26 @@ impl DiscordTransport {
             headers: axum::http::HeaderMap,
             body: axum::body::Bytes,
         ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
-            // Verify Ed25519 signature
-            if !state.public_key.is_empty() {
-                let signature = headers
-                    .get("x-signature-ed25519")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                let timestamp = headers
-                    .get("x-signature-timestamp")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
+            // Verify Ed25519 signature: the sender id below is only as good as it.
+            let signature = headers
+                .get("x-signature-ed25519")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let timestamp = headers
+                .get("x-signature-timestamp")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
 
-                if !verify_discord_signature(&state.public_key, signature, timestamp, &body) {
-                    tracing::warn!(
-                        has_signature = !signature.is_empty(),
-                        has_timestamp = !timestamp.is_empty(),
-                        "discord interaction signature verification failed"
-                    );
-                    return (
-                        axum::http::StatusCode::UNAUTHORIZED,
-                        axum::Json(serde_json::json!({"error": "invalid signature"})),
-                    );
-                }
+            if !verify_discord_signature(&state.public_key, signature, timestamp, &body) {
+                tracing::warn!(
+                    has_signature = !signature.is_empty(),
+                    has_timestamp = !timestamp.is_empty(),
+                    "discord interaction signature verification failed"
+                );
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({"error": "invalid signature"})),
+                );
             }
 
             let payload: InteractionPayload = match serde_json::from_slice(&body) {
@@ -1674,6 +1684,19 @@ impl DiscordTransport {
                     })
                     .unwrap_or_default();
 
+                let owner = match state.owners.admit(&user_id).await {
+                    Ok(owner) => owner,
+                    Err(refusal) => {
+                        return (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "type": 4,
+                                "data": { "content": refusal.answer(), "flags": 64 }
+                            })),
+                        );
+                    }
+                };
+
                 // Store DM channel mapping for reply routing
                 let channel_id = payload.channel_id.clone().unwrap_or_default();
                 let preview = truncate(&task_text, 80);
@@ -1729,15 +1752,7 @@ impl DiscordTransport {
                         "command": command,
                     });
                     apply_current_trace_context(&mut params);
-                    if let Err(e) = api
-                        .dispatch_action(
-                            "Channels",
-                            &entity_id,
-                            "Paw.Channel.ReceiveMessage",
-                            params,
-                        )
-                        .await
-                    {
+                    if let Err(e) = api.receive_message(&owner, &entity_id, params).await {
                         tracing::warn!(
                             command = %command,
                             author_id = %user_id,
@@ -1828,8 +1843,21 @@ impl DiscordTransport {
                         .and_then(|u| u.get("id"))
                         .and_then(|id| id.as_str())
                 })
-                .unwrap_or("unknown")
+                .unwrap_or_default()
                 .to_string();
+
+            let owner = match state.owners.admit(&reviewer_id).await {
+                Ok(owner) => owner,
+                Err(refusal) => {
+                    return (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "type": 4,
+                            "data": { "content": refusal.answer(), "flags": 64 }
+                        })),
+                    );
+                }
+            };
 
             tracing::info!(
                 action,
@@ -1843,15 +1871,11 @@ impl DiscordTransport {
             let api = state.api.clone();
             let target_id_owned = target_id.to_string();
             let action_owned = action.to_string();
-            let reviewer_id_owned = reviewer_id.clone();
             let token = payload.token.clone();
             let app_id = payload.application_id.clone().unwrap_or_default();
             let http = state.http.clone();
 
             tokio::spawn(async move {
-                let base_url = api.config().base_url.clone();
-                let tenant = api.config().tenant.clone();
-
                 // Read the original message content so we can preserve it
                 let original_content = {
                     let msg_url = format!(
@@ -1870,80 +1894,8 @@ impl DiscordTransport {
                     }
                 };
 
-                let (_success, status_line) = match action_owned.as_str() {
-                    approval_action if approval_scope_from_action(approval_action).is_some() => {
-                        let approve_url = format!(
-                            "{base_url}/api/tenants/{tenant}/decisions/{target_id_owned}/approve"
-                        );
-                        let scope = approval_scope_from_action(approval_action)
-                            .expect("checked approval action above");
-                        let decision =
-                            fetch_pending_decision(&api, &base_url, &tenant, &target_id_owned)
-                                .await
-                                .ok()
-                                .flatten();
-                        match approval_body_for_scope(
-                            scope,
-                            decision.as_ref(),
-                            format!("discord:{reviewer_id_owned}"),
-                        ) {
-                            Ok(body) => match api.raw_post(&approve_url, body).await {
-                                Ok(_) => {
-                                    (true, format!("Approval recorded by <@{reviewer_id_owned}>"))
-                                }
-                                Err(e) => (false, format!("Approval failed: {e}")),
-                            },
-                            Err(e) => (false, format!("Approval failed: {e}")),
-                        }
-                    }
-                    "deny" => {
-                        let deny_url = format!(
-                            "{base_url}/api/tenants/{tenant}/decisions/{target_id_owned}/deny"
-                        );
-                        let deny_body = serde_json::json!({
-                            "decided_by": format!("discord:{reviewer_id_owned}")
-                        });
-                        match api.raw_post(&deny_url, deny_body).await {
-                            Ok(_) => (true, format!("Denial recorded by <@{reviewer_id_owned}>")),
-                            Err(e) => (false, format!("Deny failed: {e}")),
-                        }
-                    }
-                    "plan_approve" => match api
-                        .dispatch_action(
-                            "Plans",
-                            &target_id_owned,
-                            "TemperPaw.Approve",
-                            serde_json::json!({}),
-                        )
-                        .await
-                    {
-                        Ok(_) => (true, format!("Plan approved by <@{reviewer_id_owned}>")),
-                        Err(e) => (false, format!("Plan approval failed: {e}")),
-                    },
-                    "plan_request_changes" => {
-                        let review_notes = format!(
-                            "Changes requested by discord:{reviewer_id_owned}. Review the plan, revise it, and resubmit for approval."
-                        );
-                        match api
-                            .dispatch_action(
-                                "Plans",
-                                &target_id_owned,
-                                "TemperPaw.RequestChanges",
-                                serde_json::json!({ "review_notes": review_notes }),
-                            )
-                            .await
-                        {
-                            Ok(_) => (
-                                true,
-                                format!(
-                                    "Plan changes requested by <@{reviewer_id_owned}>. Additional details can be sent in-thread."
-                                ),
-                            ),
-                            Err(e) => (false, format!("Request changes failed: {e}")),
-                        }
-                    }
-                    _ => (false, "Unknown action.".to_string()),
-                };
+                let (_success, status_line) =
+                    apply_press(&api, &owner, "discord", &action_owned, &target_id_owned).await;
 
                 // Build the updated message: original context + decision result
                 let message = if original_content.is_empty() {
@@ -2001,6 +1953,7 @@ impl DiscordTransport {
             bot_token: self.config.bot_token.clone(),
             dm_channels: self.dm_channels.clone(),
             api: self.api.clone(),
+            owners: self.owners.clone(),
             public_key: self.config.public_key.clone(),
             channel_entity_id: self.channel_entity_id.clone(),
             typing_cancels: self.typing_cancels.clone(),
@@ -2280,6 +2233,273 @@ mod tests {
         );
     }
 
+    /// Records every call a transport makes to this server's API.
+    #[derive(Clone, Default)]
+    struct CallLog(Arc<Mutex<Vec<String>>>);
+
+    impl CallLog {
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        async fn wait_for(&self, part: &str) {
+            for _ in 0..200 {
+                if self.calls().iter().any(|call| call.contains(part)) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("no call naming {part}: {:?}", self.calls());
+        }
+    }
+
+    /// A transport bound to a Channel, owned by `owner-1` by default, whose
+    /// calls land in the log, with the key that signs its interactions.
+    async fn owned_transport() -> (DiscordTransport, CallLog, ed25519_dalek::SigningKey) {
+        let log = CallLog::default();
+        let recorded = log.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let recorded = recorded.clone();
+            async move {
+                recorded
+                    .0
+                    .lock()
+                    .unwrap()
+                    .push(format!("{} {}", request.method(), request.uri()));
+                Json(json!({}))
+            }
+        });
+        let base_url = spawn_test_server(app).await;
+        let api = crate::PawApiClient::new(crate::PawApiConfig {
+            base_url,
+            tenant: "default".to_string(),
+            api_key: None,
+        });
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut transport = DiscordTransport::new(
+            DiscordConfig {
+                bot_token: "token".to_string(),
+                intents: intents::DEFAULT,
+                webhook_port: 0,
+                public_key: hex::encode(key.verifying_key().to_bytes()),
+                guild_id: None,
+                feed_channel_id: None,
+                forum_channel_id: None,
+            },
+            api,
+        );
+        transport.owners = crate::owners::tests::only("owner-1");
+        *transport.channel_entity_id.write().await = Some("ch-1".to_string());
+        (transport, log, key)
+    }
+
+    fn dm_from(author_id: &str) -> serde_json::Value {
+        json!({
+            "id": "msg-1",
+            "channel_id": "dm-1",
+            "author": { "id": author_id, "username": "someone" },
+            "content": "hello"
+        })
+    }
+
+    fn press_by(user_id: &str, custom_id: &str) -> serde_json::Value {
+        json!({
+            "id": "i-1",
+            "type": 3,
+            "token": "interaction-token",
+            "application_id": "app-1",
+            "channel_id": "dm-1",
+            "user": { "id": user_id, "username": "someone" },
+            "data": { "custom_id": custom_id }
+        })
+    }
+
+    fn slash_by(user_id: &str) -> serde_json::Value {
+        json!({
+            "id": "i-2",
+            "type": 2,
+            "token": "interaction-token",
+            "application_id": "app-1",
+            "channel_id": "dm-1",
+            "user": { "id": user_id, "username": "someone" },
+            "data": {
+                "name": "plan",
+                "options": [{ "name": "task", "value": "do a thing" }]
+            }
+        })
+    }
+
+    async fn post_interaction(
+        port: u16,
+        key: &ed25519_dalek::SigningKey,
+        interaction: &serde_json::Value,
+    ) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+
+        let body = serde_json::to_vec(interaction).unwrap();
+        let timestamp = "1700000000";
+        let signature = key.sign(&[timestamp.as_bytes(), &body].concat());
+        reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/interaction"))
+            .header("x-signature-ed25519", hex::encode(signature.to_bytes()))
+            .header("x-signature-timestamp", timestamp)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    fn answer_of(response: &serde_json::Value) -> &str {
+        response["data"]["content"].as_str().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_dm_from_anyone_but_an_owner_is_answered_and_starts_nothing() {
+        let (mut transport, log, _) = owned_transport().await;
+        let (owners, told) = crate::owners::tests::recording(crate::owners::tests::only("owner-1"));
+        transport.owners = owners;
+
+        transport
+            .handle_message_create(dm_from("someone-else"))
+            .await;
+        assert_eq!(log.calls(), Vec::<String>::new());
+        assert_eq!(
+            told.lock().unwrap().clone(),
+            [(
+                "dm-1".to_string(),
+                crate::owners::Refusal::NotOwner.answer().to_string()
+            )]
+        );
+
+        transport.handle_message_create(dm_from("owner-1")).await;
+        log.wait_for("ReceiveMessage").await;
+        assert_eq!(told.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn no_dm_starts_anything_while_owners_are_unknown() {
+        let (mut transport, log, _) = owned_transport().await;
+        let (owners, told) = crate::owners::tests::recording(crate::owners::tests::unanswered());
+        transport.owners = owners;
+
+        transport.handle_message_create(dm_from("owner-1")).await;
+        assert_eq!(log.calls(), Vec::<String>::new());
+        assert_eq!(
+            told.lock().unwrap().clone(),
+            [(
+                "dm-1".to_string(),
+                crate::owners::Refusal::OwnersUnknown.answer().to_string()
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bots_own_message_is_never_answered() {
+        let (mut transport, log, _) = owned_transport().await;
+        let (owners, told) = crate::owners::tests::recording(crate::owners::tests::only("owner-1"));
+        transport.owners = owners;
+
+        let mut message = dm_from("some-bot");
+        message["author"]["bot"] = json!(true);
+        transport.handle_message_create(message).await;
+        assert_eq!(log.calls(), Vec::<String>::new());
+        assert_eq!(told.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_press_from_anyone_but_an_owner_is_answered_and_applies_nothing() {
+        let (transport, log, key) = owned_transport().await;
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+
+        for custom_id in [
+            "approve_always:PD-1",
+            "approve_session:PD-1",
+            "approve_once:PD-1",
+            "deny:PD-1",
+            "plan_approve:plan-1",
+            "plan_request_changes:plan-1",
+        ] {
+            let response =
+                post_interaction(listener.port(), &key, &press_by("someone-else", custom_id)).await;
+            assert_eq!(
+                answer_of(&response),
+                crate::owners::Refusal::NotOwner.answer(),
+                "{custom_id}"
+            );
+            assert_eq!(response["data"]["flags"], 64, "{custom_id}");
+        }
+        assert_eq!(log.calls(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn an_owners_press_applies() {
+        let (transport, log, key) = owned_transport().await;
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+
+        post_interaction(listener.port(), &key, &press_by("owner-1", "deny:PD-1")).await;
+        log.wait_for("/decisions/PD-1/deny").await;
+
+        post_interaction(
+            listener.port(),
+            &key,
+            &press_by("owner-1", "plan_approve:plan-1"),
+        )
+        .await;
+        log.wait_for("TemperPaw.Approve").await;
+    }
+
+    #[tokio::test]
+    async fn no_press_applies_while_owners_are_unknown() {
+        let (mut transport, log, key) = owned_transport().await;
+        transport.owners = crate::owners::tests::unanswered();
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+
+        let response = post_interaction(
+            listener.port(),
+            &key,
+            &press_by("owner-1", "approve_always:PD-1"),
+        )
+        .await;
+        assert_eq!(
+            answer_of(&response),
+            crate::owners::Refusal::OwnersUnknown.answer()
+        );
+        assert_eq!(log.calls(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_slash_command_comes_only_from_an_owner() {
+        let (transport, log, key) = owned_transport().await;
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+
+        let response = post_interaction(listener.port(), &key, &slash_by("someone-else")).await;
+        assert_eq!(
+            answer_of(&response),
+            crate::owners::Refusal::NotOwner.answer()
+        );
+        assert_eq!(log.calls(), Vec::<String>::new());
+
+        let response = post_interaction(listener.port(), &key, &slash_by("owner-1")).await;
+        assert_eq!(response["type"], 5);
+        log.wait_for("ReceiveMessage").await;
+    }
+
+    #[tokio::test]
+    async fn an_interaction_without_a_key_to_check_it_is_refused() {
+        let (mut transport, log, key) = owned_transport().await;
+        transport.config.public_key = String::new();
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+
+        let response =
+            post_interaction(listener.port(), &key, &press_by("owner-1", "deny:PD-1")).await;
+        assert_eq!(response["error"], "invalid signature");
+        assert_eq!(log.calls(), Vec::<String>::new());
+    }
+
     #[tokio::test]
     async fn receive_message_reboots_archived_channel_binding_and_retries() {
         let probe = ArchivedRecoveryProbe::default();
@@ -2356,13 +2576,20 @@ mod tests {
         *transport.reply_webhook_url.write().await =
             Some("http://127.0.0.1:3488/reply".to_string());
 
+        let owner = crate::owners::tests::only("user_1")
+            .admit("user_1")
+            .await
+            .unwrap();
         let channel_id = transport
-            .dispatch_receive_message_with_recovery(json!({
-                "message_id": "msg_1",
-                "author_id": "user_1",
-                "thread_id": "user_1",
-                "content": "hello"
-            }))
+            .dispatch_receive_message_with_recovery(
+                &owner,
+                json!({
+                    "message_id": "msg_1",
+                    "author_id": "user_1",
+                    "thread_id": "user_1",
+                    "content": "hello"
+                }),
+            )
             .await
             .expect("archived Channel recovery should retry ReceiveMessage");
 

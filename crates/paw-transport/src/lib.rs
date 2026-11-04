@@ -8,6 +8,7 @@
 //! No dependency on paw-server internals. Communicates via HTTP only.
 
 pub mod discord;
+pub mod owners;
 pub mod slack;
 pub mod webhook;
 
@@ -323,6 +324,23 @@ impl PawApiClient {
             .await
             .map(|bytes| bytes.to_vec())
             .map_err(|e| format!("read response bytes: {e}"))
+    }
+
+    /// Hand a Channel a message an owner sent. Every transport's messages and
+    /// commands come in through here.
+    pub async fn receive_message(
+        &self,
+        _by: &owners::Owner,
+        channel_entity_id: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.dispatch_action(
+            "Channels",
+            channel_entity_id,
+            "Paw.Channel.ReceiveMessage",
+            params,
+        )
+        .await
     }
 
     /// Dispatch a bound action on an entity via OData.
