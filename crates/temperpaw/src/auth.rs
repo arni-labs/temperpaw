@@ -368,7 +368,8 @@ const OWNER_POLICY_ID: &str = "temperpaw-owner-approvals-and-reads";
 
 /// What the kernel asks of whoever approves requests and reads this server's
 /// activity, and grants to nobody by default: the dashboard's approvals, app
-/// list and live events, and an owner's press through a transport.
+/// list and live events, an owner's press through a transport, and the record of
+/// work a session started by a transport writes when it ends.
 ///
 /// An Admin here is the one account this server registers (the first takes the
 /// operator credential, and registration closes after it) or one of this server's
@@ -381,7 +382,8 @@ const OWNER_CEDAR: &str = r#"permit(
     Action::"manage_policies",
     Action::"read_events",
     Action::"read_agents",
-    Action::"read_app_catalog"
+    Action::"read_app_catalog",
+    Action::"write_trajectories"
   ],
   resource
 );"#;
@@ -2002,6 +2004,18 @@ mod tests {
                 .unwrap();
             assert_eq!(signed_in.status(), StatusCode::OK, "{target}");
         }
+
+        // Authorized, the kernel goes on to read the upload, so an empty one is 400.
+        let url = format!("{base_url}/api/ots/trajectories");
+        let anonymous = http.post(&url).send().await.unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let signed_in = http
+            .post(&url)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(signed_in.status(), StatusCode::BAD_REQUEST);
 
         for target in [
             "/tdata/AgentCredentials?$top=1",

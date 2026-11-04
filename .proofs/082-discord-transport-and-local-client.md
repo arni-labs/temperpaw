@@ -34,10 +34,11 @@
 - A dashboard session reaches the kernel's declared routes: the edge presents a
   single-use capability bound to that request and naming the signed-in person.
 - TemperPaw seeds one Cedar permit at boot, `temperpaw-owner-approvals-and-reads`,
-  giving an Admin `manage_policies`, `read_events`, `read_agents` and
-  `read_app_catalog`. An Admin here is the one account this server registers or
-  one of its own in-process identities. The dashboard's approvals, app list and
-  live events need these, and so does an owner's press on a decision.
+  giving an Admin `manage_policies`, `read_events`, `read_agents`,
+  `read_app_catalog` and `write_trajectories`. An Admin here is the one account
+  this server registers or one of its own in-process identities. The dashboard's
+  approvals, app list and live events need these, an owner's press on a decision
+  does too, and a session a transport started needs the last to record its work.
 - The first account takes the operator credential. While a server has no account,
   `/auth/register` answers 401 with a plain message unless the request presents
   it, and the login page asks for it. Registration still closes after the first.

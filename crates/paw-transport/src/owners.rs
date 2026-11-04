@@ -186,23 +186,32 @@ impl Owners {
         if sender_id.is_empty() {
             return Err(Refusal::NotOwner);
         }
-        let answer =
-            tokio::time::timeout(LOOKUP_BUDGET, (self.lookup)(sender_id.to_string())).await;
-        match answer {
-            Ok(Ok(true)) => Ok(Owner {
+        match self.provider_says(sender_id).await {
+            Some(true) => Ok(Owner {
                 id: sender_id.to_string(),
             }),
-            Ok(Ok(false)) => {
+            Some(false) => {
                 tracing::info!(sender_id, "transport refused a sender who is not an owner");
                 Err(Refusal::NotOwner)
             }
+            None => Err(Refusal::OwnersUnknown),
+        }
+    }
+
+    /// The provider's answer on whether `sender_id` owns this bot, or `None` if
+    /// it gave none in time.
+    async fn provider_says(&self, sender_id: &str) -> Option<bool> {
+        let answer =
+            tokio::time::timeout(LOOKUP_BUDGET, (self.lookup)(sender_id.to_string())).await;
+        match answer {
+            Ok(Ok(owns)) => Some(owns),
             Ok(Err(error)) => {
                 tracing::warn!(sender_id, %error, "transport could not confirm the bot's owners");
-                Err(Refusal::OwnersUnknown)
+                None
             }
             Err(_) => {
                 tracing::warn!(sender_id, "transport owner lookup ran out of time");
-                Err(Refusal::OwnersUnknown)
+                None
             }
         }
     }
@@ -221,17 +230,17 @@ impl Owners {
         }
     }
 
-    /// Say at startup whether the provider answers, using an id that is never
-    /// an owner, so a lookup that cannot work shows before anyone is refused.
+    /// Say at startup whether the provider answers, asking about the bot's own
+    /// id, so a lookup that cannot work shows before anyone is refused.
     pub async fn report_source(&self, transport: &str, bot_user_id: &str) {
-        match self.admit(bot_user_id).await {
-            Err(Refusal::OwnersUnknown) => {
+        match self.provider_says(bot_user_id).await {
+            None => {
                 tracing::warn!(
                     transport,
                     "transport owner source is not answering; every sender is refused until it does"
                 );
             }
-            Ok(_) | Err(Refusal::NotOwner) => {
+            Some(_) => {
                 tracing::info!(transport, "transport owner source is answering");
             }
         }
@@ -474,6 +483,42 @@ pub(crate) mod tests {
         ))
         .await;
         Owners::slack_at(reqwest::Client::new(), "token".to_string(), base)
+    }
+
+    async fn startup_log(owners: Owners) -> String {
+        #[derive(Clone, Default)]
+        struct Logged(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Logged {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logged = Logged::default();
+        let writer = logged.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        owners.report_source("discord", "the_bot").await;
+        String::from_utf8(logged.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_startup_check_says_whether_the_provider_answers_and_refuses_nobody() {
+        let answering = startup_log(only("owner")).await;
+        assert!(
+            answering.contains("owner source is answering"),
+            "{answering}"
+        );
+        assert!(!answering.contains("refused"), "{answering}");
+
+        let silent = startup_log(unanswered()).await;
+        assert!(silent.contains("owner source is not answering"), "{silent}");
     }
 
     #[tokio::test]
