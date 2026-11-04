@@ -66,7 +66,7 @@ pub struct DiscordTransport {
     ready_signal: Option<watch::Sender<bool>>,
 }
 
-struct WebhookListenerGuard {
+pub struct WebhookListenerGuard {
     port: u16,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
@@ -81,7 +81,7 @@ impl WebhookListenerGuard {
         }
     }
 
-    fn port(&self) -> u16 {
+    pub fn port(&self) -> u16 {
         self.port
     }
 }
@@ -527,6 +527,12 @@ async fn enrich_content_with_attachments(
 
 impl DiscordTransport {
     /// Create a new Discord transport.
+    /// Take owners from somewhere other than Discord's application record.
+    pub fn with_owners(mut self, owners: Owners) -> Self {
+        self.owners = owners;
+        self
+    }
+
     pub fn new(config: DiscordConfig, api: PawApiClient) -> Self {
         let http = reqwest::Client::new();
         Self {
@@ -1398,7 +1404,7 @@ impl DiscordTransport {
     /// Routes:
     /// - POST /reply — receives reply callbacks from send_reply/request_approval WASM
     /// - POST /interaction — receives Discord button click interactions
-    async fn spawn_webhook_listener(&self) -> Result<WebhookListenerGuard, String> {
+    pub async fn spawn_webhook_listener(&self) -> Result<WebhookListenerGuard, String> {
         use super::types::*;
         use axum::{Router, extract::State, routing::post};
 

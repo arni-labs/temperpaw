@@ -1217,6 +1217,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             );
         }
 
+        crate::auth::seed_owner_permit(&state, &tenant)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to seed owner permit for '{tenant}': {e}"))?;
+
         // ARN-255: activate kernel JWT verification for this deployment by
         // registering the trusted issuer from the environment. This dispatches
         // RegisterIssuer on the TrustedIssuer entity, which requires that spec

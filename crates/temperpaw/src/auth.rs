@@ -348,6 +348,75 @@ fn authenticated_context(tenant: &str, principal: Principal) -> AuthenticatedReq
     AuthenticatedRequestContext::new(TenantId::new(tenant), security_context)
 }
 
+/// Durable id of [`OWNER_CEDAR`] in the tenant's policy.
+const OWNER_POLICY_ID: &str = "temperpaw-owner-approvals-and-reads";
+
+/// What the kernel asks of whoever approves requests and reads this server's
+/// activity, and grants to nobody by default: the dashboard's approvals, app
+/// list and live events, and an owner's press through a transport.
+///
+/// An Admin here is the one account this server registers (registration closes
+/// after the first) or one of this server's own in-process identities, the
+/// transports and the transport reconcile. That is one trust boundary: whoever
+/// runs this server, against everyone outside it. Agents hold no such permit.
+const OWNER_CEDAR: &str = r#"permit(
+  principal is Admin,
+  action in [
+    Action::"manage_policies",
+    Action::"read_events",
+    Action::"read_agents",
+    Action::"read_app_catalog"
+  ],
+  resource
+);"#;
+
+/// Merge [`OWNER_CEDAR`] into the tenant's live policy and keep it. Run at every
+/// boot: a statement already there is left as it is.
+pub(crate) async fn seed_owner_permit(
+    state: &temper_platform::PlatformState,
+    tenant: &str,
+) -> Result<(), String> {
+    let live = state
+        .server
+        .authz
+        .get_tenant_policy_text(tenant)
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| {
+            state
+                .server
+                .tenant_policies
+                .read()
+                .ok()
+                .and_then(|policies| policies.get(tenant).cloned())
+        })
+        .unwrap_or_default();
+    let merged = if live.contains(OWNER_CEDAR) {
+        live
+    } else {
+        format!("{}\n{OWNER_CEDAR}", live.trim_end())
+    };
+    state
+        .server
+        .authz
+        .reload_tenant_policies(tenant, &merged)
+        .map_err(|error| error.to_string())?;
+    state
+        .server
+        .tenant_policies
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(tenant.to_string(), merged);
+    temper_server::authz::persist_and_activate_policy(
+        &state.server,
+        tenant,
+        OWNER_POLICY_ID,
+        OWNER_CEDAR,
+        "bootstrap",
+    )
+    .await;
+    Ok(())
+}
+
 /// Carry a verified caller past the kernel's edge, which takes authority only
 /// from a credential it resolves (ADR-0157): a single-use capability bound to
 /// this request. The kernel binds it to the target as a client would send it, so
@@ -397,9 +466,11 @@ fn present_to_kernel(
 /// to an Admin, which the operator credential is not. So each request presents
 /// a single-use capability, bound to that request, naming this client.
 ///
-/// Why Admin: it writes channels and webhook events, and a person's press on an
-/// approval needs the kernel's policy authority, which an Admin holds. It is
-/// reachable only through `paw_transport::owners`, which admits owners alone.
+/// Why Admin: it writes channels and webhook events, which those apps' policies
+/// permit to an Admin, and an owner's press decides approvals, which
+/// [`OWNER_CEDAR`] permits. It never leaves this process, and a capability opens
+/// the one request it names. Presses and messages reach it only through
+/// `paw_transport::owners`, which admits owners alone.
 pub(crate) fn local_api_client(
     credentials: &temper_server::internal_invocation::InternalInvocationCredentialStore,
     tenant: &str,
@@ -1530,13 +1601,26 @@ mod tests {
     ) -> (
         u16,
         temper_server::internal_invocation::InternalInvocationCredentialStore,
+        temper_server::ServerState,
     ) {
-        let platform = temper_platform::PlatformState::new(None);
+        let mut platform = temper_platform::PlatformState::new(None);
+        let events = format!("file:{}", root.join("edge-events.db").display());
+        platform
+            .server
+            .set_storage_stack(temper_server::StorageStack::from_turso(
+                temper_store_turso::TursoEventStore::new(&events, None)
+                    .await
+                    .unwrap(),
+            ));
         temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
+            .await
+            .unwrap();
+        super::seed_owner_permit(&platform, "default")
             .await
             .unwrap();
         install_routes(&platform.server.http_endpoint_tables).await;
         let credentials = platform.server.internal_invocation_credentials.clone();
+        let server = platform.server.clone();
         let mut state = AuthState::for_tests(root).await;
         state.server = platform.server.clone();
         state.http_endpoints = platform.server.http_endpoint_tables.clone();
@@ -1555,15 +1639,173 @@ mod tests {
             )
             .await
         });
-        (port, credentials)
+        (port, credentials, server)
     }
 
-    /// A kernel route that needs a caller answers 401 with none, and anything
-    /// else with a signed-in session, whichever way the target is spelled.
+    fn any_owner() -> paw_transport::owners::Owners {
+        paw_transport::owners::Owners::new(
+            std::sync::Arc::new(|_| Box::pin(async { Ok(true) })),
+            std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        )
+    }
+
+    async fn pending_decision(server: &temper_server::ServerState, resource_id: &str) -> String {
+        let decision = temper_server::state::PendingDecision::from_denial(
+            "default",
+            "some-agent",
+            "read",
+            "Thing",
+            resource_id,
+            json!({}),
+            "no matching permit policy",
+            None,
+        );
+        server.persist_pending_decision(&decision).await.unwrap();
+        decision.id
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Everything a press goes through: Discord's signed request, the transport's
+    /// handler and owner check, the client, the deployed edge and the kernel.
+    #[tokio::test]
+    async fn a_press_through_discord_decides_a_real_decision_only_for_an_owner() {
+        use ed25519_dalek::Signer;
+        use paw_transport::discord::{DiscordConfig, DiscordTransport};
+
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, credentials, server) = deployed_edge(tempdir.path()).await;
+        let client = super::local_api_client(&credentials, "default", port);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let owners = paw_transport::owners::Owners::new(
+            std::sync::Arc::new(|sender_id| Box::pin(async move { Ok(sender_id == "owner-1") })),
+            std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        );
+        let transport = DiscordTransport::new(
+            DiscordConfig {
+                bot_token: "token".to_string(),
+                intents: paw_transport::discord::types::intents::DEFAULT,
+                webhook_port: 0,
+                public_key: hex_of(&key.verifying_key().to_bytes()),
+                guild_id: None,
+                feed_channel_id: None,
+                forum_channel_id: None,
+            },
+            client.clone(),
+        )
+        .with_owners(owners);
+        let listener = transport.spawn_webhook_listener().await.unwrap();
+        let listener_port = listener.port();
+
+        let press = |user_id: &str, custom_id: String| {
+            let body = serde_json::to_vec(&json!({
+                "id": "i-1",
+                "type": 3,
+                "token": "interaction-token",
+                "application_id": "app-1",
+                "channel_id": "dm-1",
+                "user": { "id": user_id, "username": "someone" },
+                "data": { "custom_id": custom_id }
+            }))
+            .unwrap();
+            let timestamp = "1700000000";
+            let signature = key.sign(&[timestamp.as_bytes(), &body].concat());
+            reqwest::Client::new()
+                .post(format!("http://127.0.0.1:{listener_port}/interaction"))
+                .header("x-signature-ed25519", hex_of(&signature.to_bytes()))
+                .header("x-signature-timestamp", timestamp)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+        };
+        let decisions_in = |status: &'static str| {
+            let client = client.clone();
+            async move {
+                let answer = client
+                    .raw_get(&format!(
+                        "http://127.0.0.1:{port}/api/tenants/default/decisions?status={status}"
+                    ))
+                    .await
+                    .unwrap();
+                answer["decisions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|decision| decision["id"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let id = pending_decision(&server, "pressed-through-discord").await;
+
+        for action in ["approve_always", "approve_once", "deny"] {
+            let answer: serde_json::Value = press("someone-else", format!("{action}:{id}"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                answer["data"]["content"],
+                paw_transport::owners::Refusal::NotOwner.answer(),
+                "{action}"
+            );
+            assert_eq!(decisions_in("pending").await, [id.clone()], "{action}");
+        }
+
+        press("owner-1", format!("approve_once:{id}"))
+            .await
+            .unwrap();
+        for _ in 0..400 {
+            if decisions_in("approved").await.contains(&id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(decisions_in("approved").await, [id]);
+        assert_eq!(decisions_in("pending").await, Vec::<String>::new());
+    }
+
+    /// A press through the client the transports use, on real decisions held by
+    /// the real kernel behind the deployed edge.
+    #[tokio::test]
+    async fn an_owners_press_decides_a_real_decision() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, credentials, server) = deployed_edge(tempdir.path()).await;
+        let client = super::local_api_client(&credentials, "default", port);
+        let owner = any_owner().admit("owner-1").await.unwrap();
+
+        for (action, line) in [
+            ("deny", "Denial recorded by <@owner-1>"),
+            ("approve_once", "Approval recorded by <@owner-1>"),
+            ("approve_session", "Approval recorded by <@owner-1>"),
+            ("approve_always", "Approval recorded by <@owner-1>"),
+        ] {
+            let id = pending_decision(&server, action).await;
+            let (applied, status) =
+                paw_transport::owners::apply_press(&client, &owner, "discord", action, &id).await;
+            assert!(applied, "{action}: {status}");
+            assert_eq!(status, line, "{action}");
+        }
+
+        let base_url = format!("http://127.0.0.1:{port}");
+        let left = client
+            .raw_get(&format!(
+                "{base_url}/api/tenants/default/decisions?status=pending"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(left["decisions"], json!([]), "{left}");
+    }
+
+    /// A kernel route the dashboard reads answers 401 to nobody and 200 to a
+    /// signed-in session, whichever way the target is spelled.
     #[tokio::test]
     async fn a_signed_in_person_reaches_the_kernels_routes() {
         let tempdir = tempfile::tempdir().unwrap();
-        let (port, _) = deployed_edge(tempdir.path()).await;
+        let (port, _, _) = deployed_edge(tempdir.path()).await;
         let base_url = format!("http://127.0.0.1:{port}");
         let http = reqwest::Client::new();
 
@@ -1588,6 +1830,9 @@ mod tests {
             "/tdata/AgentCredentials?$top=1",
             "/tdata/AgentCredentials?$filter=Status%20eq%20'Active'",
             "/observe/os-apps",
+            "/observe/agents/system/history",
+            "/observe/events/stream",
+            "/api/decisions",
             "/api/tenants/default/policies/list",
         ] {
             let url = format!("{base_url}{target}");
@@ -1599,7 +1844,7 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_ne!(signed_in.status(), StatusCode::UNAUTHORIZED, "{target}");
+            assert_eq!(signed_in.status(), StatusCode::OK, "{target}");
         }
 
         // A route a tenant declared answers a signed-in person as it answers anyone.
@@ -1618,7 +1863,7 @@ mod tests {
     #[tokio::test]
     async fn this_servers_own_client_passes_both_edges() {
         let tempdir = tempfile::tempdir().unwrap();
-        let (port, credentials) = deployed_edge(tempdir.path()).await;
+        let (port, credentials, _) = deployed_edge(tempdir.path()).await;
         let base_url = format!("http://127.0.0.1:{port}");
 
         // Naming itself with headers is what the kernel's edge refuses.
