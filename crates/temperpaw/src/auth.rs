@@ -183,9 +183,11 @@ pub async fn middleware(
             label: None,
             attributes: Default::default(),
         };
-        request
-            .extensions_mut()
-            .insert(authenticated_context(state.tenant(), principal));
+        let caller = authenticated_context(state.tenant(), principal);
+        if request.extensions().get::<MatchedPath>().is_some() && !is_temperpaw_route(&path) {
+            present_to_kernel(&state, &mut request, caller.clone());
+        }
+        request.extensions_mut().insert(caller);
         return next.run(request).await;
     }
 
@@ -346,11 +348,58 @@ fn authenticated_context(tenant: &str, principal: Principal) -> AuthenticatedReq
     AuthenticatedRequestContext::new(TenantId::new(tenant), security_context)
 }
 
+/// Carry a verified caller past the kernel's edge, which takes authority only
+/// from a credential it resolves (ADR-0157): a single-use capability bound to
+/// this request. The kernel binds it to the target as a client would send it, so
+/// the request goes on with that spelling of the same target. Only for a route
+/// the kernel declares: its HttpEndpoint fallback admits by its own table.
+fn present_to_kernel(
+    state: &AuthState,
+    request: &mut Request<Body>,
+    caller: AuthenticatedRequestContext,
+) {
+    let target = request.uri().path_and_query().map_or_else(
+        || request.uri().path().to_string(),
+        |t| t.as_str().to_string(),
+    );
+    let url = format!("http://temperpaw.internal{target}");
+    let presented = temper_server::internal_invocation::canonical_request_target_from_url(&url)
+        .map_err(|error| error.to_string())
+        .and_then(|canonical| {
+            let uri = canonical
+                .parse::<axum::http::Uri>()
+                .map_err(|error| error.to_string())?;
+            let token = state
+                .server
+                .internal_invocation_credentials
+                .issue_for_url(caller, request.method().as_str(), &url)
+                .map_err(|error| error.to_string())?;
+            let bearer = HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|error| error.to_string())?;
+            Ok((uri, bearer))
+        });
+    match presented {
+        Ok((uri, bearer)) => {
+            *request.uri_mut() = uri;
+            request
+                .headers_mut()
+                .insert(axum::http::header::AUTHORIZATION, bearer);
+        }
+        Err(error) => {
+            tracing::warn!(%error, "no capability for a signed-in caller");
+        }
+    }
+}
+
 /// This server's client for its own API: the transports, the observer and the
 /// webhook trigger. The kernel's edge takes a caller's authority only from a
 /// credential it resolves (ADR-0157), and these clients' writes are permitted
 /// to an Admin, which the operator credential is not. So each request presents
 /// a single-use capability, bound to that request, naming this client.
+///
+/// Why Admin: it writes channels and webhook events, and a person's press on an
+/// approval needs the kernel's policy authority, which an Admin holds. It is
+/// reachable only through `paw_transport::owners`, which admits owners alone.
 pub(crate) fn local_api_client(
     credentials: &temper_server::internal_invocation::InternalInvocationCredentialStore,
     tenant: &str,
@@ -1476,18 +1525,25 @@ mod tests {
 
     /// The deployed edge on a real socket: this middleware outside the kernel's
     /// own router and TemperPaw's routes, with the kernel's credential store.
-    #[tokio::test]
-    async fn this_servers_own_client_passes_both_edges() {
-        let tempdir = tempfile::tempdir().unwrap();
+    async fn deployed_edge(
+        root: &std::path::Path,
+    ) -> (
+        u16,
+        temper_server::internal_invocation::InternalInvocationCredentialStore,
+    ) {
         let platform = temper_platform::PlatformState::new(None);
         temper_platform::bootstrap::bootstrap_operator_credential_specs(&platform, "default")
             .await
             .unwrap();
+        install_routes(&platform.server.http_endpoint_tables).await;
         let credentials = platform.server.internal_invocation_credentials.clone();
-        let mut state = AuthState::for_tests(tempdir.path()).await;
+        let mut state = AuthState::for_tests(root).await;
         state.server = platform.server.clone();
+        state.http_endpoints = platform.server.http_endpoint_tables.clone();
         let app = layer(
-            temper_platform::router::build_platform_router(platform).merge(temperpaw_routes()),
+            temper_platform::router::build_platform_router(platform)
+                .merge(temperpaw_routes())
+                .merge(router(state.clone())),
             state,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1499,6 +1555,70 @@ mod tests {
             )
             .await
         });
+        (port, credentials)
+    }
+
+    /// A kernel route that needs a caller answers 401 with none, and anything
+    /// else with a signed-in session, whichever way the target is spelled.
+    #[tokio::test]
+    async fn a_signed_in_person_reaches_the_kernels_routes() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, _) = deployed_edge(tempdir.path()).await;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let http = reqwest::Client::new();
+
+        let registered = http
+            .post(format!("{base_url}/auth/register"))
+            .json(&json!({
+                "email": "owner@example.com",
+                "password": "correct horse battery staple"
+            }))
+            .send()
+            .await
+            .unwrap();
+        let cookie = registered
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .unwrap()
+            .to_string();
+
+        for target in [
+            "/tdata/AgentCredentials?$top=1",
+            "/tdata/AgentCredentials?$filter=Status%20eq%20'Active'",
+            "/observe/os-apps",
+            "/api/tenants/default/policies/list",
+        ] {
+            let url = format!("{base_url}{target}");
+            let anonymous = http.get(&url).send().await.unwrap();
+            assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{target}");
+            let signed_in = http
+                .get(&url)
+                .header("cookie", &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_ne!(signed_in.status(), StatusCode::UNAUTHORIZED, "{target}");
+        }
+
+        // A route a tenant declared answers a signed-in person as it answers anyone.
+        let url = format!("{base_url}/app/hooks/provider");
+        let anonymous = http.post(&url).send().await.unwrap().status();
+        let signed_in = http
+            .post(&url)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(signed_in, anonymous);
+    }
+
+    #[tokio::test]
+    async fn this_servers_own_client_passes_both_edges() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, credentials) = deployed_edge(tempdir.path()).await;
         let base_url = format!("http://127.0.0.1:{port}");
 
         // Naming itself with headers is what the kernel's edge refuses.
