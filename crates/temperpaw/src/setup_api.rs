@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use opentelemetry::trace::{Span as _, SpanKind, Status, Tracer as _};
 use opentelemetry::{KeyValue, global};
 use serde::{Deserialize, Serialize};
-use temper_authz::{AuthenticatedRequestContext, PrincipalKind};
+use temper_authz::{AuthenticatedRequestContext, Principal, PrincipalKind, SecurityContext};
 use temper_platform::PlatformState;
 use temper_platform::genesis_install::GenesisRegistryInstallRequest;
 use temper_runtime::tenant::TenantId;
@@ -917,6 +917,34 @@ fn discord_connect_params_from_vault(
     }))
 }
 
+/// Who the Discord reconcile moves act as: this server's own transport
+/// reconcile, an Admin of its own TransportConnection.
+///
+/// Never System: `transport_reconcile` starts Discord through this server's
+/// `/paw/internal/transports/discord/start`, and the kernel gives the module of
+/// a System dispatch no internal capability for that call, so it would fail
+/// before it is sent. Boot has no caller to carry, and a person's own context
+/// would stop the retry timer when their session ends, so the moves name their
+/// own principal. `RetryDue` fires as this principal too: a timer fires as
+/// whoever armed it.
+fn discord_reconcile_agent_context() -> AgentContext {
+    let mut security_context = SecurityContext::anonymous();
+    security_context.principal = Principal {
+        id: "transport-reconcile".to_string(),
+        kind: PrincipalKind::Admin,
+        role: None,
+        acting_for: None,
+        agent_type: None,
+        label: None,
+        attributes: Default::default(),
+    };
+    AgentContext {
+        agent_id: Some(security_context.principal.id.clone()),
+        security_ctx: Some(security_context),
+        ..AgentContext::default()
+    }
+}
+
 pub(crate) async fn schedule_discord_reconcile(
     platform: &PlatformState,
     tenant: &str,
@@ -937,7 +965,7 @@ pub(crate) async fn schedule_discord_reconcile(
         .await
         .map_err(|error| anyhow!("create TransportConnection failed: {error}"))?;
 
-    let system = AgentContext::system();
+    let reconcile = discord_reconcile_agent_context();
     platform
         .server
         .dispatch_tenant_action(
@@ -949,7 +977,7 @@ pub(crate) async fn schedule_discord_reconcile(
                 "platform": "discord",
                 "desired_state": "connected",
             }),
-            &system,
+            &reconcile,
         )
         .await
         .map_err(|error| anyhow!("configure Discord TransportConnection failed: {error}"))?;
@@ -962,7 +990,7 @@ pub(crate) async fn schedule_discord_reconcile(
             DISCORD_TRANSPORT_CONNECTION_ID,
             "Start",
             serde_json::json!({}),
-            &system,
+            &reconcile,
         )
         .await
         .map_err(|error| anyhow!("start Discord TransportConnection failed: {error}"))?;
@@ -4173,6 +4201,40 @@ mod tests {
         assert_eq!(endpoint_set(Some("")), agent);
         assert_eq!(endpoint_set(Some("http://localhost:4318")), agent);
         assert_eq!(endpoint_set(Some("https://collector.example.com")), None);
+    }
+
+    /// The reconcile's module starts Discord through this server's own
+    /// `/paw/internal/transports/discord/start`, on a capability the kernel
+    /// issues for the context its move carries. The boot has no caller to carry,
+    /// so the moves name their own, and that name is what the app's Cedar admits.
+    #[test]
+    fn a_discord_reconcile_move_can_call_this_server_and_is_admitted() {
+        use temper_authz::AuthenticatedRequestContext;
+        use temper_runtime::tenant::TenantId;
+        use temper_server::internal_invocation::InternalInvocationCredentialStore;
+
+        let agent_ctx = super::discord_reconcile_agent_context();
+        let carried = agent_ctx
+            .security_ctx
+            .clone()
+            .expect("the move names who makes it");
+
+        let store = InternalInvocationCredentialStore::runtime();
+        let bearer = store.issue_for_url(
+            AuthenticatedRequestContext::new(TenantId::new("default"), carried.clone()),
+            "POST",
+            "http://127.0.0.1:8080/paw/internal/transports/discord/start",
+        );
+        assert!(bearer.is_ok(), "its module gets a capability: {bearer:?}");
+
+        // paw-channels permits every TransportConnection move to an Admin. A
+        // timer fires as whoever armed it, so RetryDue and the module's answers
+        // run as this same principal.
+        assert_eq!(carried.principal.kind, temper_authz::PrincipalKind::Admin);
+        assert_eq!(
+            agent_ctx.agent_id.as_deref(),
+            Some(carried.principal.id.as_str())
+        );
     }
 
     /// The sign-in's module saves its tokens through this server's own
