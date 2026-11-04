@@ -1753,7 +1753,7 @@ mod tests {
                 paw_transport::owners::Refusal::NotOwner.answer(),
                 "{action}"
             );
-            assert_eq!(decisions_in("pending").await, [id.clone()], "{action}");
+            assert_eq!(decisions_in("pending").await, vec![id.clone()], "{action}");
         }
 
         press("owner-1", format!("approve_once:{id}"))
