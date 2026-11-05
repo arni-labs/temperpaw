@@ -28,3 +28,5 @@ Before opening a PR, run:
 If you touch end-to-end flows, capture proof in `.proofs/`.
 
 A documentation-only change lands on `main` like any other change.
+
+A push to the default branch starts its line by itself, with no step by hand.
