@@ -26,3 +26,5 @@ Before opening a PR, run:
 - `cd dashboard && npm run build`
 
 If you touch end-to-end flows, capture proof in `.proofs/`.
+
+A documentation-only change lands on `main` like any other change.
