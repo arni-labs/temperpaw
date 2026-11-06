@@ -182,7 +182,7 @@ pub async fn middleware(
     }
 
     if is_safe_setup_path_public_during_bootstrap(&state, &method, &path).await
-        || is_public_path(request.method().as_str(), &path)
+        || is_public_path(&path)
     {
         return next.run(request).await;
     }
@@ -667,7 +667,7 @@ fn internal_caller(
         })
 }
 
-fn is_public_path(method: &str, path: &str) -> bool {
+fn is_public_path(path: &str) -> bool {
     path.starts_with("/auth/")
         || path == "/auth"
         || path == "/healthz"
@@ -1147,7 +1147,7 @@ mod tests {
     #[test]
     fn webhook_trigger_paths_are_public_for_external_providers() {
         assert!(
-            is_public_path("POST", "/triggers/webhook/patrol-datadog"),
+            is_public_path("/triggers/webhook/patrol-datadog"),
             "external webhook providers cannot send Temper bearer auth"
         );
     }
@@ -1155,7 +1155,7 @@ mod tests {
     #[test]
     fn odata_service_paths_are_not_public() {
         for path in ["/tdata", "/tdata/", "/tdata/$metadata"] {
-            assert!(!is_public_path("GET", path), "{path} needs a credential");
+            assert!(!is_public_path(path), "{path} needs a credential");
         }
     }
 
