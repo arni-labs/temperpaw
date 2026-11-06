@@ -227,6 +227,12 @@ async fn check_codex_exec_smoke(config: &Config) -> DoctorCheck {
 
 async fn check_odata(client: &reqwest::Client, config: &Config) -> DoctorCheck {
     let url = format!("{}/tdata/$metadata", config.temper_url);
+    if config.worker_token.is_none() {
+        return DoctorCheck::fail(
+            "odata",
+            "no worker token configured; /tdata/$metadata needs a credential".to_string(),
+        );
+    }
     match client
         .get(&url)
         .headers(event_stream_headers(config).unwrap_or_default())

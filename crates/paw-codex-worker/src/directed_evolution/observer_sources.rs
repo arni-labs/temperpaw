@@ -252,13 +252,20 @@ async fn directed_evolution_observer_runtime_sources(
         .or_else(|| observer_string(correlation, "runtimeTenant"))
         .unwrap_or_default();
     let auth_token = observer_runtime_auth_token(correlation);
-    let metadata = observer_runtime_get_text(
-        client,
-        &format!("{runtime_base}/tdata/$metadata"),
-        &tenant,
-        auth_token.as_deref(),
-    )
-    .await;
+    let metadata = if auth_token.is_none() {
+        json!({
+            "status": "unavailable",
+            "error": "no runtime token in the correlation; $metadata needs a credential",
+        })
+    } else {
+        observer_runtime_get_text(
+            client,
+            &format!("{runtime_base}/tdata/$metadata"),
+            &tenant,
+            auth_token.as_deref(),
+        )
+        .await
+    };
     let entity_sets = metadata
         .get("body_preview")
         .and_then(Value::as_str)
