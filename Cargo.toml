@@ -42,3 +42,10 @@ opt-level = 3
 # Omit it to keep test builds within the CI runner's disk budget.
 [profile.test]
 debug = 0
+
+
+# Temper's own pprof-rs (temper's vendor/pprof/TEMPER.md): its sample table is 4.8 MB where upstream's is 77.5 MB, and
+# Temper's continuous profiler holds it for good. A [patch] applies only in the workspace that declares it, so temper's
+# own does not reach this build. Same rev as the temper pin; the pin bump moves both.
+[patch.crates-io]
+pprof = { git = "https://github.com/arni-labs/temper.git", rev = "951240ad03f07964a2e327c2649db36027b9de4e" }
