@@ -112,6 +112,9 @@ async fn async_main() -> anyhow::Result<()> {
     }
 
     let otel_guard = temper_observe::otel::init_observability("temperpaw");
+    // Temper's continuous CPU and heap profiler; it runs only when the
+    // deployment turns it on (TEMPER_PROFILING_CONTINUOUS).
+    temper_server::profiling::spawn_continuous_profiler();
 
     // Print a clean banner in the terminal
     if is_terminal {

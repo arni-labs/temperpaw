@@ -93,6 +93,7 @@ fn datadog_runtime_variables(
     if datadog_enabled {
         variables.push("TEMPER_PROFILING_ENABLED=true".to_string());
         variables.push("TEMPER_PROFILING_AUTO_UPLOAD=true".to_string());
+        variables.push("TEMPER_PROFILING_CONTINUOUS=true".to_string());
         variables.push("TEMPER_DATADOG_RAILWAY_PROFILE=datadog-enhanced-railway".to_string());
         variables.push("DD_LLMOBS_ENABLED=true".to_string());
         variables.push("DD_LLMOBS_API_ENABLED=true".to_string());

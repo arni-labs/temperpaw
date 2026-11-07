@@ -2393,7 +2393,7 @@
           {
             "definition": {
               "type": "note",
-              "content": "Profiles are captured on-demand via `GET /_admin/profile/cpu?seconds=N` and `GET /_admin/profile/wall?seconds=N`. Enable with `TEMPER_PROFILING_ENABLED=true`, auto-upload with `TEMPER_PROFILING_AUTO_UPLOAD=true`. Jump to APM \u2192 Profiles for flame graphs.",
+              "content": "With `TEMPER_PROFILING_CONTINUOUS=true` Temper uploads a CPU window and a heap snapshot every 5 minutes. On demand: `GET /_admin/profile/cpu?seconds=N` and `GET /_admin/profile/heap` (with `TEMPER_PROFILING_ENABLED=true`; `TEMPER_PROFILING_AUTO_UPLOAD=true` uploads those too). Jump to APM \u2192 Profiles for flame graphs.",
               "background_color": "blue",
               "font_size": "14",
               "text_align": "left",
