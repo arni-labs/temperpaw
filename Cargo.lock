@@ -488,7 +488,7 @@ dependencies = [
  "addr2line",
  "cfg-if",
  "libc",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
  "object",
  "rustc-demangle",
  "windows-link",
@@ -2197,6 +2197,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
+name = "flate2"
+version = "1.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide 0.9.1",
+ "zlib-rs",
+]
+
+[[package]]
 name = "float-cmp"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3273,6 +3284,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jemalloc_pprof"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a0d44c349cfe2654897fadcb9de4f0bfbf48288ec344f700b2bd59f152dd209"
+dependencies = [
+ "anyhow",
+ "libc",
+ "mappings",
+ "once_cell",
+ "pprof_util",
+ "tempfile",
+ "tikv-jemalloc-ctl",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "jni"
 version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3640,6 +3668,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mappings"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bab1e61a4b76757edb59cd81fcaa7f3ba9018d43b527d9abfad877b4c6c60f2"
+dependencies = [
+ "anyhow",
+ "libc",
+ "once_cell",
+ "pprof_util",
+ "tracing",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3765,6 +3806,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -4580,6 +4631,20 @@ dependencies = [
  "symbolic-demangle",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pprof_util"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eea0cc524de808a6d98d192a3d99fe95617031ad4a52ec0a0f987ef4432e8fe1"
+dependencies = [
+ "anyhow",
+ "backtrace",
+ "flate2",
+ "num",
+ "paste",
+ "prost 0.14.4",
 ]
 
 [[package]]
@@ -5924,6 +5989,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
 name = "simd_cesu8"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6495,7 +6566,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 [[package]]
 name = "temper-actor-runtime"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6518,7 +6589,7 @@ dependencies = [
 [[package]]
 name = "temper-authz"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "cedar-policy",
  "cedar-policy-core",
@@ -6534,7 +6605,7 @@ dependencies = [
 [[package]]
 name = "temper-evolution"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "serde",
@@ -6551,7 +6622,7 @@ dependencies = [
 [[package]]
 name = "temper-jit"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "serde",
  "serde_json",
@@ -6563,7 +6634,7 @@ dependencies = [
 [[package]]
 name = "temper-observe"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "futures",
@@ -6587,7 +6658,7 @@ dependencies = [
 [[package]]
 name = "temper-odata"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "axum",
  "chrono",
@@ -6602,7 +6673,7 @@ dependencies = [
 [[package]]
 name = "temper-optimize"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "serde",
  "serde_json",
@@ -6617,7 +6688,7 @@ dependencies = [
 [[package]]
 name = "temper-ots"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "serde",
@@ -6629,7 +6700,7 @@ dependencies = [
 [[package]]
 name = "temper-platform"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6663,7 +6734,7 @@ dependencies = [
 [[package]]
 name = "temper-runtime"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6680,7 +6751,7 @@ dependencies = [
 [[package]]
 name = "temper-sandbox"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "anyhow",
  "monty",
@@ -6695,20 +6766,23 @@ dependencies = [
 [[package]]
 name = "temper-server"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "aes-gcm",
  "async-stream",
  "async-trait",
  "axum",
+ "backtrace",
  "base64 0.22.1",
  "bytes",
  "cedar-policy",
  "chrono",
  "ed25519-dalek",
+ "flate2",
  "futures-util",
  "hmac 0.12.1",
  "hyper",
+ "jemalloc_pprof",
  "libc",
  "lru",
  "opentelemetry",
@@ -6739,6 +6813,7 @@ dependencies = [
  "temper-wasm",
  "tempfile",
  "thiserror 2.0.18",
+ "tikv-jemalloc-ctl",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
@@ -6753,7 +6828,7 @@ dependencies = [
 [[package]]
 name = "temper-spec"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "quick-xml",
  "rustc-hash 2.1.2",
@@ -6768,7 +6843,7 @@ dependencies = [
 [[package]]
 name = "temper-store-postgres"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -6787,7 +6862,7 @@ dependencies = [
 [[package]]
 name = "temper-store-redis"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "fred",
@@ -6804,7 +6879,7 @@ dependencies = [
 [[package]]
 name = "temper-store-turso"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -6825,7 +6900,7 @@ dependencies = [
 [[package]]
 name = "temper-verify"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "dashmap",
  "proptest",
@@ -6844,7 +6919,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6870,7 +6945,7 @@ dependencies = [
 [[package]]
 name = "temper-wasm-sdk"
 version = "0.1.0"
-source = "git+https://github.com/arni-labs/temper.git?rev=1d28874ecdaf967901bf2e931b73e062cb3ad682#1d28874ecdaf967901bf2e931b73e062cb3ad682"
+source = "git+https://github.com/arni-labs/temper.git?rev=951240ad03f07964a2e327c2649db36027b9de4e#951240ad03f07964a2e327c2649db36027b9de4e"
 dependencies = [
  "serde",
  "serde_json",
@@ -9175,6 +9250,12 @@ dependencies = [
  "quote",
  "syn 3.0.5",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"
