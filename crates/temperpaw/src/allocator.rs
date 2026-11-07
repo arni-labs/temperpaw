@@ -12,6 +12,11 @@
 //! khugepaged fills a 2 MB range jemalloc has mostly purged back into one huge
 //! page: resident memory grows while the program holds nothing more, and
 //! jemalloc's own counts never see it.
+//!
+//! And on Linux the heap profiler is on: jemalloc records the stack of about
+//! one allocation per 512 KiB allocated (`lg_prof_sample:19`), and Temper's
+//! profiler exports the sampled live heap as pprof (`/_admin/profile/heap` and
+//! the continuous loop).
 
 /// A pointer to jemalloc's options string, laid out as the `const char *` it reads.
 #[repr(transparent)]
@@ -24,7 +29,8 @@ unsafe impl Sync for JemallocConf {}
 #[cfg(target_os = "linux")]
 #[unsafe(export_name = "_rjem_malloc_conf")]
 pub static JEMALLOC_CONF: JemallocConf =
-    JemallocConf(c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0,thp:never".as_ptr());
+    JemallocConf(c"background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0,thp:never,prof:true,prof_active:true,lg_prof_sample:19"
+        .as_ptr());
 
 /// Read by jemalloc at startup under its prefixed name.
 #[cfg(not(target_os = "linux"))]

@@ -2673,6 +2673,7 @@ fn datadog_enhanced_app_railway_vars(
         ("DD_TAGS", "team:temperpaw".to_string()),
         ("TEMPER_PROFILING_ENABLED", "true".to_string()),
         ("TEMPER_PROFILING_AUTO_UPLOAD", "true".to_string()),
+        ("TEMPER_PROFILING_CONTINUOUS", "true".to_string()),
         (
             "TEMPER_DATADOG_RAILWAY_PROFILE",
             "datadog-enhanced-railway".to_string(),

@@ -27,7 +27,6 @@ temper-spec = { git = "https://github.com/arni-labs/temper.git", rev = "1d28874e
 paw-transport = { path = "../paw-transport" }
 
 # Allocator: returns freed pages after bursts (see src/allocator.rs)
-tikv-jemallocator = "0.6"
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 # Async runtime
@@ -81,6 +80,14 @@ clap = { version = "4", features = ["derive"] }
 
 # Beautiful TUI prompts (Rust port of @clack/prompts)
 cliclack = "0.3"
+
+# jemalloc with its sampling heap profiler, which is built on Linux only
+# (src/allocator.rs turns it on there).
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tikv-jemallocator = "0.6"
 
 [dev-dependencies]
 dsf-resource-collect = { path = "../../os-apps/dsf-twin/wasm/dsf_resource_collect" }
