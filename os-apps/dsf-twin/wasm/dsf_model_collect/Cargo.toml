@@ -15,4 +15,4 @@ uuid = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "e783cf65d4094c68cec0de4cd98f9b03e9b19e7e" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "1d28874ecdaf967901bf2e931b73e062cb3ad682" }
