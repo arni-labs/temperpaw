@@ -9,5 +9,5 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "1d28874ecdaf967901bf2e931b73e062cb3ad682" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "951240ad03f07964a2e327c2649db36027b9de4e" }
 wasm-helpers = { path = "../../../paw-agent/wasm/wasm-helpers" }
