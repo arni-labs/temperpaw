@@ -35,6 +35,7 @@ use temper_runtime::tenant::TenantId;
 use temper_server::platform_store::{InstalledAppRecord, PlatformStore, SpecVerificationUpdate};
 use temper_server::registry::{EntityLevelSummary, EntityVerificationResult, VerificationStatus};
 use temper_server::registry_bootstrap::restore_registry_from_platform_store;
+use temper_server::secrets::vault::Opened;
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
@@ -1255,6 +1256,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
 
     // Phase 5: Secrets vault
     tracing::info!("Phase 5: Configuring secrets vault...");
+    let previous_vault_key = crate::stored_secrets::previous_vault_key(
+        config.vault_key.as_deref(),
+        config.vault_key_previous.as_deref(),
+    )?;
     let vault_key_bytes: [u8; 32] = {
         let vault_key_path = data_dir.join("vault.key");
         let key_bytes: [u8; 32] = if let Some(ref key_b64) = config.vault_key {
@@ -1351,13 +1356,22 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
             }
         }
 
-        let vault = temper_server::secrets::vault::SecretsVault::new(&key_bytes);
+        let mut vault = temper_server::secrets::vault::SecretsVault::new(&key_bytes);
+        if let Some(previous) = previous_vault_key {
+            vault = vault.with_previous_key(&previous);
+            tracing::info!("Vault holds a previous key to re-seal stored secrets from");
+        }
         state.server.secrets_vault = Some(Arc::new(vault));
         key_bytes
     };
 
     // Phase 5b: Restore secrets from durable storage (before env seeding so env vars take priority)
     if let Some(ref vault) = state.server.secrets_vault {
+        // Every tenant's rows, opened with either vault key and re-sealed
+        // under the current one, before the shared copies below read them.
+        // This deployment's tenant and the legacy bucket are served as those
+        // shared copies, not from the tenant cache.
+        crate::stored_secrets::load_stored_secrets(&state, &[tenant.as_str(), "default"]).await;
         restore_secrets_as_platform(vault, &storage, &tenant).await;
         if tenant != "default" {
             // Migration shim for older deployments that stored shared startup
@@ -2511,8 +2525,8 @@ async fn restore_secrets_as_platform(
         Ok(rows) => {
             let mut restored = 0u32;
             for (key_name, ciphertext, nonce) in rows {
-                match vault.decrypt(&ciphertext, &nonce) {
-                    Ok(plaintext) => {
+                match vault.open(&ciphertext, &nonce) {
+                    Ok(Opened::Current(plaintext) | Opened::Previous(plaintext)) => {
                         if let Ok(value) = String::from_utf8(plaintext)
                             && vault.get_platform_secret(&key_name).is_none()
                         {
