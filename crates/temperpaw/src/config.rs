@@ -165,6 +165,10 @@ pub struct Config {
     /// If not set, an ephemeral key is generated (secrets lost on restart).
     pub vault_key: Option<String>,
 
+    /// During a vault key rotation, the base64 master key `vault_key`
+    /// replaces. Stored rows it opens are sealed again under `vault_key`.
+    pub vault_key_previous: Option<String>,
+
     /// Fly.io API token for Sprites provisioning.
     pub fly_api_token: Option<String>,
 
@@ -290,6 +294,7 @@ impl Config {
             dd_site: std::env::var("DD_SITE").unwrap_or_else(|_| "datadoghq.com".to_string()),
             temper_api_key: optional_env("TEMPER_API_KEY"),
             vault_key: optional_env("TEMPER_VAULT_KEY"),
+            vault_key_previous: optional_env(crate::stored_secrets::PREVIOUS_KEY_ENV),
             fly_api_token: optional_env("FLY_API_TOKEN"),
             railway_token: optional_env("RAILWAY_TOKEN"),
             railway_project_id: optional_env("RAILWAY_PROJECT_ID"),
