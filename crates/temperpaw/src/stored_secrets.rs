@@ -106,9 +106,14 @@ impl StoredSecrets {
     }
 }
 
-/// Load every tenant's stored secrets into the vault through temper's load
-/// path, which re-seals rows only the previous key opens, and log the line.
-pub(crate) async fn load_stored_secrets(state: &PlatformState) -> StoredSecrets {
+/// Load every tenant's stored secrets through temper's load path, which
+/// re-seals rows only the previous key opens, and log the line.
+///
+/// Each tenant's values land in its tenant cache, except the `shared`
+/// tenants': their rows are served as shared platform copies, which values
+/// set later in the boot (deployment variables) replace, so a tenant copy
+/// would shadow those values. Their rows are still loaded, for the re-seal.
+pub(crate) async fn load_stored_secrets(state: &PlatformState, shared: &[&str]) -> StoredSecrets {
     let mut loaded = StoredSecrets::default();
     if state.server.secrets_vault.is_none() || state.server.storage_stack.is_none() {
         return loaded;
@@ -139,6 +144,13 @@ pub(crate) async fn load_stored_secrets(state: &PlatformState) -> StoredSecrets 
                 done += 1;
             }
             Err(e) => tracing::error!(tenant, error = %e, "failed to load secrets"),
+        }
+        if shared.contains(&tenant.as_str())
+            && let Some(vault) = state.server.secrets_vault.as_ref()
+        {
+            for key in vault.list_keys(tenant) {
+                vault.remove_secret(tenant, &key);
+            }
         }
     }
     loaded.unchecked = due.len() - done;
@@ -244,25 +256,68 @@ mod tests {
         drop(before);
 
         let rotating = boot(&events, KEY_B, Some(KEY_A)).await;
-        assert_eq!(load_stored_secrets(&rotating).await, report(0, 2));
+        assert_eq!(
+            load_stored_secrets(&rotating, &["default"]).await,
+            report(0, 2)
+        );
         let vault = rotating.server.secrets_vault.clone().unwrap();
         assert_eq!(vault.get_secret("other", "api_key").as_deref(), Some("two"));
         drop(rotating);
 
         let again = boot(&events, KEY_B, Some(KEY_A)).await;
-        assert_eq!(load_stored_secrets(&again).await, report(2, 0));
+        assert_eq!(
+            load_stored_secrets(&again, &["default"]).await,
+            report(2, 0)
+        );
         drop(again);
 
         let rotated = boot(&events, KEY_B, None).await;
-        let loaded = load_stored_secrets(&rotated).await;
+        let loaded = load_stored_secrets(&rotated, &["default"]).await;
         assert_eq!(loaded, report(2, 0));
         assert!(loaded.line().starts_with(
             "Secrets from database (every tenant): 2 kept, 0 re-sealed, 0 deferred, 0 unreadable, 0 tenants unchecked."
         ));
         let vault = rotated.server.secrets_vault.clone().unwrap();
+        assert_eq!(vault.get_secret("other", "api_key").as_deref(), Some("two"));
+    }
+
+    /// The shared tenants' rows are served as shared copies, which values set
+    /// later in the boot replace, so none of them stays in the tenant cache to
+    /// shadow those values.
+    #[tokio::test]
+    async fn a_shared_tenants_rows_leave_no_tenant_copy_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = format!("file:{}", dir.path().join("events.db").display());
+        let state = boot(&events, KEY_B, Some(KEY_A)).await;
+        let old = SecretsVault::new(&KEY_A);
+        for tenant in ["default", "other"] {
+            let (ciphertext, nonce) = old.encrypt(b"stored").unwrap();
+            state
+                .server
+                .write_secret(
+                    tenant,
+                    "api_key",
+                    &ciphertext,
+                    &nonce,
+                    SecretPrecondition::Any,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            load_stored_secrets(&state, &["default"]).await,
+            report(0, 2)
+        );
+        let vault = state.server.secrets_vault.clone().unwrap();
+        vault.cache_platform_secret("api_key", "set-later-in-boot".to_string());
         assert_eq!(
             vault.get_secret("default", "api_key").as_deref(),
-            Some("one")
+            Some("set-later-in-boot")
+        );
+        assert_eq!(
+            vault.get_secret("other", "api_key").as_deref(),
+            Some("stored")
         );
     }
 }

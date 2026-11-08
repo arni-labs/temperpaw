@@ -1369,7 +1369,9 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     if let Some(ref vault) = state.server.secrets_vault {
         // Every tenant's rows, opened with either vault key and re-sealed
         // under the current one, before the shared copies below read them.
-        crate::stored_secrets::load_stored_secrets(&state).await;
+        // This deployment's tenant and the legacy bucket are served as those
+        // shared copies, not from the tenant cache.
+        crate::stored_secrets::load_stored_secrets(&state, &[tenant.as_str(), "default"]).await;
         restore_secrets_as_platform(vault, &storage, &tenant).await;
         if tenant != "default" {
             // Migration shim for older deployments that stored shared startup
