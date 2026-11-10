@@ -182,7 +182,7 @@ pub async fn middleware(
     }
 
     if is_safe_setup_path_public_during_bootstrap(&state, &method, &path).await
-        || is_public_path(request.method().as_str(), &path)
+        || is_public_path(&path)
     {
         return next.run(request).await;
     }
@@ -667,14 +667,13 @@ fn internal_caller(
         })
 }
 
-fn is_public_path(method: &str, path: &str) -> bool {
+fn is_public_path(path: &str) -> bool {
     path.starts_with("/auth/")
         || path == "/auth"
         || path == "/healthz"
         || path == "/readyz"
         || path.starts_with("/discord/interaction")
         || path.starts_with("/triggers/webhook/")
-        || (method == "GET" && (path == "/tdata" || path == "/tdata/"))
         || is_dashboard_public_path(path)
 }
 
@@ -1148,9 +1147,16 @@ mod tests {
     #[test]
     fn webhook_trigger_paths_are_public_for_external_providers() {
         assert!(
-            is_public_path("POST", "/triggers/webhook/patrol-datadog"),
+            is_public_path("/triggers/webhook/patrol-datadog"),
             "external webhook providers cannot send Temper bearer auth"
         );
+    }
+
+    #[test]
+    fn odata_service_paths_are_not_public() {
+        for path in ["/tdata", "/tdata/", "/tdata/$metadata"] {
+            assert!(!is_public_path(path), "{path} needs a credential");
+        }
     }
 
     /// One HttpEndpoint row projected the way the kernel's reconciler does it.
@@ -1340,6 +1346,15 @@ mod tests {
             (
                 "a TemperPaw route under another tenant's public row",
                 anonymous_in("other", "GET", secret),
+            ),
+            ("the OData service root", anonymous("GET", "/tdata")),
+            (
+                "the OData service root with a slash",
+                anonymous("GET", "/tdata/"),
+            ),
+            (
+                "the OData service document",
+                anonymous("GET", "/tdata/$metadata"),
             ),
         ];
         for (case, request) in cases {
