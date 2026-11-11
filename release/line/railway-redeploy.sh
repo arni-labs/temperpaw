@@ -223,6 +223,14 @@ else result=failed; fi
 
 read_json() { if [ -f "$STATE_DIR/$1.json" ]; then jq -c . "$STATE_DIR/$1.json"; else echo null; fi; }
 misses="$(cat "$STATE_DIR/misses.txt" 2>/dev/null || cat "$STATE_DIR/errors.txt" 2>/dev/null || true)"
+# A check names each part that failed in $CHECK_FAILED (one JSON line: name, error) when the line's check wrapper sets
+# it: the wrapper lets the check pass when every named failure was failing in the check before, and alerts on each (m16).
+if [ "$MODE" = check ] && [ -n "${CHECK_FAILED:-}" ]; then
+  for part in check package e2e; do
+    outcome="${part}_outcome"
+    [ "${!outcome}" != failure ] || jq -nc --arg name "railway $part" --arg error "${misses:0:250}" '{name: $name, error: $error}' >> "$CHECK_FAILED"
+  done
+fi
 record="$(jq -n --arg result "$result" --arg environment "$DEPLOY_ENV" --arg image_tag "$IMAGE_TAG" \
   --arg commit "$EXPECTED_SHA" --arg run_url "${STEP_RUN:-}" --arg misses "$misses" \
   --argjson before "$(read_json before)" --argjson new "$(read_json new)" \
