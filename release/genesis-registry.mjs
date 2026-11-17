@@ -22,8 +22,8 @@ import { deflateSync } from "node:zlib";
 
 /** Production's Genesis. */
 export const PRODUCTION_GENESIS = "https://genesis-production-164d.up.railway.app";
-/** A read Genesis has not answered in this long is a failed read. */
-const READ_MS = 30_000;
+/** A read Genesis has not answered in this long is a failed read. A bundle is the app and its whole dependency closure, modules included: 73 s for paw-channels on 17 Nov 2026. */
+const READ_MS = 240_000;
 /** A push: control's modules are ~9 MB, and Genesis records each object before it answers. */
 const WRITE_MS = 180_000;
 /** Who a release commit names as its author: the same name every Genesis release has carried. */
