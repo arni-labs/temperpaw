@@ -165,40 +165,30 @@ fn installed_app_runtime_recovery_result(
 /// What to do with a configured Genesis bootstrap app at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BootstrapAction {
-    /// Leave the already-installed version in place; do not touch it.
+    /// Leave the installed app in place; do not touch it.
     KeepInstalled,
-    /// (Re)install the env-pinned bootstrap ref.
+    /// Install the env-pinned bootstrap ref: nothing is installed under that name.
     InstallPinned,
 }
 
-/// A record is a candidate to KEEP only if it is a completed Genesis install.
-fn is_keep_eligible_genesis_install(record: &InstalledAppRecord) -> bool {
-    record.source_kind == "genesis" && record.status == "installed"
-}
-
-/// Decide whether to keep an already-installed Genesis bootstrap app or (re)install the
-/// env-pinned ref, from the DURABLE RECORD ALONE.
+/// Decide whether the env-pinned bootstrap ref installs an app, from the DURABLE RECORD ALONE.
 ///
-/// The env-pinned bootstrap ref (`TEMPERPAW_GENESIS_BOOTSTRAP_REFS`) is a **floor, not a
-/// ceiling**: it seeds a cold start but never overrides an installed Genesis version. If a
-/// Genesis `installed` record exists (any hash), KEEP it — so a redeploy can never revert a
-/// newer agent-published version to the pinned ref. The pin is (re)installed only when there is
-/// nothing installed to keep: no record, a non-Genesis record, or a record not in the
-/// `installed` status.
+/// The env-pinned bootstrap ref (`TEMPERPAW_GENESIS_BOOTSTRAP_REFS`) seeds a cold start and
+/// nothing else: it installs an app only when the tenant has no install record for it. Any record
+/// is kept, whatever its source (Genesis, local, a line install) and status, so a redeploy never
+/// replaces what runs. Reinstalling the pin over an existing record downgrades it, and a pinned
+/// install brings its dependency closure along, so it also replaced apps installed beside it: on
+/// 17 Nov 2026 staging reinstalled paw-patrol's pin on every boot (its record was local), and the
+/// closure turned the line's Genesis install of paw-fs into the pin's older, local copy.
 ///
-/// Deliberately record-only, NOT runtime-readiness-gated (see decision log D9). The keep decision
-/// runs at boot, while the runtime state it would probe — the process-global app catalog, Cedar
-/// policies, WASM registration — is still being restored concurrently, so ANY readiness probe is
-/// racy: a transient restore hiccup or another tenant's catalog activity looks like "not ready"
-/// and triggers a downgrade to the older pin — the exact bug this change exists to kill. The
-/// durable `InstalledAppRecord` is tenant-scoped and race-free, and it is the source of truth for
-/// "what is installed". Healing a genuinely-broken install is the recovery path's job (reconcile
-/// the INSTALLED version), not the bootstrap's — reverting to an older env pin is a downgrade
-/// masquerading as a heal.
+/// Deliberately record-only, NOT runtime-readiness-gated (see decision log D9): at boot the
+/// runtime state is still being restored, so a readiness probe is racy. Healing a broken install
+/// is the recovery path's job (reconcile the INSTALLED version) or an explicit install's, not the
+/// bootstrap's.
 fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> BootstrapAction {
     match installed {
-        Some(record) if is_keep_eligible_genesis_install(record) => BootstrapAction::KeepInstalled,
-        _ => BootstrapAction::InstallPinned,
+        Some(_) => BootstrapAction::KeepInstalled,
+        None => BootstrapAction::InstallPinned,
     }
 }
 
@@ -507,10 +497,8 @@ async fn bootstrap_configured_genesis_apps(
 
         match platform_store.get_installed_app(tenant, &app_name).await {
             Ok(record) => {
-                // Record-only keep decision (see decision log D9): keep any Genesis `installed`
-                // record regardless of hash; the env pin is a floor. No runtime-readiness probe —
-                // at boot the runtime state is still being restored, so probing it is racy and
-                // can wrongly downgrade a healthy newer install.
+                // Record-only decision (see decision log D9): any install record is kept; the env
+                // pin only seeds an app that has none.
                 match classify_bootstrap_action(record.as_ref()) {
                     BootstrapAction::KeepInstalled => {
                         let installed_ref = record
@@ -518,15 +506,16 @@ async fn bootstrap_configured_genesis_apps(
                             .map(|r| r.app_ref.as_str())
                             .unwrap_or_default();
                         if installed_ref != app_ref {
-                            // The env pin is a floor: an install at a different hash is kept and the
-                            // pin is NOT force-applied. Surface this so an operator who bumped the
-                            // pin expecting an upgrade can see why it did not take — explicit
-                            // install is the upgrade path.
+                            // The pin only seeds: an install at another ref or from another source is
+                            // kept. Surface this so an operator who bumped the pin expecting an
+                            // upgrade can see why it did not take; an explicit install upgrades.
                             tracing::warn!(
                                 app = %app_name,
                                 pinned_ref = %app_ref,
                                 installed_ref = %installed_ref,
-                                "Keeping installed Genesis app at a different hash than the env pin; the pin bump did NOT upgrade it (env pin is a floor, not a ceiling — use an explicit install to change the running version)"
+                                source_kind = %record.as_ref().map(|r| r.source_kind.as_str()).unwrap_or_default(),
+                                status = %record.as_ref().map(|r| r.status.as_str()).unwrap_or_default(),
+                                "Keeping the installed app; the env pin seeds only an app with no install record (use an explicit install to change the running version)"
                             );
                         } else {
                             tracing::info!(
@@ -538,21 +527,11 @@ async fn bootstrap_configured_genesis_apps(
                         }
                         continue;
                     }
-                    BootstrapAction::InstallPinned => match record.as_ref() {
-                        Some(record) => tracing::info!(
-                            app = %app_name,
-                            previous_ref = %record.app_ref,
-                            next_ref = %app_ref,
-                            source_kind = %record.source_kind,
-                            status = %record.status,
-                            "Installing pinned Genesis bootstrap ref (no keep-eligible Genesis install record)"
-                        ),
-                        None => tracing::info!(
-                            app = %app_name,
-                            app_ref = %app_ref,
-                            "Installing fresh Genesis bootstrap app"
-                        ),
-                    },
+                    BootstrapAction::InstallPinned => tracing::info!(
+                        app = %app_name,
+                        app_ref = %app_ref,
+                        "Installing fresh Genesis bootstrap app"
+                    ),
                 }
             }
             Err(error) => {
@@ -4598,51 +4577,39 @@ on_timeout = "Fire"
     }
 
     #[test]
-    fn classify_bootstrap_keeps_installed_genesis_regardless_of_hash() {
+    fn classify_bootstrap_installs_the_pin_only_when_nothing_is_installed() {
         use temper_server::platform_store::InstalledAppRecord;
-        let genesis_installed = |app_ref: &str| InstalledAppRecord {
-            source_kind: "genesis".to_string(),
-            status: "installed".to_string(),
+        let record = |source_kind: &str, status: &str, app_ref: &str| InstalledAppRecord {
+            source_kind: source_kind.to_string(),
+            status: status.to_string(),
             app_ref: app_ref.to_string(),
             ..Default::default()
         };
 
-        // A Genesis install at the pin's hash -> keep.
-        assert_eq!(
-            classify_bootstrap_action(Some(&genesis_installed("owner/app@pin"))),
-            BootstrapAction::KeepInstalled
-        );
-        // A Genesis install at a DIFFERENT hash (a newer agent-published version) -> keep.
-        // Regression guard: the env pin is a FLOOR, not a ceiling; a redeploy must never
-        // revert a newer install back to the pinned ref. Record-only: no runtime-readiness
-        // probe (it is racy at boot — see D9), so the durable record alone decides.
-        assert_eq!(
-            classify_bootstrap_action(Some(&genesis_installed("owner/app@newer"))),
-            BootstrapAction::KeepInstalled
-        );
-        // Absent -> install the pin (cold-start seed).
+        // Nothing installed -> install the pin (cold-start seed).
         assert_eq!(
             classify_bootstrap_action(None),
             BootstrapAction::InstallPinned
         );
-        // Non-genesis source (e.g. a baked/local install) -> reinstall from the pin.
-        assert_eq!(
-            classify_bootstrap_action(Some(&InstalledAppRecord {
-                source_kind: "local".to_string(),
-                status: "installed".to_string(),
-                ..Default::default()
-            })),
-            BootstrapAction::InstallPinned
-        );
-        // Genesis but not in the "installed" status (e.g. failed/pending) -> reinstall the pin.
-        assert_eq!(
-            classify_bootstrap_action(Some(&InstalledAppRecord {
-                source_kind: "genesis".to_string(),
-                status: "failed".to_string(),
-                ..Default::default()
-            })),
-            BootstrapAction::InstallPinned
-        );
+        // Any install record is kept, whatever its ref, source and status: a redeploy never
+        // replaces what runs with the pin, nor (through the pin's dependency closure) the apps
+        // installed beside it. Record-only: no runtime-readiness probe (racy at boot, see D9).
+        for kept in [
+            record("genesis", "installed", "owner/app@pin"),
+            record("genesis", "installed", "owner/app@newer"),
+            record("local", "installed", ""),
+            record("genesis", "failed", "owner/app@pin"),
+            record("genesis", "pending", "owner/app@newer"),
+        ] {
+            assert_eq!(
+                classify_bootstrap_action(Some(&kept)),
+                BootstrapAction::KeepInstalled,
+                "{} {} {}",
+                kept.source_kind,
+                kept.status,
+                kept.app_ref
+            );
+        }
     }
 
     #[test]
