@@ -110,6 +110,9 @@ async function ship(app, apps, after, versions) {
   const mine = await tag(commit);
   if (mine.failed !== undefined) return { error: "genesis_refused", genesis_status: mine.failed };
   if (mine.sha) return { outcome: "tagged already", ref: `${OWNER}/${app}@${mine.sha}` };
+  // A new app has no repository yet: made here, as the general case of a first publish.
+  const repository = await genesis.ensureRepository(OWNER, app, `TemperPaw app ${app}`);
+  if (repository.error) return repository;
   const head = await genesis.head(OWNER, app);
   if (head.error) return head;
   for (const newer of after) {
@@ -165,7 +168,14 @@ for (const app of order) {
   }
   // Proof the version installs: Genesis serves it, read with the token so a refusal says why.
   if (!out.error) {
-    const read = await genesis.filesAt(OWNER, app, out.ref.slice(out.ref.indexOf("@") + 1));
+    const version = out.ref.slice(out.ref.indexOf("@") + 1);
+    let read = await genesis.filesAt(OWNER, app, version);
+    // Genesis answers 404 for a version of an app with no App row (a new app, or one only ever pushed): it is registered.
+    if (read.error && read.genesis_status === 404) {
+      const registered = await genesis.registerApp(OWNER, app, `TemperPaw app ${app}`);
+      if (registered.error) read = { ...registered, tagged: out.ref };
+      else read = await genesis.filesAt(OWNER, app, version);
+    }
     if (read.error) out = { ...read, tagged: out.ref };
     else versions.set(app, out.ref);
   }
