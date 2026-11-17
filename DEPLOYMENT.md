@@ -109,7 +109,7 @@ GitHub Actions (`.github/workflows/docker.yml`) builds the Docker image on:
 - **Push to `main`** -> tagged `edge` and `sha-<short-hash>`
 - **Published release** -> tagged `latest`, semver (`v1.2.3`, `v1.2`)
 
-The image is pushed to `ghcr.io/nerdsane/temperpaw`.
+The image is pushed to `ghcr.io/arni-labs/temperpaw`.
 
 ### Multi-stage Dockerfile
 
@@ -266,19 +266,11 @@ The dashboard sidebar shows:
 
 ---
 
-## Manual Deployment
+## Shipping and Manual Deployment
 
-### A CI-built image, checked, with the way back
+### How TemperPaw ships
 
-The **Railway Redeploy** workflow (`.github/workflows/railway-redeploy.yml`, run by hand) deploys one `sha-*` image from GHCR to the staging or production main Temper and runs `scripts/railway_release.sh`:
-
-1. **snapshot**: what runs now (its deployment and image), its route count from its log, and one answer from each probe in `PROBE_ROUTES`.
-2. **forward**, only for the Factory's `stage` and `go_live` deploys: when the commit `/paw/version` reported in the snapshot already contains the release's commit (GitHub's compare), the release is live already: nothing deploys or restarts, and the result is `already_live`. A release deploys only when its commit contains the commit that serves, so a branch that forked before it deploys nothing; production also requires `main` to contain the release. Production `roll_back` and manual runs with an empty `step` on either environment skip both the backward-deploy protection and the production main-membership check, allowing deliberate deploys of older images or commits outside `main`.
-3. **deploy**: the service's source set to the image, with the `railway.toml` deploy settings (`/readyz`, one hour, overlap and draining 0, three restarts), and a new deployment. Railway keeps the old one serving until `/readyz` answers.
-4. **check**: `/healthz` and `/readyz`, `/paw/version` naming the tag's commit, the new boot's route count, every probe and the guest read against the snapshot. The guest read may gain records; it misses if a thing disappears, its count falls, or an id from before is missing when both reads returned the whole thing. Reads cut at their page limit compare counts only. Memory (Railway's figure and the build's Datadog gauges) is reported after a soak.
-5. **rollback**, on any miss: a deployment that never took over is stopped and nothing restarts; one that took over is replaced by the image that ran before, checked against the snapshot.
-
-`mode: check` runs the checks against what runs now, deploying nothing. `drill` (staging only) fails the check on purpose to prove the rollback. Each run ends with a release record (job outputs and run summary). An image whose kernel adds a storage migration has a way back only when the migration is listed in `scripts/additive_migrations.txt`. A kernel whose migrator ignores unknown migrations then boots on the migrated database as it is. An older one refuses it (on staging, `sha-3d79f6e` after `sha-6f410a8`: "migration 19 was previously applied but is missing"), so the way back first deletes the newer rows from `_sqlx_migrations` where `MIGRATION_ROLLBACK` is `auto`, and otherwise stops and names them.
+A push to `main` runs CI (`.github/workflows/ci.yml`) and builds the image `sha-<7>` (`.github/workflows/docker.yml`). When CI is green, the push becomes a green Push in the Arni Ops app, and the Factory line ships it: the `temperpaw-staging` target (Railway, environment katagami-staging), then `temperpaw-production`. Each target waits for the image to be in the registry, points the Railway service at it, and is up once the host serves that deployment and `/readyz` answers 200. A red push never ships; the next green push carries the fix. A target that misses puts back the deployment that served before.
 
 ### Using Railway CLI directly
 

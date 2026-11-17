@@ -6,12 +6,11 @@ on:
   push:
     branches:
       - main
-      - release
   schedule:
     - cron: "0 7 * * *"   # nightly full validation
 
 # A new push to a pull request cancels its older run. Every push to main runs to the end, because its result decides
-# whether revert-on-red acts.
+# whether the Factory line ships that push (a green run makes it a green Push in Arni Ops).
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
@@ -39,8 +38,6 @@ jobs:
           source os-apps/wasm-build-env.sh
           wasm_path="$(temperpaw_build_wasm "$PWD/os-apps/paw-channels/wasm/route_message" wasm32-wasip1)"
           "$RUNNER_TEMP/route-message-tests/bin/python" scripts/test-route-message-continuation.py "$wasm_path"
-      - name: Release script regressions
-        run: python3 scripts/test_railway_release.py
       - name: Datadog monitors file
         run: python3 scripts/check_monitors.py
       - name: Cargo fmt
@@ -57,7 +54,7 @@ jobs:
           cargo check --manifest-path os-apps/paw-patrol/wasm/release_run_lifecycle/Cargo.toml --target wasm32-unknown-unknown
 
   # Every Cargo workspace's tests, on every push to main and nightly; a pull request runs only `checks` above, so one
-  # tree is not tested twice and revert-on-red answers a failing push. scripts/ci/rust_tests.py finds the workspaces on
+  # tree is not tested twice, and a failing push never ships. scripts/ci/rust_tests.py finds the workspaces on
   # disk: the root one (crates/*) and every os-app module and reference crate, each a workspace of its own. The root
   # tests load packaged os-app modules, so that job first builds every module the way a release does. Branch protection
   # requires `tests`, which gathers the three. (Until 28 Oct 2026 only `full` ran Rust tests, after merge, and only for
