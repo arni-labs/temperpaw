@@ -31,7 +31,8 @@ The install puts in the app's specs, Cedar, modules and the routes its
 `routes.json` declares, all or nothing. It answers 200 with the install and its
 `install_id` when it ends within 25 s, otherwise 202 with the `install_id`; the
 installs list, `GET /api/genesis/apps/installs`, then gives the app's last
-install as `running`, `installed`, or `failed` with its `reason`.
+install in its `installs`: `running`, `installed`, or `failed` with its
+`reason`.
 
 Boot fetches each installed Genesis app's files again before restoring it,
 bounded by `TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS` (default 20). If that
