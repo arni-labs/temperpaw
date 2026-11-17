@@ -9,4 +9,4 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "2e7438078d43e3b9d5beaca465e6b9ad58e0e844" }
+temper-wasm-sdk = { git = "https://github.com/arni-labs/temper.git", rev = "cbfd71960cba022de72007536b0ed5b57673342a" }
