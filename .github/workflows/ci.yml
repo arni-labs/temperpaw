@@ -153,3 +153,36 @@ jobs:
           crates/paw-codex-worker/scripts/production-git-ancestry-guard-smoke.sh
       - name: Dashboard build
         run: cd dashboard && npm run build
+
+  # Every green push to main publishes the os-apps to production Genesis and tags each app's version `src/<commit>`
+  # (release/publish-apps.mjs); the Factory line installs those tagged versions. A push whose jobs fail publishes nothing.
+  publish:
+    needs: [checks, tests, full]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' && needs.tests.result == 'success' && needs.full.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0 # the main commits after this one
+      - uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            os-apps/**/*.wasm
+            !os-apps/**/target/**
+            ~/.cache/temperpaw-os-app-modules
+          key: os-app-modules-${{ github.sha }}
+          restore-keys: os-app-modules-
+      - name: Every os-app module, built and packaged as a release builds it
+        run: python3 scripts/ci/build_os_app_modules.py --reuse
+      - name: Publish each app and tag the version that serves this commit
+        env:
+          GENESIS_TOKEN: ${{ secrets.GENESIS_TOKEN }}
+        run: node release/publish-apps.mjs "$GITHUB_SHA"
