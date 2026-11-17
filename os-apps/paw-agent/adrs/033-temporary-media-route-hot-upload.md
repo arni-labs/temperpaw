@@ -29,4 +29,4 @@ Production DMs can use the corrected app-scoped media route before the full `paw
 
 App reconciliation or a redeploy can replace the hot-upload with the older Genesis-pinned Monty module. Operators must either re-upload and verify the module after redeploys or complete the preferred fix: repair Genesis large-pack publishing and pin a new `paw-agent` ref that contains this Monty module.
 
-The temporary state should be removed once `temperpaw/paw-agent` is published with the updated `monty_repl.wasm` and production `TEMPERPAW_GENESIS_BOOTSTRAP_REFS` points at that ref.
+The temporary state should be removed once `temperpaw/paw-agent` is published with the updated `monty_repl.wasm` and production has it installed at that ref.

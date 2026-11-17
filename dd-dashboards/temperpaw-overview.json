@@ -521,30 +521,6 @@
           },
           {
             "definition": {
-              "title": "OS App Reconcile",
-              "type": "timeseries",
-              "requests": [
-                {
-                  "q": "default_zero(sum:temper_os_app_reconcile_total{service:temperpaw} by {app,result}.as_count().rollup(sum, 60))",
-                  "display_type": "bars"
-                }
-              ]
-            }
-          },
-          {
-            "definition": {
-              "title": "OS App Reconcile Duration",
-              "type": "timeseries",
-              "requests": [
-                {
-                  "q": "default_zero(avg:temper_os_app_reconcile_duration_ms{service:temperpaw} by {app,result}.rollup(avg, 60))",
-                  "display_type": "line"
-                }
-              ]
-            }
-          },
-          {
-            "definition": {
               "title": "Event Replay Duration",
               "type": "timeseries",
               "requests": [

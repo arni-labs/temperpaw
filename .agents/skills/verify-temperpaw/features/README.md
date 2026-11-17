@@ -1,6 +1,6 @@
 # Feature map
 
-Surface enumeration (os-apps/ has 14 apps; the startup surface bootstraps: paw-fs, paw-agent, paw-channels, paw-foresight, paw-media, paw-ingest, paw-pm, paw-compute, paw-patrol, paw-research, paw-skills):
+Surface enumeration (os-apps/ has 14 apps). Boot installs none of them: a server runs the apps its install records name, so install the ones a feature needs first (`POST /paw/apps/install-from-genesis`).
 
 | Feature | File | Drive when you changed |
 |---|---|---|

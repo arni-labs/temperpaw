@@ -22,25 +22,22 @@ If you prefer the one-click path, use the Railway button in the README and provi
 
 ## Genesis app source
 
-Production TemperPaw app capabilities should come from Genesis, not from the
-repo-local app catalog. Configure fresh-instance bootstrap with pinned refs:
+A server's apps are its install records. Boot restores exactly the apps those
+records name, at the versions they name, and installs nothing else. A new server
+has no apps until whoever installs them does (the Factory line, UniKon, or an
+operator): `POST /paw/apps/install-from-genesis` with a pinned `owner/app@hash`
+ref, from the registry the server installs from (`TEMPER_GENESIS_REGISTRY_URL`).
+The install puts in the app's specs, Cedar, modules and the routes its
+`routes.json` declares, all or nothing. It answers 200 with the install and its
+`install_id` when it ends within 25 s, otherwise 202 with the `install_id`; the
+installs list, `GET /api/genesis/apps/installs`, then gives the app's last
+install as `running`, `installed`, or `failed` with its `reason`.
 
-- `TEMPERPAW_GENESIS_REGISTRY_URL=https://genesis-production-164d.up.railway.app`
-- `TEMPERPAW_GENESIS_REGISTRY_TENANT=default`
-- `TEMPERPAW_GENESIS_BOOTSTRAP_REFS=temperpaw/paw-fs@HASH,temperpaw/paw-agent@HASH`
-- `TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS=20`
-- `TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS=60`
-
-On restart with the same database, TemperPaw restores installed Genesis app
-metadata and skips unchanged bootstrap refs. Do not reset, wipe, replace, or
-restore over a production database. Only a genuinely new empty database is a
-fresh instance that installs the configured pinned refs once.
-
-The restore and bootstrap deadlines are startup safety valves. If Genesis cache
-recovery or configured app bootstrap stalls, TemperPaw logs a warning and
-continues to readiness using the installed state already present in the
-database; operators can repair the pinned Genesis app version and redeploy
-without any database reset.
+Boot fetches each installed Genesis app's files again before restoring it,
+bounded by `TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS` (default 20). If that
+fetch stalls, TemperPaw logs a warning and continues to readiness with the
+installed state already in the database. Do not reset, wipe, replace, or restore
+over a production database.
 
 ## Optional Datadog
 

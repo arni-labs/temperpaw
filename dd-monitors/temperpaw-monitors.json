@@ -109,24 +109,6 @@
     }
   },
   {
-    "name": "[Temper] OS App Reconcile Regression",
-    "type": "metric alert",
-    "query": "avg(last_1h):avg:temper_startup_phase_duration_ms{service:temperpaw,phase:phase_6b_os_app_reconcile} > 60000",
-    "message": "TemperPaw OS app reconcile exceeds 60s during startup.\n\n@slack-temperpaw-alerts",
-    "tags": [
-      "team:temperpaw",
-      "severity:medium"
-    ],
-    "options": {
-      "thresholds": {
-        "critical": 60000,
-        "warning": 30000
-      },
-      "notify_no_data": false,
-      "renotify_interval": 120
-    }
-  },
-  {
     "name": "[Temper] Required WASM Load Failures",
     "type": "metric alert",
     "query": "sum(last_15m):default_zero(sum:temper_wasm_module_load_failures_total{service:temperpaw}.as_count()) > 0",

@@ -1292,11 +1292,13 @@ fn genesis_install_request_from_setup(
     })
 }
 
-/// `POST /paw/apps/install-from-genesis` — reconcile an OS app from a pinned Genesis
-/// ref on a running pod, without a Docker rebuild. Privileged setup endpoint on the
-/// same `/paw/` admin surface as secret/agent management. Lets katagami (and any
-/// os-app) be updated by publishing to Genesis + hitting this endpoint, instead of a
-/// full image rebuild (ARN-69).
+/// `POST /paw/apps/install-from-genesis` — install a pinned Genesis ref on the
+/// running server: its specs, Cedar, modules and routes, all or nothing.
+/// Privileged setup endpoint on the same `/paw/` admin surface as secret and
+/// agent management. Answers as the kernel's `POST /api/genesis/apps/install`:
+/// 200 with the install, 202 with its `install_id` while it runs on (the
+/// installs list, `GET /api/genesis/apps/installs`, says how it ends), or why
+/// not.
 async fn install_app_from_genesis(
     State(state): State<SetupApiState>,
     Json(req): Json<InstallFromGenesisRequest>,
@@ -1306,22 +1308,15 @@ async fn install_app_from_genesis(
         Err(error) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": error })),
+                Json(serde_json::json!({ "status": "failed", "error": error })),
             );
         }
     };
-    match temper_platform::genesis_install::install_genesis_app_from_registry(
-        &state.platform,
-        request,
-    )
-    .await
-    {
-        Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error })),
-        ),
-    }
+    let (status, body) =
+        temper_platform::genesis_install::install_answering(&state.platform, request)
+            .await
+            .response();
+    (status, Json(body))
 }
 
 /// The dispatch context a setup request acts with: its caller's own

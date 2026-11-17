@@ -1,11 +1,10 @@
 //! Temper Paw 9-phase startup sequence.
 //!
 //! Replicates the Temper CLI's boot flow (`temper serve`) in an embedded context.
-//! The daemon boots the Temper platform, installs Paw OS apps, seeds souls,
-//! and starts the Discord transport.
+//! The daemon boots the Temper platform, restores the apps its install records
+//! name (it installs none), seeds souls, and starts the Discord transport.
 
 use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,23 +15,15 @@ use axum::response::IntoResponse;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{KeyValue, global};
 use temper_platform::PlatformState;
-use temper_platform::genesis_install::{
-    GenesisRegistryInstallRequest, install_genesis_app_from_registry,
-    restore_genesis_registry_cache_roots,
-};
-use temper_platform::os_apps::{
-    InstallResult, OsAppReconcileResult, get_os_app, list_startup_os_apps, reconcile_os_app,
-    resolve_os_app_install_order,
-};
+use temper_platform::genesis_install::restore_genesis_registry_cache_roots;
 use temper_platform::recovery::{
-    InstalledAppRuntimeRecoveryOutcome, InstalledAppsRuntimeRecoverySummary,
-    recover_cedar_policies, recover_installed_app_runtime_state,
+    InstalledAppsRuntimeRecoverySummary, recover_cedar_policies,
     recover_installed_apps_runtime_state,
 };
 use temper_platform::router::build_platform_router;
 use temper_runtime::scheduler::sim_now;
 use temper_runtime::tenant::TenantId;
-use temper_server::platform_store::{InstalledAppRecord, PlatformStore, SpecVerificationUpdate};
+use temper_server::platform_store::PlatformStore;
 use temper_server::registry::{EntityLevelSummary, EntityVerificationResult, VerificationStatus};
 use temper_server::registry_bootstrap::restore_registry_from_platform_store;
 use temper_server::secrets::vault::Opened;
@@ -46,13 +37,9 @@ const DEFAULT_AGENT_WORKDIR: &str = "/workspace";
 const STARTUP_PHASE_DURATION_METRIC: &str = "temper_startup_phase_duration_ms";
 const STARTUP_TIME_TO_READY_METRIC: &str = "temper_startup_time_to_healthy_ms";
 const STARTUP_LIVE_RESTORE_ENTITIES_METRIC: &str = "temper_startup_live_restore_entities_total";
-const OS_APP_RECONCILE_TOTAL_METRIC: &str = "temper_os_app_reconcile_total";
-const OS_APP_RECONCILE_DURATION_METRIC: &str = "temper_os_app_reconcile_duration_ms";
 const WASM_MODULE_LOAD_FAILURES_METRIC: &str = "temper_wasm_module_load_failures_total";
 const DEFAULT_ORPHANED_SESSION_RECOVERY_LIMIT: usize = 25;
-const DEFAULT_GENESIS_REGISTRY_URL: &str = "https://genesis-production-164d.up.railway.app";
 const DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT: Duration = Duration::from_secs(20);
-const DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn running_on_railway() -> bool {
     std::env::var_os("RAILWAY_ENVIRONMENT").is_some()
@@ -64,8 +51,6 @@ struct StartupMetrics {
     phase_duration_ms: Histogram<f64>,
     time_to_ready_ms: Histogram<f64>,
     live_restore_entities_total: Counter<u64>,
-    os_app_reconcile_total: Counter<u64>,
-    os_app_reconcile_duration_ms: Histogram<f64>,
     wasm_module_load_failures_total: Counter<u64>,
 }
 
@@ -89,15 +74,6 @@ fn startup_metrics() -> &'static StartupMetrics {
             live_restore_entities_total: meter
                 .u64_counter(STARTUP_LIVE_RESTORE_ENTITIES_METRIC)
                 .with_description("Entities restored into runtime indexes during startup.")
-                .build(),
-            os_app_reconcile_total: meter
-                .u64_counter(OS_APP_RECONCILE_TOTAL_METRIC)
-                .with_description("Startup OS-app reconcile attempts by app and result.")
-                .build(),
-            os_app_reconcile_duration_ms: meter
-                .f64_histogram(OS_APP_RECONCILE_DURATION_METRIC)
-                .with_unit("ms")
-                .with_description("Startup OS-app reconcile duration by app and result.")
                 .build(),
             wasm_module_load_failures_total: meter
                 .u64_counter(WASM_MODULE_LOAD_FAILURES_METRIC)
@@ -131,17 +107,6 @@ fn record_startup_live_restore_entities(tenant: &str, count: u64) {
         .add(count, &[KeyValue::new("tenant", tenant.to_string())]);
 }
 
-fn record_os_app_reconcile(app: &str, result: &'static str, duration: Duration) {
-    let attrs = [
-        KeyValue::new("app", app.to_string()),
-        KeyValue::new("result", result.to_string()),
-    ];
-    startup_metrics().os_app_reconcile_total.add(1, &attrs);
-    startup_metrics()
-        .os_app_reconcile_duration_ms
-        .record(duration_ms(duration), &attrs);
-}
-
 fn record_wasm_module_load_failure(stage: &'static str) {
     startup_metrics()
         .wasm_module_load_failures_total
@@ -162,36 +127,6 @@ fn installed_app_runtime_recovery_result(
     }
 }
 
-/// What to do with a configured Genesis bootstrap app at startup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootstrapAction {
-    /// Leave the installed app in place; do not touch it.
-    KeepInstalled,
-    /// Install the env-pinned bootstrap ref: nothing is installed under that name.
-    InstallPinned,
-}
-
-/// Decide whether the env-pinned bootstrap ref installs an app, from the DURABLE RECORD ALONE.
-///
-/// The env-pinned bootstrap ref (`TEMPERPAW_GENESIS_BOOTSTRAP_REFS`) seeds a cold start and
-/// nothing else: it installs an app only when the tenant has no install record for it. Any record
-/// is kept, whatever its source (Genesis, local, a line install) and status, so a redeploy never
-/// replaces what runs. Reinstalling the pin over an existing record downgrades it, and a pinned
-/// install brings its dependency closure along, so it also replaced apps installed beside it: on
-/// 17 Nov 2026 staging reinstalled paw-patrol's pin on every boot (its record was local), and the
-/// closure turned the line's Genesis install of paw-fs into the pin's older, local copy.
-///
-/// Deliberately record-only, NOT runtime-readiness-gated (see decision log D9): at boot the
-/// runtime state is still being restored, so a readiness probe is racy. Healing a broken install
-/// is the recovery path's job (reconcile the INSTALLED version) or an explicit install's, not the
-/// bootstrap's.
-fn classify_bootstrap_action(installed: Option<&InstalledAppRecord>) -> BootstrapAction {
-    match installed {
-        Some(_) => BootstrapAction::KeepInstalled,
-        None => BootstrapAction::InstallPinned,
-    }
-}
-
 /// Bring back the policies and modules installed apps run on, then see what state those apps are
 /// in. Modules come first: an app with modules can only read as ready once they are registered.
 async fn recover_installed_apps(
@@ -206,96 +141,11 @@ async fn recover_installed_apps(
     Ok(recover_installed_apps_runtime_state(state, platform_store).await)
 }
 
-#[cfg(test)]
+/// Whether Phase 6a left an installed app needing work, so boot recovers the startup indexes before readiness.
 fn runtime_indexes_required_before_reconcile(
     summary: &InstalledAppsRuntimeRecoverySummary,
 ) -> bool {
     summary.store_error > 0 || summary.missing_bundle > 0 || summary.needs_reconcile > 0
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct StartupSurfaceRuntimeRecoverySummary {
-    ready: usize,
-    healed: usize,
-    cold: usize,
-    needs_reconcile: usize,
-    missing_bundle: usize,
-    store_error: usize,
-}
-
-fn startup_surface_runtime_recovery_result(
-    summary: &StartupSurfaceRuntimeRecoverySummary,
-) -> &'static str {
-    if summary.store_error > 0 || summary.missing_bundle > 0 {
-        "error"
-    } else if summary.needs_reconcile > 0 {
-        "needs_reconcile"
-    } else if summary.healed > 0 {
-        "healed"
-    } else if summary.cold > 0 && summary.ready == 0 {
-        "cold"
-    } else {
-        "ready"
-    }
-}
-
-fn startup_surface_runtime_indexes_required_before_reconcile(
-    summary: &StartupSurfaceRuntimeRecoverySummary,
-) -> bool {
-    summary.store_error > 0 || summary.missing_bundle > 0 || summary.needs_reconcile > 0
-}
-
-async fn recover_startup_surface_runtime_state(
-    state: &PlatformState,
-    ps: &dyn PlatformStore,
-    tenant: &str,
-    startup_app_order: &[String],
-) -> StartupSurfaceRuntimeRecoverySummary {
-    let mut summary = StartupSurfaceRuntimeRecoverySummary::default();
-    for app_name in startup_app_order {
-        match ps.get_installed_app(tenant, app_name).await {
-            Ok(None) => {
-                summary.cold += 1;
-                tracing::info!(
-                    tenant,
-                    app = %app_name,
-                    "Startup OS app has no durable install record; cold reconcile will install it"
-                );
-                continue;
-            }
-            Err(error) => {
-                summary.store_error += 1;
-                tracing::warn!(
-                    tenant,
-                    app = %app_name,
-                    error = %error,
-                    "Failed to read startup OS app metadata during scoped runtime recovery"
-                );
-                continue;
-            }
-            Ok(Some(_)) => {}
-        }
-
-        match recover_installed_app_runtime_state(state, ps, tenant, app_name).await {
-            InstalledAppRuntimeRecoveryOutcome::Ready => summary.ready += 1,
-            InstalledAppRuntimeRecoveryOutcome::Healed => summary.healed += 1,
-            InstalledAppRuntimeRecoveryOutcome::NeedsReconcile => summary.needs_reconcile += 1,
-            InstalledAppRuntimeRecoveryOutcome::MissingBundle => summary.missing_bundle += 1,
-            InstalledAppRuntimeRecoveryOutcome::StoreError => summary.store_error += 1,
-        }
-    }
-    summary
-}
-
-fn app_required_wasm_failure(app_name: &str, install: &InstallResult) -> Option<String> {
-    if install.wasm_failures.is_empty() {
-        return None;
-    }
-
-    Some(format!(
-        "{app_name}: required WASM module(s) failed to load or validate: {}",
-        install.wasm_failures.join(", ")
-    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,12 +157,6 @@ enum RuntimeRecoveryStep {
 }
 
 const STARTUP_RUNTIME_INDEX_ENTITY_TYPES: &[&str] = &["App", "Agent", "Soul"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalWasmStartupPolicy {
-    BuildIfMissing,
-    LoadPersistedOnly,
-}
 
 #[derive(Clone, Default)]
 struct StartupReadiness {
@@ -355,18 +199,6 @@ fn registry_tenant_ids(state: &PlatformState) -> Vec<TenantId> {
     registry.tenant_ids().into_iter().cloned().collect()
 }
 
-fn local_wasm_startup_policy(raw: Option<&str>) -> LocalWasmStartupPolicy {
-    match raw.map(|value| value.trim().to_ascii_lowercase()) {
-        Some(value) if matches!(value.as_str(), "build" | "build-if-missing" | "true" | "1") => {
-            LocalWasmStartupPolicy::BuildIfMissing
-        }
-        Some(value) if matches!(value.as_str(), "load-only" | "persisted" | "false" | "0") => {
-            LocalWasmStartupPolicy::LoadPersistedOnly
-        }
-        _ => LocalWasmStartupPolicy::LoadPersistedOnly,
-    }
-}
-
 fn runtime_recovery_plan(tenant_ids: &[TenantId]) -> Vec<RuntimeRecoveryStep> {
     let mut steps = Vec::with_capacity(tenant_ids.len() * STARTUP_RUNTIME_INDEX_ENTITY_TYPES.len());
     for tenant_id in tenant_ids {
@@ -380,52 +212,6 @@ fn runtime_recovery_plan(tenant_ids: &[TenantId]) -> Vec<RuntimeRecoveryStep> {
     steps
 }
 
-fn startup_os_apps() -> Vec<String> {
-    if !genesis_bootstrap_app_refs().is_empty() {
-        return Vec::new();
-    }
-    list_startup_os_apps()
-}
-
-fn default_agent_specs_bootstrap_needed(startup_apps: &[String]) -> bool {
-    !startup_apps.iter().any(|app| app == "paw-agent")
-}
-
-fn genesis_bootstrap_app_refs() -> Vec<String> {
-    let configured = std::env::var("TEMPERPAW_GENESIS_BOOTSTRAP_REFS")
-        .or_else(|_| std::env::var("TEMPER_GENESIS_BOOTSTRAP_REFS"))
-        .unwrap_or_default();
-    configured
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn genesis_bootstrap_app_names() -> Vec<String> {
-    genesis_bootstrap_app_refs()
-        .into_iter()
-        .filter_map(|app_ref| pinned_app_ref_name(&app_ref).map(ToString::to_string))
-        .collect()
-}
-
-fn genesis_registry_url() -> String {
-    std::env::var("TEMPERPAW_GENESIS_REGISTRY_URL")
-        .or_else(|_| std::env::var("TEMPER_GENESIS_REGISTRY_URL"))
-        .or_else(|_| std::env::var("GENESIS_REGISTRY_URL"))
-        .unwrap_or_else(|_| DEFAULT_GENESIS_REGISTRY_URL.to_string())
-        .trim()
-        .trim_end_matches('/')
-        .to_string()
-}
-
-fn genesis_registry_tenant() -> String {
-    std::env::var("TEMPERPAW_GENESIS_REGISTRY_TENANT")
-        .or_else(|_| std::env::var("TEMPER_GENESIS_REGISTRY_TENANT"))
-        .unwrap_or_else(|_| "default".to_string())
-}
-
 fn genesis_cache_restore_timeout() -> Duration {
     std::env::var("TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS")
         .ok()
@@ -433,150 +219,6 @@ fn genesis_cache_restore_timeout() -> Duration {
         .filter(|seconds| *seconds > 0)
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT)
-}
-
-fn genesis_bootstrap_timeout() -> Duration {
-    std::env::var("TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT)
-}
-
-fn pinned_app_ref_name(app_ref: &str) -> Option<&str> {
-    let (owner_and_name, hash) = app_ref.split_once('@')?;
-    if hash.trim().is_empty() {
-        return None;
-    }
-    let (_owner, name) = owner_and_name.split_once('/')?;
-    let name = name.trim();
-    if name.is_empty() { None } else { Some(name) }
-}
-
-fn pinned_app_ref_owner(app_ref: &str) -> Option<&str> {
-    let (owner_and_name, hash) = app_ref.split_once('@')?;
-    if hash.trim().is_empty() {
-        return None;
-    }
-    let (owner, name) = owner_and_name.split_once('/')?;
-    if owner.trim().is_empty() || name.trim().is_empty() {
-        return None;
-    }
-    Some(owner.trim())
-}
-
-async fn bootstrap_configured_genesis_apps(
-    state: &PlatformState,
-    platform_store: &dyn PlatformStore,
-    tenant: &str,
-) -> Result<usize> {
-    let app_refs = genesis_bootstrap_app_refs();
-    if app_refs.is_empty() {
-        return Ok(0);
-    }
-
-    let registry_url = genesis_registry_url();
-    if !(registry_url.starts_with("http://") || registry_url.starts_with("https://")) {
-        anyhow::bail!("TEMPERPAW_GENESIS_REGISTRY_URL must start with http:// or https://");
-    }
-    let registry_tenant = genesis_registry_tenant();
-    let mut installed = 0usize;
-
-    for app_ref in app_refs {
-        let Some(app_name) = pinned_app_ref_name(&app_ref).map(ToString::to_string) else {
-            anyhow::bail!(
-                "TEMPERPAW_GENESIS_BOOTSTRAP_REFS must contain pinned owner/app@hash refs; got '{app_ref}'"
-            );
-        };
-        let Some(_owner) = pinned_app_ref_owner(&app_ref) else {
-            anyhow::bail!(
-                "TEMPERPAW_GENESIS_BOOTSTRAP_REFS must contain pinned owner/app@hash refs; got '{app_ref}'"
-            );
-        };
-
-        match platform_store.get_installed_app(tenant, &app_name).await {
-            Ok(record) => {
-                // Record-only decision (see decision log D9): any install record is kept; the env
-                // pin only seeds an app that has none.
-                match classify_bootstrap_action(record.as_ref()) {
-                    BootstrapAction::KeepInstalled => {
-                        let installed_ref = record
-                            .as_ref()
-                            .map(|r| r.app_ref.as_str())
-                            .unwrap_or_default();
-                        if installed_ref != app_ref {
-                            // The pin only seeds: an install at another ref or from another source is
-                            // kept. Surface this so an operator who bumped the pin expecting an
-                            // upgrade can see why it did not take; an explicit install upgrades.
-                            tracing::warn!(
-                                app = %app_name,
-                                pinned_ref = %app_ref,
-                                installed_ref = %installed_ref,
-                                source_kind = %record.as_ref().map(|r| r.source_kind.as_str()).unwrap_or_default(),
-                                status = %record.as_ref().map(|r| r.status.as_str()).unwrap_or_default(),
-                                "Keeping the installed app; the env pin seeds only an app with no install record (use an explicit install to change the running version)"
-                            );
-                        } else {
-                            tracing::info!(
-                                app = %app_name,
-                                pinned_ref = %app_ref,
-                                installed_ref = %installed_ref,
-                                "Keeping installed Genesis bootstrap app (matches env pin)"
-                            );
-                        }
-                        continue;
-                    }
-                    BootstrapAction::InstallPinned => tracing::info!(
-                        app = %app_name,
-                        app_ref = %app_ref,
-                        "Installing fresh Genesis bootstrap app"
-                    ),
-                }
-            }
-            Err(error) => {
-                // An indeterminate read must NOT trigger a (re)install: a transient store outage
-                // during redeploy would otherwise overwrite a healthy newer Genesis version with
-                // the stale env pin — the exact downgrade this change exists to prevent. Skip and
-                // let the next boot reconcile once the store is readable. A genuinely fresh install
-                // reads Ok(None), not Err, so this does not strand first installs.
-                tracing::warn!(
-                    app = %app_name,
-                    app_ref = %app_ref,
-                    error = %error,
-                    "Could not read installed app metadata before Genesis bootstrap; skipping to avoid downgrading a possibly-healthy install (will retry next boot)"
-                );
-                continue;
-            }
-        }
-
-        match install_genesis_app_from_registry(
-            state,
-            GenesisRegistryInstallRequest {
-                tenant: tenant.to_string(),
-                app_ref: app_ref.clone(),
-                registry_url: registry_url.clone(),
-                registry_tenant: registry_tenant.clone(),
-                follow_policy: "pinned".to_string(),
-            },
-        )
-        .await
-        {
-            Ok(_) => {
-                installed += 1;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    app = %app_name,
-                    app_ref = %app_ref,
-                    error = %error,
-                    "Genesis bootstrap install/reconcile failed; continuing startup with durable app recovery"
-                );
-            }
-        }
-    }
-
-    Ok(installed)
 }
 
 #[cfg(test)]
@@ -1119,48 +761,23 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         let sys_hashes = temper_platform::bootstrap_system_tenant(&state, &sys_cache);
         temper_platform::persist_system_verification(platform_store, &sys_hashes, &sys_cache).await;
 
-        let startup_apps = startup_os_apps();
-        let genesis_bootstrap_apps = genesis_bootstrap_app_names();
-        if default_agent_specs_bootstrap_needed(&startup_apps)
-            && default_agent_specs_bootstrap_needed(&genesis_bootstrap_apps)
-        {
-            let agent_cache = platform_store
-                .load_verification_cache(&tenant)
-                .await
-                .unwrap_or_default();
-            let agent_hashes =
-                temper_platform::bootstrap_agent_specs(&state, &tenant, true, &agent_cache);
-            temper_platform::persist_agent_verification(
-                platform_store,
-                &tenant,
-                &agent_hashes,
-                &agent_cache,
-            )
-            .await;
-        } else {
-            tracing::info!(
-                tenant = %tenant,
-                "Skipping built-in default agent specs bootstrap; paw-agent OS app owns default agent specs"
-            );
-            // paw-agent owns the agent lifecycle specs but NOT the platform
-            // IDENTITY specs (TrustedIssuer, PrincipalGeneration) that back
-            // kernel JWT verification (ARN-255). The skipped default bootstrap
-            // is the only place those load, so on this host they must be
-            // registered explicitly — otherwise `tdata/TrustedIssuer` returns
-            // EntitySetNotFound and `bootstrap_trusted_issuer_from_env` below is
-            // inert. The kernel's narrow `bootstrap_identity_specs` API registers
-            // exactly those two, cascade-free (so it does not reintroduce the OOM
-            // the skip exists to prevent) and merged (so paw-agent's specs are
-            // preserved). A failure here means JWT verification would be inert, so
-            // it fails readiness rather than booting silently broken.
-            temper_platform::bootstrap_identity_specs(&state, &tenant)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to register platform identity specs for tenant '{tenant}': {e}"
-                    )
-                })?;
-        }
+        // paw-agent, an installed app, owns the agent lifecycle specs, so the
+        // kernel's built-in default agent specs are never bootstrapped here. It
+        // does NOT own the platform IDENTITY specs (TrustedIssuer,
+        // PrincipalGeneration) that back kernel JWT verification (ARN-255), so
+        // they are registered explicitly — otherwise `tdata/TrustedIssuer`
+        // returns EntitySetNotFound and `bootstrap_trusted_issuer_from_env`
+        // below is inert. The kernel's narrow `bootstrap_identity_specs` API
+        // registers exactly those two, cascade-free and merged (so paw-agent's
+        // specs are preserved). A failure here means JWT verification would be
+        // inert, so it fails readiness rather than booting silently broken.
+        temper_platform::bootstrap_identity_specs(&state, &tenant)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to register platform identity specs for tenant '{tenant}': {e}"
+                )
+            })?;
         // Bootstrap the operator credential so the deployment's TEMPER_API_KEY
         // resolves to a real tenant AgentCredential on the credential-bound
         // auth edge (ADR-0157). Without this the kernel edge has no credential
@@ -1964,14 +1581,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         );
     }
 
-    // Phase 6a: Recover persisted WASM modules + Cedar policies BEFORE app install.
-    //
-    // OS app install (Phase 6b) runs an integrity check that verifies each
-    // spec's [[integration]] references a WASM module in the registry. On
-    // subsequent startups the modules live in durable storage, not in the app bundle,
-    // so the registry must be populated first. Cedar policies are similarly
-    // needed for any effects dispatched during install (e.g. workspace
-    // bootstrap actions).
+    // Phase 6a: Restore the apps the tenant's install records name: their
+    // persisted Cedar policies and WASM modules, then each app's runtime state.
+    // Boot installs nothing; a server's apps are its install records, and an
+    // app gets on a server only by being installed.
     let app_runtime_recovery = {
         let phase_started = Instant::now();
         tracing::info!(
@@ -1995,165 +1608,32 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         app_runtime_recovery
     };
 
-    // Genesis bootstrap install/reconcile — runs AFTER Phase 6a on purpose. The env-pinned ref is
-    // a floor, not a ceiling. The keep-or-reinstall decision is RECORD-ONLY (decision log D9):
-    // it reads the durable InstalledAppRecord and never probes runtime readiness — at boot the
-    // runtime is still being restored concurrently, so a probe can misread a healthy newer
-    // install and wrongly downgrade it to the env pin, the exact redeploy-downgrade this change
-    // exists to prevent. Bootstrap still belongs after Phase 6a because bootstrap IS an install
-    // and sits with the other install/reconcile phases, after persisted-state recovery.
-    let genesis_bootstrap_timeout = genesis_bootstrap_timeout();
-    let genesis_bootstrap_installs = match tokio::time::timeout(
-        genesis_bootstrap_timeout,
-        bootstrap_configured_genesis_apps(&state, platform_store, &tenant),
-    )
-    .await
-    {
-        Ok(installs) => installs?,
-        Err(_) => {
-            tracing::warn!(
-                timeout_ms = genesis_bootstrap_timeout.as_millis(),
-                "Genesis bootstrap install/reconcile timed out; continuing startup without completing bootstrap"
-            );
-            0
-        }
-    };
-    if genesis_bootstrap_installs > 0 {
-        tracing::info!(
-            installed = genesis_bootstrap_installs,
-            "Installed configured Genesis bootstrap apps"
-        );
-    }
-
-    let startup_apps = startup_os_apps();
-    tracing::info!(apps = ?startup_apps, "Startup OS app surface resolved from manifests");
-    let startup_app_order = resolve_os_app_install_order(&startup_apps)
-        .map_err(|error| anyhow::anyhow!("Failed to resolve startup OS app order: {error}"))?;
-    tracing::info!(apps = ?startup_app_order, "Startup OS app reconcile order resolved");
-    let startup_surface_runtime_recovery =
-        recover_startup_surface_runtime_state(&state, platform_store, &tenant, &startup_app_order)
-            .await;
-    tracing::info!(
-        ready = startup_surface_runtime_recovery.ready,
-        healed = startup_surface_runtime_recovery.healed,
-        cold = startup_surface_runtime_recovery.cold,
-        needs_reconcile = startup_surface_runtime_recovery.needs_reconcile,
-        missing_bundle = startup_surface_runtime_recovery.missing_bundle,
-        store_error = startup_surface_runtime_recovery.store_error,
-        global_ready = app_runtime_recovery.ready,
-        global_healed = app_runtime_recovery.healed,
-        global_needs_reconcile = app_runtime_recovery.needs_reconcile,
-        result = startup_surface_runtime_recovery_result(&startup_surface_runtime_recovery),
-        "Startup OS app runtime recovery scoped to readiness surface complete"
-    );
-
-    // Phase 6a.5: Runtime index recovery before app reconcile.
+    // Phase 6a.5: Runtime index recovery.
     //
-    // Changed/cold app reconcile may bootstrap durable TemperFS content, whose
-    // helpers may need a few startup entity indexes. These are recovered by
-    // entity type so deploys never do a whole-tenant event/index replay.
+    // Boot installs nothing: the tenant's apps are its install records, and
+    // Phase 6a restored exactly those. When that recovery left an app needing
+    // work, a few startup entity indexes are recovered now, by entity type, so
+    // deploys never do a whole-tenant event/index replay; otherwise they
+    // recover lazily by type.
     let tenant_ids = registry_tenant_ids(&state);
-    let recover_indexes_before_reconcile =
-        startup_surface_runtime_indexes_required_before_reconcile(
-            &startup_surface_runtime_recovery,
-        );
-    if recover_indexes_before_reconcile {
-        let phase_started = Instant::now();
-        tracing::info!("Phase 6a.5: Recovering startup runtime indexes before app reconcile...");
+    let recover_indexes_at_boot = runtime_indexes_required_before_reconcile(&app_runtime_recovery);
+    let phase_started = Instant::now();
+    if recover_indexes_at_boot {
+        tracing::info!("Phase 6a.5: Recovering startup runtime indexes...");
         recover_runtime_indexes(&state, &tenant_ids).await;
-        record_startup_phase_duration("phase_6a5_runtime_index_recovery", phase_started.elapsed());
         tracing::info!(
             elapsed_ms = phase_started.elapsed().as_millis(),
             "phase_6a5_runtime_index_recovery complete"
         );
     } else {
-        let phase_started = Instant::now();
-        record_startup_phase_duration("phase_6a5_runtime_index_recovery", phase_started.elapsed());
         tracing::info!(
             elapsed_ms = phase_started.elapsed().as_millis(),
             "phase_6a5_runtime_index_recovery skipped; runtime indexes recover lazily by type"
         );
     }
+    record_startup_phase_duration("phase_6a5_runtime_index_recovery", phase_started.elapsed());
 
-    // Phase 6b: Reconcile Paw OS apps
-    let phase_started = Instant::now();
-    tracing::info!("Phase 6b: Reconciling Paw OS apps...");
-    let wasm_policy = local_wasm_startup_policy(
-        std::env::var("TEMPERPAW_WASM_STARTUP_POLICY")
-            .ok()
-            .as_deref(),
-    );
-    tracing::info!(?wasm_policy, "WASM startup policy selected");
-    if wasm_policy == LocalWasmStartupPolicy::BuildIfMissing
-        && let Err(error) = build_missing_wasm_modules(&os_apps_dir, &startup_app_order)
-    {
-        record_wasm_module_load_failure("phase_6b_local_build");
-        tracing::error!(%error, "Failed to build local OS app WASM artifacts");
-    }
-
-    let mut reconcile_errors = Vec::new();
-    for app_name in &startup_app_order {
-        let app_started = Instant::now();
-        if get_os_app(app_name).is_none() {
-            record_os_app_reconcile(app_name, "missing", app_started.elapsed());
-            let error = format!("OS app '{app_name}' bundle is missing or invalid");
-            tracing::error!("{error}");
-            reconcile_errors.push(error);
-            continue;
-        }
-        match reconcile_os_app(&state, &tenant, app_name).await {
-            Ok(OsAppReconcileResult::Skipped { bundle_digest, .. }) => {
-                persist_os_app_verification(&state, platform_store, &tenant, app_name).await;
-                record_os_app_reconcile(app_name, "skipped", app_started.elapsed());
-                tracing::info!(
-                    app = %app_name,
-                    bundle_digest = %bundle_digest,
-                    "  Skipped unchanged OS app"
-                );
-            }
-            Ok(OsAppReconcileResult::Installed { install, .. }) => {
-                persist_os_app_verification(&state, platform_store, &tenant, app_name).await;
-                if let Some(error) = app_required_wasm_failure(app_name, &install) {
-                    record_wasm_module_load_failure("phase_6b_required_app_wasm");
-                    reconcile_errors.push(error);
-                }
-                record_os_app_reconcile(app_name, "installed", app_started.elapsed());
-                tracing::info!("  Reconciled {app_name}: {install:?}");
-            }
-            Err(error) => {
-                record_os_app_reconcile(app_name, "error", app_started.elapsed());
-                tracing::error!("  Failed to reconcile {app_name}: {error}");
-                reconcile_errors.push(format!("{app_name}: {error}"));
-            }
-        }
-    }
-
-    if !reconcile_errors.is_empty() {
-        anyhow::bail!(
-            "Startup OS app reconcile failed for {} app(s): {}",
-            reconcile_errors.len(),
-            reconcile_errors.join("; ")
-        );
-    }
-
-    // Safety net: commit all specs for the tenant.
-    // install_os_app() calls commit_specs() internally, but if a previous daemon
-    // run crashed between upsert (committed=0) and commit (committed=1), specs
-    // would be left uncommitted and deleted on the NEXT restart by
-    // delete_uncommitted_specs(). This explicit commit ensures all OS app specs
-    // are durable before we proceed to entity hydration.
-    if let Err(e) = platform_store.commit_specs(&tenant).await {
-        tracing::error!("Failed to commit specs after OS app install: {e}");
-    } else {
-        tracing::info!("Specs committed for tenant {tenant}");
-    }
-    record_startup_phase_duration("phase_6b_os_app_reconcile", phase_started.elapsed());
-    tracing::info!(
-        elapsed_ms = phase_started.elapsed().as_millis(),
-        "phase_6b_os_app_reconcile complete"
-    );
-
-    // Phase 7: Refresh reaction dispatcher after any app reconcile changes.
+    // Phase 7: Refresh reaction dispatcher after the apps' recovery.
     let phase_started = Instant::now();
     tracing::info!("Phase 7: Runtime dispatcher refresh...");
     state.server.rebuild_reaction_dispatcher();
@@ -2168,7 +1648,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     start_kernel_runtime(&state).await;
 
     // Phase 7b: Session recovery — recover or fail orphaned sessions (ADR-0025).
-    if recover_indexes_before_reconcile {
+    if recover_indexes_at_boot {
         recover_orphaned_sessions(&state, &tenant).await;
     } else {
         tracing::info!("Session recovery deferred until after readiness");
@@ -2396,7 +1876,7 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     record_startup_time_to_ready(startup_started.elapsed(), &tenant);
     tracing::info!("Temper Paw listening on port {actual_port}");
     tracing::info!(elapsed_ms = startup_started.elapsed().as_millis(), tenant = %tenant, "startup: time to ready");
-    if !recover_indexes_before_reconcile {
+    if !recover_indexes_at_boot {
         spawn_deferred_session_recovery(state.clone(), tenant.clone());
     }
     // Query projections are repaired as optional maintenance, not startup work.
@@ -2796,60 +2276,6 @@ fn save_temper_api_key(path: &Path, key: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn persist_os_app_verification(
-    state: &PlatformState,
-    store: &dyn PlatformStore,
-    tenant: &str,
-    app_name: &str,
-) {
-    let Some(bundle) = get_os_app(app_name) else {
-        return;
-    };
-    let verified_at = sim_now().to_rfc3339();
-    let tenant_id = TenantId::new(tenant);
-
-    for (entity_type, _) in &bundle.specs {
-        if let Err(error) = store
-            .persist_spec_verification(
-                tenant,
-                entity_type,
-                SpecVerificationUpdate {
-                    status: "completed",
-                    verified: true,
-                    levels_passed: None,
-                    levels_total: None,
-                    verification_result_json: None,
-                },
-            )
-            .await
-        {
-            tracing::warn!(
-                tenant,
-                app = app_name,
-                entity_type,
-                error = %error,
-                "Failed to persist OS app verification status"
-            );
-        }
-
-        let mut registry = state.registry.write().unwrap(); // ci-ok: infallible lock
-        registry.set_verification_status(
-            &tenant_id,
-            entity_type,
-            VerificationStatus::Completed(EntityVerificationResult {
-                all_passed: true,
-                levels: vec![EntityLevelSummary {
-                    level: "Bootstrap".to_string(),
-                    passed: true,
-                    summary: format!("Pre-verified via os-app install ({app_name})"),
-                    details: None,
-                }],
-                verified_at: verified_at.clone(),
-            }),
-        );
-    }
 }
 
 /// Bootstrap Paw souls into the entity system.
@@ -3933,131 +3359,6 @@ fn entity_field_str<'a>(value: &'a serde_json::Value, names: &[&str]) -> Option<
     })
 }
 
-fn build_missing_wasm_modules(os_apps_dir: &Path, startup_apps: &[String]) -> Result<()> {
-    for build_script in wasm_build_scripts(os_apps_dir, startup_apps)? {
-        let build_dir = build_script
-            .parent()
-            .context("build.sh path missing parent directory")?;
-        if !wasm_build_needed(build_dir)? {
-            continue;
-        }
-
-        tracing::info!(path = %build_script.display(), "Building local WASM modules");
-        let script_name = build_script
-            .file_name()
-            .and_then(OsStr::to_str)
-            .context("build.sh path missing file name")?;
-        let status = std::process::Command::new("bash")
-            .arg(script_name)
-            .current_dir(build_dir)
-            .status()
-            .with_context(|| format!("Failed to run {}", build_script.display()))?;
-        if !status.success() {
-            anyhow::bail!("{} exited with status {status}", build_script.display());
-        }
-    }
-
-    Ok(())
-}
-
-fn wasm_build_scripts(os_apps_dir: &Path, startup_apps: &[String]) -> Result<Vec<PathBuf>> {
-    let mut scripts = Vec::new();
-    let startup_app_set: HashSet<&str> = startup_apps.iter().map(String::as_str).collect();
-
-    for app_entry in std::fs::read_dir(os_apps_dir)? {
-        let app_dir = match app_entry {
-            Ok(entry) if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) => entry.path(),
-            _ => continue,
-        };
-        let app_name = app_dir
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
-        if !startup_app_set.contains(app_name) {
-            continue;
-        }
-        let wasm_dir = app_dir.join("wasm");
-        if !wasm_dir.is_dir() {
-            continue;
-        }
-
-        let root_build = wasm_dir.join("build.sh");
-        if root_build.is_file() {
-            scripts.push(root_build);
-            continue;
-        }
-
-        for child in std::fs::read_dir(&wasm_dir)? {
-            let child_dir = match child {
-                Ok(entry) if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) => {
-                    entry.path()
-                }
-                _ => continue,
-            };
-            let child_build = child_dir.join("build.sh");
-            if child_build.is_file() {
-                scripts.push(child_build);
-            }
-        }
-    }
-
-    scripts.sort();
-    Ok(scripts)
-}
-
-fn wasm_build_needed(build_dir: &Path) -> Result<bool> {
-    if build_dir.join("Cargo.toml").is_file() {
-        let module_name = build_dir
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
-        return Ok(find_wasm_binary(build_dir, module_name).is_none());
-    }
-
-    for child in std::fs::read_dir(build_dir)? {
-        let child_dir = match child {
-            Ok(entry) if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) => entry.path(),
-            _ => continue,
-        };
-        if !child_dir.join("Cargo.toml").is_file() {
-            continue;
-        }
-
-        let module_name = child_dir
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
-        if find_wasm_binary(&child_dir, module_name).is_none() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-fn find_wasm_binary(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
-    if module_name.is_empty() {
-        return None;
-    }
-
-    // Check both wasm32-unknown-unknown and wasm32-wasip1 targets.
-    // WASI modules (e.g., monty_repl) compile to wasip1; all others
-    // use unknown-unknown. The Temper WASM engine auto-detects which
-    // linker to use based on the module's imports.
-    let release_dir = module_dir.join("target/wasm32-unknown-unknown/release");
-    let wasi_release_dir = module_dir.join("target/wasm32-wasip1/release");
-    let candidates = [
-        release_dir.join(format!("{module_name}.wasm")),
-        release_dir.join(format!("{}.wasm", module_name.replace('_', "-"))),
-        wasi_release_dir.join(format!("{module_name}.wasm")),
-        wasi_release_dir.join(format!("{}.wasm", module_name.replace('_', "-"))),
-        module_dir.join(format!("{module_name}.wasm")),
-        module_dir.join(format!("{}.wasm", module_name.replace('_', "-"))),
-    ];
-
-    candidates.into_iter().find(|path| path.is_file())
-}
-
 /// Spawn the webhook trigger (HTTP endpoint for external webhooks).
 ///
 /// Listens on port+12 for POST /triggers/webhook/{route_key}.
@@ -4120,7 +3421,6 @@ mod tests {
     use axum::http::{Method, Request, StatusCode};
     use axum::response::IntoResponse;
     use axum::routing::any;
-    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -4130,21 +3430,16 @@ mod tests {
     use temper_server::secrets::vault::SecretsVault;
 
     use super::{
-        BootstrapAction, DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT,
-        DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, LocalWasmStartupPolicy, RuntimeRecoveryStep,
-        StartupReadiness, StartupSurfaceRuntimeRecoverySummary,
-        actor_passivation_check_interval_secs, app_required_wasm_failure, bootstrap_soul,
-        classify_bootstrap_action, default_agent_specs_bootstrap_needed,
-        genesis_bootstrap_app_names, genesis_bootstrap_timeout, genesis_cache_restore_timeout,
-        installed_app_runtime_recovery_result, load_or_create_temper_api_key,
-        local_wasm_startup_policy, orphaned_session_recovery_limit,
+        DEFAULT_AGENT_TOOLS_ENABLED, DEFAULT_GENESIS_CACHE_RESTORE_TIMEOUT, RuntimeRecoveryStep,
+        StartupReadiness, actor_passivation_check_interval_secs, bootstrap_soul,
+        genesis_cache_restore_timeout, installed_app_runtime_recovery_result,
+        load_or_create_temper_api_key, orphaned_session_recovery_limit,
         paw_soul_content_is_personalized, recover_installed_apps,
         repair_default_agent_tools_enabled, resolve_startup_secret,
         runtime_indexes_required_before_reconcile, runtime_recovery_plan,
         runtime_router_with_startup_gates, soul_lookup_filters, spawn_runtime_server,
         start_http_endpoint_routes, start_kernel_runtime, startup_discord_connect_result,
-        startup_discord_summary_label, startup_os_apps,
-        startup_surface_runtime_indexes_required_before_reconcile, wait_for_runtime_server,
+        startup_discord_summary_label, wait_for_runtime_server,
     };
     use crate::transport_manager::TransportStatus;
 
@@ -4152,10 +3447,6 @@ mod tests {
     static GENESIS_ENV_LOCK: Mutex<()> = Mutex::new(());
     /// The app catalog is one per process, and `set_os_apps_dir` replaces all of it.
     static CATALOG_LOCK: Mutex<()> = Mutex::new(());
-
-    fn empty_install_result() -> temper_platform::os_apps::InstallResult {
-        temper_platform::os_apps::InstallResult::default()
-    }
 
     #[test]
     fn actor_passivation_interval_defaults_and_clamps() {
@@ -4430,65 +3721,6 @@ on_timeout = "Fire"
     }
 
     #[test]
-    fn local_wasm_policy_defaults_and_overrides() {
-        assert_eq!(
-            local_wasm_startup_policy(Some("load-only")),
-            LocalWasmStartupPolicy::LoadPersistedOnly
-        );
-        assert_eq!(
-            local_wasm_startup_policy(Some("build")),
-            LocalWasmStartupPolicy::BuildIfMissing
-        );
-        assert_eq!(
-            local_wasm_startup_policy(Some("0")),
-            LocalWasmStartupPolicy::LoadPersistedOnly
-        );
-        assert_eq!(
-            local_wasm_startup_policy(Some("1")),
-            LocalWasmStartupPolicy::BuildIfMissing
-        );
-        assert_eq!(
-            local_wasm_startup_policy(None),
-            LocalWasmStartupPolicy::LoadPersistedOnly
-        );
-    }
-
-    #[test]
-    fn startup_skips_builtin_default_agent_specs_when_paw_agent_owns_them() {
-        assert!(!default_agent_specs_bootstrap_needed(&[
-            "paw-fs".to_string(),
-            "paw-agent".to_string(),
-            "paw-channels".to_string(),
-        ]));
-        assert!(default_agent_specs_bootstrap_needed(&[
-            "paw-fs".to_string(),
-            "paw-channels".to_string(),
-        ]));
-    }
-
-    #[test]
-    fn genesis_bootstrap_refs_replace_local_startup_surface() {
-        let _guard = GENESIS_ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var(
-                "TEMPERPAW_GENESIS_BOOTSTRAP_REFS",
-                "temperpaw/paw-agent@abc123, katagami/katagami-commons@def456",
-            );
-            std::env::remove_var("TEMPER_GENESIS_BOOTSTRAP_REFS");
-        }
-
-        assert_eq!(
-            genesis_bootstrap_app_names(),
-            vec!["paw-agent".to_string(), "katagami-commons".to_string()]
-        );
-        assert!(startup_os_apps().is_empty());
-
-        unsafe {
-            std::env::remove_var("TEMPERPAW_GENESIS_BOOTSTRAP_REFS");
-        }
-    }
-
-    #[test]
     fn default_agent_tool_repair_adds_genesis_app_workflow_tokens() {
         let legacy_tools = "temper_create,temper_get,temper_list,temper_action,temper_patch,temper_submit_specs,temper_show_spec,temper_specs,temper_upload_wasm,temper_get_trajectories,temper_get_insights,temper_get_decisions,temper_poll_decision,temper_approve_decision,temper_deny_decision,temper_submit_policy,temper_list_policies,temper_get_policy,temper_update_policy,temper_delete_policy,temper_install_app,temper_list_apps,temper_spawn_session,temper_list_sessions,temper_abort_session,temper_steer_session,temper_save_memory,temper_recall_memory,temper_write,temper_read,temper_run_coding_agent,temper_get_secret,temper_datadog_query,temper_railway,temper_vercel,temper_web_search,temper_web_fetch,read,write,edit,bash";
 
@@ -4544,71 +3776,6 @@ on_timeout = "Fire"
 
         unsafe {
             std::env::remove_var("TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS");
-        }
-    }
-
-    #[test]
-    fn genesis_bootstrap_timeout_defaults_and_overrides() {
-        let _guard = GENESIS_ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::remove_var("TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS");
-        }
-        assert_eq!(
-            genesis_bootstrap_timeout(),
-            DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT
-        );
-
-        unsafe {
-            std::env::set_var("TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS", "7");
-        }
-        assert_eq!(genesis_bootstrap_timeout(), Duration::from_secs(7));
-
-        unsafe {
-            std::env::set_var("TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS", "0");
-        }
-        assert_eq!(
-            genesis_bootstrap_timeout(),
-            DEFAULT_GENESIS_BOOTSTRAP_TIMEOUT
-        );
-
-        unsafe {
-            std::env::remove_var("TEMPERPAW_GENESIS_BOOTSTRAP_TIMEOUT_SECS");
-        }
-    }
-
-    #[test]
-    fn classify_bootstrap_installs_the_pin_only_when_nothing_is_installed() {
-        use temper_server::platform_store::InstalledAppRecord;
-        let record = |source_kind: &str, status: &str, app_ref: &str| InstalledAppRecord {
-            source_kind: source_kind.to_string(),
-            status: status.to_string(),
-            app_ref: app_ref.to_string(),
-            ..Default::default()
-        };
-
-        // Nothing installed -> install the pin (cold-start seed).
-        assert_eq!(
-            classify_bootstrap_action(None),
-            BootstrapAction::InstallPinned
-        );
-        // Any install record is kept, whatever its ref, source and status: a redeploy never
-        // replaces what runs with the pin, nor (through the pin's dependency closure) the apps
-        // installed beside it. Record-only: no runtime-readiness probe (racy at boot, see D9).
-        for kept in [
-            record("genesis", "installed", "owner/app@pin"),
-            record("genesis", "installed", "owner/app@newer"),
-            record("local", "installed", ""),
-            record("genesis", "failed", "owner/app@pin"),
-            record("genesis", "pending", "owner/app@newer"),
-        ] {
-            assert_eq!(
-                classify_bootstrap_action(Some(&kept)),
-                BootstrapAction::KeepInstalled,
-                "{} {} {}",
-                kept.source_kind,
-                kept.status,
-                kept.app_ref
-            );
         }
     }
 
@@ -4729,35 +3896,6 @@ on_timeout = "Fire"
     }
 
     #[test]
-    fn runtime_indexes_are_deferred_when_startup_surface_is_ready_despite_global_reconcile_work() {
-        let global = InstalledAppsRuntimeRecoverySummary {
-            ready: 6,
-            needs_reconcile: 6,
-            ..InstalledAppsRuntimeRecoverySummary::default()
-        };
-        let startup_surface = StartupSurfaceRuntimeRecoverySummary {
-            ready: 4,
-            healed: 2,
-            cold: 1,
-            ..StartupSurfaceRuntimeRecoverySummary::default()
-        };
-
-        assert_eq!(
-            installed_app_runtime_recovery_result(&global),
-            "needs_reconcile"
-        );
-        assert!(!startup_surface_runtime_indexes_required_before_reconcile(
-            &startup_surface
-        ));
-        assert!(startup_surface_runtime_indexes_required_before_reconcile(
-            &StartupSurfaceRuntimeRecoverySummary {
-                needs_reconcile: 1,
-                ..StartupSurfaceRuntimeRecoverySummary::default()
-            }
-        ));
-    }
-
-    #[test]
     fn startup_discord_connect_result_keeps_success() {
         assert_eq!(
             startup_discord_connect_result(Ok("https://example.com/discord/interaction".into())),
@@ -4790,62 +3928,6 @@ on_timeout = "Fire"
             .as_deref(),
             Some("✓ Discord connected")
         );
-    }
-
-    #[test]
-    fn startup_os_apps_includes_core_apps() {
-        let _catalog = CATALOG_LOCK.lock().unwrap();
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
-        let apps = startup_os_apps();
-        for expected in ["paw-agent", "paw-channels", "paw-fs", "paw-research"] {
-            assert!(
-                apps.iter().any(|app| app == expected),
-                "expected startup OS app {expected} to be present in {apps:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn startup_os_app_order_dedupes_shared_dependencies() {
-        let _catalog = CATALOG_LOCK.lock().unwrap();
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        temper_platform::os_apps::set_os_apps_dir(repo_root.join("os-apps"));
-        let apps = startup_os_apps();
-        let order = temper_platform::os_apps::resolve_os_app_install_order(&apps)
-            .expect("startup OS app order should resolve");
-        let unique = order.iter().collect::<std::collections::HashSet<_>>();
-
-        assert_eq!(
-            order.len(),
-            unique.len(),
-            "startup OS app reconcile order should not reinstall duplicate shared dependencies"
-        );
-        for app in apps {
-            assert!(
-                order.iter().any(|candidate| candidate == &app),
-                "startup reconcile order should include requested app {app}"
-            );
-        }
-    }
-
-    #[test]
-    fn required_wasm_failures_block_readiness() {
-        let mut install = empty_install_result();
-        install.wasm_failures = vec!["route_message".to_string(), "send_reply".to_string()];
-
-        let error = app_required_wasm_failure("paw-channels", &install)
-            .expect("app-required WASM failures should block startup readiness");
-
-        assert!(error.contains("paw-channels"));
-        assert!(error.contains("route_message, send_reply"));
-    }
-
-    #[test]
-    fn installed_apps_without_wasm_failures_do_not_block_readiness() {
-        let install = empty_install_result();
-
-        assert!(app_required_wasm_failure("paw-fs", &install).is_none());
     }
 
     #[test]
