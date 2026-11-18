@@ -48,4 +48,4 @@ debug = 0
 # Temper's continuous profiler holds it for good. A [patch] applies only in the workspace that declares it, so temper's
 # own does not reach this build. Same rev as the temper pin; the pin bump moves both.
 [patch.crates-io]
-pprof = { git = "https://github.com/arni-labs/temper.git", rev = "fc62571f2916bb4fa1609dc3658cb464820b68dd" }
+pprof = { git = "https://github.com/arni-labs/temper.git", rev = "fe498cedfb6da3c947a77baf5f9882b1fe8a9147" }
