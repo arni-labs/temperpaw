@@ -1885,6 +1885,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     // ADR-0153/ARN-68: independent, cheap key-index backfill (own flag), so existing
     // declared-key entities become keyed without the heavy field-index re-scan.
     spawn_key_index_backfill(state.server.clone(), tenant_ids.clone());
+    // ADR-0186: search by meaning. Runs in the background once the server is ready: it
+    // gives records saved before their store kept meaning rows theirs, loads the model
+    // and keeps every record's meaning up to date.
+    temper_server::meaning::model::start(state.server.clone());
 
     // Phase 10: Soul personalization (post-boot, writes to TemperFS via OData)
     if needs_soul_setup {
