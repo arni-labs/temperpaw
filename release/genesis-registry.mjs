@@ -289,23 +289,15 @@ export function createGenesisPublisher({ base = PRODUCTION_GENESIS, token, fetch
     return { status: 200, outcome: moveMain ? "published" : "already", ref: `${owner}/${app}@${version}` };
   }
   const said = (sent) => sent.bytes.toString("utf8").slice(0, 200);
-  /** The repository `owner/app` on Genesis, created (public, REST v3 `POST /api/v3/user/repos`) when it has none: a first
-   *  publish of a new app. Production routes no org route; this one creates `<token's account>/<name>`, so the answer must
-   *  name `owner/app` or the token belongs to another account. */
+  /** The repository `owner/app` on Genesis, created (public, REST v3 `POST /api/v3/orgs/{owner}/repos`) when it has none: a
+   *  first publish of a new app. Genesis allows that to a token with `admin:repos`, or `repo:write` on its own account. */
   async function ensureRepository(owner, app, description) {
     const there = await ask("GET", `/api/v3/repos/${owner}/${app}`);
     if (there.status === 200) return { status: 200, outcome: "repository exists" };
     if (there.status !== 404) return { status: 502, error: "genesis_refused", genesis_status: there.status };
-    const made = await ask("POST", "/api/v3/user/repos", JSON.stringify({ name: app, description, visibility: "public" }), "application/json");
-    let json = null;
-    try {
-      json = JSON.parse(made.bytes.toString("utf8"));
-    } catch {
-      json = null;
-    }
-    const named = json?.full_name ?? (json?.owner?.login && json?.name ? `${json.owner.login}/${json.name}` : "");
-    if (made.status === 201 && named === `${owner}/${app}`) return { status: 200, outcome: "repository created" };
-    return { status: 502, error: "repository_create_refused", genesis_status: made.status, reason: said(made), expected: `${owner}/${app}`, needs: `GENESIS_TOKEN of the account ${owner}, with repo:write` };
+    const made = await ask("POST", `/api/v3/orgs/${owner}/repos`, JSON.stringify({ name: app, description, visibility: "public" }), "application/json");
+    if (made.status === 201) return { status: 200, outcome: "repository created" };
+    return { status: 502, error: "repository_create_refused", genesis_status: made.status, reason: said(made), needs: "GENESIS_TOKEN with admin:repos (or repo:write as the account that owns the repository)" };
   }
   /** The App row of `owner/app` (Temper.Git.RegisterNewApp), which Genesis serves a bundle through, made when it has none. */
   async function registerApp(owner, app, description) {
@@ -316,7 +308,7 @@ export function createGenesisPublisher({ base = PRODUCTION_GENESIS, token, fetch
     const body = JSON.stringify({ Name: app, RepositoryId: `rp-${owner}-${app}`, Description: description, Exports: "{}", Visibility: "public" });
     const made = await ask("POST", `${route}/Temper.Git.RegisterNewApp?await_integration=true`, body, "application/json");
     if (made.status >= 200 && made.status < 300) return { status: 200, outcome: "app registered" };
-    return { status: 502, error: "app_register_refused", genesis_status: made.status, reason: said(made), needs: `the Genesis App record ${owner}/${app} of a new app must be created by an operator` };
+    return { status: 502, error: "app_register_refused", genesis_status: made.status, reason: said(made) };
   }
   return { publish, tag, head, filesAt, ensureRepository, registerApp };
 }
