@@ -1,4 +1,4 @@
-# temper-pin-bump (ARN-438): keep temperpaw's kernel pin current.
+# temper-pin-bump: keep temperpaw's kernel pin current.
 #
 # temperpaw pins the temper kernel by git rev in many places: the server crates,
 # every os-app WASM manifest, and all their Cargo.lock files. Bumping that pin IS
@@ -7,15 +7,14 @@
 # temper rev to bump to and opens ONE PR that moves EVERY temper git rev in the
 # repo to it and refreshes Cargo.lock.
 #
-# WHICH REV: the one the line has staged and checked for the temper change, passed
-# in as the `rev` input. NOT temper main's head. Main can be ahead of what the line
-# checked, and a bump to an unchecked kernel would ship code nobody verified (and
-# would deadlock the temper change's go-live, which waits on main carrying the
-# staged rev). So there is no schedule and no main lookup.
+# WHICH REV: the line passes it in as the `rev` input: the commit it has staged and
+# checked. NOT temper main's head. Main can be ahead of what the line checked, and
+# a bump to an unchecked kernel would ship code nobody verified. So there is no
+# schedule and no main lookup.
 #
-# The PR then rides temperpaw's normal gates (fmt/clippy/check/test --locked, the
-# review panel, proof) - CI building and testing against the new kernel IS the
-# verification. No cross-repo event plumbing: a scheduled diff check, nothing more.
+# The PR then rides temperpaw's normal gates (fmt/clippy/check/test --locked,
+# proof) - CI building and testing against the new kernel IS the verification.
+# No cross-repo event plumbing: the line starts this workflow, nothing more.
 #
 # temper is PUBLIC (anonymous reads work), so STACK_TOKEN is NOT about read access.
 # It is required because the PR must be CREATED by a real PAT: a PR opened with the
