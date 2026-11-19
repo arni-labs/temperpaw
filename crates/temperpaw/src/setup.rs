@@ -590,7 +590,10 @@ pub fn run_doctor(data_dir: &Path, config: &Config) {
     } else if config.vault_key.is_some() {
         println!("  \u{2713} Vault key (env var)");
     } else {
-        println!("  \u{2717} Vault key (generated on boot)");
+        println!(
+            "  \u{2717} Vault key missing: set TEMPER_VAULT_KEY, or for a new local instance run: openssl rand -base64 32 > {}",
+            vault_key_path.display()
+        );
     }
 
     if db_path.exists() {

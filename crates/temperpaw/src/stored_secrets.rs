@@ -7,6 +7,7 @@
 //! so once a boot has re-sealed them the old key can be dropped.
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 use temper_platform::PlatformState;
@@ -35,6 +36,34 @@ pub(crate) fn previous_vault_key(
     };
     decode_vault_key("TEMPER_VAULT_KEY", current)?;
     decode_vault_key(PREVIOUS_KEY_ENV, previous).map(Some)
+}
+
+/// The vault's master key: `TEMPER_VAULT_KEY` when it is set, else the key file
+/// a local instance keeps beside its data (`vault.key`). It is read, never
+/// made: a key made at a start seals rows the next start cannot open unless
+/// it is kept, and opens none an earlier key sealed. A start with neither, or
+/// with one that is not 32 bytes of base64, stops and says which.
+pub(crate) fn current_vault_key(from_env: Option<&str>, key_file: &Path) -> Result<[u8; 32]> {
+    if let Some(key_b64) = from_env {
+        return decode_vault_key("TEMPER_VAULT_KEY", key_b64);
+    }
+    if !key_file.exists() {
+        bail!(
+            "no vault key: TEMPER_VAULT_KEY is not set and {} does not exist. None is made at a start, because a new key opens nothing an earlier one sealed. Set TEMPER_VAULT_KEY to the key this deployment has always had; for a new local instance, make one once: openssl rand -base64 32 > {}",
+            key_file.display(),
+            key_file.display()
+        );
+    }
+    let contents = std::fs::read_to_string(key_file).map_err(|error| {
+        anyhow!(
+            "the vault key file {} could not be read: {error}",
+            key_file.display()
+        )
+    })?;
+    decode_vault_key(
+        &format!("the vault key file {}", key_file.display()),
+        contents.trim(),
+    )
 }
 
 fn decode_vault_key(name: &str, key_b64: &str) -> Result<[u8; 32]> {
@@ -173,6 +202,61 @@ mod tests {
 
     fn b64(key: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(key)
+    }
+
+    /// A start reads its vault key and never makes one: with none it stops,
+    /// and with a malformed one it stops, where it used to make a new key or
+    /// carry on with a throwaway one and strand every stored secret.
+    #[test]
+    fn a_start_with_no_vault_key_or_a_malformed_one_stops_and_makes_none() {
+        let dir = std::env::temp_dir().join(format!("temperpaw-vault-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("vault.key");
+
+        let none = current_vault_key(None, &file).unwrap_err().to_string();
+        assert!(
+            none.contains("no vault key: TEMPER_VAULT_KEY is not set"),
+            "{none}"
+        );
+        assert!(!file.exists(), "no key file is made");
+
+        assert_eq!(current_vault_key(Some(&b64(&KEY_A)), &file).unwrap(), KEY_A);
+        let short = current_vault_key(Some(&b64(&[1; 16])), &file)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            short.contains("TEMPER_VAULT_KEY must be 32 bytes"),
+            "{short}"
+        );
+        let garbled = current_vault_key(Some("not base64!"), &file)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            garbled.contains("TEMPER_VAULT_KEY must be valid base64"),
+            "{garbled}"
+        );
+
+        // A local instance's key file is read as it is, and a corrupt one stops the start too.
+        std::fs::write(&file, format!("{}\n", b64(&KEY_B))).unwrap();
+        assert_eq!(current_vault_key(None, &file).unwrap(), KEY_B);
+        assert_eq!(
+            current_vault_key(Some(&b64(&KEY_A)), &file).unwrap(),
+            KEY_A,
+            "the environment's key comes first"
+        );
+        std::fs::write(&file, "corrupt").unwrap();
+        let corrupt = current_vault_key(None, &file).unwrap_err().to_string();
+        assert!(
+            corrupt.contains("the vault key file") && corrupt.contains("must be"),
+            "{corrupt}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "corrupt",
+            "and is left as it is"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

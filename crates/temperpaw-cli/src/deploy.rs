@@ -312,18 +312,41 @@ pub async fn run_deploy() -> Result<()> {
         }
     };
 
-    let existing_temperpaw_vars = load_service_variables("temperpaw").unwrap_or_default();
-    let vault_key_b64 = existing_temperpaw_vars
+    // What the service has now. A lookup that fails is not an empty service: read as one, it had this
+    // command make a new vault key over an environment whose stored secrets only the old key opens.
+    let looked_up = load_service_variables("temperpaw");
+    let lookup_failed = looked_up.as_ref().err().map(|error| error.to_string());
+    let existing_temperpaw_vars = looked_up.unwrap_or_default();
+    let vault_key_b64 = match existing_temperpaw_vars
         .get("TEMPER_VAULT_KEY")
         .filter(|value| !value.trim().is_empty())
         .cloned()
-        .unwrap_or_else(|| {
+    {
+        Some(existing) => existing,
+        None => {
+            // A new key is right only for an environment that has never run: it opens nothing an earlier
+            // key sealed. Whether this is one is a person's to say, so it is asked, and the answer is no
+            // unless they say otherwise.
+            let why = lookup_failed
+                .map(|error| format!("its variables could not be read ({error})"))
+                .unwrap_or_else(|| "it has no TEMPER_VAULT_KEY".to_string());
+            let make: bool = cliclack::confirm(format!(
+                "Service `temperpaw`: {why}. Make a new vault key? Only for an environment that has never run: a new key cannot open any secret the old one sealed."
+            ))
+            .initial_value(false)
+            .interact()?;
+            if !make {
+                anyhow::bail!(
+                    "No vault key was made. Set TEMPER_VAULT_KEY on the `temperpaw` service to the key this environment has always had, then deploy again."
+                );
+            }
             let generated = generate_vault_key_b64();
-            let _ = cliclack::log::info(
-                "Generated TEMPER_VAULT_KEY for this environment (it will be reused on later deploys).",
-            );
+            cliclack::log::info(
+                "Generated TEMPER_VAULT_KEY for this new environment (later deploys reuse it).",
+            )?;
             generated
-        });
+        }
+    };
     let temper_api_key = existing_temperpaw_vars
         .get("TEMPER_API_KEY")
         .filter(|value| !value.trim().is_empty())

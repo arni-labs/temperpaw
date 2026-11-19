@@ -857,100 +857,15 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
         config.vault_key_previous.as_deref(),
     )?;
     let vault_key_bytes: [u8; 32] = {
-        let vault_key_path = data_dir.join("vault.key");
-        let key_bytes: [u8; 32] = if let Some(ref key_b64) = config.vault_key {
-            use base64::Engine as _;
-
-            match base64::engine::general_purpose::STANDARD.decode(key_b64) {
-                Ok(decoded) if decoded.len() == 32 => {
-                    tracing::info!("Vault key loaded from TEMPER_VAULT_KEY env var");
-                    decoded.try_into().unwrap()
-                }
-                Ok(decoded) => {
-                    let mut key = [0u8; 32];
-                    rand::fill(&mut key);
-                    tracing::warn!(
-                        actual_len = decoded.len(),
-                        "TEMPER_VAULT_KEY was not 32 bytes after base64 decode — using ephemeral vault key"
-                    );
-                    key
-                }
-                Err(error) => {
-                    let mut key = [0u8; 32];
-                    rand::fill(&mut key);
-                    tracing::warn!(
-                        %error,
-                        "TEMPER_VAULT_KEY was invalid base64 — using ephemeral vault key"
-                    );
-                    key
-                }
-            }
-        } else if vault_key_path.exists() {
-            // Load persisted vault key from file
-            use base64::Engine as _;
-            match std::fs::read_to_string(&vault_key_path) {
-                Ok(contents) => {
-                    match base64::engine::general_purpose::STANDARD.decode(contents.trim()) {
-                        Ok(decoded) if decoded.len() == 32 => {
-                            tracing::info!(
-                                path = %vault_key_path.display(),
-                                "Vault key loaded from file"
-                            );
-                            decoded.try_into().unwrap()
-                        }
-                        _ => {
-                            tracing::warn!(
-                                path = %vault_key_path.display(),
-                                "Vault key file was corrupt — generating new key"
-                            );
-
-                            generate_and_save_vault_key(&vault_key_path)?
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %vault_key_path.display(),
-                        "Failed to read vault key file — generating new key"
-                    );
-                    generate_and_save_vault_key(&vault_key_path)?
-                }
-            }
-        } else {
-            // First run: generate and persist a new vault key
-            tracing::info!(
-                path = %vault_key_path.display(),
-                "No vault key found — generating and saving new key"
-            );
-            generate_and_save_vault_key(&vault_key_path)?
-        };
-        // If we generated a new key (no env var) and Railway is available, persist it
-        // so the key survives across container redeploys (Railway has no persistent disk).
-        if config.vault_key.is_none()
-            && let (Some(token), Some(project_id), Some(env_id), Some(service_id)) = (
-                &config.railway_token,
-                &config.railway_project_id,
-                &config.railway_environment_id,
-                &config.railway_service_id,
-            )
-        {
-            use base64::Engine as _;
-            let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-            match persist_vault_key_to_railway(token, project_id, env_id, service_id, &key_b64)
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!("Vault key persisted to Railway env var TEMPER_VAULT_KEY");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        %e,
-                        "Failed to persist vault key to Railway — account data will be lost on next redeploy"
-                    );
-                }
-            }
-        }
+        // The vault key is given, never made here. A start that made one when it found none, or carried on
+        // with a throwaway one when the one it was given was malformed, sealed what it stored under a key the
+        // next start did not hold, and could open nothing an earlier key had sealed (production, 18 Nov 2026:
+        // three stored rows no boot can open). So a start with no key, or with one that is not 32 bytes of
+        // base64, stops and says which.
+        let key_bytes = crate::stored_secrets::current_vault_key(
+            config.vault_key.as_deref(),
+            &data_dir.join("vault.key"),
+        )?;
 
         let mut vault = temper_server::secrets::vault::SecretsVault::new(&key_bytes);
         if let Some(previous) = previous_vault_key {
@@ -2027,50 +1942,6 @@ fn resolve_startup_secret(
         .filter(|value| !value.trim().is_empty())
         .or_else(|| vault.and_then(|vault| vault.get_platform_secret(key)))
         .or_else(|| vault.and_then(|vault| vault.get_secret(tenant, key)))
-}
-
-/// Generate a random 32-byte vault key, save it to disk as base64, and return the raw bytes.
-fn generate_and_save_vault_key(path: &Path) -> Result<[u8; 32]> {
-    use base64::Engine as _;
-
-    let mut key = [0u8; 32];
-    rand::fill(&mut key);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(key);
-    std::fs::write(path, &encoded)
-        .with_context(|| format!("Failed to write vault key to {}", path.display()))?;
-
-    // Set file permissions to owner-only (0o600) on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perms)
-            .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
-    }
-
-    tracing::info!(path = %path.display(), "Saved new vault key to file");
-    Ok(key)
-}
-
-/// Persist the vault key to Railway as an environment variable so it survives container redeploys.
-/// Railway containers have no persistent disk, so without this the vault key is regenerated
-/// on every deploy and all encrypted secrets (including user accounts) become unreadable.
-async fn persist_vault_key_to_railway(
-    token: &str,
-    project_id: &str,
-    environment_id: &str,
-    service_id: &str,
-    vault_key_b64: &str,
-) -> Result<()> {
-    persist_service_variable_to_railway(
-        token,
-        project_id,
-        environment_id,
-        service_id,
-        "TEMPER_VAULT_KEY",
-        vault_key_b64,
-    )
-    .await
 }
 
 async fn persist_temper_api_key_to_railway(
