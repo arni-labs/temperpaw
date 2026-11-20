@@ -58,6 +58,8 @@ async fn async_main() -> anyhow::Result<()> {
 
     let force_soul_setup = match cli.command {
         Some(Command::Run) => {
+            // The vault key first: no start makes one, so without it every answer below would be for nothing.
+            setup::settle_vault_key(&data_dir, &config)?;
             // Collect API key + messaging config, then boot the server
             let result = setup::run_setup_config(&config).await?;
             setup::merge_setup_into_config(&mut config, result);

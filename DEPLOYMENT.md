@@ -299,8 +299,11 @@ docker run -d \
   -e BLOB_SECRET_KEY=your-secret \
   -e LLM_PROVIDER=anthropic \
   -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e TEMPER_VAULT_KEY=<32 bytes in base64> \
   ghcr.io/nerdsane/temperpaw:edge
 ```
+
+`TEMPER_VAULT_KEY` seals the secrets the server stores. Make it once (`openssl rand -base64 32`), keep it somewhere safe, and pass the same value at every start: the server makes none and stops without it, because a different key opens nothing stored under this one.
 
 ### First-time setup
 

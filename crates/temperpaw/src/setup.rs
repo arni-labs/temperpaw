@@ -95,6 +95,28 @@ pub fn needs_setup(_data_dir: &Path, config: &Config) -> bool {
     !has_llm_credentials(config)
 }
 
+/// Settle the vault key before anything else is asked or started. A start
+/// makes no key, so a new local instance would answer every setup question and
+/// then stop for want of one. With no key given and none on disk, a person at
+/// a terminal is asked once whether this instance is new: yes makes its key
+/// file, theirs alone. Without a terminal, or on a no, the start stops here
+/// and says how to give it one.
+pub fn settle_vault_key(data_dir: &Path, config: &Config) -> anyhow::Result<()> {
+    let key_file = data_dir.join("vault.key");
+    if config.vault_key.is_none() && !key_file.exists() && std::io::stdin().is_terminal() {
+        let new = cliclack::confirm(format!(
+            "No vault key: TEMPER_VAULT_KEY is not set and {} does not exist. Is this a new instance? Yes makes its key there, readable only by you. Say no if this instance has stored secrets: a new key opens none of them.",
+            key_file.display()
+        ))
+        .initial_value(false)
+        .interact()?;
+        if new {
+            crate::stored_secrets::make_vault_key_file(&key_file)?;
+        }
+    }
+    crate::stored_secrets::current_vault_key(config.vault_key.as_deref(), &key_file).map(|_| ())
+}
+
 /// Phase A: Collect API key and messaging config (runs pre-boot).
 pub async fn run_setup_config(config: &Config) -> anyhow::Result<SetupResult> {
     let has_api_key = has_llm_credentials(config);
@@ -591,8 +613,8 @@ pub fn run_doctor(data_dir: &Path, config: &Config) {
         println!("  \u{2713} Vault key (env var)");
     } else {
         println!(
-            "  \u{2717} Vault key missing: set TEMPER_VAULT_KEY, or for a new local instance run: openssl rand -base64 32 > {}",
-            vault_key_path.display()
+            "  \u{2717} Vault key missing: set TEMPER_VAULT_KEY, or for a new local instance {}",
+            crate::stored_secrets::make_key_by_hand(&vault_key_path)
         );
     }
 

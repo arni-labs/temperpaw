@@ -49,9 +49,9 @@ pub(crate) fn current_vault_key(from_env: Option<&str>, key_file: &Path) -> Resu
     }
     if !key_file.exists() {
         bail!(
-            "no vault key: TEMPER_VAULT_KEY is not set and {} does not exist. None is made at a start, because a new key opens nothing an earlier one sealed. Set TEMPER_VAULT_KEY to the key this deployment has always had; for a new local instance, make one once: openssl rand -base64 32 > {}",
+            "no vault key: TEMPER_VAULT_KEY is not set and {} does not exist. None is made at a start, because a new key opens nothing an earlier one sealed. Set TEMPER_VAULT_KEY to the key this deployment has always had; for a new local instance, {}",
             key_file.display(),
-            key_file.display()
+            make_key_by_hand(key_file)
         );
     }
     let contents = std::fs::read_to_string(key_file).map_err(|error| {
@@ -64,6 +64,52 @@ pub(crate) fn current_vault_key(from_env: Option<&str>, key_file: &Path) -> Resu
         &format!("the vault key file {}", key_file.display()),
         contents.trim(),
     )
+}
+
+/// How a person makes a new local instance's key file themselves: readable
+/// by its owner alone from the moment it exists, whatever their umask.
+pub(crate) fn make_key_by_hand(key_file: &Path) -> String {
+    format!(
+        "make one once, readable only by you: (umask 077 && openssl rand -base64 32 > {})",
+        key_file.display()
+    )
+}
+
+/// Make a new local instance's vault key file: 32 random bytes in base64,
+/// readable by its owner alone from the moment it exists. Only setup calls
+/// this, after the person says the instance is new; no start does. It never
+/// replaces a file: a key already there is the one its secrets are under.
+pub(crate) fn make_vault_key_file(key_file: &Path) -> Result<()> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+
+    let mut key = [0u8; 32];
+    rand::fill(&mut key);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(key_file).map_err(|error| {
+        anyhow!(
+            "the vault key file {} could not be made: {error}",
+            key_file.display()
+        )
+    })?;
+    writeln!(
+        file,
+        "{}",
+        base64::engine::general_purpose::STANDARD.encode(key)
+    )
+    .and_then(|()| file.sync_all())
+    .map_err(|error| {
+        anyhow!(
+            "the vault key file {} could not be written: {error}",
+            key_file.display()
+        )
+    })
 }
 
 fn decode_vault_key(name: &str, key_b64: &str) -> Result<[u8; 32]> {
@@ -207,6 +253,37 @@ mod tests {
     /// A start reads its vault key and never makes one: with none it stops,
     /// and with a malformed one it stops, where it used to make a new key or
     /// carry on with a throwaway one and strand every stored secret.
+    #[test]
+    fn a_key_file_setup_makes_is_its_owners_alone_and_never_replaces_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("vault.key");
+
+        make_vault_key_file(&file).unwrap();
+        let made = current_vault_key(None, &file).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "nobody else can read the key: {mode:o}");
+        }
+
+        // A key already there is the one its secrets are under: it stays.
+        let again = make_vault_key_file(&file).unwrap_err().to_string();
+        assert!(again.contains("could not be made"), "{again}");
+        assert_eq!(current_vault_key(None, &file).unwrap(), made);
+
+        // What a person is told to run makes the file theirs alone too.
+        let by_hand = make_key_by_hand(&file);
+        assert!(
+            by_hand.contains("(umask 077 && openssl rand -base64 32 > "),
+            "{by_hand}"
+        );
+        let none = current_vault_key(None, &dir.path().join("none.key"))
+            .unwrap_err()
+            .to_string();
+        assert!(none.contains("umask 077"), "{none}");
+    }
+
     #[test]
     fn a_start_with_no_vault_key_or_a_malformed_one_stops_and_makes_none() {
         let dir = std::env::temp_dir().join(format!("temperpaw-vault-key-{}", std::process::id()));

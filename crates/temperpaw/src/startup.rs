@@ -648,6 +648,10 @@ pub async fn run(mut config: Config, force_soul_setup: bool) -> Result<()> {
     let api_key_path = data_dir.join("api.key");
     config.temper_api_key = Some(resolve_temper_api_key(&config, &api_key_path).await?);
 
+    // The vault key is settled before any prompt or listener: a start makes none (Phase 5), and a new local
+    // instance is asked for one here, once.
+    crate::setup::settle_vault_key(&data_dir, &config)?;
+
     // Phase 0: Config setup (API key + messaging — runs pre-boot)
     let needs_soul_setup = if crate::setup::needs_setup(&data_dir, &config) {
         let setup_result = crate::setup::run_setup_config(&config).await?;
