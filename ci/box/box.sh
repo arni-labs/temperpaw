@@ -124,14 +124,17 @@ run)
     if [ -s "$tmp/ci.bundle" ]; then put "$id" "$tmp/ci.bundle" /var/lib/ci/in.bundle; echo "box: sent $(du -h "$tmp/ci.bundle" | cut -f1) of git"; fi
     echo "box: ready to gate in $(( $(date +%s) - started )) s"
     code=0
-    run_on "$id" 5400 tl-user "cd /var/lib/ci && CI_ALL=${CI_ALL:-0} bash gate.sh $commit $base" || code=$?
+    # The route's gates hold /var/lib/ci/box.lock while they run, so a hand run takes it too: one gate per box at a time.
+    run_on "$id" 5400 tl-user "exec 9>/var/lib/ci/box.lock && flock 9 && cd /var/lib/ci && CI_ALL=${CI_ALL:-0} bash gate.sh $commit $base" || code=$?
     echo "box: verdict $([ $code = 0 ] && echo passed || echo failed) (exit $code) in $(( $(date +%s) - started )) s from wake"
     if [ "${CI_STATUS:-0}" = 1 ]; then
         gh api -X POST "repos/arni-labs/temperpaw/statuses/$commit" -f context=ci-temperpaw \
           -f state="$([ $code = 0 ] && echo success || echo failure)" \
           -f description="ci-temperpaw box gate against ${base:0:10}" >/dev/null && echo "box: status ci-temperpaw posted to $commit"
     fi
-    suspend_box
+    # A route gate may be running, or waiting on the lock this run just let go: the box sleeps only when none holds it.
+    if run_on "$id" 60 tl-user 'flock -n /var/lib/ci/box.lock true' >/dev/null 2>&1; then suspend_box
+    else echo "box: $BOX left awake: a route gate holds box.lock"; fi
     exit $code ;;
 *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

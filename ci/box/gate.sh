@@ -97,6 +97,23 @@ run_job() {
     echo "exit $c" >>"$out/$name.txt"
     printf '%-24s exit %-3s %5s s\n' "$name" "$c" "$((SECONDS - s))" | tee -a "$out/summary.txt" >&3
 }
+# Fail fast (ci-migration, 25 Nov): once a job fails the verdict is red, so the lanes still running stop then instead of
+# running to their end; each failed job's tail still goes in the log below. set -m gives each lane its own process
+# group, so the kill reaches every cargo, node and docker client it started. /proc, since a finished lane can linger
+# as a zombie until it is waited for.
+lanes_wait() {
+    local p alive
+    while :; do
+        alive=(); for p in "$@"; do [ -r "/proc/$p/status" ] && ! grep -q '^State:[[:space:]]*Z' "/proc/$p/status" && alive+=("$p"); done
+        [ ${#alive[@]} -gt 0 ] || break
+        if awk '$3 != 0 {f = 1} END {exit !f}' "$out/summary.txt"; then
+            echo "gate: a job failed, so the lanes still running stop" >&3
+            for p in "${alive[@]}"; do kill -TERM -- "-$p" 2>/dev/null; done; break
+        fi
+        sleep 2
+    done
+    wait "$@" 2>/dev/null
+}
 # Docker for the gate's length (a process the run started dies with it); its data and build cache stay in /var/lib/docker.
 docker_up() {
     sudo -n dockerd --group "$(id -gn)" -H "unix://$CI/docker.sock" --pidfile "$CI/docker.pid" >"$CI/dockerd.log" 2>&1 &
@@ -112,11 +129,13 @@ docker_up || { echo "gate: dockerd did not start"; exit 1; }
 done ) >/dev/null 2>&1 &
 sampler=$!
 # Each lane in a cargo target of its own; the ones that only compile yield the cores (nice 10) to the tests.
+set -m
 ( renice -n 10 "$BASHPID" >/dev/null; run_job checks ) & l1=$!
 run_job tests-root & l2=$!
 ( renice -n 10 "$BASHPID" >/dev/null; run_job tests-others; run_job full ) & l3=$!
 ( renice -n 10 "$BASHPID" >/dev/null; run_job image ) & l4=$!
-wait $l1 $l2 $l3 $l4
+set +m
+lanes_wait $l1 $l2 $l3 $l4
 kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
 echo "gate: peak memory in use $(cat "$out/peak-mem-mb.txt" 2>/dev/null || echo 0) MB of $(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo) MB"
 verdict=passed
