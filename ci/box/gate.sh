@@ -12,6 +12,9 @@
 # Left out on purpose: pushing the image (ci/box/publish.sh does that, with a credential the box does not keep).
 # Exit 0 when every job passed, 1 when one failed, 2 on a usage error. Prints no key.
 set -uo pipefail
+# The Factory's command holds /var/lib/ci/box.lock on fd 9 for as long as this runs. Closed here, so no daemon this
+# starts (a server, Postgres, Redis, dockerd) inherits it and keeps the box locked after a run that was killed.
+exec 9>&-
 commit=${1:?usage: gate.sh <commit> <base>} base=${2:?usage: gate.sh <commit> <base>}
 CI=/var/lib/ci repo=/var/lib/ci/repo.git tree=/var/lib/ci/tree
 . /opt/ci/env.sh
