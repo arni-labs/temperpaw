@@ -9,7 +9,7 @@
 # ~/.cache/temperpaw-os-app-modules, as the Actions cache held them) survive the clean between runs. Docker runs for
 # the gate's length only; its build cache stays on disk. Answers go to /var/lib/ci/runs/<commit>/ (<job>.txt ending
 # `exit <code>`; summary.txt; image-name.txt naming the built image; verdict.txt last).
-# Left out on purpose: pushing the image (ci/box/publish.sh does that, with a credential the box does not keep).
+# With CI_PUBLISH=1 a passed push's image goes to R2 for the release box to push (below); no registry key is here.
 # Exit 0 when every job passed, 1 when one failed, 2 on a usage error. Prints no key.
 set -uo pipefail
 # The Factory's command holds /var/lib/ci/box.lock on fd 9 for as long as this runs. Closed here, so no daemon this
@@ -142,16 +142,29 @@ verdict=passed
 for f in $(awk '$3 != 0 {print $1}' "$out/summary.txt"); do verdict=failed; echo "== $f (last 40 lines)"; tail -40 "$out/$f.txt"; done
 echo "gate: $(wc -l <"$out/summary.txt") jobs, verdict $verdict in $((SECONDS - t0)) s"
 said=$(awk '$3 != 0 {printf "%s%s", sep, $1; sep=", "}' "$out/summary.txt")
-# A passed push is published when CI_PUBLISH=1: its image to ghcr (the tags image-name.txt lists), with keys/ghcr-token
-# (a token that may write packages), as docker.yml pushed it. A push that fails fails the verdict: the Factory's
-# railway target deploys only the tag it names.
+# A passed push is published when CI_PUBLISH=1, as temper's binary is: its sha-<7> image, as a `docker save` archive,
+# to R2 bucket temperpaw-images, with keys/images-write, a key for that bucket alone. No ghcr token is on this box, since a
+# test in a bad commit could read it: the release box ci-release pushes the archive to ghcr when the Factory's target
+# asks (stack ci/release/push-image.sh). images/<commit>/{image.tar,image.tar.sha256}, then COMMIT (the full sha) last,
+# so an image without COMMIT is unfinished. Every put is If-None-Match: *, so nothing published is ever replaced. A
+# publish that fails fails the verdict, since the line needs the image.
 if [ $verdict = passed ] && [ "${CI_PUBLISH:-0}" = 1 ]; then
     s=$SECONDS
-    ( set -e; [ -s "$keys/ghcr-token" ] || { echo "no ghcr-token in $keys"; exit 1; }
-      export DOCKER_HOST=unix://$CI/docker.sock DOCKER_CONFIG; DOCKER_CONFIG=$(mktemp -d)
-      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-      tr -d '\n' <"$keys/ghcr-token" | docker login ghcr.io -u ci-box --password-stdin
-      while read -r tag; do docker push -q "$tag"; done <"$out/image-name.txt" ) >"$out/publish.txt" 2>&1; c=$?
+    ( set -euo pipefail; [ -s "$keys/images-write" ] || { echo "no images-write in $keys"; exit 1; }
+      at=https://075a5c0a617de3bdc08a44f9794b6f2f.r2.cloudflarestorage.com/temperpaw-images/images/$commit tar=$CI/image.tar
+      r2() { curl -sS --config <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$keys/images-write")" "$(sed -n 2p "$keys/images-write")") \
+                 --aws-sigv4 aws:amz:auto:s3 "$@"; }
+      put() { # put <file> <key>: 200 made, 412 already there (kept)
+          local c; c=$(r2 -o /dev/null -w '%{http_code}' -H 'If-None-Match: *' \
+              -H "x-amz-content-sha256: $(sha256sum "$1" | cut -c1-64)" -T "$1" "$at/$2")
+          case $c in 200) ;; 412) echo "$2 was already there, kept" ;; *) echo "put $2 answered $c"; return 1 ;; esac; }
+      [ "$(r2 -o /dev/null -w '%{http_code}' "$at/COMMIT")" != 200 ] || { echo "$commit is already published"; exit 0; }
+      trap 'rm -f "$tar" "$tar.sha256"' EXIT
+      DOCKER_HOST=unix://$CI/docker.sock docker save -o "$tar" "ghcr.io/arni-labs/temperpaw:sha-${commit:0:7}"
+      sha256sum "$tar" | cut -c1-64 >"$tar.sha256"
+      put "$tar" image.tar && put "$tar.sha256" image.tar.sha256
+      echo "$commit" >"$out/COMMIT" && put "$out/COMMIT" COMMIT
+      echo "published $at/, $(du -h "$tar" | cut -f1), sha256 $(cat "$tar.sha256")" ) >"$out/publish.txt" 2>&1; c=$?
     echo "exit $c" >>"$out/publish.txt"
     printf '%-24s exit %-3s %5s s\n' publish "$c" "$((SECONDS - s))" | tee -a "$out/summary.txt"
     [ $c = 0 ] || { verdict=failed said="publish"; tail -30 "$out/publish.txt"; }
