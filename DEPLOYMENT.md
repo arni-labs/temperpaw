@@ -270,7 +270,7 @@ The dashboard sidebar shows:
 
 ### How TemperPaw ships
 
-A push to `main` runs CI (`.github/workflows/ci.yml`) and builds the image `sha-<7>` (`.github/workflows/docker.yml`). When CI is green, the push becomes a green Push in the Arni Ops app, and the Factory line ships it: the `temperpaw-staging` target (Railway, environment katagami-staging), then `temperpaw-production`. Each target waits for the image to be in the registry, points the Railway service at it, and is up once the host serves that deployment and `/readyz` answers 200. A red push never ships; the next green push carries the fix. A target that misses puts back the deployment that served before.
+A push to `main` is gated on the warm Tensorlake box ci-temperpaw (`ci/box/gate.sh`, which the Factory's route runs from the commit itself) and builds the image `sha-<7>` (`.github/workflows/docker.yml`). When the gate passes, the push becomes a green Push in the Arni Ops app, and the Factory line ships it: the `temperpaw-staging` target (Railway, environment katagami-staging), then `temperpaw-production`. Each target waits for the image to be in the registry, points the Railway service at it, and is up once the host serves that deployment and `/readyz` answers 200. A red push never ships; the next green push carries the fix. A target that misses puts back the deployment that served before.
 
 ### Using Railway CLI directly
 
