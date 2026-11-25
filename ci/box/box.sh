@@ -96,9 +96,18 @@ run)
     repo=$(git rev-parse --show-toplevel)
     commit=$(git rev-parse --verify "${1:-HEAD}^{commit}")
     base=$(git rev-parse --verify "${2:-$commit^}^{commit}")
+    # A box that holds a write key (keys/) gates only commits on origin's main (ci-migration, Forum r_sv0er8qphcswhr6k):
+    # other code there could read the keys, or poison the warm caches the next main gate builds its artifacts from.
+    # Branch commits, unpushed ones and planted defects run on a box with no keys: CI_BOX=<that box> ci/box/box.sh run.
+    on_main=no; git -C "$repo" fetch -q origin main && git -C "$repo" merge-base --is-ancestor "$commit" FETCH_HEAD && on_main=yes
     started=$(date +%s)
     id=$(wake)
     echo "box: $BOX ($id) awake in $(( $(date +%s) - started )) s"
+    if [ $on_main = no ] && [ -n "$(run_on "$id" 60 tl-user 'ls -A /var/lib/ci/keys 2>/dev/null || true' 2>/dev/null || echo unknown)" ]; then
+        echo "box: $BOX holds write keys and ${commit:0:12} is not on origin's main, so it is not gated here; use a box with no keys (CI_BOX=...)" >&2
+        if run_on "$id" 60 tl-user 'flock -n /var/lib/ci/box.lock true' >/dev/null 2>&1; then suspend_box >&2; fi
+        exit 2
+    fi
     # What the box holds, so the bundle carries only what it lacks; a box with no clone gets a shallow one.
     have=$(run_on "$id" 120 tl-user 'git -C /var/lib/ci/repo.git for-each-ref --format="%(objectname)" 2>/dev/null | sort -u | head -200' 2>/dev/null || true)
     echo "box: asked what it holds in $(( $(date +%s) - started )) s"
