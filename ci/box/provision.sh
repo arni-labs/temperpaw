@@ -14,6 +14,14 @@ WASMTIME_PY=38.0.0            # ci.yml's "Channel continuation regression" pip i
 MOBY=fbf3ed25f893e6ce21336f1101590e40a13934f4 # docker-v29.1.3, the docker.io here: contrib/dockerd-rootless.sh
 ROOTLESS_SHA256=8eb00d61b5e78ffc0dcd628f056389b5859cc61d6fe3ce17b4a3a4b08143c8a5
 CI=/var/lib/ci T=ci-test W=/var/lib/ci/work
+# Waits for box.lock, the lock route.sh holds for a gate, before touching dockerd, /opt/ci or the work: provision run
+# during a gate would kill its rootless dockerd and swap tools under it. flock -o holds the lock in flock itself, so no
+# daemon provision starts (apt's postinst) inherits the lock and keeps it after provision ends.
+if [ -z "${CI_PROVISION_LOCKED:-}" ]; then
+    mkdir -p "$CI"
+    flock -n "$CI/box.lock" true || echo "provision: a gate holds box.lock; waiting for it"
+    exec env CI_PROVISION_LOCKED=1 flock -o "$CI/box.lock" bash "$0" "$@"
+fi
 export DEBIAN_FRONTEND=noninteractive
 step() { echo "provision: $*"; }
 step apt
