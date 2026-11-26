@@ -1492,6 +1492,7 @@ mod tests {
     const SECRET: &str = "/paw/setup/secrets/temper_api_key";
     const OPERATOR_KEY: &str = "operator-key-for-the-edge-test";
     const WORKER_KEY: &str = "worker-key-for-the-edge-test";
+    const INSTALLER_KEY: &str = "installer-key-for-the-edge-test";
 
     #[tokio::test]
     async fn principal_headers_from_another_host_open_nothing() {
@@ -1695,6 +1696,7 @@ mod tests {
         .await
         .unwrap();
         issue_credential(&platform, "worker", WORKER_KEY).await;
+        issue_credential(&platform, "line-installer", INSTALLER_KEY).await;
         super::seed_owner_permit(&platform, "default")
             .await
             .unwrap();
@@ -2059,6 +2061,85 @@ mod tests {
             .unwrap()
             .status();
         assert_eq!(signed_in, anonymous);
+    }
+
+    /// A key that is not the operator's installs a pinned app version and
+    /// reads the installs on the kernel's own routes, through this edge, as
+    /// far as its tenant's Cedar names its agent type for `install_app` on
+    /// `App` and `read_app_installs` on `AppInstall`, and no further.
+    #[tokio::test]
+    async fn an_installer_key_installs_on_the_kernels_routes_as_cedar_decides() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let (port, _, server) = deployed_edge(tempdir.path()).await;
+        let base_url = format!("http://127.0.0.1:{port}");
+        let http = reqwest::Client::new();
+        let install = |key: &str, tenant: &str| {
+            http.post(format!("{base_url}/api/genesis/apps/install"))
+                .bearer_auth(key)
+                .json(&json!({
+                    "tenant": tenant,
+                    "app_ref": "acme/notes@abc123",
+                    "registry_url": "https://genesis.invalid"
+                }))
+                .send()
+        };
+        let installs = |key: &str| {
+            http.get(format!("{base_url}/api/genesis/apps/installs"))
+                .bearer_auth(key)
+                .send()
+        };
+
+        // Until the tenant's Cedar names the installer, it is refused like any key.
+        for key in [INSTALLER_KEY, WORKER_KEY] {
+            let response = install(key, "default").await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{key} install");
+            let response = installs(key).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{key} installs");
+        }
+
+        let permits = r#"permit(principal is Agent, action == Action::"install_app", resource is App)
+when { principal has agent_type && principal.agent_type == "line-installer" && principal has agentTypeVerified && principal.agentTypeVerified == true };
+permit(principal is Agent, action == Action::"read_app_installs", resource is AppInstall)
+when { principal has agent_type && principal.agent_type == "line-installer" && principal has agentTypeVerified && principal.agentTypeVerified == true };"#;
+        let live = server
+            .authz
+            .get_tenant_policy_text("default")
+            .unwrap_or_default();
+        server
+            .authz
+            .reload_tenant_policies("default", &format!("{}\n{permits}", live.trim_end()))
+            .unwrap();
+
+        // Cedar admits the install; the kernel goes on to the registry, which
+        // this server has not set.
+        let response = install(INSTALLER_KEY, "default").await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("registry"), "unexpected body: {body}");
+        let response = installs(INSTALLER_KEY).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert!(
+            body["value"].is_array() && body["installs"].is_array(),
+            "{body}"
+        );
+
+        // Another tenant, another agent type, and TemperPaw's own routes stay closed.
+        let response = install(INSTALLER_KEY, "other").await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "another tenant");
+        let response = install(WORKER_KEY, "default").await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "another agent type"
+        );
+        let response = http
+            .get(format!("{base_url}{SECRET}"))
+            .bearer_auth(INSTALLER_KEY)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "a /paw route");
     }
 
     #[tokio::test]

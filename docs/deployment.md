@@ -34,6 +34,13 @@ installs list, `GET /api/genesis/apps/installs`, then gives the app's last
 install in its `installs`: `running`, `installed`, or `failed` with its
 `reason`.
 
+`/paw/apps/install-from-genesis` takes only the operator credential. Any other
+key, such as the Factory line's installer key, installs through the kernel's
+own `POST /api/genesis/apps/install` (the same body, `tenant` being the key's
+own) and reads `GET /api/genesis/apps/installs`. Cedar decides both, as
+`install_app` on `App` and `read_app_installs` on `AppInstall`, so a key does
+exactly what its tenant's policy permits its agent type.
+
 Boot fetches each installed Genesis app's files again before restoring it,
 bounded by `TEMPERPAW_GENESIS_CACHE_RESTORE_TIMEOUT_SECS` (default 20). If that
 fetch stalls, TemperPaw logs a warning and continues to readiness with the
