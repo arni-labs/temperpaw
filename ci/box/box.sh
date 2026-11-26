@@ -8,8 +8,8 @@
 # The box is named, keeps its disk across sleeps (git clone, cargo targets, node_modules, toolchains), wakes on the
 # first call (auto_resume) and sleeps when idle: this script suspends it after each run, and Tensorlake does after 600 s
 # with no ingress if anything is left awake. Commits reach it as a git bundle of what it lacks (the first run seeds a
-# shallow clone), so it holds no GitHub credential. Each run uploads this checkout's ci/box/gate.sh, which then runs the
-# commit's own scripts. With CI_STATUS=1 the verdict is posted to the commit as the GitHub status `ci-temperpaw` (gh).
+# shallow clone), so it holds no GitHub credential. The box's /opt/ci/route.sh then runs the commit's own ci/box/gate.sh as ci-test,
+# which holds no key. With CI_STATUS=1 the verdict is posted to the commit as the GitHub status `ci-temperpaw` (gh).
 # The key is read from TENSORLAKE_API_KEY or ~/.config/tensorlake/env and only ever handed to curl through a pipe, never
 # in an argument (ps shows every argv); nothing here prints it.
 set -euo pipefail
@@ -89,27 +89,18 @@ exec)
     id=$(wake); run_on "$id" "${CI_TIMEOUT:-600}" tl-user "$*" ;;
 provision)
     id=$(wake)
-    put "$id" "$here/provision.sh" /tmp/ci-provision.sh
+    put "$id" "$here/provision.sh" /tmp/ci-provision.sh && put "$id" "$here/route.sh" /tmp/ci-route.sh
     run_on "$id" 3600 root 'bash /tmp/ci-provision.sh'
     suspend_box ;;
 run)
     repo=$(git rev-parse --show-toplevel)
     commit=$(git rev-parse --verify "${1:-HEAD}^{commit}")
     base=$(git rev-parse --verify "${2:-$commit^}^{commit}")
-    # A box that holds a write key (keys/) gates only commits on origin's main (ci-migration, Forum r_sv0er8qphcswhr6k):
-    # other code there could read the keys, or poison the warm caches the next main gate builds its artifacts from.
-    # Branch commits, unpushed ones and planted defects run on a box with no keys: CI_BOX=<that box> ci/box/box.sh run.
-    on_main=no; git -C "$repo" fetch -q origin main && git -C "$repo" merge-base --is-ancestor "$commit" FETCH_HEAD && on_main=yes
     started=$(date +%s)
     id=$(wake)
     echo "box: $BOX ($id) awake in $(( $(date +%s) - started )) s"
-    if [ $on_main = no ] && [ -n "$(run_on "$id" 60 tl-user 'ls -A /var/lib/ci/keys 2>/dev/null || true' 2>/dev/null || echo unknown)" ]; then
-        echo "box: $BOX holds write keys and ${commit:0:12} is not on origin's main, so it is not gated here; use a box with no keys (CI_BOX=...)" >&2
-        if run_on "$id" 60 tl-user 'flock -n /var/lib/ci/box.lock true' >/dev/null 2>&1; then suspend_box >&2; fi
-        exit 2
-    fi
     # What the box holds, so the bundle carries only what it lacks; a box with no clone gets a shallow one.
-    have=$(run_on "$id" 120 tl-user 'git -C /var/lib/ci/repo.git for-each-ref --format="%(objectname)" 2>/dev/null | sort -u | head -200' 2>/dev/null || true)
+    have=$(run_on "$id" 120 root 'git -C /var/lib/ci/repo.git for-each-ref --format="%(objectname)" 2>/dev/null | sort -u | head -200' 2>/dev/null || true)
     echo "box: asked what it holds in $(( $(date +%s) - started )) s"
     not=()
     for c in $have; do git -C "$repo" cat-file -e "$c^{commit}" 2>/dev/null && not+=("^$c"); done
@@ -122,19 +113,20 @@ run)
         git -C "$tmp/repo.git" fetch -q --depth=200 "file://$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)" \
             refs/ci/commit:refs/ci/commit refs/ci/base:refs/ci/base
         COPYFILE_DISABLE=1 tar --no-xattrs -czf "$tmp/repo.tgz" -C "$tmp" repo.git
-        put "$id" "$tmp/repo.tgz" /var/lib/ci/repo.tgz
-        run_on "$id" 300 tl-user 'cd /var/lib/ci && rm -rf repo.git && tar -xzf repo.tgz && rm repo.tgz && git -C repo.git config core.bare true'
+        put "$id" "$tmp/repo.tgz" /var/lib/ci/in/repo.tgz
+        run_on "$id" 300 root 'cd /var/lib/ci && rm -rf repo.git && tar --no-same-owner -xzf in/repo.tgz && rm in/repo.tgz && git -C repo.git config core.bare true'
         echo "box: seeded a shallow clone ($(du -h "$tmp/repo.tgz" | cut -f1))"
     else
         git -C "$repo" bundle create -q "$tmp/ci.bundle" refs/ci/commit refs/ci/base "${not[@]}" 2>/dev/null || true
     fi
     echo "box: git to send made in $(( $(date +%s) - started )) s"
-    put "$id" "$here/gate.sh" /var/lib/ci/gate.sh
-    if [ -s "$tmp/ci.bundle" ]; then put "$id" "$tmp/ci.bundle" /var/lib/ci/in.bundle; echo "box: sent $(du -h "$tmp/ci.bundle" | cut -f1) of git"; fi
+    if [ -s "$tmp/ci.bundle" ]; then put "$id" "$tmp/ci.bundle" /var/lib/ci/in/bundle; echo "box: sent $(du -h "$tmp/ci.bundle" | cut -f1) of git"; fi
     echo "box: ready to gate in $(( $(date +%s) - started )) s"
     code=0
-    # The route's gates hold /var/lib/ci/box.lock while they run, so a hand run takes it too: one gate per box at a time.
-    run_on "$id" 5400 tl-user "exec 9>/var/lib/ci/box.lock && flock 9 && cd /var/lib/ci && CI_ALL=${CI_ALL:-0} bash gate.sh $commit $base" || code=$?
+    # /opt/ci/route.sh, the box's fixed wrapper, holds box.lock, refuses a commit not on origin's main while the box
+    # holds keys (ci-migration, Forum r_sv0er8qphcswhr6k: branch commits and planted defects go to a box with none,
+    # CI_BOX=...), and runs the commit's gate.sh as ci-test.
+    run_on "$id" 5400 root "CI_ALL=${CI_ALL:-0} /opt/ci/route.sh --bundle $commit $base" || code=$?
     echo "box: verdict $([ $code = 0 ] && echo passed || echo failed) (exit $code) in $(( $(date +%s) - started )) s from wake"
     if [ "${CI_STATUS:-0}" = 1 ]; then
         gh api -X POST "repos/arni-labs/temperpaw/statuses/$commit" -f context=ci-temperpaw \
@@ -142,7 +134,7 @@ run)
           -f description="ci-temperpaw box gate against ${base:0:10}" >/dev/null && echo "box: status ci-temperpaw posted to $commit"
     fi
     # A route gate may be running, or waiting on the lock this run just let go: the box sleeps only when none holds it.
-    if run_on "$id" 60 tl-user 'flock -n /var/lib/ci/box.lock true' >/dev/null 2>&1; then suspend_box
+    if run_on "$id" 60 root 'flock -n /var/lib/ci/box.lock true' >/dev/null 2>&1; then suspend_box
     else echo "box: $BOX left awake: a route gate holds box.lock"; fi
     exit $code ;;
 *) sed -n '2,15p' "$0"; exit 2 ;;

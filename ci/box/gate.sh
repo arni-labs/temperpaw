@@ -1,41 +1,25 @@
 #!/usr/bin/env bash
-# Runs on ci-temperpaw, as tl-user: tests one commit as .github/workflows/ci.yml did on GitHub's runners for a push to
-# main (jobs checks, tests-root, tests-others, full, by the same steps and the commit's own scripts), and builds
+# Runs on ci-temperpaw, as ci-test: tests one commit as .github/workflows/ci.yml did on GitHub's runners for a push to
+# main (jobs checks, tests-root, tests-others, full, and replay.yml's replay, by the same steps and the commit's own scripts), and builds
 # docker.yml's image from the Dockerfile with a warm BuildKit cache, tagged as docker.yml tagged a push to main:
 #   gate.sh <commit> <base>        CI_ALL=1 builds every os-app module again, as the nightly did (no --reuse)
-# ci/box/box.sh uploads this file and the git bundle (/var/lib/ci/in.bundle) before it calls it. Warm by design: one
+# /opt/ci/route.sh (the fixed wrapper) runs it as ci-test, which holds no key and has no sudo, after it put the two
+# commits in /var/lib/ci/work/test.git (refs/ci/commit, refs/ci/base); it publishes and sends the verdict. Warm by design: one
 # worktree at one path, so a checkout keeps unchanged files' times and cargo rebuilds only what the commit changed;
 # target/, dashboard/node_modules and the packaged os-app modules (os-apps/**/*.wasm, with their stamps in
 # ~/.cache/temperpaw-os-app-modules, as the Actions cache held them) survive the clean between runs. Docker runs for
-# the gate's length only; its build cache stays on disk. Answers go to /var/lib/ci/runs/<commit>/ (<job>.txt ending
+# the gate's length only, rootless, as ci-test; its build cache stays on disk. Answers go to /var/lib/ci/work/runs/<commit>/ (<job>.txt ending
 # `exit <code>`; summary.txt; image-name.txt naming the built image; verdict.txt last).
-# With CI_PUBLISH=1 a passed push's image goes to R2 for the release box to push (below); no registry key is here.
+# With CI_PUBLISH=1 a passed push's image is saved to publish/image.tar there, for route.sh to put in R2.
 # Exit 0 when every job passed, 1 when one failed, 2 on a usage error. Prints no key.
 set -uo pipefail
-# The Factory's command holds /var/lib/ci/box.lock on fd 9 for as long as this runs. Closed here, so no daemon this
-# starts (a server, Postgres, Redis, dockerd) inherits it and keeps the box locked after a run that was killed.
-exec 9>&-
 commit=${1:?usage: gate.sh <commit> <base>} base=${2:?usage: gate.sh <commit> <base>}
-CI=/var/lib/ci repo=/var/lib/ci/repo.git tree=/var/lib/ci/tree
+CI=/var/lib/ci/work repo=/var/lib/ci/work/test.git tree=/var/lib/ci/work/tree
 . /opt/ci/env.sh
-[ "$(id -u)" != 0 ] || { echo "gate: run as a user that is not root, as GitHub's runner is"; exit 2; }
+[ "$(id -u)" != 0 ] || { echo "gate: runs as ci-test, through /opt/ci/route.sh"; exit 2; }
 t0=$SECONDS
-if [ -s "$CI/in.bundle" ]; then
-    git -C "$repo" fetch -q "$CI/in.bundle" '+refs/ci/*:refs/ci/*' || { echo "gate: the bundle did not fetch"; exit 2; }
-    rm -f "$CI/in.bundle"
-fi
-# A commit the box lacks comes from origin (https://github.com/arni-labs/temperpaw.git), as the Factory's route runs a gate: no bundle, only the
-# two commits. ci/box/box.sh's bundle carries them instead when it drives the box.
-keys=${CI_KEYS:-$CI/keys}
-git -C "$repo" remote get-url origin >/dev/null 2>&1 || git -C "$repo" remote add origin https://github.com/arni-labs/temperpaw.git
-for c in "$commit" "$base"; do
-    git -C "$repo" cat-file -e "$c^{commit}" 2>/dev/null || git -C "$repo" fetch -q --depth=200 origin "$c" \
-        || { echo "gate: $c is neither on the box nor fetched from origin"; exit 2; }
-done
 commit=$(git -C "$repo" rev-parse --verify "$commit^{commit}") || exit 2
 base=$(git -C "$repo" rev-parse --verify "$base^{commit}") || exit 2
-git -C "$repo" update-ref "refs/ci/tested/$commit" "$commit"
-git -C "$repo" for-each-ref --sort=-committerdate --format='%(refname)' refs/ci/tested | tail -n +51 | xargs -r -n1 git -C "$repo" update-ref -d
 if git -C "$tree" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$tree" reset -q --hard && git -C "$tree" checkout -q --force --detach "$commit" \
       && git -C "$tree" clean -q -ffdx -e target/ -e node_modules/ -e '/os-apps/**/*.wasm' || exit 2
@@ -69,6 +53,13 @@ job_tests_root() { # cargo test (root workspace)
     bash scripts/verify_route_message_wasm.sh || return
     echo "== cargo test, the root workspace"; python3 scripts/ci/rust_tests.py root
 }
+# replay.yml's check, which ran on pull requests: whether a spec change rewrites the records it already has
+# (.github/ci/replay.py). On a push the intent lines ("Replay intended: ...") come from the commit messages since base,
+# as katagami's gate reads them.
+job_replay() {
+    python3 -m unittest discover -s .github/ci -p 'replay_test.py' || return
+    git log --format=%B "$base..$commit" >"$out/replay-messages.txt" && python3 .github/ci/replay.py "$base" "$commit" "$out/replay-messages.txt"
+}
 job_tests_others() { python3 scripts/ci/rust_tests.py others 1/1; } # both of GitHub's parts, one machine
 job_full() {
     cd dashboard || return
@@ -80,7 +71,7 @@ job_full() {
 # docker.yml's image of a push to main: tags edge and sha-<7>, build args BUILD_VERSION and BUILD_SHA.
 job_image() {
     local image=ghcr.io/arni-labs/temperpaw
-    DOCKER_HOST=unix://$CI/docker.sock docker buildx build --load --progress=plain \
+    docker buildx build --load --progress=plain \
       -t "$image:sha-${commit:0:7}" -t "$image:edge" \
       --build-arg "BUILD_VERSION=sha-${commit:0:7}" --build-arg "BUILD_SHA=$commit" \
       --label org.opencontainers.image.title=TemperPaw \
@@ -88,7 +79,7 @@ job_image() {
       --label org.opencontainers.image.source=https://github.com/arni-labs/temperpaw \
       --label org.opencontainers.image.revision="$commit" . || return
     printf '%s\n' "$image:sha-${commit:0:7}" "$image:edge" >"$out/image-name.txt"
-    DOCKER_HOST=unix://$CI/docker.sock docker image inspect --format '{{.Id}} {{.Size}}' "$image:sha-${commit:0:7}"
+    docker image inspect --format '{{.Id}} {{.Size}}' "$image:sha-${commit:0:7}"
 }
 
 run_job() {
@@ -114,13 +105,15 @@ lanes_wait() {
     done
     wait "$@" 2>/dev/null
 }
-# Docker for the gate's length (a process the run started dies with it); its data and build cache stay in /var/lib/docker.
+# Docker for the gate's length, rootless: ci-test's own dockerd (rootlesskit), so a build or a container is ci-test and
+# no more. Its data and build cache stay in ~/.local/share/docker; route.sh stops every ci-test process after the gate.
+export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
 docker_up() {
-    sudo -n dockerd --group "$(id -gn)" -H "unix://$CI/docker.sock" --pidfile "$CI/docker.pid" >"$CI/dockerd.log" 2>&1 &
-    for _ in $(seq 60); do DOCKER_HOST=unix://$CI/docker.sock docker info >/dev/null 2>&1 && return; sleep 1; done
+    dockerd-rootless.sh >"$CI/dockerd.log" 2>&1 & docker_pid=$!
+    for _ in $(seq 60); do docker info >/dev/null 2>&1 && return; sleep 1; done
     tail -20 "$CI/dockerd.log"; return 1
 }
-docker_down() { [ -s "$CI/docker.pid" ] && sudo -n kill "$(cat "$CI/docker.pid")" 2>/dev/null; sleep 2; true; }
+docker_down() { [ -z "${docker_pid:-}" ] || kill "$docker_pid" 2>/dev/null; sleep 2; true; }
 trap docker_down EXIT
 docker_up || { echo "gate: dockerd did not start"; exit 1; }
 ( peak=0; while sleep 2; do
@@ -130,7 +123,7 @@ done ) >/dev/null 2>&1 &
 sampler=$!
 # Each lane in a cargo target of its own; the ones that only compile yield the cores (nice 10) to the tests.
 set -m
-( renice -n 10 "$BASHPID" >/dev/null; run_job checks ) & l1=$!
+( renice -n 10 "$BASHPID" >/dev/null; run_job replay; run_job checks ) & l1=$!
 run_job tests-root & l2=$!
 ( renice -n 10 "$BASHPID" >/dev/null; run_job tests-others; run_job full ) & l3=$!
 ( renice -n 10 "$BASHPID" >/dev/null; run_job image ) & l4=$!
@@ -141,46 +134,11 @@ echo "gate: peak memory in use $(cat "$out/peak-mem-mb.txt" 2>/dev/null || echo 
 verdict=passed
 for f in $(awk '$3 != 0 {print $1}' "$out/summary.txt"); do verdict=failed; echo "== $f (last 40 lines)"; tail -40 "$out/$f.txt"; done
 echo "gate: $(wc -l <"$out/summary.txt") jobs, verdict $verdict in $((SECONDS - t0)) s"
-said=$(awk '$3 != 0 {printf "%s%s", sep, $1; sep=", "}' "$out/summary.txt")
-# A passed push is published when CI_PUBLISH=1, as temper's binary is: its sha-<7> image, as a `docker save` archive,
-# to R2 bucket temperpaw-images, with keys/images-write, a key for that bucket alone. No ghcr token is on this box, since a
-# test in a bad commit could read it: the release box ci-release pushes the archive to ghcr when the Factory's target
-# asks (stack ci/release/push-image.sh). images/<commit>/{image.tar,image.tar.sha256}, then COMMIT (the full sha) last,
-# so an image without COMMIT is unfinished. Every put is If-None-Match: *, so nothing published is ever replaced. A
-# publish that fails fails the verdict, since the line needs the image.
+# A passed push to publish (CI_PUBLISH=1, from route.sh): its sha-<7> image as a `docker save` archive, which route.sh
+# hashes and puts in R2 for the release box. A save that fails fails the verdict, since the line needs the image.
 if [ $verdict = passed ] && [ "${CI_PUBLISH:-0}" = 1 ]; then
-    s=$SECONDS
-    ( set -euo pipefail; [ -s "$keys/images-write" ] || { echo "no images-write in $keys"; exit 1; }
-      at=https://075a5c0a617de3bdc08a44f9794b6f2f.r2.cloudflarestorage.com/temperpaw-images/images/$commit tar=$CI/image.tar
-      r2() { curl -sS --config <(printf 'user = "%s:%s"\n' "$(sed -n 1p "$keys/images-write")" "$(sed -n 2p "$keys/images-write")") \
-                 --aws-sigv4 aws:amz:auto:s3 "$@"; }
-      put() { # put <file> <key>: 200 made, 412 already there (kept)
-          local c; c=$(r2 -o /dev/null -w '%{http_code}' -H 'If-None-Match: *' \
-              -H "x-amz-content-sha256: $(sha256sum "$1" | cut -c1-64)" -T "$1" "$at/$2")
-          case $c in 200) ;; 412) echo "$2 was already there, kept" ;; *) echo "put $2 answered $c"; return 1 ;; esac; }
-      [ "$(r2 -o /dev/null -w '%{http_code}' "$at/COMMIT")" != 200 ] || { echo "$commit is already published"; exit 0; }
-      trap 'rm -f "$tar" "$tar.sha256"' EXIT
-      DOCKER_HOST=unix://$CI/docker.sock docker save -o "$tar" "ghcr.io/arni-labs/temperpaw:sha-${commit:0:7}"
-      sha256sum "$tar" | cut -c1-64 >"$tar.sha256"
-      put "$tar" image.tar && put "$tar.sha256" image.tar.sha256
-      echo "$commit" >"$out/COMMIT" && put "$out/COMMIT" COMMIT
-      echo "published $at/, $(du -h "$tar" | cut -f1), sha256 $(cat "$tar.sha256")" ) >"$out/publish.txt" 2>&1; c=$?
-    echo "exit $c" >>"$out/publish.txt"
-    printf '%-24s exit %-3s %5s s\n' publish "$c" "$((SECONDS - s))" | tee -a "$out/summary.txt"
-    [ $c = 0 ] || { verdict=failed said="publish"; tail -30 "$out/publish.txt"; }
+    mkdir -p "$out/publish" && docker save -o "$out/publish/image.tar" "ghcr.io/arni-labs/temperpaw:sha-${commit:0:7}" \
+        || { verdict=failed; echo "gate: the image did not save"; }
 fi
-
 echo "$verdict" >"$out/verdict.txt"
-# The verdict to the Factory's gate hook, as ci-temper-v2 and ci-katagami send it: {type, id, tests_url}, signed with
-# HMAC-SHA256 of the body under keys/hook-secret.
-if [ -n "${GATE_HOOK:-}" ]; then
-    if [ -s "$keys/hook-secret" ]; then
-        body=$(python3 -c 'import json,sys; print(json.dumps({"type": sys.argv[1], "id": sys.argv[2], "tests_url": sys.argv[3]}))' \
-            "$verdict" "$commit" "ci-temperpaw box gate $verdict${said:+: $said}; $out on tbskhr4v3zlm1gy0m7m6m")
-        signature=$(printf '%s' "$body" | python3 -c 'import hmac,sys; print(hmac.new(open(sys.argv[1],"rb").read().strip(), sys.stdin.buffer.read(), "sha256").hexdigest())' "$keys/hook-secret")
-        curl -sS --fail-with-body --max-time 30 -X POST -H 'content-type: application/json' \
-            -H "x-katagami-signature: sha256=$signature" --data "$body" "$GATE_HOOK" && echo "gate: the gate hook took the verdict" ||
-            echo "gate: the Factory's gate hook did not take the verdict"
-    else echo "gate: no hook-secret in $keys, so the verdict went to no hook"; fi
-fi
 [ $verdict = passed ]
