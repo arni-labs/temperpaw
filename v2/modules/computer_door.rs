@@ -11,12 +11,12 @@
 //
 // Limits, each with its reason: a command runs at most 120 s, inside the process destination's 180 s deadline, so a long
 // command ends as a known timeout; each stream keeps its first 32 KiB, so one result fits the model's context; a resume
-// is waited on for at most 40 status reads; a sandbox lives at most 24 hours (the cost rule: never without a timeout),
-// paused whenever it idles.
+// is waited on for at most 40 status reads; a sandbox lives at most an hour (the pool's sandbox rule: 1,800 to 3,600 s, never
+// without a timeout), paused whenever it idles; one past its hour is gone, and the next command makes a fresh one.
 
 const RUN_SECONDS: u64 = 120;
 const KEEP_BYTES: usize = 32 * 1024;
-const LIFETIME_SECONDS: u64 = 86_400;
+const LIFETIME_SECONDS: u64 = 3_600;
 const STATUS_READS: u64 = 40;
 
 pub fn call(input: Input) -> Option<Answer> {
