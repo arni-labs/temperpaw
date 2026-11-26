@@ -1,0 +1,41 @@
+.paw { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--k-space-4); max-width: var(--k-measure); margin: 0 auto; padding: 12px var(--k-gutter) max(40px, var(--k-host-bottom)); }
+.paw-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--k-space-3); }
+.paw-head h1 { margin: 0; font-family: var(--k-font-display); font-size: var(--k-size-head); font-weight: var(--k-weight-display); }
+.paw-model, .paw code, .paw pre { font-family: var(--k-font-code); }
+.paw-model { color: var(--k-soft); font-size: 0.85em; }
+.paw-quiet { background: none; border: 0; color: var(--k-soft); font: inherit; cursor: pointer; padding: var(--k-space-1) var(--k-space-2); }
+.paw-agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--k-space-3); }
+.paw-agent { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--k-space-1) var(--k-space-3); align-items: center; padding: var(--k-space-3); border-radius: var(--k-radius); background: var(--k-sheet, var(--k-page)); box-shadow: var(--k-raised); }
+.paw-agent-name { font-weight: var(--k-weight-strong); }
+.paw-agent .paw-model { grid-column: 1; }
+.paw-agent k-key { grid-column: 2; grid-row: 1 / span 2; }
+.paw-sessions { list-style: none; margin: 0; padding: 0; }
+.paw-session-link { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--k-space-1) var(--k-space-3); padding: var(--k-space-3) 0; color: var(--k-ink); text-decoration: none; }
+.paw-session-title { font-weight: var(--k-weight-strong); overflow-wrap: anywhere; }
+.paw-session-last { color: var(--k-soft); overflow-wrap: anywhere; }
+.paw-by { color: var(--k-quiet); font-size: 0.85em; }
+.paw-computer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--k-space-2); padding: var(--k-space-2) var(--k-space-3); border-radius: var(--k-radius); background: var(--k-tint); font-family: var(--k-font-code); font-size: 0.85em; }
+.paw-led { width: 10px; height: 10px; border-radius: var(--k-round); background: var(--k-tint-3); }
+.paw-computer[data-state="ready"] .paw-led { background: var(--k-here); }
+.paw-computer[data-state="paused"] .paw-led { background: var(--k-soft); }
+.paw-computer .paw-by { margin-left: auto; }
+.paw-tape { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--k-space-3); }
+.paw-line { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--k-space-2); }
+.paw-line[data-role="user"] .paw-said { justify-self: end; max-width: 85%; padding: var(--k-space-2) var(--k-space-3); border-radius: var(--k-radius); background: var(--k-tint); }
+.paw-said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--k-leading); }
+.paw-out { margin: 0; padding: var(--k-space-2) var(--k-space-3); border-radius: var(--k-radius); background: var(--k-tint-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85em; max-height: 320px; overflow: auto; }
+.paw-calls { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--k-space-1); }
+.paw-calls li { display: flex; gap: var(--k-space-2); align-items: baseline; overflow-wrap: anywhere; }
+.paw-tool { font-family: var(--k-font-code); color: var(--k-soft); }
+.paw-gate { display: grid; gap: var(--k-space-2); padding: var(--k-space-3); border-radius: var(--k-radius); background: var(--k-sheet, var(--k-page)); box-shadow: var(--k-lifted); }
+.paw-gate p { margin: 0; }
+.paw-keys { display: flex; gap: var(--k-space-2); }
+.paw-key { font: inherit; padding: var(--k-space-2) var(--k-space-4); border: 0; border-radius: var(--k-round); background: var(--k-sheet, var(--k-page)); color: var(--k-ink); box-shadow: var(--k-raised); cursor: pointer; white-space: nowrap; }
+.paw-key.paw-quiet { box-shadow: none; }
+.paw-pulse { margin: 0; color: var(--k-soft); overflow-wrap: anywhere; }
+.paw-why { margin: 0; overflow-wrap: anywhere; }
+.paw-ask { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--k-space-2); align-items: end; }
+.paw-ask textarea { font: inherit; resize: vertical; min-height: 3em; }
+.paw-ask .paw-why { grid-column: 1 / -1; }
+.paw-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--k-space-3); }
+@media (pointer: coarse) { .paw-key, .paw-quiet { padding-block: 12px; } }

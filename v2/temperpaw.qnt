@@ -1,5 +1,5 @@
 // TemperPaw on Temper V2, rebuilt from scratch (26 Nov 2026): an agent harness as six small record types.
-//   Agent     who the agent is: its soul, its model and provider (swappable), its tools and its limits.
+//   Agent     who the agent is: its soul, its model and provider (swappable) and its tools.
 //   Session   one durable conversation: a state machine that survives restarts, model swaps and a lost computer.
 //   Turn      one immutable entry of the conversation (user, assistant, tool, summary), parent-linked.
 //   ToolCall  one governed tool call the model asked for, decided from the agent's grants.
@@ -104,21 +104,14 @@ module agent_record {
 
   type AgentId = Id
   type Status = Ready | Paused
-  // provider: openai, anthropic or openrouter (any OpenAI-compatible model), each its own destination and key.
-  // tools: the tools it may call ("bash" runs on its session's computer). approve: the ones a person approves each time.
-  // max_steps: model calls one ask may take, so a looping model stops. compact_after: history entries kept before the
-  // session asks the model to summarise them, so the request stays inside the provider's context window.
-  type Row = {
-    status: Status, name: str, soul: str, provider: str, model: str, max_tokens: int, tools: Set[str], approve: Set[str],
-    max_steps: int, compact_after: int, sessions: int,
-  }
-  type Msg = DoOpen({
-    title: str, soul: str, provider: str, model: str, max_tokens: int, tools: Set[str], approve: Set[str], max_steps: int, compact_after: int,
-  })
+  // provider: OpenAI, Anthropic or OpenRouter (any OpenAI-compatible model), each its own destination and key; the row
+  // keeps its wire name, which turn_runner reads. tools: the tools it may call ("bash" runs on its session's computer).
+  // approve: the ones a person approves each time.
+  type Provider = OpenAI | Anthropic | OpenRouter
+  type Row = { status: Status, name: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str], sessions: int }
+  type Msg = DoOpen({ title: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str] })
   type Ask = NoAsks
-  type SetIn = {
-    name: str, soul: str, provider: str, model: str, max_tokens: int, tools: Set[str], approve: Set[str], max_steps: int, compact_after: int,
-  }
+  type SetIn = { name: str, soul: str, provider: Provider, model: str, tools: Set[str], approve: Set[str] }
   type StartIn = { title: str }
 
   pure val record: RecordDecl = { name: "Agent", status: "status" }
@@ -129,29 +122,24 @@ module agent_record {
     { name: "pause", from: Statuses([Ready]) },
     { name: "resume", from: Statuses([Paused]) },
   ]
-  pure def known_provider(p: str): bool = p == "openai" or p == "anthropic" or p == "openrouter"
+  pure def provider_name(p: Provider): str = if (p == OpenAI) "openai" else if (p == Anthropic) "anthropic" else "openrouter"
   pure def create_guard(i: SetIn, c: Ctx): bool = and {
     require(i.name != "" and i.model != "", "An agent has a name and a model."),
-    require(known_provider(i.provider), "The provider is openai, anthropic or openrouter."),
-    require(i.max_tokens > 0 and i.max_steps > 0 and i.compact_after > 1, "Its limits are positive."),
   }
   pure def create_apply(i: SetIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
     next: {
-      status: Ready, name: i.name, soul: i.soul, provider: i.provider, model: i.model, max_tokens: i.max_tokens, tools: i.tools,
-      approve: i.approve, max_steps: i.max_steps, compact_after: i.compact_after, sessions: 0,
+      status: Ready, name: i.name, soul: i.soul, provider: provider_name(i.provider), model: i.model, tools: i.tools,
+      approve: i.approve, sessions: 0,
     },
     follow: [],
   }
   // Swapping the model or provider here changes the sessions it starts next; a live session swaps with swap_model.
   pure def revise_guard(t: Row, i: SetIn, c: Ctx): bool = and {
     require(i.name != "" and i.model != "", "An agent has a name and a model."),
-    require(known_provider(i.provider), "The provider is openai, anthropic or openrouter."),
-    require(i.max_tokens > 0 and i.max_steps > 0 and i.compact_after > 1, "Its limits are positive."),
   }
   pure def revise_apply(t: Row, i: SetIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
     next: {
-      ...t, name: i.name, soul: i.soul, provider: i.provider, model: i.model, max_tokens: i.max_tokens, tools: i.tools,
-      approve: i.approve, max_steps: i.max_steps, compact_after: i.compact_after,
+      ...t, name: i.name, soul: i.soul, provider: provider_name(i.provider), model: i.model, tools: i.tools, approve: i.approve,
     },
     follow: [],
   }
@@ -161,8 +149,7 @@ module agent_record {
     follow: [Make({
       record: "Session", id: minted_id(c),
       msg: DoOpen({
-        title: i.title, soul: t.soul, provider: t.provider, model: t.model, max_tokens: t.max_tokens, tools: t.tools,
-        approve: t.approve, max_steps: t.max_steps, compact_after: t.compact_after,
+        title: i.title, soul: t.soul, provider: t.provider, model: t.model, tools: t.tools, approve: t.approve,
       }),
       paths: no_paths,
     })],
@@ -189,8 +176,7 @@ module session_record {
   type Row = {
     status: Status,
     agent: agent_record::AgentId,
-    title: str, soul: str, provider: str, model: str, max_tokens: int, tools: Set[str], approve: Set[str],
-    max_steps: int, compact_after: int,
+    title: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str],
     history: List[Entry],
     turns: int,
     steps: int,
@@ -210,12 +196,19 @@ module session_record {
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
-  type OpenIn = {
-    title: str, soul: str, provider: str, model: str, max_tokens: int, tools: Set[str], approve: Set[str], max_steps: int, compact_after: int,
-  }
+  type OpenIn = { title: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str] }
   type AskIn = { text: str }
   type CallIn = { call: str }
-  type SwapIn = { provider: str, model: str }
+  // The same three as an agent's: a move's generated cases name a sum's variants unqualified, so each record declares it.
+  type Provider = OpenAI | Anthropic | OpenRouter
+  type SwapIn = { provider: Provider, model: str }
+  pure def provider_name(p: Provider): str = if (p == OpenAI) "openai" else if (p == Anthropic) "anthropic" else "openrouter"
+  // One answer's token cap, model calls one ask may take (so a looping model stops), and history entries kept before
+  // the session asks the model to summarise them (so a request stays inside the provider's context window). Constants,
+  // not an agent's inputs: each input multiplies the cases admission's search tries, 15,000 at most per move.
+  pure val max_tokens: int = 4096
+  pure val max_steps: int = 12
+  pure val compact_after: int = 40
 
   pure val record: RecordDecl = { name: "Session", status: "status" }
   pure val moves: List[MoveDecl[Status]] = [
@@ -260,7 +253,7 @@ module session_record {
   pure def rest_of(q: List[str]): List[str] = if (q.length() == 0) q else q.tail()
   pure def head_of(q: List[str]): str = if (q.length() == 0) "" else q.head()
   pure def ask_model(t: Row, history: List[Entry], compact: bool): Ask = AskModel({
-    provider: t.provider, model: t.model, soul: t.soul, max_tokens: t.max_tokens, computer: t.tools.contains("bash"),
+    provider: t.provider, model: t.model, soul: t.soul, max_tokens: max_tokens, computer: t.tools.contains("bash"),
     compact: compact, history: history,
   })
   // The spec, not the module, decides each call: a tool the agent holds no grant for is answered "refuse" by the module
@@ -273,15 +266,15 @@ module session_record {
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
   // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit.
   pure def after_call(t: Row): Status =
-    if (rest_of(t.queue_ids).length() > 0) Calling else if (t.steps < t.max_steps) Thinking else Idle
+    if (rest_of(t.queue_ids).length() > 0) Calling else if (t.steps < max_steps) Thinking else Idle
   pure def why_after(place: Status): str = if (place == Idle) "Stopped at the agent's step limit." else ""
   pure def steps_after(t: Row, place: Status): int = if (place == Thinking) t.steps + 1 else t.steps
 
   pure def open_guard(i: OpenIn, c: Ctx): bool = require(by_message(c), "An agent opens a session.")
   pure def open_apply(i: OpenIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
     next: {
-      status: Idle, agent: sender(c), title: i.title, soul: i.soul, provider: i.provider, model: i.model, max_tokens: i.max_tokens,
-      tools: i.tools, approve: i.approve, max_steps: i.max_steps, compact_after: i.compact_after, history: [], turns: 0, steps: 0,
+      status: Idle, agent: sender(c), title: i.title, soul: i.soul, provider: i.provider, model: i.model,
+      tools: i.tools, approve: i.approve, history: [], turns: 0, steps: 0,
       queue_ids: [], queue_names: [], queue_args: [], asked_in: "", computer: "", computer_paused: false, tokens_in: 0, tokens_out: 0,
       reply: "", why: "",
     },
@@ -331,7 +324,7 @@ module session_record {
     require(i.stop == "end", "The model answered."),
   }
   pure def answered_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
-    val place = if (v.self.history.length() + 1 > v.self.compact_after) Compacting else Idle
+    val place = if (v.self.history.length() + 1 > compact_after) Compacting else Idle
     {
       next: {
         ...v,
@@ -537,11 +530,10 @@ module session_record {
 
   // ---- the model can be swapped mid-session: the history is provider-neutral, so the next turn goes to the new one.
   pure def swap_model_guard(v: View, i: SwapIn, c: Ctx): bool = and {
-    require(i.provider == "openai" or i.provider == "anthropic" or i.provider == "openrouter", "The provider is openai, anthropic or openrouter."),
     require(i.model != "", "A model is named."),
   }
   pure def swap_model_apply(v: View, i: SwapIn, c: Ctx): Move[View, Do, Msg, Ask] = {
-    next: { ...v, self: { ...v.self, provider: i.provider, model: i.model } }, follow: [],
+    next: { ...v, self: { ...v.self, provider: provider_name(i.provider), model: i.model } }, follow: [],
   }
 
   // ---- the computer's idle pause and the session's close
