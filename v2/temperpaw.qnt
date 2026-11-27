@@ -267,6 +267,7 @@ module session_record {
     { name: "turn_failed", from: Statuses([Thinking, Compacting]) },
     { name: "next_tool", from: Statuses([Calling]) },
     { name: "tool_done", from: Statuses([Acting]) },
+    { name: "tool_done_again", from: Statuses([Acting]) },
     { name: "tool_refused", from: Statuses([Acting]) },
     { name: "tool_failed", from: Statuses([Acting]) },
     { name: "approve", from: Statuses([WaitingApproval]) },
@@ -289,7 +290,7 @@ module session_record {
     applied: ["compacted", "turn_refused"], failed: ["turn_failed"], unknown: ["turn_failed"], refused: ["turn_failed"],
   }
   pure val exec_paths: ModulePaths = {
-    applied: ["tool_done", "tool_refused"], failed: ["tool_failed"], unknown: ["tool_failed"], refused: ["tool_failed"],
+    applied: ["tool_done_again", "tool_done", "tool_refused"], failed: ["tool_failed"], unknown: ["tool_failed"], refused: ["tool_failed"],
   }
   pure val pause_paths: ModulePaths = { applied: ["computer_paused"], failed: [], unknown: [], refused: [] }
   pure val end_paths: ModulePaths = { applied: ["computer_ended"], failed: [], unknown: [], refused: [] }
@@ -487,10 +488,44 @@ module session_record {
     }
   }
 
-  // ---- a call's end on the computer: its output is the tool's answer, and the loop goes on.
+  // ---- a call's end on the computer: its output is the tool's answer, and the loop goes on. The session's first call
+  // on a sandbox makes its Computer (tool_done); every later call on it marks that Computer Ready (tool_done_again), since
+  // a second put of the same child is refused as child_exists.
   pure def tool_done_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer ends a call."),
     require(v.self.queue_ids.length() > 0 and i.sandbox != "", "A call ran on a computer."),
+    require(v.self.computer != i.sandbox, "The call ran on a new computer."),
+  }
+  pure def tool_done_again_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
+    require(by_module_answer(c), "Only computer_door's answer ends a call."),
+    require(v.self.queue_ids.length() > 0 and i.sandbox != "", "A call ran on a computer."),
+    require(v.self.computer == i.sandbox, "The call ran on this session's computer."),
+  }
+  pure def tool_done_again_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
+    val uid = head_of(v.self.queue_ids)
+    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val place = after_call(v.self)
+    {
+      next: {
+        ...v,
+        toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, uid), {
+          ...v.toolcall_record_rows.get(child_id(v.id, uid)), status: toolcall_record::Done, exit_code: i.exit_code, output: said,
+        }),
+        turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
+          status: turn_record::Written, parent: key_of(v.self.turns), role: "tool", content: said, tool: uid, model: "", tokens_in: 0, tokens_out: 0,
+        }),
+        computer_record_rows: v.computer_record_rows.set(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox }),
+        self: {
+          ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
+          queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
+          history: v.self.history.append(tool_entry(uid, said)), computer: i.sandbox, computer_paused: false,
+        },
+      },
+      follow:
+        if (place == Calling) [Intent(DoNext_tool(Nothing))]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else [],
+    }
   }
   pure def tool_done_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
@@ -505,12 +540,7 @@ module session_record {
         turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
           status: turn_record::Written, parent: key_of(v.self.turns), role: "tool", content: said, tool: uid, model: "", tokens_in: 0, tokens_out: 0,
         }),
-        // The session's computer is made by its first call and marked Ready again by every later one (a second put of
-        // the same child is refused as child_exists).
-        computer_record_rows: if (v.computer_record_rows.keys().contains(child_id(v.id, i.sandbox)))
-          v.computer_record_rows.set(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox })
-        else
-          v.computer_record_rows.put(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox }),
+        computer_record_rows: v.computer_record_rows.put(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox }),
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
@@ -694,7 +724,7 @@ module temperpaw {
     {
       decide: Permit, who: HasRole("owner"),
       what: MovesOf({ record: "Session", moves: [
-        "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_refused",
+        "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
       ] }),
       when: Always,
@@ -702,7 +732,7 @@ module temperpaw {
     {
       decide: Permit, who: HasRole("member"),
       what: MovesOf({ record: "Session", moves: [
-        "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_refused",
+        "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
       ] }),
       when: Always,
