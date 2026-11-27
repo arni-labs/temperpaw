@@ -2,6 +2,7 @@ import { start, useApp, useRecords, useRecord, add, move, can, ago, howItWorks }
 import { Routes, Route, Link, useParams, useNavigate } from "react-router";
 import { useState, useEffect, useRef, useMemo } from "react";
 import "./app.css";
+import links from "./links.json";
 
 type AnyRec = {
   id: string;
@@ -133,7 +134,7 @@ function extractAppLinks(texts: string[]): AppLink[] {
       const friendly = (mdMatch?.[1] || parenMatch?.[1] || "").trim();
       out.push({
         slug,
-        url: `https://${slug}.unikon.app/`,
+        url: links.app.replace("{slug}", slug),
         label: friendly || `UniKon app · ${slug}`,
       });
     }
