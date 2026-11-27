@@ -2,16 +2,19 @@
 //   Agent     who the agent is: its soul, its model and provider (swappable) and its tools.
 //   Session   one durable conversation: a state machine that survives restarts, model swaps and a lost computer.
 //   Turn      one immutable entry of the conversation (user, assistant, tool, summary), parent-linked.
-//   ToolCall  one governed tool call the model asked for, decided from the agent's grants.
+//   ToolCall  one governed tool call the model asked for, decided from the agent's grants: bash runs on the Computer,
+//             unikon calls UniKon's connector through unikon_door, with no computer.
 //   Computer  the session's own Tensorlake sandbox (never the node's), reached only through computer_door.
 //   Memory    what an agent keeps: (key, scope, content), Active or Archived.
 // The loop is the Session's statuses. V2 picks a move's follow-on only from the status that move leaves, so "running"
-// is three statuses: Thinking (the model is asked), Calling (a tool call is next), Acting (a tool call runs).
+// is four statuses: Thinking (the model is asked), Calling (a tool call is next), Acting (a bash call runs on the
+// computer) and Connecting (a unikon call runs at UniKon's connector).
 //
-//   Idle|Failed --ask--> Thinking --answered_tools--> Calling --next_tool--> Acting | WaitingApproval
+//   Idle|Failed --ask--> Thinking --answered_tools--> Calling --next_tool--> Acting | Connecting | WaitingApproval
 //   Thinking --answered--> Idle | Compacting --compacted--> Idle
 //   Acting --tool_done | tool_refused | tool_failed--> Calling (more calls) | Thinking (next turn) | Idle (step limit)
-//   WaitingApproval --approve--> Acting ; --deny--> Calling | Thinking | Idle
+//   Connecting --tool_answered | tool_failed--> the same
+//   WaitingApproval --approve--> Acting | Connecting ; --deny--> Calling | Thinking | Idle
 //   Idle --10 min (status timer)--> pause_computer --computer_paused-->        Idle|Failed --close--> Done
 //
 // Trajectory capture is the kernel's own: every move is a hash-chained commit in the app's history.
@@ -215,7 +218,7 @@ module session_record {
   import agent_record as agent_record
 
   type SessionId = Id
-  type Status = Idle | Thinking | Calling | Acting | WaitingApproval | Compacting | Done | Failed
+  type Status = Idle | Thinking | Calling | Acting | Connecting | WaitingApproval | Compacting | Done | Failed
   // What the model is sent each turn, provider-neutral: turn_runner writes it in the provider's own wire format.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
   type Row = {
@@ -235,9 +238,11 @@ module session_record {
     why: str,
   }
   type Msg = NoMsgs
-  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, compact: bool, history: List[Entry] }
+  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry] }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
-  type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn)
+  // One unikon tool call: its id and the model's input, {"tool": .., "arguments": {..}}.
+  type UnikonIn = { call: str, args: str }
+  type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn) | AskUnikon(UnikonIn)
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
@@ -269,12 +274,13 @@ module session_record {
     { name: "tool_done", from: Statuses([Acting]) },
     { name: "tool_done_again", from: Statuses([Acting]) },
     { name: "tool_refused", from: Statuses([Acting]) },
-    { name: "tool_failed", from: Statuses([Acting]) },
+    { name: "tool_answered", from: Statuses([Connecting]) },
+    { name: "tool_failed", from: Statuses([Acting, Connecting]) },
     { name: "approve", from: Statuses([WaitingApproval]) },
     { name: "deny", from: Statuses([WaitingApproval]) },
     { name: "swap_model", from: Statuses([Idle, Failed, WaitingApproval]) },
     { name: "pause_computer", from: Statuses([Idle]) },
-    { name: "computer_paused", from: Statuses([Idle, Thinking, Calling, Acting, WaitingApproval, Compacting, Failed]) },
+    { name: "computer_paused", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Failed]) },
     { name: "close", from: Statuses([Idle, Failed]) },
     { name: "computer_ended", from: Statuses([Done]) },
   ]
@@ -292,6 +298,9 @@ module session_record {
   pure val exec_paths: ModulePaths = {
     applied: ["tool_done_again", "tool_done", "tool_refused"], failed: ["tool_failed"], unknown: ["tool_failed"], refused: ["tool_failed"],
   }
+  pure val unikon_paths: ModulePaths = {
+    applied: ["tool_answered"], failed: ["tool_failed"], unknown: ["tool_failed"], refused: ["tool_failed"],
+  }
   pure val pause_paths: ModulePaths = { applied: ["computer_paused"], failed: [], unknown: [], refused: [] }
   pure val end_paths: ModulePaths = { applied: ["computer_ended"], failed: [], unknown: [], refused: [] }
 
@@ -300,7 +309,7 @@ module session_record {
   pure def rest_of(q: List[str]): List[str] = if (q.length() == 0) q else q.tail()
   pure def head_of(q: List[str]): str = if (q.length() == 0) "" else q.head()
   pure def ask_model(t: Row, history: List[Entry], compact: bool): Ask = AskModel({
-    provider: t.provider, model: t.model, soul: t.soul, max_tokens: max_tokens, computer: t.tools.contains("bash"),
+    provider: t.provider, model: t.model, soul: t.soul, max_tokens: max_tokens, computer: t.tools.contains("bash"), unikon: t.tools.contains("unikon"),
     compact: compact, history: history,
   })
   // The spec, not the module, decides each call: a tool the agent holds no grant for is answered "refuse" by the module
@@ -308,11 +317,14 @@ module session_record {
   pure def ask_computer(t: Row): Ask = AskComputer({
     op: if (t.tools.contains(head_of(t.queue_names))) "exec" else "refuse",
     sandbox: t.computer, paused: t.computer_paused, call: head_of(t.queue_ids), args: head_of(t.queue_args),
-    // An agent granted "unikon" runs its commands with its owner's UniKon connector credential, so on its computer it
-    // can do what an agent does through the connector (make, evolve and restyle apps, this one included): Rita's
-    // decision, 26 Nov. Without the grant, no command carries it.
-    unikon: t.tools.contains("unikon"),
+    // No command carries the owner's UniKon credential: an agent granted "unikon" calls the connector through its own
+    // tool and unikon_door, so the key never reaches the computer (Rita, 27 Nov).
+    unikon: false,
   })
+  // A granted unikon call goes to unikon_door, with no computer; every other call (an ungranted one too, refused there)
+  // to computer_door.
+  pure def calls_unikon(t: Row): bool = head_of(t.queue_names) == "unikon" and t.tools.contains("unikon")
+  pure def ask_unikon(t: Row): Ask = AskUnikon({ call: head_of(t.queue_ids), args: head_of(t.queue_args) })
   pure def said_entry(role: str, said: str): Entry = { role: role, content: said, call_id: "", call_ids: [], call_names: [], call_args: [] }
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
   // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit.
@@ -432,7 +444,7 @@ module session_record {
   pure def next_tool_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uname = head_of(v.self.queue_names)
     val waits = v.self.tools.contains(uname) and v.self.approve.contains(uname)
-    val place = if (waits) WaitingApproval else Acting
+    val place = if (waits) WaitingApproval else if (calls_unikon(v.self)) Connecting else Acting
     {
       next: {
         ...v,
@@ -442,7 +454,10 @@ module session_record {
         }),
         self: { ...v.self, status: place },
       },
-      follow: if (place == Acting) [RunModule({ mod: "computer_door", input: ask_computer(v.self), paths: exec_paths })] else [],
+      follow:
+        if (place == Acting) [RunModule({ mod: "computer_door", input: ask_computer(v.self), paths: exec_paths })]
+        else if (place == Connecting) [RunModule({ mod: "unikon_door", input: ask_unikon(v.self), paths: unikon_paths })]
+        else [],
     }
   }
   pure def approve_guard(v: View, i: CallIn, c: Ctx): bool = and {
@@ -450,14 +465,19 @@ module session_record {
     require(i.call == head_of(v.self.queue_ids), "It is the call the session waits on."),
   }
   pure def approve_apply(v: View, i: CallIn, c: Ctx): Move[View, Do, Msg, Ask] = {
-    next: {
-      ...v,
-      toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, i.call), {
-        ...v.toolcall_record_rows.get(child_id(v.id, i.call)), status: toolcall_record::Running,
-      }),
-      self: { ...v.self, status: Acting },
-    },
-    follow: [RunModule({ mod: "computer_door", input: ask_computer(v.self), paths: exec_paths })],
+    val place = if (calls_unikon(v.self)) Connecting else Acting
+    {
+      next: {
+        ...v,
+        toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, i.call), {
+          ...v.toolcall_record_rows.get(child_id(v.id, i.call)), status: toolcall_record::Running,
+        }),
+        self: { ...v.self, status: place },
+      },
+      follow:
+        if (place == Connecting) [RunModule({ mod: "unikon_door", input: ask_unikon(v.self), paths: unikon_paths })]
+        else [RunModule({ mod: "computer_door", input: ask_computer(v.self), paths: exec_paths })],
+    }
   }
   pure def deny_guard(v: View, i: CallIn, c: Ctx): bool = and {
     require(is_person(c), "A person denies a tool call."),
@@ -583,13 +603,43 @@ module session_record {
         else [],
     }
   }
+  // ---- a unikon call's end: unikon_door answered the connector's text with no computer, and the loop goes on.
+  pure def tool_answered_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
+    require(by_module_answer(c), "Only unikon_door's answer ends a unikon call."),
+    require(v.self.queue_ids.length() > 0 and i.sandbox == "", "A unikon call ran with no computer."),
+  }
+  pure def tool_answered_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
+    val uid = head_of(v.self.queue_ids)
+    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val place = after_call(v.self)
+    {
+      next: {
+        ...v,
+        toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, uid), {
+          ...v.toolcall_record_rows.get(child_id(v.id, uid)), status: toolcall_record::Done, exit_code: i.exit_code, output: said,
+        }),
+        turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
+          status: turn_record::Written, parent: key_of(v.self.turns), role: "tool", content: said, tool: uid, model: "", tokens_in: 0, tokens_out: 0,
+        }),
+        self: {
+          ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
+          queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
+          history: v.self.history.append(tool_entry(uid, said)),
+        },
+      },
+      follow:
+        if (place == Calling) [Intent(DoNext_tool(Nothing))]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else [],
+    }
+  }
   pure def tool_failed_guard(v: View, i: NoInput, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's end ends a call."),
     require(v.self.queue_ids.length() > 0, "A call is at the queue's head."),
   }
   pure def tool_failed_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
-    val said = "The computer could not run this call (its sandbox did not start or answer)."
+    val said = "This call could not run: its computer or the UniKon connector did not start or answer."
     val place = after_call(v.self)
     {
       next: {
@@ -675,10 +725,11 @@ module temperpaw {
 
   // Each module's contract, by value.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
-  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, compact: bool, history: List[Entry] }
+  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry] }
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
+  type UnikonIn = { call: str, args: str }
   type CatalogIn = { source: str }
   type CatalogOut = { models: str, count: int }
 
@@ -691,7 +742,11 @@ module temperpaw {
     // The computer: Tensorlake's sandbox API (make, suspend, resume, delete) and its process API at the one fixed host,
     // which names the sandbox by the x-tensorlake-sandbox-id header. A command runs at most 120 s, inside the 180 s deadline.
     DestinationDoor({ name: "tensorlake", deadline: seconds(90), honours_keys: true, may_carry_personal_data: false, keeps_keys_for: None, status_query: None, at_most_once: false, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.tensorlake.ai", port: 443, path_prefix: "/", streamed: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "tensorlake_key" }], keys: ["tensorlake_key"] }),
-    DestinationDoor({ name: "tensorlake_process", deadline: seconds(180), honours_keys: true, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "sandbox.tensorlake.ai", port: 443, path_prefix: "/api/v1/", streamed: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "tensorlake_process_key" }, { name: "body_key", value: "unikon_mcp_token" }, { name: "body_mark", value: "@@unikon_mcp_token@@" }], keys: ["tensorlake_process_key", "unikon_mcp_token"] }),
+    DestinationDoor({ name: "tensorlake_process", deadline: seconds(180), honours_keys: true, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "sandbox.tensorlake.ai", port: 443, path_prefix: "/api/v1/", streamed: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "tensorlake_process_key" }, ], keys: ["tensorlake_process_key"] }),
+    // UniKon's connector, for the unikon tool: the owner's connector key goes in Authorization, put there by door_sign,
+    // never on the computer. Deadline 300 s, the kernel's ceiling: an evolve can take minutes. At most once: a call may
+    // make or move records, so an unknown end fails the call and the model is told.
+    DestinationDoor({ name: "unikon", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "unikon.dev", port: 443, path_prefix: "/", streamed: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "unikon_mcp_token" }], keys: ["unikon_mcp_token"] }),
     // Keys live in the app's vault under the login names; each door puts its key in place, out of every module's sight.
     KeyDoor({ name: "codex_api_key" }),
     KeyDoor({ name: "anthropic_api_key" }),
@@ -703,6 +758,7 @@ module temperpaw {
   pure val modules: List[ModuleDecl] = [
     { name: "turn_runner", source_hash: "@turn_runner.rs", form: CallingModule(["openai", "anthropic", "openrouter"]), input: "TurnIn", answer: "TurnOut", constraints: [] },
     { name: "computer_door", source_hash: "@computer_door.rs", form: CallingModule(["tensorlake", "tensorlake_process"]), input: "ComputerIn", answer: "ComputerOut", constraints: [] },
+    { name: "unikon_door", source_hash: "@unikon_door.rs", form: CallingModule(["unikon"]), input: "UnikonIn", answer: "ComputerOut", constraints: [] },
     // OpenRouter's model list is public: the call carries no key.
     { name: "model_catalog", source_hash: "@model_catalog.rs", form: CallingModule(["openrouter"]), input: "CatalogIn", answer: "CatalogOut", constraints: [] },
     // Every door's middleware: it alone is handed the keys, and puts them in place at send time (S-DOOR-10).
@@ -725,7 +781,7 @@ module temperpaw {
       decide: Permit, who: HasRole("owner"),
       what: MovesOf({ record: "Session", moves: [
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
-        "tool_failed", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
+        "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
       ] }),
       when: Always,
     },
@@ -733,7 +789,7 @@ module temperpaw {
       decide: Permit, who: HasRole("member"),
       what: MovesOf({ record: "Session", moves: [
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
-        "tool_failed", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
+        "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
       ] }),
       when: Always,
     },

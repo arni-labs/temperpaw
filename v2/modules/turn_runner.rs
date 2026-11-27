@@ -6,12 +6,17 @@
 // move: stop "tool_use" -> answered_tools, "end" -> answered or compacted, anything else (an error status, an unreadable
 // reply) -> turn_refused with the reason in `stop` and the start of the provider's body in `text`.
 //
-// The one tool is `bash`, run on the session's computer, offered only when the agent holds it. Limits, each with its
+// Two tools, each offered only when the agent holds it: `bash`, run on the session's computer, and `unikon`, one UniKon
+// connector call made by unikon_door with no computer. Limits, each with its
 // reason: one door call per turn, since one turn is one request; max_tokens is the agent's, at least 1 as providers ask;
 // an error body is kept to 600 bytes, enough to say why and small beside the session's row.
 
 const BASH_DESCRIPTION: &'static str = "Run one bash command on your own computer (a persistent Linux sandbox with your \
 workspace in /home/tl-user). It answers the exit code, stdout and stderr. Each command runs at most 120 seconds.";
+const UNIKON_DESCRIPTION: &'static str = "Call one UniKon connector tool directly, as your owner: tool is its name (such as \
+find_app, inspect_app, use_app, wait_for_app, evolve_app, set_app_interface, construct_app, get_upload_urls, \
+construction_manual), arguments its JSON arguments, exactly as the connector takes them. It answers the tool's text. \
+Send tool list_tools for every tool and what it does.";
 const COMPACT_ASK: &'static str = "Summarize this conversation so far for yourself: the task, what was done, what was \
 learned, and what is left. This summary will replace the conversation.";
 const ERROR_KEEP: usize = 600;
@@ -112,10 +117,22 @@ fn chat_body(input: &Input, openrouter: bool) -> String {
     // OpenAI's newer models take max_completion_tokens and refuse max_tokens; OpenRouter takes max_tokens.
     if openrouter { b.push_str(",\"max_tokens\":"); } else { b.push_str(",\"max_completion_tokens\":"); }
     push_count(&mut b, bounded_tokens(input.max_tokens));
-    if input.computer && !input.compact {
-        b.push_str(",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":");
-        push_json_string(&mut b, BASH_DESCRIPTION);
-        b.push_str(",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]");
+    if (input.computer || input.unikon) && !input.compact {
+        b.push_str(",\"tools\":[");
+        if input.computer {
+            b.push_str("{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":");
+            push_json_string(&mut b, BASH_DESCRIPTION);
+            b.push_str(",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}");
+        }
+        if input.unikon {
+            if input.computer {
+                b.push_str(",");
+            }
+            b.push_str("{\"type\":\"function\",\"function\":{\"name\":\"unikon\",\"description\":");
+            push_json_string(&mut b, UNIKON_DESCRIPTION);
+            b.push_str(",\"parameters\":{\"type\":\"object\",\"properties\":{\"tool\":{\"type\":\"string\"},\"arguments\":{\"type\":\"object\"}},\"required\":[\"tool\"]}}}");
+        }
+        b.push_str("]");
     }
     b.push_str(",\"messages\":[");
     let mut first = true;
@@ -358,10 +375,22 @@ fn anthropic_body(input: &Input) -> String {
         b.push_str(",\"system\":");
         push_json_string(&mut b, &input.soul);
     }
-    if input.computer && !input.compact {
-        b.push_str(",\"tools\":[{\"name\":\"bash\",\"description\":");
-        push_json_string(&mut b, BASH_DESCRIPTION);
-        b.push_str(",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]");
+    if (input.computer || input.unikon) && !input.compact {
+        b.push_str(",\"tools\":[");
+        if input.computer {
+            b.push_str("{\"name\":\"bash\",\"description\":");
+            push_json_string(&mut b, BASH_DESCRIPTION);
+            b.push_str(",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}");
+        }
+        if input.unikon {
+            if input.computer {
+                b.push_str(",");
+            }
+            b.push_str("{\"name\":\"unikon\",\"description\":");
+            push_json_string(&mut b, UNIKON_DESCRIPTION);
+            b.push_str(",\"input_schema\":{\"type\":\"object\",\"properties\":{\"tool\":{\"type\":\"string\"},\"arguments\":{\"type\":\"object\"}},\"required\":[\"tool\"]}}");
+        }
+        b.push_str("]");
     }
     // Anthropic joins consecutive turns of one role into one, so each entry may be its own message.
     b.push_str(",\"messages\":[");

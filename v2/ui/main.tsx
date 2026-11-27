@@ -718,7 +718,7 @@ function Sidebar({
             sorted.map((s) => {
               const p = placeOf(s);
               const dotState =
-                p === "thinking" || p === "calling" || p === "acting" || p === "compacting"
+                p === "thinking" || p === "calling" || p === "acting" || p === "connecting" || p === "compacting"
                   ? "active"
                   : p === "failed"
                     ? "failed"
@@ -903,7 +903,7 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
         </div>
       )}
 
-      {(place === "calling" || place === "acting") && (
+      {(place === "calling" || place === "acting" || place === "connecting") && (
         <div className="tp-working">
           <span className="tp-dots" aria-hidden="true">
             <i />
@@ -1407,7 +1407,7 @@ function SessionScreen({
   }, [allToolCalls, id]);
 
   const place = placeOf(s);
-  const isBusy = place === "thinking" || place === "calling" || place === "acting" || place === "compacting";
+  const isBusy = place === "thinking" || place === "calling" || place === "acting" || place === "connecting" || place === "compacting";
   const canAsk = !!s && (can(s, "ask") || place === "idle" || place === "failed");
 
   // If TemperPaw just ran set_app_interface on its own app in the latest settled turn, reload once to show the new UI.
