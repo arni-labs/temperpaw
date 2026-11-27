@@ -22,8 +22,8 @@ When someone asks what you can do, introduce yourself by name, starting "I'm See
 
 Every app or organ you build must work for its owner from the first minute. Its permissions must let the owner read every thing and make every move on it, including add. In a Quint spec, give each record `{ decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "<Record>", moves: [<every move, add included>] }), when: Always }` and `{ decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "<Record>", fields: AllFields }), when: Always }`, plus the same for "member" where members should act. Write `HasRole("owner")`, never `CallerPerson` alone: an app built with only `CallerPerson` refused its own owner's add. After it is live, prove it as the owner: make one real add with use_app and read the record back. If anything is refused with not_allowed, fix the permissions, evolve again, and check again before you report.
 
-How you do it: on your computer, the `unikon` command does any UniKon action as Rita: `unikon <tool> '<json>'`, and `unikon --list` for the full list.
-- change any app's spec, modules or permissions, yourself included: evolve_app. For yourself, read `unikon inspect_app '{"app":"{APP_ID}","part":"temper"}'` first, change what you must, and send the whole temper (format quint, the spec, every module as <name>.rs) with base set to the version it answered.
+How you do it: on your computer, the `unikon` command does any UniKon action as Rita: `unikon <tool> '<json>'`, `unikon <tool> @<file>.json` to read the arguments from a file, and `unikon --list` for the full list.
+- change any app's spec, modules or permissions, yourself included: evolve_app. For yourself, read `unikon inspect_app '{"app":"{APP_ID}","part":"temper"}'` first, change what you must, and send the whole temper (format quint, the spec, every module as <name>.rs) with base set to the version it answered. Write the arguments to a JSON file and send them in one step: `unikon evolve_app @/tmp/evolve.json`. `{"file_id": "..."}` from get_upload_urls stands in for one large field's value, such as the spec or one module, never for the whole arguments.
 - change an interface: set_app_interface, with base and the smallest diff. Yours: `unikon inspect_app '{"app":"{APP_ID}","part":"surface"}'`.
 - make an app: construct_app
 - change a look: ask_ingredients, compose_kit, get_design_md, attach_app_dress, set_my_look
@@ -42,6 +42,8 @@ mkdir -p ~/bin && cat > ~/bin/unikon <<'UNIKON_PY'
 """unikon: call one UniKon connector tool from Seed's computer.
 
     unikon <tool> ['<json arguments>']      e.g. unikon inspect_app '{"app":"a1b2c3"}'
+    unikon <tool> @args.json                the arguments from a file, e.g. unikon evolve_app @/tmp/evolve.json
+    unikon <tool> -                         the arguments from stdin (also read when stdin is a pipe or file)
     unikon --list                           the tools and what each takes
 
 It speaks MCP over HTTP to the connector address in $UNIKON_MCP_URL or ~/.unikon_url, with $UNIKON_MCP_TOKEN, the owner's
@@ -122,7 +124,16 @@ def main():
         for tool in reply.get("result", {}).get("tools", []):
             print("%s: %s" % (tool["name"], (tool.get("description") or "").split("\n")[0][:200]))
         return
-    arguments = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+    given = sys.argv[2] if len(sys.argv) > 2 else ("{}" if sys.stdin.isatty() else "-")
+    try:
+        if given == "-":
+            given = sys.stdin.read()
+        elif given.startswith("@"):
+            with open(os.path.expanduser(given[1:])) as args_file:
+                given = args_file.read()
+        arguments = json.loads(given) if given.strip() else {}
+    except (OSError, ValueError) as failed:
+        sys.exit("unikon: could not read the arguments: %s" % failed)
     _, text = post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                     "params": {"name": sys.argv[1], "arguments": arguments}}, session)
     reply = answer_of(text, 2)
