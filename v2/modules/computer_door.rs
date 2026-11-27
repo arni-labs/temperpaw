@@ -103,8 +103,7 @@ fn sandbox_call(method: DoorMethod, sandbox: &str, rest: &str, body: String) -> 
     path.push_str(sandbox);
     path.push_str(rest);
     let reply = door_call(DoorRequest {
-        destination: DoorDestination::tensorlake, method, path, headers: json_headers(), body,
-        keys: vec!["tensorlake_key".to_string()],
+        destination: DoorDestination::tensorlake, method, path, headers: json_headers(), body: body.into_bytes(),
     });
     match reply {
         DoorReply::Answered(heard) => heard.status,
@@ -154,11 +153,12 @@ fn make(call: &str) -> Option<String> {
     body.push_str("}");
     let reply = door_call(DoorRequest {
         destination: DoorDestination::tensorlake, method: DoorMethod::Post, path: "sandboxes".to_string(), headers: json_headers(),
-        body, keys: vec!["tensorlake_key".to_string()],
+        body: body.into_bytes(),
     });
     let id = match reply {
         DoorReply::Answered(heard) => {
-            let DoorAnswer { status, body } = heard;
+            let DoorAnswer { status, headers: _, body: raw } = heard;
+            let body = text_of(raw);
             if status < 200 || status > 299 {
                 return None;
             }
@@ -218,11 +218,12 @@ fn wait_for(sandbox: &str, word: &str) -> bool {
     {
         let reply = door_call(DoorRequest {
             destination: DoorDestination::tensorlake, method: DoorMethod::Get, path: path.clone(), headers: json_headers(),
-            body: String::new(), keys: vec!["tensorlake_key".to_string()],
+            body: Vec::new(),
         });
         match reply {
             DoorReply::Answered(heard) => {
-                let DoorAnswer { status, body } = heard;
+                let DoorAnswer { status, headers: _, body: raw } = heard;
+            let body = text_of(raw);
                 if status >= 200 && status <= 299 && body.contains(word) {
                     return true;
                 }
@@ -234,27 +235,29 @@ fn wait_for(sandbox: &str, word: &str) -> bool {
     false
 }
 
-// With unikon, the door puts the vault's UniKon connector credential in the command's env (UNIKON_MCP_TOKEN), out of
-// this module's sight; without it the call names no such key, so an agent without the grant never carries it.
+// With unikon, this module writes the env slot UNIKON_MCP_TOKEN holding only a mark, and the door's signer (door_sign)
+// puts the vault's UniKon connector credential there at send time, out of this module's sight. Without it no slot is
+// written, so an agent without the grant never carries the credential.
 fn run(sandbox: &str, command: &str, unikon: bool) -> Ran {
     let mut body = String::from("{\"command\":\"bash\",\"args\":[\"-lc\",");
     push_json_string(&mut body, command);
     body.push_str("],\"working_dir\":\"/home/tl-user\",\"timeout\":");
     push_count(&mut body, RUN_SECONDS);
-    body.push_str(",\"env\":{}}");
-    let mut keys = vec!["tensorlake_process_key".to_string()];
     if unikon {
-        keys.push("unikon_mcp_token".to_string());
+        body.push_str(",\"env\":{\"UNIKON_MCP_TOKEN\":\"@@unikon_mcp_token@@\"}}");
+    } else {
+        body.push_str(",\"env\":{}}");
     }
     let mut headers = json_headers();
     headers.push(("x-tensorlake-sandbox-id".to_string(), sandbox.to_string()));
     let reply = door_call(DoorRequest {
         destination: DoorDestination::tensorlake_process, method: DoorMethod::Post, path: "processes/run".to_string(), headers,
-        body, keys,
+        body: body.into_bytes(),
     });
     match reply {
         DoorReply::Answered(heard) => {
-            let DoorAnswer { status, body } = heard;
+            let DoorAnswer { status, headers: _, body: raw } = heard;
+            let body = text_of(raw);
             if status >= 200 && status <= 299 {
                 Ran::Answered(read_events(&body))
             } else if status == 404 || body.contains("SANDBOX_NOT_FOUND") || body.contains("terminated") {
@@ -674,4 +677,12 @@ fn array_items(bytes: &[u8], at: usize) -> Option<Vec<(usize, usize)>> {
         }
     }
     None
+}
+
+// A door answer's body as text; a body that is not UTF-8 reads as empty, which every reader takes as no answer.
+fn text_of(raw: Vec<u8>) -> String {
+    match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(_) => String::new(),
+    }
 }

@@ -25,23 +25,21 @@ pub fn call(input: Input) -> Option<Answer> {
     let reply = if anthropic {
         headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
         door_call(DoorRequest {
-            destination: DoorDestination::anthropic, method: DoorMethod::Post, path: "messages".to_string(), headers, body,
-            keys: vec!["anthropic_api_key".to_string()],
+            destination: DoorDestination::anthropic, method: DoorMethod::Post, path: "messages".to_string(), headers, body: body.into_bytes(),
         })
     } else if openrouter {
         door_call(DoorRequest {
-            destination: DoorDestination::openrouter, method: DoorMethod::Post, path: "chat/completions".to_string(), headers, body,
-            keys: vec!["openrouter_api_key".to_string()],
+            destination: DoorDestination::openrouter, method: DoorMethod::Post, path: "chat/completions".to_string(), headers, body: body.into_bytes(),
         })
     } else {
         door_call(DoorRequest {
-            destination: DoorDestination::openai, method: DoorMethod::Post, path: "chat/completions".to_string(), headers, body,
-            keys: vec!["codex_api_key".to_string()],
+            destination: DoorDestination::openai, method: DoorMethod::Post, path: "chat/completions".to_string(), headers, body: body.into_bytes(),
         })
     };
     match reply {
         DoorReply::Answered(heard) => {
-            let DoorAnswer { status, body } = heard;
+            let DoorAnswer { status, headers: _, body: raw } = heard;
+            let body = text_of(raw);
             if status < 200 || status > 299 {
                 return Some(failed_answer(status, &body));
             }
@@ -857,4 +855,12 @@ fn array_items(bytes: &[u8], at: usize) -> Option<Vec<(usize, usize)>> {
         }
     }
     None
+}
+
+// A door answer's body as text; a body that is not UTF-8 reads as empty, which every reader takes as no answer.
+fn text_of(raw: Vec<u8>) -> String {
+    match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(_) => String::new(),
+    }
 }

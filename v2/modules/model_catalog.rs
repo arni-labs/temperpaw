@@ -10,11 +10,12 @@ pub fn call(input: Input) -> Option<Answer> {
     let _ = input;
     let reply = door_call(DoorRequest {
         destination: DoorDestination::openrouter, method: DoorMethod::Get, path: "models?supported_parameters=tools".to_string(),
-        headers: Vec::new(), body: String::new(), keys: Vec::new(),
+        headers: Vec::new(), body: Vec::new(),
     });
     let body = match reply {
         DoorReply::Answered(heard) => {
-            let DoorAnswer { status, body } = heard;
+            let DoorAnswer { status, headers: _, body: raw } = heard;
+            let body = text_of(raw);
             if status < 200 || status > 299 {
                 return None;
             }
@@ -405,4 +406,12 @@ fn array_items(bytes: &[u8], at: usize) -> Option<Vec<(usize, usize)>> {
         }
     }
     None
+}
+
+// A door answer's body as text; a body that is not UTF-8 reads as empty, which every reader takes as no answer.
+fn text_of(raw: Vec<u8>) -> String {
+    match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(_) => String::new(),
+    }
 }

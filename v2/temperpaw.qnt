@@ -650,26 +650,28 @@ module temperpaw {
   pure val doors: List[DoorDecl] = [
     // The model destinations. Deadline 300 s, the kernel's ceiling: one long answer can take minutes. At most once: a
     // retry would pay twice, so an unknown end fails the turn and a person asks again.
-    DestinationDoor({ name: "openai", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.openai.com", port: 443, path_prefix: "/v1/", streamed: None }) }),
-    DestinationDoor({ name: "anthropic", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.anthropic.com", port: 443, path_prefix: "/v1/", streamed: None }) }),
-    DestinationDoor({ name: "openrouter", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "openrouter.ai", port: 443, path_prefix: "/api/v1/", streamed: None }) }),
+    DestinationDoor({ name: "openai", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.openai.com", port: 443, path_prefix: "/v1/", stall: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "codex_api_key" }], keys: ["codex_api_key"] }),
+    DestinationDoor({ name: "anthropic", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.anthropic.com", port: 443, path_prefix: "/v1/", stall: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "x-api-key" }, { name: "prefix", value: "" }, { name: "header_key", value: "anthropic_api_key" }], keys: ["anthropic_api_key"] }),
+    DestinationDoor({ name: "openrouter", deadline: seconds(300), honours_keys: false, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "openrouter.ai", port: 443, path_prefix: "/api/v1/", stall: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "openrouter_api_key" }], keys: ["openrouter_api_key"] }),
     // The computer: Tensorlake's sandbox API (make, suspend, resume, delete) and its process API at the one fixed host,
     // which names the sandbox by the x-tensorlake-sandbox-id header. A command runs at most 120 s, inside the 180 s deadline.
-    DestinationDoor({ name: "tensorlake", deadline: seconds(90), honours_keys: true, may_carry_personal_data: false, keeps_keys_for: None, status_query: None, at_most_once: false, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.tensorlake.ai", port: 443, path_prefix: "/", streamed: None }) }),
-    DestinationDoor({ name: "tensorlake_process", deadline: seconds(180), honours_keys: true, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "sandbox.tensorlake.ai", port: 443, path_prefix: "/api/v1/", streamed: None }) }),
+    DestinationDoor({ name: "tensorlake", deadline: seconds(90), honours_keys: true, may_carry_personal_data: false, keeps_keys_for: None, status_query: None, at_most_once: false, reach: ReachEndpoint({ scheme: SecureHttp, host: "api.tensorlake.ai", port: 443, path_prefix: "/", stall: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "tensorlake_key" }], keys: ["tensorlake_key"] }),
+    DestinationDoor({ name: "tensorlake_process", deadline: seconds(180), honours_keys: true, may_carry_personal_data: true, keeps_keys_for: None, status_query: None, at_most_once: true, reach: ReachEndpoint({ scheme: SecureHttp, host: "sandbox.tensorlake.ai", port: 443, path_prefix: "/api/v1/", stall: None }), middleware: Some("door_sign"), params: [{ name: "header", value: "authorization" }, { name: "prefix", value: "Bearer " }, { name: "header_key", value: "tensorlake_process_key" }, { name: "body_key", value: "unikon_mcp_token" }, { name: "body_mark", value: "@@unikon_mcp_token@@" }], keys: ["tensorlake_process_key", "unikon_mcp_token"] }),
     // Keys live in the app's vault under the login names; each door puts its key in place, out of every module's sight.
-    KeyDoor({ name: "codex_api_key", place: HeaderOf({ destination: "openai", header: "Authorization", prefix: "Bearer " }) }),
-    KeyDoor({ name: "anthropic_api_key", place: HeaderOf({ destination: "anthropic", header: "x-api-key", prefix: "" }) }),
-    KeyDoor({ name: "openrouter_api_key", place: HeaderOf({ destination: "openrouter", header: "Authorization", prefix: "Bearer " }) }),
-    KeyDoor({ name: "tensorlake_key", place: HeaderOf({ destination: "tensorlake", header: "Authorization", prefix: "Bearer " }) }),
-    KeyDoor({ name: "tensorlake_process_key", place: HeaderOf({ destination: "tensorlake_process", header: "Authorization", prefix: "Bearer " }) }),
-    KeyDoor({ name: "unikon_mcp_token", place: JsonFieldOf({ destination: "tensorlake_process", field: "env.UNIKON_MCP_TOKEN" }) }),
+    KeyDoor({ name: "codex_api_key" }),
+    KeyDoor({ name: "anthropic_api_key" }),
+    KeyDoor({ name: "openrouter_api_key" }),
+    KeyDoor({ name: "tensorlake_key" }),
+    KeyDoor({ name: "tensorlake_process_key" }),
+    KeyDoor({ name: "unikon_mcp_token" }),
   ]
   pure val modules: List[ModuleDecl] = [
     { name: "turn_runner", source_hash: "@turn_runner.rs", form: CallingModule(["openai", "anthropic", "openrouter"]), input: "TurnIn", answer: "TurnOut", constraints: [] },
     { name: "computer_door", source_hash: "@computer_door.rs", form: CallingModule(["tensorlake", "tensorlake_process"]), input: "ComputerIn", answer: "ComputerOut", constraints: [] },
     // OpenRouter's model list is public: the call carries no key.
     { name: "model_catalog", source_hash: "@model_catalog.rs", form: CallingModule(["openrouter"]), input: "CatalogIn", answer: "CatalogOut", constraints: [] },
+    // Every door's middleware: it alone is handed the keys, and puts them in place at send time (S-DOOR-10).
+    { name: "door_sign", source_hash: "@door_sign.rs", form: SigningModule, input: "", answer: "", constraints: [] },
   ]
   pure val roles: List[str] = ["owner", "member"]
   pure val statements: List[Statement] = [
