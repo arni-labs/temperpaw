@@ -203,11 +203,12 @@ module session_record {
   type Provider = OpenAI | Anthropic | OpenRouter
   type SwapIn = { provider: Provider, model: str }
   pure def provider_name(p: Provider): str = if (p == OpenAI) "openai" else if (p == Anthropic) "anthropic" else "openrouter"
-  // One answer's token cap, model calls one ask may take (so a looping model stops), and history entries kept before
+  // One answer's token cap (room for a tool call that writes an app's files), model calls one ask may take (enough to
+  // build, check and fix an app; a looping model still stops), and history entries kept before
   // the session asks the model to summarise them (so a request stays inside the provider's context window). Constants,
   // not an agent's inputs: each input multiplies the cases admission's search tries, 15,000 at most per move.
-  pure val max_tokens: int = 4096
-  pure val max_steps: int = 12
+  pure val max_tokens: int = 16000
+  pure val max_steps: int = 40
   pure val compact_after: int = 40
 
   pure val record: RecordDecl = { name: "Session", status: "status" }

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""unikon: call one UniKon connector tool from TemperPaw's computer.
+
+    unikon <tool> ['<json arguments>']      e.g. unikon inspect_app '{"app":"a1b2c3"}'
+    unikon --list                           the tools and what each takes
+
+It speaks MCP over HTTP to $UNIKON_MCP_URL (default https://unikon.dev/mcp) with $UNIKON_MCP_TOKEN, the owner's
+personal key the door puts in this command's env. Prints the tool's text answer; exits 1 on a tool error, 2 on a
+transport error. The key is never printed.
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+URL = os.environ.get("UNIKON_MCP_URL", "https://unikon.dev/mcp")
+
+
+def post(body, session):
+    token = os.environ.get("UNIKON_MCP_TOKEN", "")
+    if not token:
+        sys.exit("unikon: no UNIKON_MCP_TOKEN here (this agent needs the unikon grant)")
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json, text/event-stream",
+        "authorization": "Bearer " + token,
+        "mcp-protocol-version": "2025-06-18",
+    }
+    if session:
+        headers["mcp-session-id"] = session
+    request = urllib.request.Request(URL, data=json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=300) as reply:
+            return reply.headers.get("mcp-session-id") or session, reply.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as failed:
+        print("unikon: HTTP %d: %s" % (failed.code, failed.read().decode("utf-8", "replace")[:800]), file=sys.stderr)
+        sys.exit(2)
+    except OSError as failed:
+        print("unikon: %s" % failed, file=sys.stderr)
+        sys.exit(2)
+
+
+def answer_of(text, wanted):
+    """The JSON-RPC answer with this id, from a plain JSON body or an event stream."""
+    bodies = [text]
+    if "data:" in text:
+        bodies = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
+    for body in bodies:
+        try:
+            message = json.loads(body)
+        except ValueError:
+            continue
+        for one in message if isinstance(message, list) else [message]:
+            if isinstance(one, dict) and one.get("id") == wanted:
+                return one
+    return None
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    session, _ = post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "temperpaw-computer", "version": "1"}}}, "")
+    post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
+    if sys.argv[1] == "--list":
+        _, text = post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, session)
+        reply = answer_of(text, 2) or {}
+        for tool in reply.get("result", {}).get("tools", []):
+            print("%s: %s" % (tool["name"], (tool.get("description") or "").split("\n")[0][:200]))
+        return
+    arguments = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+    _, text = post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": sys.argv[1], "arguments": arguments}}, session)
+    reply = answer_of(text, 2)
+    if reply is None:
+        print("unikon: no answer: " + text[:800], file=sys.stderr)
+        sys.exit(2)
+    if "error" in reply:
+        print(json.dumps(reply["error"]), file=sys.stderr)
+        sys.exit(1)
+    result = reply.get("result", {})
+    for part in result.get("content", []):
+        if part.get("type") == "text":
+            print(part["text"])
+    sys.exit(1 if result.get("isError") else 0)
+
+
+main()
