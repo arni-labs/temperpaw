@@ -191,7 +191,7 @@ module session_record {
   }
   type Msg = NoMsgs
   type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, compact: bool, history: List[Entry] }
-  type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str }
+  type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, propose: bool }
   type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn)
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
@@ -261,6 +261,9 @@ module session_record {
   pure def ask_computer(t: Row): Ask = AskComputer({
     op: if (t.tools.contains(head_of(t.queue_names))) "exec" else "refuse",
     sandbox: t.computer, paused: t.computer_paused, call: head_of(t.queue_ids), args: head_of(t.queue_args),
+    // An agent granted "propose" runs its commands with a pass that can only propose changes to an app, each held on
+    // the app's node for its approver's yes (S-EVOLVE-06); without the grant, no command carries it.
+    propose: t.tools.contains("propose"),
   })
   pure def said_entry(role: str, said: str): Entry = { role: role, content: said, call_id: "", call_ids: [], call_names: [], call_args: [] }
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
@@ -543,7 +546,7 @@ module session_record {
   }
   pure def pause_computer_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
     next: { ...v, self: v.self },
-    follow: [RunModule({ mod: "computer_door", input: AskComputer({ op: "pause", sandbox: v.self.computer, paused: false, call: "", args: "" }), paths: pause_paths })],
+    follow: [RunModule({ mod: "computer_door", input: AskComputer({ op: "pause", sandbox: v.self.computer, paused: false, call: "", args: "", propose: false }), paths: pause_paths })],
   }
   pure def computer_paused_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer pauses a computer."),
@@ -560,7 +563,7 @@ module session_record {
   pure def close_guard(v: View, i: NoInput, c: Ctx): bool = true
   pure def close_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
     next: { ...v, self: { ...v.self, status: Done } },
-    follow: [RunModule({ mod: "computer_door", input: AskComputer({ op: "end", sandbox: v.self.computer, paused: false, call: "", args: "" }), paths: end_paths })],
+    follow: [RunModule({ mod: "computer_door", input: AskComputer({ op: "end", sandbox: v.self.computer, paused: false, call: "", args: "", propose: false }), paths: end_paths })],
   }
   pure def computer_ended_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer ends a computer."),
@@ -591,7 +594,7 @@ module temperpaw {
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
   type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, compact: bool, history: List[Entry] }
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
-  type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str }
+  type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, propose: bool }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
 
   pure val doors: List[DoorDecl] = [
@@ -610,6 +613,7 @@ module temperpaw {
     KeyDoor({ name: "openrouter_api_key", place: HeaderOf({ destination: "openrouter", header: "Authorization", prefix: "Bearer " }) }),
     KeyDoor({ name: "tensorlake_key", place: HeaderOf({ destination: "tensorlake", header: "Authorization", prefix: "Bearer " }) }),
     KeyDoor({ name: "tensorlake_process_key", place: HeaderOf({ destination: "tensorlake_process", header: "Authorization", prefix: "Bearer " }) }),
+    KeyDoor({ name: "propose_pass", place: JsonFieldOf({ destination: "tensorlake_process", field: "env.UNIKON_PROPOSE_PASS" }) }),
   ]
   pure val modules: List[ModuleDecl] = [
     { name: "turn_runner", source_hash: "@turn_runner.rs", form: CallingModule(["openai", "anthropic", "openrouter"]), input: "TurnIn", answer: "TurnOut", constraints: [] },
