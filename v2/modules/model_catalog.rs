@@ -12,19 +12,43 @@ pub fn call(input: Input) -> Option<Answer> {
         destination: DoorDestination::openrouter, method: DoorMethod::Get, path: "models?supported_parameters=tools".to_string(),
         headers: Vec::new(), body: Vec::new(),
     });
+    // Until the first list arrives on V2, every way a read can end is answered as a reason with count 0, so the Catalog
+    // record says which one it was.
     let body = match reply {
         DoorReply::Answered(heard) => {
             let DoorAnswer { status, headers: _, body: raw } = heard;
-            let body = text_of(raw);
             if status < 200 || status > 299 {
-                return None;
+                let mut why = String::new();
+                why.push_str("error: openrouter answered status ");
+                push_count(&mut why, status as u64);
+                why.push_str(": ");
+                why.push_str(&ascii_head(&raw, 300));
+                return Some(Answer { models: why, count: 0 });
             }
-            body
+            text_of(raw)
         }
-        _ => return None,
+        DoorReply::Failed(n) => {
+            let mut why = String::new();
+            why.push_str("error: door failed ");
+            push_count(&mut why, n as u64);
+            return Some(Answer { models: why, count: 0 });
+        }
+        DoorReply::Refused => return Some(Answer { models: "error: door refused".to_string(), count: 0 }),
+        DoorReply::Unknown => return Some(Answer { models: "error: door unknown".to_string(), count: 0 }),
+        DoorReply::TooLarge(big) => {
+            let mut why = String::new();
+            why.push_str("error: reply too large, status ");
+            push_count(&mut why, big.status as u64);
+            why.push_str(", bytes ");
+            push_count(&mut why, big.bytes as u64);
+            return Some(Answer { models: why, count: 0 });
+        }
     };
     let bytes = body.as_bytes();
-    let top = match object_fields(bytes, skip_ws(bytes, 0)) { Some(f) => f, None => return None };
+    let top = match object_fields(bytes, skip_ws(bytes, 0)) {
+        Some(f) => f,
+        None => return Some(Answer { models: "error: reply is not a JSON object".to_string(), count: 0 }),
+    };
     let fields = top.len();
     let mut j: usize = 0;
     while j < fields
@@ -157,6 +181,29 @@ fn push_count(b: &mut String, n: u64) {
             b.push_str(digit_text(digit));
             started = true;
         }
+    }
+}
+
+// The first `most` bytes of a reply, printable ASCII only (anything else becomes '?'), for an error's reason.
+fn ascii_head(raw: &Vec<u8>, most: usize) -> String {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut i: usize = 0;
+    while i < raw.len() && i < most
+        invariant
+            i <= raw.len(),
+        decreases raw.len() - i,
+    {
+        let b = raw[i];
+        if b >= 32 && b < 127 {
+            kept.push(b);
+        } else {
+            kept.push(63);
+        }
+        i = i + 1;
+    }
+    match String::from_utf8(kept) {
+        Ok(text) => text,
+        Err(_) => String::new(),
     }
 }
 
