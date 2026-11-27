@@ -3,11 +3,12 @@
 // HTTP to the `unikon` door (https://unikon.dev/mcp): initialize, then notifications/initialized, then tools/call (or
 // tools/list, when the tool is "list_tools"). The owner's connector key is put in the Authorization header by the door's
 // middleware (door_sign), out of this module's sight and never on the session's computer. The one time it touches the
-// session's computer is to put there a credential an answer holds (below, at sealed), so no record holds it.
+// session's computer is to put there a credential an answer holds (below, at sealed), so no record holds it, and an
+// answer too big to keep whole (below, at answer_of), so the model reads it there.
 //
 // Limits, each with its reason: an answer keeps its first 32 KiB, as a computer's stream does, so one result fits the
-// model's context and the session's row (a bigger read goes to the computer: inspect_app part repo, then git); an error
-// body keeps 600 bytes, enough to say why.
+// model's context and the session's row (the whole of a bigger one goes to the computer); an error body keeps 600
+// bytes, enough to say why.
 
 const KEEP_BYTES: usize = 32 * 1024;
 const ERROR_KEEP: usize = 600;
@@ -205,11 +206,63 @@ fn answer_of(text: &str, listing: bool, sandbox: &str, paused: bool, call: &str)
     answer.exit_code = code;
     if out.len() > KEEP_BYTES {
         answer.stdout = cut_at_ascii(&out, KEEP_BYTES);
-        answer.stderr.push_str("(The answer was cut at 32 KiB. For a big read, use inspect_app part repo and git on your computer.)");
+        answer.stderr.push_str(&put_whole(&out, sandbox, paused, call));
     } else {
         answer.stdout = out;
     }
     answer
+}
+
+// An answer past KEEP_BYTES goes whole (its credentials already sealed) to one file on the session's computer, so the
+// model reads what it needs there with jq, grep or python3. It goes in parts of PART_BYTES, at most PARTS of them.
+// Reasons: Linux takes one environment string of at most 128 KiB (MAX_ARG_STRLEN), and a process's arguments and
+// environment share about 2 MiB (ARG_MAX at the default 8 MiB stack), so 16 parts of 64 KiB (1 MiB) fit with room.
+const PART_BYTES: usize = 64 * 1024;
+const PARTS: usize = 16;
+
+fn put_whole(out: &str, sandbox: &str, paused: bool, call: &str) -> String {
+    if sandbox.len() == 0 || paused {
+        return "(The answer was cut at 32 KiB. Run any bash command, so your computer is up, and make this call again: the whole answer will be put on it.)".to_string();
+    }
+    let mut file = file_name(call);
+    file.push_str(".answer");
+    let spans = part_spans(out);
+    let held = if spans.len() > 0 { spans[spans.len() - 1].1 } else { 0 };
+    if !put_on_computer(out, &spans, sandbox, &file, true) {
+        return "(The answer was cut at 32 KiB, and could not be put on your computer. Make this call again.)".to_string();
+    }
+    let mut note = String::from("(The answer was cut here at 32 KiB. The whole answer is on your computer at ");
+    note.push_str(SEAL_DIR);
+    note.push_str(&file);
+    note.push_str(": read what you need there with jq, grep or python3, never all of it back into this conversation.");
+    if held < out.len() {
+        note.push_str(" It holds the answer's first 1 MiB.");
+    }
+    note.push_str(")");
+    note
+}
+
+// The answer's first PARTS parts of at most PART_BYTES each, each ending where a character starts, so none splits.
+fn part_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut s: usize = 0;
+    while s < n && spans.len() < PARTS
+        invariant n == bytes.len(), s <= n,
+        decreases n - s,
+    {
+        let mut e: usize = if n - s > PART_BYTES { s + PART_BYTES } else { n };
+        while e > s + 1 && e < n && (bytes[e] & 192) == 128
+            invariant n == bytes.len(), s < e, e <= n,
+            decreases e,
+        {
+            e = e - 1;
+        }
+        spans.push((s, e));
+        s = e;
+    }
+    spans
 }
 
 // A tools/call result: its text parts, one after another; 1 when it says isError, else 0.
@@ -645,7 +698,7 @@ fn sealed(text: String, sandbox: &str, paused: bool, call: &str) -> (String, Str
     }
     let name = file_name(call);
     let up = sandbox.len() > 0 && !paused;
-    let kept = up && put_on_computer(&text, &spans, sandbox, &name);
+    let kept = up && put_on_computer(&text, &spans, sandbox, &name, false);
     let mut out = String::new();
     let mut from: usize = 0;
     let mut j: usize = 0;
@@ -701,11 +754,15 @@ fn file_name(call: &str) -> String {
     if name.len() == 0 { "call".to_string() } else { name }
 }
 
-// One bash run on the session's computer that writes each credential to its file, the values passed as the process's
-// environment, never in the command. True when the run said it wrote them all.
-fn put_on_computer(text: &str, spans: &Vec<(usize, usize)>, sandbox: &str, name: &str) -> bool {
+// One bash run on the session's computer that writes each span of text to its own file (name-<n>), or all of them in
+// order to one file (name) when whole, the values passed as the process's environment, never in the command. True when
+// the run said it wrote them all.
+fn put_on_computer(text: &str, spans: &Vec<(usize, usize)>, sandbox: &str, name: &str, whole: bool) -> bool {
     let mut command = String::from("umask 077 && mkdir -p ");
     command.push_str(SEAL_DIR);
+    if whole {
+        command.push_str(" && printf %s");
+    }
     let mut vars = String::from("{");
     let count = spans.len();
     let mut j: usize = 0;
@@ -716,13 +773,19 @@ fn put_on_computer(text: &str, spans: &Vec<(usize, usize)>, sandbox: &str, name:
         let s = spans[j].0;
         let e = spans[j].1;
         let value = match text.get(s..e) { Some(t) => t, None => "" };
-        command.push_str(" && printf %s \"$SEED_SEAL_");
-        push_count(&mut command, (j + 1) as u64);
-        command.push_str("\" > ");
-        command.push_str(SEAL_DIR);
-        command.push_str(name);
-        command.push_str("-");
-        push_count(&mut command, (j + 1) as u64);
+        if whole {
+            command.push_str(" \"$SEED_SEAL_");
+            push_count(&mut command, (j + 1) as u64);
+            command.push_str("\"");
+        } else {
+            command.push_str(" && printf %s \"$SEED_SEAL_");
+            push_count(&mut command, (j + 1) as u64);
+            command.push_str("\" > ");
+            command.push_str(SEAL_DIR);
+            command.push_str(name);
+            command.push_str("-");
+            push_count(&mut command, (j + 1) as u64);
+        }
         if j > 0 {
             vars.push_str(",");
         }
@@ -731,6 +794,11 @@ fn put_on_computer(text: &str, spans: &Vec<(usize, usize)>, sandbox: &str, name:
         vars.push_str("\":");
         push_json_string(&mut vars, value);
         j = j + 1;
+    }
+    if whole {
+        command.push_str(" > ");
+        command.push_str(SEAL_DIR);
+        command.push_str(name);
     }
     command.push_str(" && echo seed-sealed-ok");
     vars.push_str("}");

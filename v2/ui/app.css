@@ -871,6 +871,47 @@ html, body {
   color: var(--tp-accent);
 }
 
+/* ---- Compaction: a quiet divider, the summary folded inside ---- */
+.tp-compacted {
+  color: var(--tp-ink-3);
+  font-size: 12.5px;
+}
+
+.tp-compacted > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tp-compacted > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tp-compacted > summary::before,
+.tp-compacted > summary::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--tp-border);
+}
+
+.tp-compacted > summary:hover {
+  color: var(--tp-ink-2);
+}
+
+.tp-compacted[open] > .tp-assistant-body {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: var(--tp-radius-md);
+  background: var(--tp-surface);
+  border: 1px solid var(--tp-border);
+  color: var(--tp-ink-2);
+  font-size: 13px;
+}
+
 /* ---- Subtle Collapsible Tool-Activity Chips ---- */
 .tp-tools {
   display: flex;

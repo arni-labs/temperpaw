@@ -177,6 +177,17 @@ function describeToolCall(name: string, args: string): { kind: string; preview: 
   return { kind: label, preview: oneLine.slice(0, 88) || "run" };
 }
 
+// A compaction's summary is history the model reads, never something a person said: the session writes it with role
+// "summary". Sessions compacted before that wrote it as role "user" with this lead, so those are read the same way.
+const SUMMARY_LEAD = "A summary of our conversation so far:";
+function isSummary(e: Entry): boolean {
+  return e.role === "summary" || (e.role === "user" && e.content.startsWith(SUMMARY_LEAD));
+}
+function summaryText(content: string): string {
+  const rest = content.startsWith(SUMMARY_LEAD) ? content.slice(SUMMARY_LEAD.length) : content;
+  return rest.replace(/^(\\n|\s)+/, "");
+}
+
 type AppLink = { slug: string; url: string; label: string };
 
 function extractAppLinks(texts: string[]): AppLink[] {
@@ -814,6 +825,7 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
   }, [history, toolCalls]);
 
   const visibleEntries = useMemo(() => history.filter((e) => e.role !== "tool"), [history]);
+  const opensExchange = (e?: Entry) => !!e && (e.role === "user" || isSummary(e));
 
   // Deduplicate app cards per user-prompt exchange and show them on the final assistant step of that exchange.
   const appLinksByEntryIdx = useMemo(() => {
@@ -821,7 +833,7 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
     let exchangeTexts: string[] = [];
     for (let idx = 0; idx < visibleEntries.length; idx++) {
       const e = visibleEntries[idx];
-      if (e.role === "user") {
+      if (opensExchange(e)) {
         exchangeTexts = [];
         continue;
       }
@@ -831,7 +843,7 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
         if (out?.output) exchangeTexts.push(out.output);
       }
       const next = visibleEntries[idx + 1];
-      const isEndOfExchange = !next || next.role === "user";
+      const isEndOfExchange = !next || opensExchange(next);
       if (isEndOfExchange) {
         const links = extractAppLinks(exchangeTexts);
         if (links.length > 0) result.set(idx, links);
@@ -852,6 +864,14 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
   return (
     <div className="tp-stream">
       {visibleEntries.map((e, idx) => {
+        if (isSummary(e)) {
+          return (
+            <details key={idx} className="tp-compacted">
+              <summary>Context compacted</summary>
+              <MarkdownProse text={summaryText(e.content)} />
+            </details>
+          );
+        }
         if (e.role === "user") {
           return (
             <div key={idx} className="tp-msg" data-role="user">

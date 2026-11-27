@@ -12,8 +12,9 @@
 // computer) and Connecting (a unikon call runs at UniKon's connector).
 //
 //   Idle|Failed --ask--> Thinking --answered_tools--> Calling --next_tool--> Acting | Connecting | WaitingApproval
-//   Thinking --answered--> Idle | Compacting --compacted--> Idle
+//   Thinking --answered--> Idle | Compacting --compacted--> Idle (the answer kept after the summary)
 //   Acting --tool_done | tool_refused | tool_failed--> Calling (more calls) | Thinking (next turn) | Idle (step limit)
+//     | Compacting (history past compact_after) --compacted--> Thinking (the turn goes on from the summary)
 //   Connecting --tool_answered | tool_failed--> the same
 //   WaitingApproval --approve--> Acting | Connecting ; --deny--> Calling | Thinking | Idle
 //   Idle --10 min (status timer)--> pause_computer --computer_paused-->        Idle|Failed --close--> Done
@@ -114,25 +115,44 @@ module briefing_record {
 
   type BriefingId = Id
   type BriefingStatus = BriefingPublished | BriefingArchived
-  type Row = { status: BriefingStatus, title: str, summary: str, date: str }
+  type Row = { status: BriefingStatus, date: str, what_i_did: str, whats_waiting: str, owner_prefs: str }
   type Msg = NoMsgs
   type Ask = NoAsks
-  type PublishIn = { title: str, summary: str, date: str }
+  type PublishIn = { date: str, what_i_did: str, whats_waiting: str, owner_prefs: str }
+  type UpdateIn = { what_i_did: str, whats_waiting: str }
 
   pure val record: RecordDecl = { name: "Briefing", status: "status" }
   pure val moves: List[MoveDecl[BriefingStatus]] = [
     { name: "publish", from: FirstMove },
+    { name: "update", from: Statuses([BriefingPublished]) },
     { name: "archive_briefing", from: Statuses([BriefingPublished]) },
   ]
-  pure def publish_guard(i: PublishIn, c: Ctx): bool = require(i.title != "" and i.summary != "", "A briefing has a title and summary.")
+  pure val marks: List[Mark] = [
+    MoveSays({ move: "publish", says: "Publish the daily briefing." }),
+    MoveSays({ move: "update", says: "Update briefing content." }),
+    StatusSays({ status: "BriefingPublished", says: "Published" }),
+    Indexed("date"),
+  ]
+  pure val timers: List[TimerDecl] = [
+    { name: "daily_briefing", fires: "publish", when: CronAt({ schedule: "0 8 * * *", zone: "UTC" }) },
+  ]
+
+  pure def publish_guard(i: PublishIn, c: Ctx): bool = require(by_timer(c) or is_person(c) or is_agent(c), "A briefing is published by a timer, person or agent.")
   pure def publish_apply(i: PublishIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
-    next: { status: BriefingPublished, title: i.title, summary: i.summary, date: i.date }, follow: [],
+    next: { status: BriefingPublished, date: i.date, what_i_did: i.what_i_did, whats_waiting: i.whats_waiting, owner_prefs: i.owner_prefs },
+    follow: [],
+  }
+  pure def update_guard(t: Row, i: UpdateIn, c: Ctx): bool = true
+  pure def update_apply(t: Row, i: UpdateIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
+    next: { ...t, what_i_did: i.what_i_did, whats_waiting: i.whats_waiting },
+    follow: [],
   }
   pure def archive_briefing_guard(t: Row, i: NoInput, c: Ctx): bool = true
   pure def archive_briefing_apply(t: Row, i: NoInput, c: Ctx): Move[Row, Do, Msg, Ask] = { next: { ...t, status: BriefingArchived }, follow: [] }
   // temper:generated begin
   // temper:generated end
 }
+
 
 module catalog_record {
   import temper.* from "./temper"
@@ -387,13 +407,20 @@ module session_record {
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
   // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit. What a
   // person said meanwhile always gets its turn: past the limit it starts a fresh run of steps, as an ask does.
+  // A history grown past compact_after is summarised first, and the turn goes on from the summary (compacted).
   pure def after_call(t: Row): Status =
-    if (rest_of(t.queue_ids).length() > 0) Calling else if (t.steps < max_steps or t.pending != "") Thinking else Idle
+    if (rest_of(t.queue_ids).length() > 0) Calling
+    else if (t.steps < max_steps or t.pending != "") (if (t.history.length() + 1 > compact_after) Compacting else Thinking)
+    else Idle
   pure def why_after(place: Status): str = if (place == Idle) "Stopped at the agent's step limit." else ""
   pure def steps_after(t: Row, place: Status): int = if (place == Thinking) (if (t.steps < max_steps) t.steps + 1 else 1) else t.steps
   // The history the model is sent next: what a person said while the session worked goes after the tools' answers.
   pure def with_pending(h: List[Entry], p: str): List[Entry] = if (p == "") h else h.append(said_entry("user", p))
-  pure def joined(p: str, text: str): str = if (p == "") text else format("{}\n\n{}", [p, text])
+  // The history's last entry.
+  pure def last_entry(h: List[Entry]): Entry = h.foldl(said_entry("user", ""), (kept, e) => e)
+  pure def joined(p: str, text: str): str = if (p == "") text else format("{}
+
+{}", [p, text])
   pure val stopped_said: str = "Stopped before this call ended."
   // A stopped run's history: each call still queued is answered as stopped (a provider refuses a call with no answer),
   // then what the person said meanwhile.
@@ -576,9 +603,17 @@ module session_record {
     require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
     require(i.stop == "end" and i.text != "", "A compaction answers its summary."),
   }
+  // A history that ends in the model's answer (answered wrote it, and reply holds it) was compacted after the turn:
+  // that answer stays after the summary, so the person still sees it, and the session rests. Else the turn was
+  // compacted mid-way and goes on from the summary.
+  // The summary is its own role: the model is sent it as the person's words, and the interface shows it as a divider.
   pure def compacted_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
-    val place = if (v.self.pending != "") Thinking else Idle
-    val sent = with_pending([said_entry("user", format("A summary of our conversation so far:\n{}", [i.text]))], v.self.pending)
+    val last = last_entry(v.self.history)
+    val ended = last == said_entry("assistant", v.self.reply)
+    val summary = said_entry("summary", format("A summary of our conversation so far:
+{}", [i.text]))
+    val place = if (v.self.pending != "" or not(ended)) Thinking else Idle
+    val sent = with_pending(if (ended) [summary, last] else [summary], v.self.pending)
     {
       next: {
         ...v,
@@ -588,7 +623,7 @@ module session_record {
         }),
         self: {
           ...v.self, status: place, turns: v.self.turns + 1, history: sent, pending: "",
-          steps: if (place == Thinking) 1 else v.self.steps,
+          steps: if (place != Thinking) v.self.steps else if (ended) 1 else steps_after(v.self, Thinking),
           tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out, tokens_cached: v.self.tokens_cached + i.tokens_cached,
         },
       },
@@ -677,6 +712,7 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(i.call, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(i.call, said)), true), paths: compact_paths })]
         else [],
     }
   }
@@ -698,7 +734,8 @@ module session_record {
   }
   pure def tool_done_again_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
-    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val said = format("exit {}
+{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
     val place = after_call(v.self)
     {
       next: {
@@ -719,12 +756,14 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), true), paths: compact_paths })]
         else [],
     }
   }
   pure def tool_done_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
-    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val said = format("exit {}
+{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
     val place = after_call(v.self)
     {
       next: {
@@ -745,6 +784,7 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), true), paths: compact_paths })]
         else [],
     }
   }
@@ -756,7 +796,8 @@ module session_record {
   }
   pure def tool_refused_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
-    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val said = format("exit {}
+{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
     val place = after_call(v.self)
     {
       next: {
@@ -776,6 +817,7 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), true), paths: compact_paths })]
         else [],
     }
   }
@@ -787,7 +829,8 @@ module session_record {
   }
   pure def tool_answered_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
-    val said = format("exit {}\n{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
+    val said = format("exit {}
+{}{}", [as_text(i.exit_code), i.stdout, i.stderr])
     val place = after_call(v.self)
     {
       next: {
@@ -807,6 +850,7 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), true), paths: compact_paths })]
         else [],
     }
   }
@@ -836,6 +880,7 @@ module session_record {
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
         else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), true), paths: compact_paths })]
         else [],
     }
   }
@@ -975,12 +1020,13 @@ module temperpaw {
     },
     // A status timer's fire and what it asks act as the app.
     { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused", "stalled", "stalled_call"] }), when: Always },
+        { decide: Permit, who: CallerApp, what: MovesOf({ record: "Briefing", moves: ["publish"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
-    { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Briefing", moves: ["publish", "archive_briefing"] }), when: Always },
+    { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Briefing", moves: ["publish", "update", "archive_briefing"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
-    { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Briefing", moves: ["publish", "archive_briefing"] }), when: Always },
+    { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Briefing", moves: ["publish", "update", "archive_briefing"] }), when: Always },
     // No agent approves or denies its own tool calls. Agents may make and revise Agents, as the owner may (Rita,
     // 27 Nov: agents edit freely, approval can come later).
     { decide: Forbid, who: CallerAgent, what: MovesOf({ record: "Session", moves: ["approve", "deny"] }), when: Always },
