@@ -1,94 +1,42 @@
-/* TemperPaw V2 — Minimal Linear / Axia-grade UI in authentic UniKon brand colors.
- * Ground: #FFFFFF pure paper · Surfaces: #F6F7FE / #EEF0FE · Hairlines: #E6E8FC
- * Ink: #17142B deep indigo · Primary accent: #2F3CF0 UniKon cobalt · Spark: #FF48B0
+/* Seed's interface draws only with the look's --k-* properties: the language Seed wears (its dress) sets every colour,
+ * face, corner and shadow, so Switch the Look changes the whole app and How it works matches it. The names below are
+ * Seed's own roles, each one of the look's properties; none holds a colour of its own.
  */
 
 :root {
-  --tp-bg: #ffffff;
-  --tp-surface: #f7f8fe;
-  --tp-surface-2: #eef0fe;
-  --tp-surface-hover: #f0f2fe;
-  --tp-border: #e6e8fc;
-  --tp-border-strong: #d3d7fa;
-  --tp-ink: #17142b;
-  --tp-ink-2: #45405e;
-  --tp-ink-3: #6a6585;
-  --tp-accent: #2f3cf0;
-  --tp-accent-hover: #2330d8;
-  --tp-accent-soft: rgba(47, 60, 240, 0.08);
-  --tp-accent-ring: rgba(47, 60, 240, 0.16);
-  --tp-pink: #ff48b0;
-  --tp-butter: #fff07a;
-  --tp-green: #16a34a;
-  --tp-green-soft: rgba(22, 163, 74, 0.1);
-  --tp-amber: #d97706;
-  --tp-red: #dc2626;
-  --tp-red-soft: #fef2f2;
-  --tp-red-border: #fecaca;
-  --tp-shadow-composer: 0 1px 2px rgba(23, 20, 43, 0.04), 0 8px 24px -12px rgba(47, 60, 240, 0.12);
-  --tp-shadow-card: 0 1px 2px rgba(23, 20, 43, 0.03), 0 4px 12px -6px rgba(23, 20, 43, 0.06);
-  --tp-shadow-pop: 0 4px 16px -4px rgba(23, 20, 43, 0.12), 0 12px 32px -8px rgba(23, 20, 43, 0.12);
-  --tp-font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --tp-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --tp-radius-sm: 6px;
-  --tp-radius-md: 10px;
-  --tp-radius-lg: 14px;
+  --tp-bg: var(--k-page);
+  --tp-surface: var(--k-tint);
+  --tp-surface-2: var(--k-tint-2);
+  --tp-surface-hover: var(--k-tint-2);
+  --tp-border: var(--k-tint-3);
+  --tp-border-strong: color-mix(in srgb, var(--k-ink) 18%, var(--k-page));
+  --tp-ink: var(--k-ink);
+  --tp-ink-2: var(--k-soft);
+  --tp-ink-3: var(--k-quiet);
+  --tp-accent: var(--k-here-deep);
+  --tp-accent-hover: color-mix(in srgb, var(--k-here-deep) 84%, var(--k-ink));
+  --tp-accent-soft: color-mix(in srgb, var(--k-here-deep) 9%, var(--k-page));
+  --tp-accent-ring: color-mix(in srgb, var(--k-here-deep) 18%, transparent);
+  --tp-on-accent: var(--k-sheet, var(--k-page));
+  --tp-pink: var(--k-notnow);
+  --tp-butter: var(--k-new);
+  --tp-green: var(--k-here-deep);
+  --tp-green-soft: var(--k-here);
+  --tp-amber: color-mix(in srgb, var(--k-new) 45%, var(--k-ink));
+  --tp-red: color-mix(in srgb, var(--k-notnow) 35%, var(--k-ink));
+  --tp-red-soft: color-mix(in srgb, var(--k-notnow) 22%, var(--k-page));
+  --tp-red-border: var(--k-notnow);
+  --tp-scrim: rgb(var(--k-shade) / 0.3);
+  --tp-shadow-composer: var(--k-lifted);
+  --tp-shadow-card: var(--k-raised);
+  --tp-shadow-pop: var(--k-float);
+  --tp-font-sans: var(--k-font-text);
+  --tp-font-display: var(--k-font-display);
+  --tp-font-mono: var(--k-font-code);
+  --tp-radius-sm: var(--k-radius);
+  --tp-radius-md: var(--k-radius);
+  --tp-radius-lg: calc(var(--k-radius) * 2);
   --tp-sidebar-w: 256px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --tp-bg: #0e0d18;
-    --tp-surface: #141224;
-    --tp-surface-2: #1c1933;
-    --tp-surface-hover: #201d3b;
-    --tp-border: #262344;
-    --tp-border-strong: #373361;
-    --tp-ink: #eceaf7;
-    --tp-ink-2: #c2bdd9;
-    --tp-ink-3: #8d87ab;
-    --tp-accent: #7f89ff;
-    --tp-accent-hover: #969fff;
-    --tp-accent-soft: rgba(127, 137, 255, 0.14);
-    --tp-accent-ring: rgba(127, 137, 255, 0.24);
-    --tp-green: #4ade80;
-    --tp-green-soft: rgba(74, 222, 128, 0.12);
-    --tp-red: #f87171;
-    --tp-red-soft: rgba(248, 113, 113, 0.12);
-    --tp-red-border: rgba(248, 113, 113, 0.28);
-    --tp-shadow-composer: 0 2px 8px rgba(0, 0, 0, 0.36), 0 12px 28px -12px rgba(0, 0, 0, 0.5);
-    --tp-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.28);
-    --tp-shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.55);
-  }
-}
-
-/* The look's tokens follow TemperPaw's palette. The dress (Cathode) is a dark console; the pages it draws, such as
- * How it works, read these --k-* tokens, so on TemperPaw's light page they would draw dark chips and pale text. Pointing
- * them at --tp-* keeps those pages in TemperPaw's colours in light and dark alike. html:root outranks the dress's :root. */
-html:root {
-  color-scheme: light dark;
-  --k-page: var(--tp-bg);
-  --k-ink: var(--tp-ink);
-  --k-soft: var(--tp-ink-2);
-  --k-quiet: var(--tp-ink-3);
-  --k-tint: var(--tp-surface);
-  --k-tint-2: var(--tp-surface-2);
-  --k-tint-3: var(--tp-surface-2);
-  --k-sheet: var(--tp-surface);
-  --k-here: var(--tp-green-soft);
-  --k-here-deep: var(--tp-green);
-  --k-new: var(--tp-accent-soft);
-  --k-notnow: var(--tp-red-soft);
-  --k-font-display: var(--tp-font-sans);
-  --k-font-text: var(--tp-font-sans);
-  --k-font-code: var(--tp-font-mono);
-  --_green: var(--tp-accent);
-  --_cyan: var(--tp-accent);
-  --_amber: var(--tp-amber);
-  --_red: var(--tp-red);
-  --_on: #ffffff;
-  --_rule: var(--tp-border);
-  --_leader: var(--tp-border-strong);
 }
 
 *, *::before, *::after {
@@ -120,7 +68,7 @@ html, body {
 .tp-scrim {
   position: fixed;
   inset: 0;
-  background: rgba(23, 20, 43, 0.28);
+  background: var(--tp-scrim);
   backdrop-filter: blur(2px);
   z-index: 30;
 }
@@ -530,6 +478,7 @@ html, body {
 
 .tp-hero h1 {
   margin: 0;
+  font-family: var(--tp-font-display);
   font-size: clamp(1.65rem, 3.2vw, 2.15rem);
   font-weight: 600;
   letter-spacing: -0.03em;
@@ -557,10 +506,6 @@ html, body {
   flex-direction: column;
   gap: 10px;
   transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-
-@media (prefers-color-scheme: dark) {
-  .tp-composer { background: var(--tp-surface); }
 }
 
 .tp-composer:focus-within {
@@ -725,7 +670,7 @@ html, body {
   border-radius: 9px;
   border: 0;
   background: var(--tp-accent);
-  color: #ffffff;
+  color: var(--tp-on-accent);
   font-family: inherit;
   font-size: 13px;
   font-weight: 500;
@@ -743,8 +688,8 @@ html, body {
 }
 
 .tp-send-btn:disabled {
-  background: var(--tp-surface-2);
-  color: var(--tp-ink-3);
+  background: var(--tp-border);
+  color: var(--tp-ink-2);
   cursor: default;
 }
 
@@ -1217,7 +1162,7 @@ html, body {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(23, 20, 43, 0.32);
+  background: var(--tp-scrim);
   backdrop-filter: blur(3px);
 }
 
@@ -1338,7 +1283,7 @@ html, body {
 .tp-seg-btn[data-active="true"] {
   background: var(--tp-bg);
   color: var(--tp-ink);
-  box-shadow: 0 1px 2px rgba(23, 20, 43, 0.08);
+  box-shadow: var(--k-raised);
 }
 
 .tp-search-row {
