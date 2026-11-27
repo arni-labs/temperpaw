@@ -62,6 +62,35 @@
   }
 }
 
+/* The look's tokens follow TemperPaw's palette. The dress (Cathode) is a dark console; the pages it draws, such as
+ * How it works, read these --k-* tokens, so on TemperPaw's light page they would draw dark chips and pale text. Pointing
+ * them at --tp-* keeps those pages in TemperPaw's colours in light and dark alike. html:root outranks the dress's :root. */
+html:root {
+  color-scheme: light dark;
+  --k-page: var(--tp-bg);
+  --k-ink: var(--tp-ink);
+  --k-soft: var(--tp-ink-2);
+  --k-quiet: var(--tp-ink-3);
+  --k-tint: var(--tp-surface);
+  --k-tint-2: var(--tp-surface-2);
+  --k-tint-3: var(--tp-surface-2);
+  --k-sheet: var(--tp-surface);
+  --k-here: var(--tp-green-soft);
+  --k-here-deep: var(--tp-green);
+  --k-new: var(--tp-accent-soft);
+  --k-notnow: var(--tp-red-soft);
+  --k-font-display: var(--tp-font-sans);
+  --k-font-text: var(--tp-font-sans);
+  --k-font-code: var(--tp-font-mono);
+  --_green: var(--tp-accent);
+  --_cyan: var(--tp-accent);
+  --_amber: var(--tp-amber);
+  --_red: var(--tp-red);
+  --_on: #ffffff;
+  --_rule: var(--tp-border);
+  --_leader: var(--tp-border-strong);
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
