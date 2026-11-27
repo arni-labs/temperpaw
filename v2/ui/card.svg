@@ -1,15 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" font-family="ui-monospace, Menlo, monospace">
-  <rect width="1200" height="630" fill="#0d0f0c"/>
-  <g fill="none" stroke="#2a3226" stroke-width="2"><rect x="60" y="60" width="1080" height="510"/><line x1="60" y1="140" x2="1140" y2="140"/></g>
-  <circle cx="100" cy="100" r="9" fill="#c8f08a"/>
-  <text x="130" y="112" fill="#c8f08a" font-size="34">TemperPaw</text>
-  <text x="1100" y="112" fill="#6f7d66" font-size="22" text-anchor="end">computer ready</text>
-  <g font-size="28">
-    <text x="100" y="210" fill="#e6ecdf">&gt; how much disk is free?</text>
-    <text x="100" y="270" fill="#6f7d66">bash</text><text x="190" y="270" fill="#c8f08a">df -h /</text>
-    <text x="100" y="330" fill="#9aa892">/dev/root  20G  3.1G  17G  16% /</text>
-    <text x="100" y="400" fill="#e6ecdf">17 GB of 20 GB is free.</text>
-  </g>
-  <rect x="100" y="460" width="18" height="34" fill="#c8f08a"/>
-  <text x="1100" y="530" fill="#6f7d66" font-size="22" text-anchor="end">a session, a model, a computer</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 724 630" width="724" height="630">
+  <rect width="724" height="630" fill="#F7F8FE"/>
+  <rect x="36" y="36" width="652" height="558" rx="22" fill="#FFFFFF" stroke="#E6E8FC" stroke-width="2"/>
+  <rect x="36" y="36" width="168" height="558" rx="22" fill="#F7F8FE"/>
+  <rect x="184" y="36" width="20" height="558" fill="#F7F8FE"/>
+  <line x1="204" y1="36" x2="204" y2="594" stroke="#E6E8FC" stroke-width="2"/>
+  <circle cx="80" cy="84" r="11" fill="#2F3CF0" fill-opacity="0.88"/>
+  <circle cx="94" cy="84" r="11" fill="#FF48B0" fill-opacity="0.72"/>
+  <circle cx="87" cy="96" r="11" fill="#17142B" fill-opacity="0.82"/>
+  <rect x="64" y="136" width="112" height="24" rx="7" fill="#EEF0FE"/>
+  <rect x="64" y="136" width="4" height="24" rx="2" fill="#2F3CF0"/>
+  <rect x="64" y="174" width="96" height="16" rx="5" fill="#E6E8FC"/>
+  <rect x="64" y="204" width="108" height="16" rx="5" fill="#E6E8FC"/>
+  <rect x="64" y="234" width="84" height="16" rx="5" fill="#E6E8FC"/>
+  <rect x="360" y="128" width="276" height="44" rx="12" fill="#EEF0FE" stroke="#E6E8FC" stroke-width="1.5"/>
+  <rect x="380" y="144" width="180" height="12" rx="6" fill="#17142B" fill-opacity="0.7"/>
+  <rect x="248" y="204" width="388" height="12" rx="6" fill="#17142B" fill-opacity="0.78"/>
+  <rect x="248" y="228" width="320" height="12" rx="6" fill="#45405E" fill-opacity="0.5"/>
+  <rect x="248" y="264" width="388" height="42" rx="10" fill="#F7F8FE" stroke="#E6E8FC" stroke-width="1.5"/>
+  <circle cx="272" cy="285" r="8" fill="#16A34A" fill-opacity="0.18"/>
+  <circle cx="272" cy="285" r="4" fill="#16A34A"/>
+  <rect x="292" y="279" width="210" height="12" rx="6" fill="#6A6585" fill-opacity="0.55"/>
+  <rect x="248" y="328" width="388" height="72" rx="12" fill="#FFFFFF" stroke="#D3D7FA" stroke-width="2"/>
+  <rect x="268" y="346" width="36" height="36" rx="10" fill="#2F3CF0" fill-opacity="0.12"/>
+  <circle cx="286" cy="364" r="9" fill="#2F3CF0"/>
+  <rect x="320" y="352" width="144" height="12" rx="6" fill="#17142B" fill-opacity="0.82"/>
+  <rect x="320" y="372" width="196" height="9" rx="4.5" fill="#6A6585" fill-opacity="0.55"/>
+  <rect x="572" y="352" width="46" height="24" rx="7" fill="#2F3CF0"/>
+  <rect x="248" y="456" width="388" height="92" rx="16" fill="#FFFFFF" stroke="#2F3CF0" stroke-width="2"/>
+  <rect x="272" y="480" width="216" height="12" rx="6" fill="#6A6585" fill-opacity="0.4"/>
+  <rect x="556" y="502" width="60" height="30" rx="8" fill="#2F3CF0"/>
 </svg>
