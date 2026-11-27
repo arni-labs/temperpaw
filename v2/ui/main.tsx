@@ -674,8 +674,23 @@ function Sidebar({
 }) {
   const navigate = useNavigate();
 
+  const [deleting, setDeleting] = useState("");
+
+  const removeSession = async (s: AnyRec) => {
+    if (deleting) return;
+    if (!window.confirm(`Delete "${s.fields.title || "Untitled session"}"? It leaves your list and its computer is ended.`)) return;
+    setDeleting(s.id);
+    const res = await move("session", s.id, "delete", {});
+    setDeleting("");
+    if (!res.ok) {
+      window.alert(res.reason || "Could not delete this session.");
+      return;
+    }
+    if (s.id === activeId) navigate("/");
+  };
+
   const sorted = useMemo(() => {
-    return [...sessions].sort((a, b) => {
+    return [...sessions].filter((s) => placeOf(s) !== "deleted").sort((a, b) => {
       const ta = Date.parse(a.moved_at || a.created_at || "") || 0;
       const tb = Date.parse(b.moved_at || b.created_at || "") || 0;
       return tb - ta;
@@ -737,6 +752,16 @@ function Sidebar({
                     <span className="tp-session-title">{s.fields.title || "Untitled session"}</span>
                     <span className="tp-session-time">{shortAgo(s.moved_at || s.created_at)}</span>
                   </Link>
+                  <button
+                    type="button"
+                    className="tp-session-delete"
+                    aria-label={`Delete ${s.fields.title || "session"}`}
+                    title="Delete session"
+                    disabled={deleting === s.id}
+                    onClick={() => void removeSession(s)}
+                  >
+                    ×
+                  </button>
                 </li>
               );
             })
@@ -1409,6 +1434,11 @@ function SessionScreen({
   const place = placeOf(s);
   const isBusy = place === "thinking" || place === "calling" || place === "acting" || place === "connecting" || place === "compacting";
   const canAsk = !!s && (can(s, "ask") || place === "idle" || place === "failed");
+  // Working: a stop can end it, and what the person types steers it (read at the model's next step, or as the next turn).
+  const working = isBusy || place === "waitingapproval";
+  const closed = place === "done" || place === "deleted";
+  const pending = String(s?.fields?.pending || "");
+  const [stopping, setStopping] = useState(false);
 
   // If TemperPaw just ran set_app_interface on its own app in the latest settled turn, reload once to show the new UI.
   useEffect(() => {
@@ -1440,16 +1470,27 @@ function SessionScreen({
 
   const send = async () => {
     const clean = text.trim();
-    if (!s || !clean || sending || isBusy) return;
+    if (!s || !clean || sending || closed) return;
     setSending(true);
     setSendErr("");
-    const res = await move("session", s.id, "ask", { text: clean });
+    const res = await move("session", s.id, working ? "steer" : "ask", { text: clean });
     setSending(false);
     if (res.ok) {
       setText("");
     } else {
       setSendErr(res.reason || "Could not send message.");
     }
+  };
+
+  const stop = async () => {
+    if (!s || stopping) return;
+    setStopping(true);
+    setSendErr("");
+    // At a tool call (running or waiting on approval) the stop also marks that call stopped.
+    const atCall = place === "acting" || place === "connecting" || place === "waitingapproval";
+    const res = await move("session", s.id, atCall ? "stop_call" : "stop", {});
+    setStopping(false);
+    if (!res.ok) setSendErr(res.reason || "Could not stop this session.");
   };
 
   const handleSwapModel = async (prov: string, mod: string) => {
@@ -1537,6 +1578,12 @@ function SessionScreen({
             <div className="tp-dock">
               <div className="tp-dock-inner">
                 {sendErr && <div className="tp-error">{sendErr}</div>}
+                {pending && (
+                  <div className="tp-pending">
+                    <span className="tp-pending-label">Seed reads this at its next step</span>
+                    <span className="tp-pending-text">{pending}</span>
+                  </div>
+                )}
                 <form
                   className="tp-composer"
                   onSubmit={(e) => {
@@ -1548,12 +1595,12 @@ function SessionScreen({
                     data-part="input"
                     rows={1}
                     value={text}
-                    disabled={!canAsk || isBusy || sending}
+                    disabled={closed}
                     placeholder={
-                      place === "done"
+                      closed
                         ? "This session is closed."
-                        : isBusy
-                          ? "Seed is working…"
+                        : working
+                          ? "Steer Seed while it works: it reads this at its next step…"
                           : "Reply or ask for a change…"
                     }
                     onChange={(e) => setText(e.target.value)}
@@ -1572,13 +1619,26 @@ function SessionScreen({
                           : "Enter to send"}
                       </span>
                     </div>
-                    <button
-                      type="submit"
-                      className="tp-send-btn"
-                      disabled={!canAsk || isBusy || sending || !text.trim()}
-                    >
-                      {isBusy ? "Working…" : <>Send <SendIcon /></>}
-                    </button>
+                    <div className="tp-composer-actions">
+                      {working && (
+                        <button
+                          type="button"
+                          className="tp-stop-btn"
+                          disabled={stopping}
+                          onClick={() => void stop()}
+                        >
+                          <span className="tp-stop-square" aria-hidden="true" />
+                          {stopping ? "Stopping…" : "Stop"}
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        className="tp-send-btn"
+                        disabled={closed || (!working && !canAsk) || sending || !text.trim()}
+                      >
+                        {working ? <>Steer <SendIcon /></> : <>Send <SendIcon /></>}
+                      </button>
+                    </div>
                   </div>
                 </form>
               </div>

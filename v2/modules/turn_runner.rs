@@ -21,7 +21,19 @@ const COMPACT_ASK: &'static str = "Summarize this conversation so far for yourse
 learned, and what is left. This summary will replace the conversation.";
 const ERROR_KEEP: usize = 600;
 
+// Every answer carries the epoch (the run) it was asked in, so the spec moves nothing on an answer to a run a stop ended.
 pub fn call(input: Input) -> Option<Answer> {
+    let epoch = input.epoch;
+    match reply_to(input) {
+        Some(mut answer) => {
+            answer.epoch = epoch;
+            Some(answer)
+        }
+        None => None,
+    }
+}
+
+fn reply_to(input: Input) -> Option<Answer> {
     let anthropic = input.provider.as_str() == "anthropic";
     let openrouter = input.provider.as_str() == "openrouter";
     let body = if anthropic { anthropic_body(&input) } else { chat_body(&input, openrouter) };
@@ -62,7 +74,7 @@ pub fn call(input: Input) -> Option<Answer> {
 fn empty_answer() -> Answer {
     Answer {
         message: String::new(), stop: String::new(), text: String::new(), call_ids: Vec::new(), call_names: Vec::new(),
-        call_args: Vec::new(), tokens_in: 0, tokens_out: 0,
+        call_args: Vec::new(), tokens_in: 0, tokens_out: 0, epoch: 0,
     }
 }
 

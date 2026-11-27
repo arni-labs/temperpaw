@@ -594,6 +594,120 @@ html, body {
   gap: 8px;
 }
 
+/* Stop and steer: the composer stays open while Seed works. */
+.tp-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.tp-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid var(--tp-red-border);
+  background: var(--tp-red-soft);
+  color: var(--tp-red);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease, transform 120ms ease;
+}
+
+.tp-stop-btn:hover:not(:disabled) {
+  background: var(--tp-red-border);
+}
+
+.tp-stop-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.tp-stop-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.tp-stop-square {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.tp-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 13px;
+  border-radius: var(--tp-radius-md);
+  background: var(--tp-accent-soft);
+  border: 1px dashed var(--tp-accent-ring);
+  font-size: 13px;
+}
+
+.tp-pending-label {
+  color: var(--tp-ink-3);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.tp-pending-text {
+  color: var(--tp-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tp-session-list li {
+  position: relative;
+}
+
+.tp-session-list li .tp-session-item {
+  padding-right: 30px;
+}
+
+.tp-session-delete {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--tp-radius-sm);
+  background: transparent;
+  color: var(--tp-ink-3);
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.tp-session-list li:hover .tp-session-delete,
+.tp-session-delete:focus-visible {
+  opacity: 1;
+}
+
+.tp-session-delete:hover {
+  background: var(--tp-red-soft);
+  color: var(--tp-red);
+}
+
+@media (hover: none) {
+  .tp-session-delete {
+    opacity: 1;
+  }
+}
+
 .tp-composer-meta {
   display: flex;
   align-items: center;

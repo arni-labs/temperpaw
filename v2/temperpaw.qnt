@@ -16,6 +16,12 @@
 //   Connecting --tool_answered | tool_failed--> the same
 //   WaitingApproval --approve--> Acting | Connecting ; --deny--> Calling | Thinking | Idle
 //   Idle --10 min (status timer)--> pause_computer --computer_paused-->        Idle|Failed --close--> Done
+//   any working status --steer--> the same (what a person says waits in pending for the model's next step or turn)
+//   any working status --stop | stop_call--> Idle ; --stalled | stalled_call (20 min watchdog)--> Failed
+//   any status --delete--> Deleted
+// A stop starts a new run: an answer to the stopped run's model call (its run) or tool call (its call id) moves nothing.
+// A module's failed or unknown end carries no answer, so one arriving after a stop and a new ask can still end that
+// new turn or call as failed; the person asks again, and nothing more runs.
 //
 // Trajectory capture is the kernel's own: every move is a hash-chained commit in the app's history.
 
@@ -218,7 +224,7 @@ module session_record {
   import agent_record as agent_record
 
   type SessionId = Id
-  type Status = Idle | Thinking | Calling | Acting | Connecting | WaitingApproval | Compacting | Done | Failed
+  type Status = Idle | Thinking | Calling | Acting | Connecting | WaitingApproval | Compacting | Done | Failed | Deleted
   // What the model is sent each turn, provider-neutral: turn_runner writes it in the provider's own wire format.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
   type Row = {
@@ -236,16 +242,22 @@ module session_record {
     tokens_in: int, tokens_out: int,
     reply: str,
     why: str,
+    // epoch: which run the session's module calls belong to. A stop, a stall or a delete starts a new one, so an answer
+    // to a call made before it (each module echoes the run it was asked in) moves nothing.
+    epoch: int,
+    // pending: what a person said while the session worked, not yet sent to the model. It goes at the next model step,
+    // or as the next turn when this one ends.
+    pending: str,
   }
   type Msg = NoMsgs
-  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry] }
+  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry], epoch: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   // One unikon tool call: its id and the model's input, {"tool": .., "arguments": {..}}.
   type UnikonIn = { call: str, args: str }
   type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn) | AskUnikon(UnikonIn)
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
-  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
-  type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
+  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, epoch: int }
+  type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str, call: str }
   type OpenIn = { title: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str] }
   type AskIn = { text: str }
   type CallIn = { call: str }
@@ -262,9 +274,17 @@ module session_record {
   pure val compact_after: int = 40
 
   pure val record: RecordDecl = { name: "Session", status: "status" }
+  // Sessions made before epoch and pending existed read them as these.
+  pure val initial: { epoch: int, pending: str } = { epoch: 0, pending: "" }
   pure val moves: List[MoveDecl[Status]] = [
     { name: "open", from: FirstMove },
     { name: "ask", from: Statuses([Idle, Failed]) },
+    { name: "steer", from: Statuses([Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting]) },
+    { name: "stop", from: Statuses([Thinking, Calling, Compacting]) },
+    { name: "stop_call", from: Statuses([Acting, Connecting, WaitingApproval]) },
+    { name: "stalled", from: Statuses([Thinking, Calling, Compacting]) },
+    { name: "stalled_call", from: Statuses([Acting, Connecting]) },
+    { name: "delete", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Done, Failed]) },
     { name: "answered_tools", from: Statuses([Thinking]) },
     { name: "answered", from: Statuses([Thinking]) },
     { name: "compacted", from: Statuses([Compacting]) },
@@ -282,12 +302,20 @@ module session_record {
     { name: "pause_computer", from: Statuses([Idle]) },
     { name: "computer_paused", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Failed]) },
     { name: "close", from: Statuses([Idle, Failed]) },
-    { name: "computer_ended", from: Statuses([Done]) },
+    { name: "computer_ended", from: Statuses([Done, Deleted]) },
   ]
   // A computer idle 10 minutes is suspended. Reason: Tensorlake bills a running sandbox by the second, and a suspended one
   // keeps its disk, so the workspace persists and costs nothing while nobody uses it.
   pure val status_timers: List[StatusTimer[Status]] = [
     { name: "idle_computer", while_in: Idle, after: minutes(10), fires: "pause_computer" },
+    // A watchdog on each status that waits on a module: 20 minutes with no answer ends the run as Failed, so a dropped
+    // answer cannot hold a session forever. Reason: the longest module call is unikon_door's three door calls of 300 s
+    // each (15 min), and every other call is shorter. WaitingApproval has none: it waits on a person, who has no deadline.
+    { name: "thinking_watch", while_in: Thinking, after: minutes(20), fires: "stalled" },
+    { name: "calling_watch", while_in: Calling, after: minutes(20), fires: "stalled" },
+    { name: "acting_watch", while_in: Acting, after: minutes(20), fires: "stalled_call" },
+    { name: "connecting_watch", while_in: Connecting, after: minutes(20), fires: "stalled_call" },
+    { name: "compacting_watch", while_in: Compacting, after: minutes(20), fires: "stalled" },
   ]
   pure val model_paths: ModulePaths = {
     applied: ["answered_tools", "answered", "turn_refused"], failed: ["turn_failed"], unknown: ["turn_failed"], refused: ["turn_failed"],
@@ -310,7 +338,7 @@ module session_record {
   pure def head_of(q: List[str]): str = if (q.length() == 0) "" else q.head()
   pure def ask_model(t: Row, history: List[Entry], compact: bool): Ask = AskModel({
     provider: t.provider, model: t.model, soul: t.soul, max_tokens: max_tokens, computer: t.tools.contains("bash"), unikon: t.tools.contains("unikon"),
-    compact: compact, history: history,
+    compact: compact, history: history, epoch: t.epoch,
   })
   // The spec, not the module, decides each call: a tool the agent holds no grant for is answered "refuse" by the module
   // with no door call, so the model is told why.
@@ -327,11 +355,24 @@ module session_record {
   pure def ask_unikon(t: Row): Ask = AskUnikon({ call: head_of(t.queue_ids), args: head_of(t.queue_args) })
   pure def said_entry(role: str, said: str): Entry = { role: role, content: said, call_id: "", call_ids: [], call_names: [], call_args: [] }
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
-  // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit.
+  // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit. What a
+  // person said meanwhile always gets its turn: past the limit it starts a fresh run of steps, as an ask does.
   pure def after_call(t: Row): Status =
-    if (rest_of(t.queue_ids).length() > 0) Calling else if (t.steps < max_steps) Thinking else Idle
+    if (rest_of(t.queue_ids).length() > 0) Calling else if (t.steps < max_steps or t.pending != "") Thinking else Idle
   pure def why_after(place: Status): str = if (place == Idle) "Stopped at the agent's step limit." else ""
-  pure def steps_after(t: Row, place: Status): int = if (place == Thinking) t.steps + 1 else t.steps
+  pure def steps_after(t: Row, place: Status): int = if (place == Thinking) (if (t.steps < max_steps) t.steps + 1 else 1) else t.steps
+  // The history the model is sent next: what a person said while the session worked goes after the tools' answers.
+  pure def with_pending(h: List[Entry], p: str): List[Entry] = if (p == "") h else h.append(said_entry("user", p))
+  pure def joined(p: str, text: str): str = if (p == "") text else format("{}\n\n{}", [p, text])
+  pure val stopped_said: str = "Stopped before this call ended."
+  // A stopped run's history: each call still queued is answered as stopped (a provider refuses a call with no answer),
+  // then what the person said meanwhile.
+  pure def halted_history(t: Row): List[Entry] =
+    with_pending(t.queue_ids.foldl(t.history, (h, id) => h.append(tool_entry(id, stopped_said))), t.pending)
+  // The history after the head call's answer, and the pending text once the model is asked.
+  pure def history_after(t: Row, place: Status, entry: Entry): List[Entry] =
+    if (place == Thinking) with_pending(t.history.append(entry), t.pending) else t.history.append(entry)
+  pure def pending_after(t: Row, place: Status): str = if (place == Thinking) "" else t.pending
 
   pure def open_guard(i: OpenIn, c: Ctx): bool = require(by_message(c), "An agent opens a session.")
   pure def open_apply(i: OpenIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
@@ -339,7 +380,7 @@ module session_record {
       status: Idle, agent: sender(c), title: i.title, soul: i.soul, provider: i.provider, model: i.model,
       tools: i.tools, approve: i.approve, history: [], turns: 0, steps: 0,
       queue_ids: [], queue_names: [], queue_args: [], asked_in: "", computer: "", computer_paused: false, tokens_in: 0, tokens_out: 0,
-      reply: "", why: "",
+      reply: "", why: "", epoch: 0, pending: "",
     },
     follow: [],
   }
@@ -353,16 +394,105 @@ module session_record {
         status: turn_record::Written, parent: key_of(v.self.turns), role: "user", content: i.text, tool: "", model: "", tokens_in: 0, tokens_out: 0,
       }),
       self: {
-        ...v.self, status: Thinking, steps: 1, turns: v.self.turns + 1, reply: "", why: "",
-        history: v.self.history.append(said_entry("user", i.text)),
+        ...v.self, status: Thinking, steps: 1, turns: v.self.turns + 1, reply: "", why: "", pending: "",
+        history: with_pending(v.self.history, v.self.pending).append(said_entry("user", i.text)),
       },
     },
-    follow: [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(said_entry("user", i.text)), false), paths: model_paths })],
+    follow: [RunModule({ mod: "turn_runner", input: ask_model(v.self, with_pending(v.self.history, v.self.pending).append(said_entry("user", i.text)), false), paths: model_paths })],
+  }
+
+  // ---- steer: a person speaks while the session works. Their turn is written now; the model reads it at its next step,
+  // or as the next turn when this one ends, so the composer never waits.
+  pure def steer_guard(v: View, i: AskIn, c: Ctx): bool = require(i.text != "", "A steer says something.")
+  pure def steer_apply(v: View, i: AskIn, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: {
+      ...v,
+      turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
+        status: turn_record::Written, parent: key_of(v.self.turns), role: "user", content: i.text, tool: "", model: "", tokens_in: 0, tokens_out: 0,
+      }),
+      self: { ...v.self, turns: v.self.turns + 1, pending: joined(v.self.pending, i.text) },
+    },
+    follow: [],
+  }
+
+  // ---- stop: a person ends the run now. The session is Idle at once, and an answer still coming for the stopped run
+  // moves nothing (its epoch or its call is no longer the session's). stop is for a run between tool calls, where no
+  // ToolCall is out; stop_call for one at a call (running, or waiting on approval), whose ToolCall it marks stopped.
+  pure def stop_guard(v: View, i: NoInput, c: Ctx): bool = require(by_request(c), "A person stops a session.")
+  pure def stop_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: {
+      ...v,
+      self: {
+        ...v.self, status: Idle, epoch: v.self.epoch + 1, why: "Stopped.", history: halted_history(v.self), pending: "",
+        queue_ids: [], queue_names: [], queue_args: [],
+      },
+    },
+    follow: [],
+  }
+  pure def stop_call_guard(v: View, i: NoInput, c: Ctx): bool = and {
+    require(by_request(c), "A person stops a session."),
+    require(v.toolcall_record_rows.keys().contains(child_id(v.id, head_of(v.self.queue_ids))), "A call is out."),
+  }
+  pure def stop_call_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    val uid = head_of(v.self.queue_ids)
+    {
+      next: {
+        ...v,
+        toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, uid), {
+          ...v.toolcall_record_rows.get(child_id(v.id, uid)), status: toolcall_record::Failed, output: stopped_said,
+        }),
+        self: {
+          ...v.self, status: Idle, epoch: v.self.epoch + 1, why: "Stopped.", history: halted_history(v.self), pending: "",
+          queue_ids: [], queue_names: [], queue_args: [],
+        },
+      },
+      follow: [],
+    }
+  }
+  // ---- stalled: a status's watchdog found no answer in 20 minutes. The run ends as a stop does, but Failed, with why.
+  pure val stalled_why: str = "No answer came for 20 minutes, so the run was stopped. Ask again."
+  pure def stalled_guard(v: View, i: NoInput, c: Ctx): bool = require(by_timer(c), "A status's watchdog ends a stalled run.")
+  pure def stalled_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: {
+      ...v,
+      self: {
+        ...v.self, status: Failed, epoch: v.self.epoch + 1, why: stalled_why, history: halted_history(v.self), pending: "",
+        queue_ids: [], queue_names: [], queue_args: [],
+      },
+    },
+    follow: [],
+  }
+  pure def stalled_call_guard(v: View, i: NoInput, c: Ctx): bool = and {
+    require(by_timer(c), "A status's watchdog ends a stalled run."),
+    require(v.toolcall_record_rows.keys().contains(child_id(v.id, head_of(v.self.queue_ids))), "A call is out."),
+  }
+  pure def stalled_call_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    val uid = head_of(v.self.queue_ids)
+    {
+      next: {
+        ...v,
+        toolcall_record_rows: v.toolcall_record_rows.set(child_id(v.id, uid), {
+          ...v.toolcall_record_rows.get(child_id(v.id, uid)), status: toolcall_record::Failed, output: stopped_said,
+        }),
+        self: {
+          ...v.self, status: Failed, epoch: v.self.epoch + 1, why: stalled_why, history: halted_history(v.self), pending: "",
+          queue_ids: [], queue_names: [], queue_args: [],
+        },
+      },
+      follow: [],
+    }
+  }
+  // ---- delete: a person removes a session from any status. Its computer is ended; it leaves every list but its records stay.
+  pure def delete_guard(v: View, i: NoInput, c: Ctx): bool = require(by_request(c), "A person deletes a session.")
+  pure def delete_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: { ...v, self: { ...v.self, status: Deleted, epoch: v.self.epoch + 1, pending: "", queue_ids: [], queue_names: [], queue_args: [] } },
+    follow: [RunModule({ mod: "computer_door", input: AskComputer({ op: "end", sandbox: v.self.computer, paused: false, call: "", args: "", unikon: false }), paths: end_paths })],
   }
 
   // ---- the model's answer
   pure def answered_tools_guard(v: View, i: TurnOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only turn_runner's answer ends a turn."),
+    require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
     require(i.stop == "tool_use" and i.call_ids.length() > 0, "The model asked for tools."),
     require(i.call_names.length() == i.call_ids.length() and i.call_args.length() == i.call_ids.length(), "Each call has a name and input."),
   }
@@ -384,10 +514,13 @@ module session_record {
   }
   pure def answered_guard(v: View, i: TurnOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only turn_runner's answer ends a turn."),
+    require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
     require(i.stop == "end", "The model answered."),
   }
+  // What a person said while the model worked becomes the next turn at once; else a long history is summarised.
   pure def answered_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
-    val place = if (v.self.history.length() + 1 > compact_after) Compacting else Idle
+    val place = if (v.self.pending != "") Thinking else if (v.self.history.length() + 1 > compact_after) Compacting else Idle
+    val sent = with_pending(v.self.history.append(said_entry("assistant", i.text)), v.self.pending)
     {
       next: {
         ...v,
@@ -396,37 +529,47 @@ module session_record {
           tokens_in: i.tokens_in, tokens_out: i.tokens_out,
         }),
         self: {
-          ...v.self, status: place, turns: v.self.turns + 1, reply: i.text, history: v.self.history.append(said_entry("assistant", i.text)),
+          ...v.self, status: place, turns: v.self.turns + 1, reply: i.text, history: sent, pending: "",
+          steps: if (place == Thinking) 1 else v.self.steps,
           tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
         },
       },
       follow:
-        if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(said_entry("assistant", i.text)), true), paths: compact_paths })]
+        if (place == Compacting) [RunModule({ mod: "turn_runner", input: ask_model(v.self, sent, true), paths: compact_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, sent, false), paths: model_paths })]
         else [],
     }
   }
   // The summary replaces the history the model is sent; every turn before it stays in the session's Turns.
   pure def compacted_guard(v: View, i: TurnOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only turn_runner's answer compacts."),
+    require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
     require(i.stop == "end" and i.text != "", "A compaction answers its summary."),
   }
   pure def compacted_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
-    next: {
-      ...v,
-      turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
-        status: turn_record::Written, parent: key_of(v.self.turns), role: "summary", content: i.text, tool: "", model: v.self.model,
-        tokens_in: i.tokens_in, tokens_out: i.tokens_out,
-      }),
-      self: {
-        ...v.self, status: Idle, turns: v.self.turns + 1,
-        history: [said_entry("user", format("A summary of our conversation so far:\n{}", [i.text]))],
-        tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
+    val place = if (v.self.pending != "") Thinking else Idle
+    val sent = with_pending([said_entry("user", format("A summary of our conversation so far:\n{}", [i.text]))], v.self.pending)
+    {
+      next: {
+        ...v,
+        turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
+          status: turn_record::Written, parent: key_of(v.self.turns), role: "summary", content: i.text, tool: "", model: v.self.model,
+          tokens_in: i.tokens_in, tokens_out: i.tokens_out,
+        }),
+        self: {
+          ...v.self, status: place, turns: v.self.turns + 1, history: sent, pending: "",
+          steps: if (place == Thinking) 1 else v.self.steps,
+          tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
+        },
       },
-    },
-    follow: [],
+      follow: if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, sent, false), paths: model_paths })] else [],
+    }
   }
   // A provider's refusal or error status: the session fails with its reason, keeps its history, and may be asked again.
-  pure def turn_refused_guard(v: View, i: TurnOut, c: Ctx): bool = require(by_module_answer(c), "Only turn_runner's answer ends a turn.")
+  pure def turn_refused_guard(v: View, i: TurnOut, c: Ctx): bool = and {
+    require(by_module_answer(c), "Only turn_runner's answer ends a turn."),
+    require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
+  }
   pure def turn_refused_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     next: { ...v, self: { ...v.self, status: Failed, why: format("The model's turn ended: {} {}", [i.stop, i.text]) } }, follow: [],
   }
@@ -498,12 +641,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(i.call, said)),
+          history: history_after(v.self, place, tool_entry(i.call, said)), pending: pending_after(v.self, place),
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(i.call, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(i.call, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -514,11 +657,13 @@ module session_record {
   pure def tool_done_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer ends a call."),
     require(v.self.queue_ids.length() > 0 and i.sandbox != "", "A call ran on a computer."),
+    require(i.call == head_of(v.self.queue_ids), "The answer is to the call at the head, not one a stop ended."),
     require(v.self.computer != i.sandbox, "The call ran on a new computer."),
   }
   pure def tool_done_again_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer ends a call."),
     require(v.self.queue_ids.length() > 0 and i.sandbox != "", "A call ran on a computer."),
+    require(i.call == head_of(v.self.queue_ids), "The answer is to the call at the head, not one a stop ended."),
     require(v.self.computer == i.sandbox, "The call ran on this session's computer."),
   }
   pure def tool_done_again_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
@@ -538,12 +683,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(uid, said)), computer: i.sandbox, computer_paused: false,
+          history: history_after(v.self, place, tool_entry(uid, said)), pending: pending_after(v.self, place), computer: i.sandbox, computer_paused: false,
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -564,12 +709,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(uid, said)), computer: i.sandbox, computer_paused: false,
+          history: history_after(v.self, place, tool_entry(uid, said)), pending: pending_after(v.self, place), computer: i.sandbox, computer_paused: false,
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -577,6 +722,7 @@ module session_record {
   pure def tool_refused_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only computer_door's answer ends a call."),
     require(v.self.queue_ids.length() > 0, "A call is at the queue's head."),
+    require(i.call == head_of(v.self.queue_ids), "The answer is to the call at the head, not one a stop ended."),
   }
   pure def tool_refused_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
@@ -594,12 +740,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(uid, said)),
+          history: history_after(v.self, place, tool_entry(uid, said)), pending: pending_after(v.self, place),
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -607,6 +753,7 @@ module session_record {
   pure def tool_answered_guard(v: View, i: ComputerOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only unikon_door's answer ends a unikon call."),
     require(v.self.queue_ids.length() > 0 and i.sandbox == "", "A unikon call ran with no computer."),
+    require(i.call == head_of(v.self.queue_ids), "The answer is to the call at the head, not one a stop ended."),
   }
   pure def tool_answered_apply(v: View, i: ComputerOut, c: Ctx): Move[View, Do, Msg, Ask] = {
     val uid = head_of(v.self.queue_ids)
@@ -624,12 +771,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(uid, said)),
+          history: history_after(v.self, place, tool_entry(uid, said)), pending: pending_after(v.self, place),
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -653,12 +800,12 @@ module session_record {
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
-          history: v.self.history.append(tool_entry(uid, said)),
+          history: history_after(v.self, place, tool_entry(uid, said)), pending: pending_after(v.self, place),
         },
       },
       follow:
         if (place == Calling) [Intent(DoNext_tool(Nothing))]
-        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, v.self.history.append(tool_entry(uid, said)), false), paths: model_paths })]
+        else if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, history_after(v.self, place, tool_entry(uid, said)), false), paths: model_paths })]
         else [],
     }
   }
@@ -725,10 +872,10 @@ module temperpaw {
 
   // Each module's contract, by value.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
-  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry] }
-  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
+  type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry], epoch: int }
+  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, epoch: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
-  type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
+  type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str, call: str }
   type UnikonIn = { call: str, args: str }
   type CatalogIn = { source: str }
   type CatalogOut = { models: str, count: int }
@@ -782,6 +929,7 @@ module temperpaw {
       what: MovesOf({ record: "Session", moves: [
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
+        "steer", "stop", "stop_call", "stalled", "stalled_call", "delete",
       ] }),
       when: Always,
     },
@@ -790,11 +938,12 @@ module temperpaw {
       what: MovesOf({ record: "Session", moves: [
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
+        "steer", "stop", "stop_call", "stalled", "stalled_call", "delete",
       ] }),
       when: Always,
     },
     // A status timer's fire and what it asks act as the app.
-    { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused"] }), when: Always },
+    { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused", "stalled", "stalled_call"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },

@@ -15,7 +15,19 @@ const INITIALIZED: &'static str = "{\"jsonrpc\":\"2.0\",\"method\":\"notificatio
 const LIST_TOOLS: &'static str = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
 const NO_TOOL: &'static str = "The unikon tool's input names no tool. Send {\"tool\": \"<name>\", \"arguments\": {...}}, or {\"tool\": \"list_tools\"} for the list.";
 
+// Every answer names the call it made, so the spec moves nothing on an answer to a call a stop ended.
 pub fn call(input: Input) -> Option<Answer> {
+    let call = input.call.clone();
+    match connect(input) {
+        Some(mut answer) => {
+            answer.call = call;
+            Some(answer)
+        }
+        None => None,
+    }
+}
+
+fn connect(input: Input) -> Option<Answer> {
     let (tool, arguments) = match tool_of(&input.args) {
         Some(found) => found,
         None => return Some(said(2, NO_TOOL)),
@@ -55,7 +67,7 @@ enum Posted {
 }
 
 fn said(code: i64, why: &str) -> Answer {
-    Answer { sandbox: String::new(), exit_code: code, stdout: String::new(), stderr: why.to_string() }
+    Answer { sandbox: String::new(), exit_code: code, stdout: String::new(), stderr: why.to_string(), call: String::new() }
 }
 
 // A connector status outside 2xx: exit 1, the status and the start of its body.

@@ -19,7 +19,19 @@ const KEEP_BYTES: usize = 32 * 1024;
 const LIFETIME_SECONDS: u64 = 3_600;
 const STATUS_READS: u64 = 40;
 
+// Every answer names the call it ran, so the spec moves nothing on an answer to a call a stop ended.
 pub fn call(input: Input) -> Option<Answer> {
+    let call = input.call.clone();
+    match carry_out(input) {
+        Some(mut answer) => {
+            answer.call = call;
+            Some(answer)
+        }
+        None => None,
+    }
+}
+
+fn carry_out(input: Input) -> Option<Answer> {
     let op = input.op.as_str();
     if op == "refuse" {
         return Some(said(&input.sandbox, 126, "This agent holds no grant for this tool."));
@@ -88,7 +100,7 @@ enum Ran {
 }
 
 fn said(sandbox: &str, code: i64, why: &str) -> Answer {
-    Answer { sandbox: sandbox.to_string(), exit_code: code, stdout: String::new(), stderr: why.to_string() }
+    Answer { sandbox: sandbox.to_string(), exit_code: code, stdout: String::new(), stderr: why.to_string(), call: String::new() }
 }
 
 fn json_headers() -> Vec<(String, String)> {
@@ -342,7 +354,7 @@ fn read_line(raw: &str, answer: &mut Answer) {
 // The process API answers events, one JSON object a line, some after `data:`. A run with no exit code answers 255.
 // Lines are cut at newline bytes, which never fall inside a character.
 fn read_events(body: &str) -> Answer {
-    let mut answer = Answer { sandbox: String::new(), exit_code: 255, stdout: String::new(), stderr: String::new() };
+    let mut answer = Answer { sandbox: String::new(), exit_code: 255, stdout: String::new(), stderr: String::new(), call: String::new() };
     let bytes = body.as_bytes();
     let n = bytes.len();
     let mut start: usize = 0;
