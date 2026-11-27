@@ -706,9 +706,9 @@ module temperpaw {
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
-    // No agent approves or denies its own tool calls, or changes its own grants.
+    // No agent approves or denies its own tool calls. Agents may make and revise Agents, as the owner may (Rita,
+    // 27 Nov: agents edit freely, approval can come later).
     { decide: Forbid, who: CallerAgent, what: MovesOf({ record: "Session", moves: ["approve", "deny"] }), when: Always },
-    { decide: Forbid, who: CallerAgent, what: MovesOf({ record: "Agent", moves: ["create", "revise"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Agent", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Agent", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Session", fields: AllFields }), when: Always },
