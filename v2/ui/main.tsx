@@ -1,4 +1,4 @@
-import { start, useApp, useRecords, useRecord, add, move, can, ago, howItWorks } from "@katagami/app";
+import { start, useApp, useRecords, useRecord, add, move, can, ago } from "@katagami/app";
 import { Routes, Route, Link, useParams, useNavigate } from "react-router";
 import { useState, useEffect, useRef, useMemo } from "react";
 import "./app.css";
@@ -783,9 +783,6 @@ function Sidebar({
           <div className="tp-foot-row">
             <button type="button" className="tp-ghost-btn" onClick={onOpenMemory}>
               Memory <span className="tp-badge-count">{memoryCount}</span>
-            </button>
-            <button type="button" className="tp-ghost-btn" onClick={howItWorks}>
-              How it works
             </button>
           </div>
         </div>
