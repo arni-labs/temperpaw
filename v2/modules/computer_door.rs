@@ -271,7 +271,10 @@ fn run(sandbox: &str, command: &str, unikon: bool) -> Ran {
             let DoorAnswer { status, headers: _, body: raw } = heard;
             let body = text_of(raw);
             if status >= 200 && status <= 299 {
-                Ran::Answered(read_events(&body))
+                let mut answer = read_events(&body);
+                answer.stdout = masked(answer.stdout);
+                answer.stderr = masked(answer.stderr);
+                Ran::Answered(answer)
             } else if status == 404 || body.contains("SANDBOX_NOT_FOUND") || body.contains("terminated") {
                 Ran::Gone
             } else if body.contains("SANDBOX_NOT_RUNNING") || status == 409 {
@@ -697,4 +700,114 @@ fn text_of(raw: Vec<u8>) -> String {
         Ok(text) => text,
         Err(_) => String::new(),
     }
+}
+
+// A command's output with each credential in it hidden, so a command that prints one (a clone url with its password,
+// a file unikon_door put on this computer) never puts it in a record. Reason: as at unikon_door's sealed.
+fn masked(text: String) -> String {
+    let spans = credential_spans(&text);
+    let count = spans.len();
+    if count == 0 {
+        return text;
+    }
+    let mut out = String::new();
+    let mut from: usize = 0;
+    let mut j: usize = 0;
+    while j < count
+        invariant count == spans.len(),
+        decreases count - j,
+    {
+        let s = spans[j].0;
+        let e = spans[j].1;
+        match text.get(from..s) { Some(t) => out.push_str(t), None => {} }
+        out.push_str("[a credential, hidden]");
+        from = e;
+        j = j + 1;
+    }
+    match text.get(from..text.len()) { Some(t) => out.push_str(t), None => {} }
+    out
+}
+
+// ---- Credentials. A credential is a run of three base64url segments joined by dots, the first at least 8 bytes and the
+// other two at least 16: the shape of a JWT, and of every clone password, upload link and open link the connector hands
+// out. What is kept off the record is the whole word holding one (a URL, say), up to a space, a quote, a backslash, a
+// backtick or an angle bracket.
+
+fn is_seg(c: u8) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+}
+
+fn is_stop(c: u8) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13 || c == 34 || c == 39 || c == 92 || c == 60 || c == 62 || c == 96
+}
+
+// Where a credential that starts at `at` ends, if one starts there.
+fn token_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let n = bytes.len();
+    if at >= n {
+        return None;
+    }
+    let mut i: usize = at;
+    let mut end: usize = n;
+    let mut part: usize = 0;
+    let mut part_start: usize = at;
+    while i < n
+        invariant n == bytes.len(), at <= part_start, part_start <= i, i <= n, part_start <= end, end <= n, end == n || i == n, part <= 2,
+        decreases n - i,
+    {
+        let c = bytes[i];
+        let need: usize = if part == 0 { 8 } else { 16 };
+        if is_seg(c) {
+            i = i + 1;
+        } else if c == 46 && part < 2 && i - part_start >= need {
+            part = part + 1;
+            i = i + 1;
+            part_start = i;
+        } else {
+            end = i;
+            i = n;
+        }
+    }
+    if part == 2 && end - part_start >= 16 { Some(end) } else { None }
+}
+
+// The start and end of every word in `text` holding a credential, in order and apart.
+fn credential_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut last: usize = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant n == bytes.len(), last <= i, i <= n,
+        decreases n - i,
+    {
+        let starts = is_seg(bytes[i]) && (i == 0 || !is_seg(bytes[i - 1]));
+        let found = if starts { token_end(bytes, i) } else { None };
+        match found {
+            Some(e) => {
+                let mut s: usize = i;
+                while s > last && !is_stop(bytes[s - 1])
+                    invariant n == bytes.len(), last <= s, s <= i, i < n,
+                    decreases s,
+                {
+                    s = s - 1;
+                }
+                let mut r: usize = if e > i && e <= n { e } else { i + 1 };
+                while r < n && !is_stop(bytes[r])
+                    invariant n == bytes.len(), i < r, r <= n,
+                    decreases n - r,
+                {
+                    r = r + 1;
+                }
+                spans.push((s, r));
+                last = r;
+                i = r;
+            }
+            None => {
+                i = i + 1;
+            }
+        }
+    }
+    spans
 }

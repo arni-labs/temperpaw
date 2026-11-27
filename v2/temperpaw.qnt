@@ -3,8 +3,9 @@
 //   Session   one durable conversation: a state machine that survives restarts, model swaps and a lost computer.
 //   Turn      one immutable entry of the conversation (user, assistant, tool, summary), parent-linked.
 //   ToolCall  one governed tool call the model asked for, decided from the agent's grants: bash runs on the Computer,
-//             unikon calls UniKon's connector through unikon_door, with no computer.
-//   Computer  the session's own Tensorlake sandbox (never the node's), reached only through computer_door.
+//             unikon calls UniKon's connector through unikon_door, which reaches the computer only to put there a
+//             credential an answer holds, so no record holds it.
+//   Computer  the session's own Tensorlake sandbox (never the node's), run through computer_door.
 //   Memory    what an agent keeps: (key, scope, content), Active or Archived.
 // The loop is the Session's statuses. V2 picks a move's follow-on only from the status that move leaves, so "running"
 // is four statuses: Thinking (the model is asked), Calling (a tool call is next), Acting (a bash call runs on the
@@ -280,7 +281,7 @@ module session_record {
   type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry], epoch: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   // One unikon tool call: its id and the model's input, {"tool": .., "arguments": {..}}.
-  type UnikonIn = { call: str, args: str }
+  type UnikonIn = { call: str, args: str, sandbox: str, paused: bool }
   type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn) | AskUnikon(UnikonIn)
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, tokens_cached: int, epoch: int }
@@ -380,7 +381,8 @@ module session_record {
   // A granted unikon call goes to unikon_door, with no computer; every other call (an ungranted one too, refused there)
   // to computer_door.
   pure def calls_unikon(t: Row): bool = head_of(t.queue_names) == "unikon" and t.tools.contains("unikon")
-  pure def ask_unikon(t: Row): Ask = AskUnikon({ call: head_of(t.queue_ids), args: head_of(t.queue_args) })
+  // The session's computer goes too, only so unikon_door can put a credential an answer holds there, off the record.
+  pure def ask_unikon(t: Row): Ask = AskUnikon({ call: head_of(t.queue_ids), args: head_of(t.queue_args), sandbox: t.computer, paused: t.computer_paused })
   pure def said_entry(role: str, said: str): Entry = { role: role, content: said, call_id: "", call_ids: [], call_names: [], call_args: [] }
   pure def tool_entry(call: str, said: str): Entry = { role: "tool", content: said, call_id: call, call_ids: [], call_names: [], call_args: [] }
   // After the call at the head ends: the next call, else the next model turn, else stop at the agent's step limit. What a
@@ -905,7 +907,7 @@ module temperpaw {
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, tokens_cached: int, epoch: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str, call: str }
-  type UnikonIn = { call: str, args: str }
+  type UnikonIn = { call: str, args: str, sandbox: str, paused: bool }
   type CatalogIn = { source: str }
   type CatalogOut = { models: str, count: int }
 
@@ -934,7 +936,7 @@ module temperpaw {
   pure val modules: List[ModuleDecl] = [
     { name: "turn_runner", source_hash: "@turn_runner.rs", form: CallingModule(["openai", "anthropic", "openrouter"]), input: "TurnIn", answer: "TurnOut", constraints: [] },
     { name: "computer_door", source_hash: "@computer_door.rs", form: CallingModule(["tensorlake", "tensorlake_process"]), input: "ComputerIn", answer: "ComputerOut", constraints: [] },
-    { name: "unikon_door", source_hash: "@unikon_door.rs", form: CallingModule(["unikon"]), input: "UnikonIn", answer: "ComputerOut", constraints: [] },
+    { name: "unikon_door", source_hash: "@unikon_door.rs", form: CallingModule(["unikon", "tensorlake_process"]), input: "UnikonIn", answer: "ComputerOut", constraints: [] },
     // OpenRouter's model list is public: the call carries no key.
     { name: "model_catalog", source_hash: "@model_catalog.rs", form: CallingModule(["openrouter"]), input: "CatalogIn", answer: "CatalogOut", constraints: [] },
     // Every door's middleware: it alone is handed the keys, and puts them in place at send time (S-DOOR-10).

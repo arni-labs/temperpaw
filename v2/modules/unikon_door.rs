@@ -2,7 +2,8 @@
 // tool's text. The model calls the `unikon` tool with {"tool": "<name>", "arguments": {...}}; this module speaks MCP over
 // HTTP to the `unikon` door (https://unikon.dev/mcp): initialize, then notifications/initialized, then tools/call (or
 // tools/list, when the tool is "list_tools"). The owner's connector key is put in the Authorization header by the door's
-// middleware (door_sign), out of this module's sight and never on the session's computer. No sandbox is involved.
+// middleware (door_sign), out of this module's sight and never on the session's computer. The one time it touches the
+// session's computer is to put there a credential an answer holds (below, at sealed), so no record holds it.
 //
 // Limits, each with its reason: an answer keeps its first 32 KiB, as a computer's stream does, so one result fits the
 // model's context and the session's row (a bigger read goes to the computer: inspect_app part repo, then git); an error
@@ -53,7 +54,7 @@ fn connect(input: Input) -> Option<Answer> {
         b
     };
     match post(body, &session) {
-        Posted::Answered(text, _) => Some(answer_of(&text, listing)),
+        Posted::Answered(text, _) => Some(answer_of(&text, listing, &input.sandbox, input.paused, &input.call)),
         Posted::Status(status, body) => Some(refused(status, &body)),
         // Unknown or failed: the connector may have acted, so nothing is retried (the door is at most once).
         Posted::Failed => None,
@@ -178,7 +179,7 @@ fn message_at(bytes: &[u8]) -> Option<usize> {
 
 // The connector's answer as the tool's: a call's text parts (exit 1 when it says isError), the tool list's names and
 // first lines, or a JSON-RPC error's text.
-fn answer_of(text: &str, listing: bool) -> Answer {
+fn answer_of(text: &str, listing: bool, sandbox: &str, paused: bool, call: &str) -> Answer {
     let bytes = text.as_bytes();
     let at = match message_at(bytes) { Some(at) => at, None => return said(1, &cut_at_ascii(text, ERROR_KEEP)) };
     let fields = match object_fields(bytes, at) { Some(f) => f, None => return said(1, &cut_at_ascii(text, ERROR_KEEP)) };
@@ -199,7 +200,8 @@ fn answer_of(text: &str, listing: bool) -> Answer {
         }
         j = j + 1;
     }
-    let mut answer = said(0, "");
+    let (out, note) = sealed(out, sandbox, paused, call);
+    let mut answer = said(0, &note);
     answer.exit_code = code;
     if out.len() > KEEP_BYTES {
         answer.stdout = cut_at_ascii(&out, KEEP_BYTES);
@@ -625,4 +627,240 @@ fn text_of(raw: Vec<u8>) -> String {
         Ok(text) => text,
         Err(_) => String::new(),
     }
+}
+
+// Each credential in an answer is put in its own file on the session's computer, readable by it alone, and the answer
+// shows `$(cat <file>)` in its place; with no computer up, it shows only that one was kept. So the model, the session's
+// history, its ToolCall and Turn records and the provider never hold one, and a bash command still uses it. Reason: a
+// short-lived clone password or upload link in a record lives on in the app's hash-chained history (hub, 27 Nov). A
+// file write runs at most 30 s, inside the process destination's 180 s deadline.
+const SEAL_DIR: &'static str = "/home/tl-user/.seed/";
+const SEAL_SECONDS: u64 = 30;
+
+fn sealed(text: String, sandbox: &str, paused: bool, call: &str) -> (String, String) {
+    let spans = credential_spans(&text);
+    let count = spans.len();
+    if count == 0 {
+        return (text, String::new());
+    }
+    let name = file_name(call);
+    let up = sandbox.len() > 0 && !paused;
+    let kept = up && put_on_computer(&text, &spans, sandbox, &name);
+    let mut out = String::new();
+    let mut from: usize = 0;
+    let mut j: usize = 0;
+    while j < count
+        invariant count == spans.len(),
+        decreases count - j,
+    {
+        let s = spans[j].0;
+        let e = spans[j].1;
+        match text.get(from..s) { Some(t) => out.push_str(t), None => {} }
+        if kept {
+            out.push_str("$(cat ");
+            out.push_str(SEAL_DIR);
+            out.push_str(&name);
+            out.push_str("-");
+            push_count(&mut out, (j + 1) as u64);
+            out.push_str(")");
+        } else {
+            out.push_str("[a credential, kept off the record]");
+        }
+        from = e;
+        j = j + 1;
+    }
+    match text.get(from..text.len()) { Some(t) => out.push_str(t), None => {} }
+    let note = if kept {
+        "(Each credential in this answer is on your computer, readable by it alone, shown as $(cat <file>). Put that inside double quotes in a bash command, as it is, and never print it.)\n"
+    } else if up {
+        "(This answer's credentials could not be put on your computer, so they were kept off the record. Make this call again.)\n"
+    } else {
+        "(This answer's credentials were kept off the record: your computer is not up. Run any bash command, then make this call again, and each will be on your computer.)\n"
+    };
+    (out, note.to_string())
+}
+
+// The file name for a call's credentials: the call id's letters and digits, at most 40, or "call".
+fn file_name(call: &str) -> String {
+    let bytes = call.as_bytes();
+    let n = bytes.len();
+    let mut name = String::new();
+    let mut kept: usize = 0;
+    let mut i: usize = 0;
+    while i < n && kept < 40
+        invariant n == bytes.len(),
+        decreases n - i,
+    {
+        let c = bytes[i];
+        if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+            match call.get(i..i + 1) { Some(t) => name.push_str(t), None => {} }
+            kept = kept + 1;
+        }
+        i = i + 1;
+    }
+    if name.len() == 0 { "call".to_string() } else { name }
+}
+
+// One bash run on the session's computer that writes each credential to its file, the values passed as the process's
+// environment, never in the command. True when the run said it wrote them all.
+fn put_on_computer(text: &str, spans: &Vec<(usize, usize)>, sandbox: &str, name: &str) -> bool {
+    let mut command = String::from("umask 077 && mkdir -p ");
+    command.push_str(SEAL_DIR);
+    let mut vars = String::from("{");
+    let count = spans.len();
+    let mut j: usize = 0;
+    while j < count
+        invariant count == spans.len(),
+        decreases count - j,
+    {
+        let s = spans[j].0;
+        let e = spans[j].1;
+        let value = match text.get(s..e) { Some(t) => t, None => "" };
+        command.push_str(" && printf %s \"$SEED_SEAL_");
+        push_count(&mut command, (j + 1) as u64);
+        command.push_str("\" > ");
+        command.push_str(SEAL_DIR);
+        command.push_str(name);
+        command.push_str("-");
+        push_count(&mut command, (j + 1) as u64);
+        if j > 0 {
+            vars.push_str(",");
+        }
+        vars.push_str("\"SEED_SEAL_");
+        push_count(&mut vars, (j + 1) as u64);
+        vars.push_str("\":");
+        push_json_string(&mut vars, value);
+        j = j + 1;
+    }
+    command.push_str(" && echo seed-sealed-ok");
+    vars.push_str("}");
+    let mut body = String::from("{\"command\":\"bash\",\"args\":[\"-lc\",");
+    push_json_string(&mut body, &command);
+    body.push_str("],\"working_dir\":\"/home/tl-user\",\"timeout\":");
+    push_count(&mut body, SEAL_SECONDS);
+    body.push_str(",\"env\":");
+    body.push_str(&vars);
+    body.push_str("}");
+    let mut headers: Vec<(String, String)> = Vec::new();
+    headers.push(("Content-Type".to_string(), "application/json".to_string()));
+    headers.push(("x-tensorlake-sandbox-id".to_string(), sandbox.to_string()));
+    let reply = door_call(DoorRequest {
+        destination: DoorDestination::tensorlake_process, method: DoorMethod::Post, path: "processes/run".to_string(), headers,
+        body: body.into_bytes(),
+    });
+    match reply {
+        DoorReply::Answered(heard) => {
+            let DoorAnswer { status, headers: _, body: raw } = heard;
+            status >= 200 && status <= 299 && text_of(raw).contains("seed-sealed-ok")
+        }
+        _ => false,
+    }
+}
+
+fn power_of_ten(k: u64) -> u64 {
+    match k {
+        0 => 1, 1 => 10, 2 => 100, 3 => 1_000, 4 => 10_000, 5 => 100_000, 6 => 1_000_000, 7 => 10_000_000,
+        8 => 100_000_000, _ => 1_000_000_000,
+    }
+}
+
+// n in decimal, at least one digit. n is at most 9_999_999_999 by its callers' bounds.
+fn push_count(b: &mut String, n: u64) {
+    let mut started = false;
+    let mut k: u64 = 10;
+    while k > 0
+        decreases k,
+    {
+        k = k - 1;
+        let p = power_of_ten(k);
+        let digit = if p > 0 { (n / p) % 10 } else { 0 };
+        if digit != 0 || started || k == 0 {
+            b.push_str(digit_text(digit));
+            started = true;
+        }
+    }
+}
+
+// ---- Credentials. A credential is a run of three base64url segments joined by dots, the first at least 8 bytes and the
+// other two at least 16: the shape of a JWT, and of every clone password, upload link and open link the connector hands
+// out. What is kept off the record is the whole word holding one (a URL, say), up to a space, a quote, a backslash, a
+// backtick or an angle bracket.
+
+fn is_seg(c: u8) -> bool {
+    (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
+}
+
+fn is_stop(c: u8) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13 || c == 34 || c == 39 || c == 92 || c == 60 || c == 62 || c == 96
+}
+
+// Where a credential that starts at `at` ends, if one starts there.
+fn token_end(bytes: &[u8], at: usize) -> Option<usize> {
+    let n = bytes.len();
+    if at >= n {
+        return None;
+    }
+    let mut i: usize = at;
+    let mut end: usize = n;
+    let mut part: usize = 0;
+    let mut part_start: usize = at;
+    while i < n
+        invariant n == bytes.len(), at <= part_start, part_start <= i, i <= n, part_start <= end, end <= n, end == n || i == n, part <= 2,
+        decreases n - i,
+    {
+        let c = bytes[i];
+        let need: usize = if part == 0 { 8 } else { 16 };
+        if is_seg(c) {
+            i = i + 1;
+        } else if c == 46 && part < 2 && i - part_start >= need {
+            part = part + 1;
+            i = i + 1;
+            part_start = i;
+        } else {
+            end = i;
+            i = n;
+        }
+    }
+    if part == 2 && end - part_start >= 16 { Some(end) } else { None }
+}
+
+// The start and end of every word in `text` holding a credential, in order and apart.
+fn credential_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut last: usize = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant n == bytes.len(), last <= i, i <= n,
+        decreases n - i,
+    {
+        let starts = is_seg(bytes[i]) && (i == 0 || !is_seg(bytes[i - 1]));
+        let found = if starts { token_end(bytes, i) } else { None };
+        match found {
+            Some(e) => {
+                let mut s: usize = i;
+                while s > last && !is_stop(bytes[s - 1])
+                    invariant n == bytes.len(), last <= s, s <= i, i < n,
+                    decreases s,
+                {
+                    s = s - 1;
+                }
+                let mut r: usize = if e > i && e <= n { e } else { i + 1 };
+                while r < n && !is_stop(bytes[r])
+                    invariant n == bytes.len(), i < r, r <= n,
+                    decreases n - r,
+                {
+                    r = r + 1;
+                }
+                spans.push((s, r));
+                last = r;
+                i = r;
+            }
+            None => {
+                i = i + 1;
+            }
+        }
+    }
+    spans
 }
