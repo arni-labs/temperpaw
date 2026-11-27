@@ -108,6 +108,31 @@ module memory_record {
   // temper:generated end
 }
 
+module briefing_record {
+  import temper.* from "./temper"
+
+  type BriefingId = Id
+  type BriefingStatus = BriefingPublished | BriefingArchived
+  type Row = { status: BriefingStatus, title: str, summary: str, date: str }
+  type Msg = NoMsgs
+  type Ask = NoAsks
+  type PublishIn = { title: str, summary: str, date: str }
+
+  pure val record: RecordDecl = { name: "Briefing", status: "status" }
+  pure val moves: List[MoveDecl[BriefingStatus]] = [
+    { name: "publish", from: FirstMove },
+    { name: "archive_briefing", from: Statuses([BriefingPublished]) },
+  ]
+  pure def publish_guard(i: PublishIn, c: Ctx): bool = require(i.title != "" and i.summary != "", "A briefing has a title and summary.")
+  pure def publish_apply(i: PublishIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
+    next: { status: BriefingPublished, title: i.title, summary: i.summary, date: i.date }, follow: [],
+  }
+  pure def archive_briefing_guard(t: Row, i: NoInput, c: Ctx): bool = true
+  pure def archive_briefing_apply(t: Row, i: NoInput, c: Ctx): Move[Row, Do, Msg, Ask] = { next: { ...t, status: BriefingArchived }, follow: [] }
+  // temper:generated begin
+  // temper:generated end
+}
+
 module catalog_record {
   import temper.* from "./temper"
 
@@ -869,6 +894,7 @@ module temperpaw {
   import toolcall_record as toolcall_record
   import computer_record as computer_record
   import memory_record as memory_record
+  import briefing_record as briefing_record
   import catalog_record as catalog_record
   import session_record as session_record
   import agent_record as agent_record
@@ -948,9 +974,11 @@ module temperpaw {
     // A status timer's fire and what it asks act as the app.
     { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused", "stalled", "stalled_call"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
+    { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Briefing", moves: ["publish", "archive_briefing"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
+    { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Briefing", moves: ["publish", "archive_briefing"] }), when: Always },
     // No agent approves or denies its own tool calls. Agents may make and revise Agents, as the owner may (Rita,
     // 27 Nov: agents edit freely, approval can come later).
     { decide: Forbid, who: CallerAgent, what: MovesOf({ record: "Session", moves: ["approve", "deny"] }), when: Always },
@@ -965,7 +993,9 @@ module temperpaw {
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Computer", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Computer", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Memory", fields: AllFields }), when: Always },
+    { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Briefing", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Memory", fields: AllFields }), when: Always },
+    { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Briefing", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Catalog", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Catalog", fields: AllFields }), when: Always },
   ]
