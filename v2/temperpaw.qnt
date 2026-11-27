@@ -72,7 +72,7 @@ module memory_record {
 
   type MemoryId = Id
   type Status = Active | Archived
-  type Row = { status: Status, key: str, scope: str, content: str }
+  type Row = { status: Status, key: str, scope: str, content: str, pinned: bool }
   type Msg = NoMsgs
   type Ask = NoAsks
   type RememberIn = { key: str, scope: str, content: str }
@@ -87,7 +87,7 @@ module memory_record {
   ]
   pure def remember_guard(i: RememberIn, c: Ctx): bool = require(i.key != "" and i.content != "", "A memory has a key and content.")
   pure def remember_apply(i: RememberIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
-    next: { status: Active, key: i.key, scope: i.scope, content: i.content }, follow: [],
+    next: { status: Active, key: i.key, scope: i.scope, content: i.content, pinned: false }, follow: [],
   }
   pure def revise_guard(t: Row, i: ReviseIn, c: Ctx): bool = require(i.content != "", "A memory keeps some content.")
   pure def revise_apply(t: Row, i: ReviseIn, c: Ctx): Move[Row, Do, Msg, Ask] = { next: { ...t, content: i.content }, follow: [] }

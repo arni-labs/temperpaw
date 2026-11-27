@@ -43,7 +43,7 @@ const SUGGESTIONS = [
   },
   {
     title: "Upgrade yourself with a daily briefing",
-    subtitle: "TemperPaw adds a Briefing tab to itself, live",
+    subtitle: "Seed adds a Briefing tab to itself, live",
     prompt: "Upgrade yourself with a daily briefing. Every morning at 8, write me a short note on what you did yesterday and what's waiting on me. Add a Briefing tab to your own home screen and a page showing what you remember about me. Change yourself live, with no restart, then show me today's briefing.",
   },
 ];
@@ -638,7 +638,7 @@ function MemoryModal({ memories, onClose }: { memories: AnyRec[]; onClose: () =>
         </div>
         {active.length === 0 ? (
           <p className="tp-side-empty" style={{ padding: 0 }}>
-            No saved memories yet. Ask TemperPaw to remember preferences or project context.
+            No saved memories yet. Ask Seed to remember preferences or project context.
           </p>
         ) : (
           <ul className="tp-memory-list">
@@ -696,7 +696,7 @@ function Sidebar({
             }}
           >
             <BrandMark />
-            <span>{appName || "TemperPaw"}</span>
+            <span>{appName || "Seed"}</span>
           </button>
           <button
             type="button"
@@ -984,7 +984,7 @@ function TemperPawApp() {
         path="/"
         element={
           <LandingScreen
-            appName={app?.name || "TemperPaw"}
+            appName={app?.name || "Seed"}
             agents={agents}
             primaryAgent={primaryAgent}
             sessions={sessions}
@@ -1009,7 +1009,7 @@ function TemperPawApp() {
         element={
           <SessionScreen
             appId={String(app?.id || "")}
-            appName={app?.name || "TemperPaw"}
+            appName={app?.name || "Seed"}
             sessions={sessions}
             memories={memories}
             catalog={catalog}
@@ -1071,7 +1071,39 @@ function LandingScreen({
     prompt: string;
     knownAgentIds: Set<string>;
     knownSessionIds: Set<string>;
+    title: string;
+    since: number;
   } | null>(null);
+
+  // A session that start_session makes is a follow-on of the Agent's move, and the page's live list is not told of it,
+  // so while one is awaited the list is read again: each read is a new query (its limit grows by one), which the kit
+  // asks the app for afresh. Every 500 ms for at most 20 s; after that the launch ends with an error, never a spinner.
+  const [probe, setProbe] = useState(0);
+  const PROBE_MS = 500;
+  const PROBE_MAX = 39;
+  const probed = useRecords("session", probe > 0 ? { limit: 10 + probe } : { limit: 50 }) as AnyRec[];
+  useEffect(() => {
+    if (!launching) {
+      setProbe(0);
+      return;
+    }
+    let n = 0;
+    const timer = window.setInterval(() => {
+      n += 1;
+      if (n <= PROBE_MAX) {
+        setProbe(n);
+        return;
+      }
+      window.clearInterval(timer);
+      const p = pendingRef.current;
+      if (!p) return;
+      pendingRef.current = null;
+      setLaunching(false);
+      setPrompt(p.prompt);
+      setError("Seed started your session, but this page has not caught up yet. Reload the page to open it.");
+    }, PROBE_MS);
+    return () => window.clearInterval(timer);
+  }, [launching]);
 
   useEffect(() => {
     const p = pendingRef.current;
@@ -1085,6 +1117,8 @@ function LandingScreen({
         prompt: p.prompt,
         knownAgentIds: p.knownAgentIds,
         knownSessionIds: new Set(sessions.map((s) => s.id)),
+        title: p.title,
+        since: p.since,
       };
       setPendingTick((n) => n + 1);
       void move("agent", created.id, "start_session", { title: deriveTitle(p.prompt) }).then((r) => {
@@ -1100,7 +1134,12 @@ function LandingScreen({
     }
 
     if (p.stage === "session") {
-      const created = sessions.find((s) => !p.knownSessionIds.has(s.id));
+      const created = [...probed, ...sessions].find(
+        (s) =>
+          !p.knownSessionIds.has(s.id) &&
+          (s.title === p.title || s.fields?.title === p.title) &&
+          (!s.created_at || Date.parse(s.created_at) >= p.since - 60_000),
+      );
       if (!created) return;
       const text = p.prompt;
       pendingRef.current = null;
@@ -1110,7 +1149,7 @@ function LandingScreen({
         navigate(`/session/${created.id}`);
       });
     }
-  }, [agents, sessions, pendingTick, navigate]);
+  }, [agents, sessions, probed, pendingTick, navigate]);
 
   const launch = async (rawText: string) => {
     const text = rawText.trim();
@@ -1126,6 +1165,8 @@ function LandingScreen({
         prompt: text,
         knownAgentIds: new Set(agents.map((a) => a.id)),
         knownSessionIds,
+        title: deriveTitle(text),
+        since: Date.now(),
       };
       const res = await move("agent", primaryAgent.id, "start_session", { title: deriveTitle(text) });
       if (!res.ok) {
@@ -1146,9 +1187,11 @@ function LandingScreen({
       prompt: text,
       knownAgentIds,
       knownSessionIds,
+      title: deriveTitle(text),
+      since: Date.now(),
     };
     const created = await add("agent", {
-      name: "TemperPaw",
+      name: "Seed",
       soul: DEFAULT_SOUL,
       provider: toProviderVariant(provider),
       model,
@@ -1159,7 +1202,7 @@ function LandingScreen({
       pendingRef.current = null;
       setLaunching(false);
       setPrompt(text);
-      setError(created.reason || "Could not initialize TemperPaw.");
+      setError(created.reason || "Could not initialize Seed.");
       return;
     }
     if (created.id) {
@@ -1168,6 +1211,8 @@ function LandingScreen({
         prompt: text,
         knownAgentIds,
         knownSessionIds,
+        title: deriveTitle(text),
+        since: Date.now(),
       };
       const started = await move("agent", created.id, "start_session", { title: deriveTitle(text) });
       if (!started.ok) {
@@ -1192,7 +1237,7 @@ function LandingScreen({
     }
     setModelSaving(true);
     const res = await move("agent", primaryAgent.id, "revise", {
-      name: primaryAgent.fields.name || "TemperPaw",
+      name: primaryAgent.fields.name || "Seed",
       soul: primaryAgent.fields.soul || DEFAULT_SOUL,
       provider: toProviderVariant(newProv),
       model: newMod,
@@ -1242,9 +1287,9 @@ function LandingScreen({
             <div className="tp-hero">
               <div className="tp-hero-eyebrow">
                 <span className="tp-pill-dot" />
-                <span>TemperPaw · UniKon</span>
+                <span>Seed · UniKon</span>
               </div>
-              <h1>What should TemperPaw build next?</h1>
+              <h1>What should Seed grow next?</h1>
               <p>Hand it a goal. It builds you a living app that keeps your limits, learns from your OKs and keeps improving, and it upgrades itself the same way.</p>
             </div>
 
@@ -1260,7 +1305,7 @@ function LandingScreen({
                 rows={2}
                 value={prompt}
                 disabled={launching}
-                placeholder="Give TemperPaw a goal, or ask anything…"
+                placeholder="Give Seed a goal, or ask anything…"
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -1508,7 +1553,7 @@ function SessionScreen({
                       place === "done"
                         ? "This session is closed."
                         : isBusy
-                          ? "TemperPaw is working…"
+                          ? "Seed is working…"
                           : "Reply or ask for a change…"
                     }
                     onChange={(e) => setText(e.target.value)}
