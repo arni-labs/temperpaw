@@ -48,12 +48,76 @@ const SUGGESTIONS = [
   },
 ];
 
-const MODEL_PRESETS = [
-  { provider: "openrouter", label: "OpenRouter", model: "anthropic/claude-sonnet-4.5", short: "claude-sonnet-4.5" },
-  { provider: "openrouter", label: "OpenRouter", model: "openai/gpt-4o", short: "gpt-4o (OR)" },
-  { provider: "openai", label: "OpenAI", model: "gpt-4o", short: "gpt-4o" },
-  { provider: "anthropic", label: "Anthropic", model: "claude-sonnet-4-5", short: "claude-sonnet-4-5" },
+type CatalogEntry = { id: string; name: string; ctxK: number; price: string };
+
+const FEATURED_OPENROUTER = [
+  "anthropic/claude-sonnet-4.5",
+  "anthropic/claude-opus-4.5",
+  "anthropic/claude-opus-4.1",
+  "openai/gpt-5",
+  "openai/gpt-4o",
+  "openai/o3",
+  "google/gemini-2.5-pro",
+  "google/gemini-2.5-flash",
+  "google/gemini-4-neon",
+  "deepseek/deepseek-r1",
+  "deepseek/deepseek-chat",
+  "x-ai/grok-4",
 ];
+
+function formatPromptPrice(raw: string | undefined): string {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return "";
+  if (n === 0) return "free";
+  const perM = n * 1_000_000;
+  if (perM < 0.01) return "<$0.01/M";
+  if (perM < 1) return `$${perM.toFixed(2)}/M`;
+  return `$${perM % 1 === 0 ? perM.toFixed(0) : perM.toFixed(2)}/M`;
+}
+
+function parseCatalogModels(raw: unknown): CatalogEntry[] {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  const out: CatalogEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    const id = (parts[0] || "").trim();
+    if (!id) continue;
+    const name = (parts[1] || id).trim();
+    const ctxLen = Number(parts[2] || 0);
+    const ctxK = ctxLen > 0 ? Math.round(ctxLen / 1000) : 0;
+    const price = formatPromptPrice(parts[3]);
+    out.push({ id, name, ctxK, price });
+  }
+  const rank = (id: string) => {
+    const idx = FEATURED_OPENROUTER.indexOf(id);
+    return idx >= 0 ? idx : 1000;
+  };
+  return out.sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id));
+}
+
+const DIRECT_MODELS: Record<string, CatalogEntry[]> = {
+  openai: [
+    { id: "gpt-4o", name: "OpenAI: GPT-4o", ctxK: 128, price: "" },
+    { id: "gpt-4o-mini", name: "OpenAI: GPT-4o mini", ctxK: 128, price: "" },
+    { id: "gpt-5", name: "OpenAI: GPT-5", ctxK: 400, price: "" },
+    { id: "o3", name: "OpenAI: o3", ctxK: 200, price: "" },
+    { id: "o4-mini", name: "OpenAI: o4-mini", ctxK: 200, price: "" },
+  ],
+  anthropic: [
+    { id: "claude-sonnet-4-5", name: "Anthropic: Claude Sonnet 4.5", ctxK: 200, price: "" },
+    { id: "claude-opus-4-5", name: "Anthropic: Claude Opus 4.5", ctxK: 200, price: "" },
+    { id: "claude-3-7-sonnet-latest", name: "Anthropic: Claude 3.7 Sonnet", ctxK: 200, price: "" },
+    { id: "claude-3-5-haiku-latest", name: "Anthropic: Claude 3.5 Haiku", ctxK: 200, price: "" },
+  ],
+};
+
+function formatCtx(ctxK: number): string {
+  if (!ctxK || ctxK <= 0) return "";
+  if (ctxK >= 1000) return `${(ctxK / 1000).toFixed(ctxK % 1000 === 0 ? 0 : 1)}M`;
+  return `${ctxK}k`;
+}
 
 // The default agent's soul: v2/agent/soul.md with this app's id filled in.
 const DEFAULT_SOUL: string = soul.soul;
@@ -306,6 +370,7 @@ function MarkdownProse({ text }: { text: string }) {
 function ModelModal({
   provider,
   model,
+  catalog,
   saving,
   error,
   onSave,
@@ -313,6 +378,7 @@ function ModelModal({
 }: {
   provider: string;
   model: string;
+  catalog: AnyRec | null;
   saving: boolean;
   error: string;
   onSave: (provider: string, model: string) => void;
@@ -320,61 +386,232 @@ function ModelModal({
 }) {
   const [prov, setProv] = useState(provider || "openrouter");
   const [mod, setMod] = useState(model || "anthropic/claude-sonnet-4.5");
+  const [query, setQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [catalogErr, setCatalogErr] = useState("");
+  const autoFetchedRef = useRef(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
+
+  const catalogPlace = placeOf(catalog);
+  const catalogLoading = refreshing || catalogPlace === "fetching";
+  const liveOpenRouterModels = useMemo(() => parseCatalogModels(catalog?.fields?.models), [catalog?.fields?.models]);
+
+  const triggerCatalogRefresh = async () => {
+    if (catalogLoading) return;
+    setRefreshing(true);
+    setCatalogErr("");
+    const res = catalog
+      ? await move("catalog", catalog.id, "refresh", {})
+      : await add("catalog", {});
+    setRefreshing(false);
+    if (!res.ok) setCatalogErr(res.reason || "Could not load OpenRouter catalog.");
+  };
+
+  // Auto-fetch live OpenRouter models once when opening the picker if no Catalog record exists yet.
+  useEffect(() => {
+    if (prov !== "openrouter" || catalog || autoFetchedRef.current) return;
+    autoFetchedRef.current = true;
+    void triggerCatalogRefresh();
+  }, [prov, catalog]);
+
+  const allForProvider = useMemo(() => {
+    if (prov === "openrouter") return liveOpenRouterModels;
+    return DIRECT_MODELS[prov] || [];
+  }, [prov, liveOpenRouterModels]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allForProvider.slice(0, 80);
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const matches: CatalogEntry[] = [];
+    for (const item of allForProvider) {
+      const hay = `${item.id} ${item.name}`.toLowerCase();
+      if (tokens.every((t) => hay.includes(t))) {
+        matches.push(item);
+        if (matches.length >= 80) break;
+      }
+    }
+    return matches;
+  }, [allForProvider, query]);
+
+  const trimmedQuery = query.trim();
+  const isCustomSlug = trimmedQuery.length > 0 && !/\s/.test(trimmedQuery);
+  const hasExactMatch = useMemo(
+    () => isCustomSlug && allForProvider.some((m) => m.id.toLowerCase() === trimmedQuery.toLowerCase()),
+    [allForProvider, isCustomSlug, trimmedQuery],
+  );
+
+  const selectModel = (nextMod: string) => {
+    setMod(nextMod);
+  };
+
+  const switchProvider = (nextProv: string) => {
+    setProv(nextProv);
+    setQuery("");
+    if (nextProv === "openrouter" && !mod.includes("/")) {
+      setMod("anthropic/claude-sonnet-4.5");
+    } else if (nextProv === "openai" && mod.includes("/")) {
+      setMod("gpt-4o");
+    } else if (nextProv === "anthropic" && mod.includes("/")) {
+      setMod("claude-sonnet-4-5");
+    }
+  };
 
   return (
     <div className="tp-modal-wrap" onClick={onClose}>
-      <div className="tp-modal" role="dialog" aria-label="Model settings" onClick={(e) => e.stopPropagation()}>
+      <div className="tp-modal tp-modal-wide" role="dialog" aria-label="Model settings" onClick={(e) => e.stopPropagation()}>
         <div className="tp-modal-head">
-          <h2>Model</h2>
-          <button type="button" className="tp-ghost-btn" onClick={onClose}>
-            Close
+          <h2>Choose model</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            {prov === "openrouter" && (
+              <button
+                type="button"
+                className="tp-ghost-btn"
+                disabled={catalogLoading}
+                onClick={() => void triggerCatalogRefresh()}
+              >
+                {catalogLoading ? "Refreshing…" : "Refresh"}
+              </button>
+            )}
+            <button type="button" className="tp-ghost-btn" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="tp-seg" role="tablist" aria-label="Provider">
+          <button
+            type="button"
+            role="tab"
+            className="tp-seg-btn"
+            aria-selected={prov === "openrouter"}
+            data-active={prov === "openrouter" ? "true" : "false"}
+            onClick={() => switchProvider("openrouter")}
+          >
+            OpenRouter
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="tp-seg-btn"
+            aria-selected={prov === "openai"}
+            data-active={prov === "openai" ? "true" : "false"}
+            onClick={() => switchProvider("openai")}
+          >
+            OpenAI
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="tp-seg-btn"
+            aria-selected={prov === "anthropic"}
+            data-active={prov === "anthropic" ? "true" : "false"}
+            onClick={() => switchProvider("anthropic")}
+          >
+            Anthropic
           </button>
         </div>
 
-        <div className="tp-preset-row">
-          {MODEL_PRESETS.map((p) => {
-            const active = prov === p.provider && mod === p.model;
-            return (
-              <button
-                key={`${p.provider}/${p.model}`}
-                type="button"
-                className="tp-preset-btn"
-                data-active={active ? "true" : "false"}
-                onClick={() => {
-                  setProv(p.provider);
-                  setMod(p.model);
-                }}
-              >
-                {p.short}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="tp-field">
-          <label htmlFor="tp-provider-sel">Provider</label>
-          <select id="tp-provider-sel" className="tp-select" value={prov} onChange={(e) => setProv(e.target.value)}>
-            <option value="openrouter">OpenRouter</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-        </div>
-
-        <div className="tp-field">
-          <label htmlFor="tp-model-in">Model ID</label>
+        <div className="tp-search-row">
           <input
-            id="tp-model-in"
+            ref={searchRef}
+            data-part="input"
             className="tp-input"
-            value={mod}
-            onChange={(e) => setMod(e.target.value)}
-            placeholder="anthropic/claude-sonnet-4.5"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && trimmedQuery && !saving) {
+                e.preventDefault();
+                const target = filtered[0]?.id || trimmedQuery;
+                setMod(target);
+                onSave(prov, target);
+              }
+            }}
+            placeholder={
+              prov === "openrouter"
+                ? liveOpenRouterModels.length > 0
+                  ? `Search ${liveOpenRouterModels.length} OpenRouter models or paste any slug…`
+                  : "Search OpenRouter models or paste any slug…"
+                : "Filter or type any model ID…"
+            }
           />
         </div>
+
+        {catalogErr && <div className="tp-error">{catalogErr}</div>}
+
+        <ul className="tp-model-list" role="listbox" aria-label="Available models">
+          {isCustomSlug && !hasExactMatch && (
+            <li>
+              <button
+                type="button"
+                className="tp-model-opt"
+                data-selected={mod === trimmedQuery ? "true" : "false"}
+                onClick={() => selectModel(trimmedQuery)}
+              >
+                <span className="tp-model-opt-main">
+                  <span className="tp-model-opt-name">Use custom model ID</span>
+                  <span className="tp-model-opt-id">{trimmedQuery}</span>
+                </span>
+                <span className="tp-model-opt-right">
+                  {mod === trimmedQuery && <span className="tp-model-check">✓</span>}
+                </span>
+              </button>
+            </li>
+          )}
+
+          {filtered.length === 0 ? (
+            <li className="tp-model-empty">
+              {prov === "openrouter" && catalogLoading
+                ? "Loading live OpenRouter models…"
+                : prov === "openrouter" && catalogPlace === "failed"
+                  ? "Could not reach OpenRouter catalog. Click Refresh or paste any model slug above."
+                  : trimmedQuery
+                    ? "No matches — paste any exact model slug above."
+                    : "Click Refresh to load live OpenRouter models, or paste any slug above."}
+            </li>
+          ) : (
+            filtered.map((item) => {
+              const selected = mod === item.id;
+              const ctx = formatCtx(item.ctxK);
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className="tp-model-opt"
+                    data-selected={selected ? "true" : "false"}
+                    onClick={() => selectModel(item.id)}
+                    onDoubleClick={() => {
+                      setMod(item.id);
+                      if (!saving) onSave(prov, item.id);
+                    }}
+                  >
+                    <span className="tp-model-opt-main">
+                      <span className="tp-model-opt-name">{item.name}</span>
+                      <span className="tp-model-opt-id">{item.id}</span>
+                    </span>
+                    <span className="tp-model-opt-right">
+                      {item.price && <span className="tp-model-ctx">{item.price}</span>}
+                      {ctx && <span className="tp-model-ctx">{ctx}</span>}
+                      {selected && <span className="tp-model-check">✓</span>}
+                    </span>
+                  </button>
+                </li>
+              );
+            })
+          )}
+        </ul>
 
         {error && <div className="tp-error">{error}</div>}
 
         <div className="tp-foot-row">
-          <span className="tp-session-time">Swaps cleanly without losing history.</span>
+          <span className="tp-model-opt-id" style={{ maxWidth: "66%" }}>
+            {prov}/{mod}
+          </span>
           <button
             type="button"
             className="tp-send-btn"
@@ -707,6 +944,8 @@ function TemperPawApp() {
   const agents = useRecords("agent", { limit: 12 }) as AnyRec[];
   const sessions = useRecords("session", { limit: 50 }) as AnyRec[];
   const memories = useRecords("memory", { limit: 50 }) as AnyRec[];
+  const catalogs = useRecords("catalog", { limit: 4 }) as AnyRec[];
+  const catalog = catalogs[0] || null;
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -751,6 +990,7 @@ function TemperPawApp() {
             primaryAgent={primaryAgent}
             sessions={sessions}
             memories={memories}
+            catalog={catalog}
             memoryCount={activeMemoryCount}
             provider={activeProvider}
             model={activeModel}
@@ -773,6 +1013,7 @@ function TemperPawApp() {
             appName={app?.name || "TemperPaw"}
             sessions={sessions}
             memories={memories}
+            catalog={catalog}
             memoryCount={activeMemoryCount}
             sidebarOpen={sidebarOpen}
             setSidebarOpen={setSidebarOpen}
@@ -791,6 +1032,7 @@ function LandingScreen({
   primaryAgent,
   sessions,
   memories,
+  catalog,
   memoryCount,
   provider,
   model,
@@ -805,6 +1047,7 @@ function LandingScreen({
   primaryAgent: AnyRec | null;
   sessions: AnyRec[];
   memories: AnyRec[];
+  catalog: AnyRec | null;
   memoryCount: number;
   provider: string;
   model: string;
@@ -1066,6 +1309,7 @@ function LandingScreen({
         <ModelModal
           provider={provider}
           model={model}
+          catalog={catalog}
           saving={modelSaving}
           error={modelErr}
           onSave={handleSaveModel}
@@ -1083,6 +1327,7 @@ function SessionScreen({
   appName,
   sessions,
   memories,
+  catalog,
   memoryCount,
   sidebarOpen,
   setSidebarOpen,
@@ -1093,6 +1338,7 @@ function SessionScreen({
   appName: string;
   sessions: AnyRec[];
   memories: AnyRec[];
+  catalog: AnyRec | null;
   memoryCount: number;
   sidebarOpen: boolean;
   setSidebarOpen: (v: boolean) => void;
@@ -1301,6 +1547,7 @@ function SessionScreen({
         <ModelModal
           provider={s.fields.provider}
           model={s.fields.model}
+          catalog={catalog}
           saving={modelSaving}
           error={modelErr}
           onSave={handleSwapModel}
