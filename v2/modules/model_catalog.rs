@@ -41,26 +41,29 @@ pub fn call(input: Input) -> Option<Answer> {
 
 fn lines_of(bytes: &[u8], items: &Vec<(usize, usize)>) -> Answer {
     let mut models = String::new();
-    let mut count: i64 = 0;
+    let mut used: usize = 0;
+    let mut count: usize = 0;
     let n = items.len();
     let mut full = false;
     let mut i: usize = 0;
     while i < n && !full
-        invariant n == items.len(),
+        invariant n == items.len(), i <= n, count <= i, used <= MOST_BYTES,
         decreases n - i,
     {
         let mut line = String::new();
         if model_line(bytes, items[i].0, &mut line) {
-            if models.len() + line.len() > MOST_BYTES {
+            let size = line.len();
+            if size > MOST_BYTES - used {
                 full = true;
             } else {
                 models.push_str(&line);
+                used = used + size;
                 count = count + 1;
             }
         }
         i = i + 1;
     }
-    Answer { models, count }
+    Answer { models, count: count as i64 }
 }
 
 // One model's line, or false when it has no id.
