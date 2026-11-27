@@ -27,24 +27,24 @@ type Entry = {
 
 const SUGGESTIONS = [
   {
-    title: "Grow a business from a goal",
-    subtitle: "Hard rules, judgment and deep work, organ by organ",
-    prompt: "My goal: run a small online print shop. Grow it as one living app. System 0: an order ledger with a hard daily spend cap and a timer that flags any order unshipped after 48 hours. System 1: a choice point that sorts each new request into fixed actions for me to agree or overrule. System 2: deep work that drafts product listings. Start small, share the live link, and tell me which organ to grow next.",
+    title: "Track my bills & cancel renewals",
+    subtitle: "A hard monthly cap, alerts before renewals charge",
+    prompt: "Build me an app to track my bills and subscriptions. Give it a hard monthly spending cap it can never go past, and alert me 3 days before any renewal charges. When a subscription looks unused, draft a cancellation email and wait for my OK before anything is sent, and learn from which ones I approve or skip. Add a few of my bills to start and share the link.",
   },
   {
-    title: "Keep my bills under a hard cap",
-    subtitle: "A ledger no move can overspend, with due-date timers",
-    prompt: "My goal: never overspend on household bills. Grow an app with a ledger where each category has a hard monthly cap no move can pass, a timer that warns me 3 days before each bill is due, and a choice point that sorts each new expense into a category for me to agree or overrule. Share the live link and add my first categories.",
+    title: "Handle my support inbox",
+    subtitle: "Replies due in 24h, drafts that learn from my edits",
+    prompt: "Set up an app for my customer support inbox. Every message must get a reply within 24 hours; if one is about to miss that, flag it and move it to the top. Sort each message as a question, bug, refund or other, and draft a reply I can approve or edit, learning from my edits so the drafts get better. Nothing goes out without my OK. Share the link.",
   },
   {
-    title: "Run my hiring pipeline",
-    subtitle: "Stages, deadlines and an offer only I sign off",
-    prompt: "My goal: hire our first engineer. Grow an app where candidates move through fixed stages, an offer can't go out without my sign-off, a timer flags anyone waiting over 3 days for a reply, and a choice point suggests each candidate's next step from fixed options. Add deep work that drafts an interview scorecard per candidate, then share the live link.",
+    title: "Run my small online shop",
+    subtitle: "Orders, low-stock alerts, a capped ad budget",
+    prompt: "Build an app to run my small online shop: products with stock counts, orders from placed to shipped, and a weekly ad budget it can never overspend. Flag any product with fewer than 5 left and any order not shipped within 2 days. Each week, draft a promo for my slowest seller and wait for my OK. Add a few sample products and share the link.",
   },
   {
-    title: "Grow yourself a Goals organ",
-    subtitle: "Evolve your own spec, rules and screen live",
-    prompt: "Grow yourself a new organ: a Goal record in your own spec that moves planned, growing, live, with an invariant that a goal can't be live without a linked app, and show my goals on your home screen. Evolve your spec and interface live, with no restart, then show me it working.",
+    title: "Upgrade yourself with a daily briefing",
+    subtitle: "TemperPaw adds a Briefing tab to itself, live",
+    prompt: "Upgrade yourself with a daily briefing. Every morning at 8, write me a short note on what you did yesterday and what's waiting on me. Add a Briefing tab to your own home screen and a page showing what you remember about me. Change yourself live, with no restart, then show me today's briefing.",
   },
 ];
 
@@ -1245,7 +1245,7 @@ function LandingScreen({
                 <span>TemperPaw · UniKon</span>
               </div>
               <h1>What should TemperPaw build next?</h1>
-              <p>Hand it a goal. It grows a living app for it, with hard rules, judgment and deep work, and grows itself the same way.</p>
+              <p>Hand it a goal. It builds you a living app that keeps your limits, learns from your OKs and keeps improving, and it upgrades itself the same way.</p>
             </div>
 
             <form
