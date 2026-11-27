@@ -530,6 +530,10 @@ html, body {
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
+@media (prefers-color-scheme: dark) {
+  .tp-composer { background: var(--tp-surface); }
+}
+
 .tp-composer:focus-within {
   border-color: var(--tp-accent);
   box-shadow: 0 0 0 3px var(--tp-accent-ring), var(--tp-shadow-composer);
