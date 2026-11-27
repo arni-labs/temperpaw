@@ -99,6 +99,51 @@ module memory_record {
   // temper:generated end
 }
 
+module catalog_record {
+  import temper.* from "./temper"
+
+  // The models a person can pick from: OpenRouter's live list of models that take tool calls, read by model_catalog.
+  // Fetching: the list is being read (a refresh keeps the last list readable). Ready: models holds it. Failed: the
+  // read failed; refresh tries again.
+  type CatalogId = Id
+  type Status = Fetching | Ready | Failed
+  // models: one line per model, id TAB name TAB context length TAB prompt price TAB completion price (per token, as
+  // OpenRouter writes them).
+  type Row = { status: Status, models: str, count: int }
+  type Msg = NoMsgs
+  type CatalogIn = { source: str }
+  type CatalogOut = { models: str, count: int }
+  type Ask = | AskCatalog(CatalogIn)
+
+  pure val record: RecordDecl = { name: "Catalog", status: "status" }
+  pure val moves: List[MoveDecl[Status]] = [
+    { name: "fetch", from: FirstMove },
+    { name: "refresh", from: Statuses([Ready, Failed]) },
+    { name: "filled", from: Statuses([Fetching]) },
+    { name: "fetch_failed", from: Statuses([Fetching]) },
+  ]
+  pure val catalog_paths: ModulePaths = { applied: ["filled"], failed: ["fetch_failed"], unknown: ["fetch_failed"], refused: ["fetch_failed"] }
+  pure val read_list: Ask = AskCatalog({ source: "openrouter" })
+  pure def fetch_guard(i: NoInput, c: Ctx): bool = true
+  pure def fetch_apply(i: NoInput, c: Ctx): Move[Row, Do, Msg, Ask] = {
+    next: { status: Fetching, models: "", count: 0 },
+    follow: [RunModule({ mod: "model_catalog", input: read_list, paths: catalog_paths })],
+  }
+  pure def refresh_guard(t: Row, i: NoInput, c: Ctx): bool = true
+  pure def refresh_apply(t: Row, i: NoInput, c: Ctx): Move[Row, Do, Msg, Ask] = {
+    next: { ...t, status: Fetching },
+    follow: [RunModule({ mod: "model_catalog", input: read_list, paths: catalog_paths })],
+  }
+  pure def filled_guard(t: Row, i: CatalogOut, c: Ctx): bool = require(by_module_answer(c), "Only model_catalog's answer fills the list.")
+  pure def filled_apply(t: Row, i: CatalogOut, c: Ctx): Move[Row, Do, Msg, Ask] = {
+    next: { status: Ready, models: i.models, count: i.count }, follow: [],
+  }
+  pure def fetch_failed_guard(t: Row, i: NoInput, c: Ctx): bool = require(by_module_answer(c), "Only model_catalog's end fails a read.")
+  pure def fetch_failed_apply(t: Row, i: NoInput, c: Ctx): Move[Row, Do, Msg, Ask] = { next: { ...t, status: Failed }, follow: [] }
+  // temper:generated begin
+  // temper:generated end
+}
+
 module agent_record {
   import temper.* from "./temper"
 
@@ -589,6 +634,7 @@ module temperpaw {
   import toolcall_record as toolcall_record
   import computer_record as computer_record
   import memory_record as memory_record
+  import catalog_record as catalog_record
   import session_record as session_record
   import agent_record as agent_record
 
@@ -598,6 +644,8 @@ module temperpaw {
   type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str }
+  type CatalogIn = { source: str }
+  type CatalogOut = { models: str, count: int }
 
   pure val doors: List[DoorDecl] = [
     // The model destinations. Deadline 300 s, the kernel's ceiling: one long answer can take minutes. At most once: a
@@ -620,6 +668,8 @@ module temperpaw {
   pure val modules: List[ModuleDecl] = [
     { name: "turn_runner", source_hash: "@turn_runner.rs", form: CallingModule(["openai", "anthropic", "openrouter"]), input: "TurnIn", answer: "TurnOut", constraints: [] },
     { name: "computer_door", source_hash: "@computer_door.rs", form: CallingModule(["tensorlake", "tensorlake_process"]), input: "ComputerIn", answer: "ComputerOut", constraints: [] },
+    // OpenRouter's model list is public: the call carries no key.
+    { name: "model_catalog", source_hash: "@model_catalog.rs", form: CallingModule(["openrouter"]), input: "CatalogIn", answer: "CatalogOut", constraints: [] },
   ]
   pure val roles: List[str] = ["owner", "member"]
   pure val statements: List[Statement] = [
@@ -653,6 +703,8 @@ module temperpaw {
     // A status timer's fire and what it asks act as the app.
     { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
+    { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
+    { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
     { decide: Permit, who: HasRole("member"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
     // No agent approves or denies its own tool calls, or changes its own grants.
     { decide: Forbid, who: CallerAgent, what: MovesOf({ record: "Session", moves: ["approve", "deny"] }), when: Always },
@@ -669,6 +721,8 @@ module temperpaw {
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Computer", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Memory", fields: AllFields }), when: Always },
     { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Memory", fields: AllFields }), when: Always },
+    { decide: Permit, who: HasRole("owner"), what: ReadsOf({ record: "Catalog", fields: AllFields }), when: Always },
+    { decide: Permit, who: HasRole("member"), what: ReadsOf({ record: "Catalog", fields: AllFields }), when: Always },
   ]
   // temper:generated begin
   // temper:generated end
