@@ -505,7 +505,12 @@ module session_record {
         turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
           status: turn_record::Written, parent: key_of(v.self.turns), role: "tool", content: said, tool: uid, model: "", tokens_in: 0, tokens_out: 0,
         }),
-        computer_record_rows: v.computer_record_rows.put(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox }),
+        // The session's computer is made by its first call and marked Ready again by every later one (a second put of
+        // the same child is refused as child_exists).
+        computer_record_rows: if (v.computer_record_rows.keys().contains(child_id(v.id, i.sandbox)))
+          v.computer_record_rows.set(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox })
+        else
+          v.computer_record_rows.put(child_id(v.id, i.sandbox), { status: computer_record::Ready, sandbox: i.sandbox }),
         self: {
           ...v.self, status: place, steps: steps_after(v.self, place), why: why_after(place), turns: v.self.turns + 1,
           queue_ids: rest_of(v.self.queue_ids), queue_names: rest_of(v.self.queue_names), queue_args: rest_of(v.self.queue_args),
