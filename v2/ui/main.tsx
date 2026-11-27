@@ -1015,6 +1015,7 @@ function LandingScreen({
               }}
             >
               <textarea
+                data-part="input"
                 rows={2}
                 value={prompt}
                 disabled={launching}
@@ -1255,6 +1256,7 @@ function SessionScreen({
                   }}
                 >
                   <textarea
+                    data-part="input"
                     rows={1}
                     value={text}
                     disabled={!canAsk || isBusy || sending}

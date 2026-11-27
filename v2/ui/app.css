@@ -777,13 +777,6 @@ html, body {
 
 .tp-assistant-body a {
   color: var(--tp-accent);
-  text-decoration: underline;
-  text-decoration-color: var(--tp-border-strong);
-  text-underline-offset: 3px;
-}
-
-.tp-assistant-body a:hover {
-  text-decoration-color: var(--tp-accent);
 }
 
 /* ---- Subtle Collapsible Tool-Activity Chips ---- */
