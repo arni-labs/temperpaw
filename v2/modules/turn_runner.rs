@@ -20,6 +20,17 @@ Send tool list_tools for every tool and what it does.";
 const COMPACT_ASK: &'static str = "Summarize this conversation so far for yourself: the task, what was done, what was \
 learned, and what is left. This summary will replace the conversation.";
 const ERROR_KEEP: usize = 600;
+// An older tool result goes to the model cut to OLD_RESULT_KEEP bytes. The model has already read it and the session
+// keeps it whole, and resending every 32 KiB read on every step is what made one long turn cost over a million tokens.
+// The cut line moves in strides of TRIM_STRIDE entries, so the prefix a provider caches changes once a stride, not each
+// step; the last RECENT_ENTRIES entries always go whole.
+const RECENT_ENTRIES: usize = 8;
+const TRIM_STRIDE: usize = 16;
+const OLD_RESULT_KEEP: usize = 1500;
+const OLD_RESULT_NOTE: &'static str = "\n(An older result, cut here to save tokens. Make the call again if you need it whole.)";
+// Anthropic models cache a prompt only where it is marked: the soul (with the tools before it) and the newest entry,
+// so each step reads the steps before it from the cache.
+const CACHE_MARK: &'static str = ",\"cache_control\":{\"type\":\"ephemeral\"}";
 
 // Every answer carries the epoch (the run) it was asked in, so the spec moves nothing on an answer to a run a stop ended.
 pub fn call(input: Input) -> Option<Answer> {
@@ -74,7 +85,7 @@ fn reply_to(input: Input) -> Option<Answer> {
 fn empty_answer() -> Answer {
     Answer {
         message: String::new(), stop: String::new(), text: String::new(), call_ids: Vec::new(), call_names: Vec::new(),
-        call_args: Vec::new(), tokens_in: 0, tokens_out: 0, epoch: 0,
+        call_args: Vec::new(), tokens_in: 0, tokens_out: 0, tokens_cached: 0, epoch: 0,
     }
 }
 
@@ -109,6 +120,28 @@ fn cut_at_ascii(s: &str, keep: usize) -> String {
         end = end - 1;
     }
     match s.get(0..end) { Some(t) => t.to_string(), None => String::new() }
+}
+
+// The index below which tool results are sent cut.
+fn trim_line(count: usize) -> usize {
+    if count <= RECENT_ENTRIES + TRIM_STRIDE { 0 } else { ((count - RECENT_ENTRIES) / TRIM_STRIDE) * TRIM_STRIDE }
+}
+
+// The text an entry is sent with: whole, or cut when it is an older tool result.
+fn sent_content(e: &Input_history_item, old: bool) -> String {
+    if old && e.role.as_str() == "tool" && e.content.len() > OLD_RESULT_KEEP {
+        let mut s = cut_at_ascii(&e.content, OLD_RESULT_KEEP);
+        s.push_str(OLD_RESULT_NOTE);
+        s
+    } else {
+        e.content.as_str().to_string()
+    }
+}
+
+// a + b, each held to a trillion, so no provider's count can overflow it.
+fn added_tokens(a: i64, b: u64) -> i64 {
+    let c: i64 = if b > 1_000_000_000_000 { 1_000_000_000_000 } else { b as i64 };
+    if a < 0 || a > 1_000_000_000_000 { c } else { a + c }
 }
 
 fn bounded_tokens(n: i64) -> u64 {
@@ -146,15 +179,24 @@ fn chat_body(input: &Input, openrouter: bool) -> String {
         }
         b.push_str("]");
     }
+    let cache = openrouter && match input.model.as_str().get(0..10) { Some(p) => p == "anthropic/", None => false };
     b.push_str(",\"messages\":[");
     let mut first = true;
     if input.soul.len() > 0 {
         b.push_str("{\"role\":\"system\",\"content\":");
-        push_json_string(&mut b, &input.soul);
+        if cache {
+            b.push_str("[{\"type\":\"text\",\"text\":");
+            push_json_string(&mut b, &input.soul);
+            b.push_str(CACHE_MARK);
+            b.push_str("}]");
+        } else {
+            push_json_string(&mut b, &input.soul);
+        }
         b.push_str("}");
         first = false;
     }
     let count = input.history.len();
+    let line = trim_line(count);
     let mut j: usize = 0;
     while j < count
         invariant count == input.history.len(),
@@ -163,7 +205,7 @@ fn chat_body(input: &Input, openrouter: bool) -> String {
         if !first {
             b.push_str(",");
         }
-        push_chat_entry(&mut b, &input.history[j]);
+        push_chat_entry(&mut b, &input.history[j], j < line, cache && j + 1 == count && !input.compact);
         first = false;
         j = j + 1;
     }
@@ -179,13 +221,25 @@ fn chat_body(input: &Input, openrouter: bool) -> String {
     b
 }
 
-fn push_chat_entry(b: &mut String, e: &Input_history_item) {
+// A marked entry carries its text as one cached text part.
+fn push_chat_text(b: &mut String, text: &str, mark: bool) {
+    if mark {
+        b.push_str("[{\"type\":\"text\",\"text\":");
+        push_json_string(b, text);
+        b.push_str(CACHE_MARK);
+        b.push_str("}]");
+    } else {
+        push_json_string(b, text);
+    }
+}
+
+fn push_chat_entry(b: &mut String, e: &Input_history_item, old: bool, mark: bool) {
     let role = e.role.as_str();
     if role == "tool" {
         b.push_str("{\"role\":\"tool\",\"tool_call_id\":");
         push_json_string(b, &e.call_id);
         b.push_str(",\"content\":");
-        push_json_string(b, &e.content);
+        push_chat_text(b, &sent_content(e, old), mark);
         b.push_str("}");
     } else if role == "assistant" {
         b.push_str("{\"role\":\"assistant\",\"content\":");
@@ -215,7 +269,7 @@ fn push_chat_entry(b: &mut String, e: &Input_history_item) {
         b.push_str("}");
     } else {
         b.push_str("{\"role\":\"user\",\"content\":");
-        push_json_string(b, &e.content);
+        push_chat_text(b, &e.content, mark);
         b.push_str("}");
     }
 }
@@ -249,6 +303,8 @@ fn chat_reply(body: &str) -> Option<Answer> {
                             answer.tokens_in = read_count(bytes, usage[u].1) as i64;
                         } else if name == "completion_tokens" {
                             answer.tokens_out = read_count(bytes, usage[u].1) as i64;
+                        } else if name == "prompt_tokens_details" {
+                            answer.tokens_cached = cached_of(bytes, usage[u].1);
                         }
                         u = u + 1;
                     }
@@ -273,6 +329,24 @@ fn chat_reply(body: &str) -> Option<Answer> {
         answer.stop.push_str(f);
     }
     Some(answer)
+}
+
+// prompt_tokens_details.cached_tokens, or 0.
+fn cached_of(bytes: &[u8], at: usize) -> i64 {
+    let fields = match object_fields(bytes, at) { Some(f) => f, None => return 0 };
+    let count = fields.len();
+    let mut cached: i64 = 0;
+    let mut j: usize = 0;
+    while j < count
+        invariant count == fields.len(),
+        decreases count - j,
+    {
+        if fields[j].0.as_str() == "cached_tokens" {
+            cached = read_count(bytes, fields[j].1) as i64;
+        }
+        j = j + 1;
+    }
+    cached
 }
 
 // One choice: its message's text and tool calls go into the answer; it answers the finish reason.
@@ -384,8 +458,10 @@ fn anthropic_body(input: &Input) -> String {
     b.push_str(",\"max_tokens\":");
     push_count(&mut b, bounded_tokens(input.max_tokens));
     if input.soul.len() > 0 {
-        b.push_str(",\"system\":");
+        b.push_str(",\"system\":[{\"type\":\"text\",\"text\":");
         push_json_string(&mut b, &input.soul);
+        b.push_str(CACHE_MARK);
+        b.push_str("}]");
     }
     if (input.computer || input.unikon) && !input.compact {
         b.push_str(",\"tools\":[");
@@ -408,6 +484,7 @@ fn anthropic_body(input: &Input) -> String {
     b.push_str(",\"messages\":[");
     let mut first = true;
     let count = input.history.len();
+    let line = trim_line(count);
     let mut j: usize = 0;
     while j < count
         invariant count == input.history.len(),
@@ -416,7 +493,7 @@ fn anthropic_body(input: &Input) -> String {
         if !first {
             b.push_str(",");
         }
-        push_anthropic_entry(&mut b, &input.history[j]);
+        push_anthropic_entry(&mut b, &input.history[j], j < line, j + 1 == count && !input.compact);
         first = false;
         j = j + 1;
     }
@@ -432,13 +509,16 @@ fn anthropic_body(input: &Input) -> String {
     b
 }
 
-fn push_anthropic_entry(b: &mut String, e: &Input_history_item) {
+fn push_anthropic_entry(b: &mut String, e: &Input_history_item, old: bool, mark: bool) {
     let role = e.role.as_str();
     if role == "tool" {
         b.push_str("{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":");
         push_json_string(b, &e.call_id);
         b.push_str(",\"content\":");
-        push_json_string(b, &e.content);
+        push_json_string(b, &sent_content(e, old));
+        if mark {
+            b.push_str(CACHE_MARK);
+        }
         b.push_str("}]}");
     } else if role == "assistant" {
         b.push_str("{\"role\":\"assistant\",\"content\":[");
@@ -473,9 +553,12 @@ fn push_anthropic_entry(b: &mut String, e: &Input_history_item) {
         }
         b.push_str("]}");
     } else {
-        b.push_str("{\"role\":\"user\",\"content\":");
+        b.push_str("{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":");
         push_json_string(b, &e.content);
-        b.push_str("}");
+        if mark {
+            b.push_str(CACHE_MARK);
+        }
+        b.push_str("}]}");
     }
 }
 
@@ -506,8 +589,13 @@ fn anthropic_reply(body: &str) -> Option<Answer> {
                         decreases uses - u,
                     {
                         let name = usage[u].0.as_str();
-                        if name == "input_tokens" {
-                            answer.tokens_in = read_count(bytes, usage[u].1) as i64;
+                        // input_tokens leaves out what was read from or written to the cache; tokens_in is all three.
+                        if name == "input_tokens" || name == "cache_creation_input_tokens" {
+                            answer.tokens_in = added_tokens(answer.tokens_in, read_count(bytes, usage[u].1));
+                        } else if name == "cache_read_input_tokens" {
+                            let read = read_count(bytes, usage[u].1);
+                            answer.tokens_in = added_tokens(answer.tokens_in, read);
+                            answer.tokens_cached = added_tokens(0, read);
                         } else if name == "output_tokens" {
                             answer.tokens_out = read_count(bytes, usage[u].1) as i64;
                         }

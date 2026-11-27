@@ -240,6 +240,8 @@ module session_record {
     computer: str,
     computer_paused: bool,
     tokens_in: int, tokens_out: int,
+    // tokens_cached: how many of tokens_in the provider read from its prompt cache.
+    tokens_cached: int,
     reply: str,
     why: str,
     // epoch: which run the session's module calls belong to. A stop, a stall or a delete starts a new one, so an answer
@@ -256,7 +258,7 @@ module session_record {
   type UnikonIn = { call: str, args: str }
   type Ask = | AskModel(TurnIn) | AskComputer(ComputerIn) | AskUnikon(UnikonIn)
   // One model answer: its id, stop ("tool_use", "end", or why it failed), text, tool calls and token use.
-  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, epoch: int }
+  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, tokens_cached: int, epoch: int }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str, call: str }
   type OpenIn = { title: str, soul: str, provider: str, model: str, tools: Set[str], approve: Set[str] }
   type AskIn = { text: str }
@@ -275,7 +277,7 @@ module session_record {
 
   pure val record: RecordDecl = { name: "Session", status: "status" }
   // Sessions made before epoch and pending existed read them as these.
-  pure val initial: { epoch: int, pending: str } = { epoch: 0, pending: "" }
+  pure val initial: { tokens_cached: int, epoch: int, pending: str } = { tokens_cached: 0, epoch: 0, pending: "" }
   pure val moves: List[MoveDecl[Status]] = [
     { name: "open", from: FirstMove },
     { name: "ask", from: Statuses([Idle, Failed]) },
@@ -380,7 +382,7 @@ module session_record {
       status: Idle, agent: sender(c), title: i.title, soul: i.soul, provider: i.provider, model: i.model,
       tools: i.tools, approve: i.approve, history: [], turns: 0, steps: 0,
       queue_ids: [], queue_names: [], queue_args: [], asked_in: "", computer: "", computer_paused: false, tokens_in: 0, tokens_out: 0,
-      reply: "", why: "", epoch: 0, pending: "",
+      tokens_cached: 0, reply: "", why: "", epoch: 0, pending: "",
     },
     follow: [],
   }
@@ -507,7 +509,7 @@ module session_record {
         ...v.self, status: Calling, turns: v.self.turns + 1, asked_in: key_of(v.self.turns + 1),
         queue_ids: i.call_ids, queue_names: i.call_names, queue_args: i.call_args,
         history: v.self.history.append({ role: "assistant", content: i.text, call_id: "", call_ids: i.call_ids, call_names: i.call_names, call_args: i.call_args }),
-        tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
+        tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out, tokens_cached: v.self.tokens_cached + i.tokens_cached,
       },
     },
     follow: [Intent(DoNext_tool(Nothing))],
@@ -531,7 +533,7 @@ module session_record {
         self: {
           ...v.self, status: place, turns: v.self.turns + 1, reply: i.text, history: sent, pending: "",
           steps: if (place == Thinking) 1 else v.self.steps,
-          tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
+          tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out, tokens_cached: v.self.tokens_cached + i.tokens_cached,
         },
       },
       follow:
@@ -559,7 +561,7 @@ module session_record {
         self: {
           ...v.self, status: place, turns: v.self.turns + 1, history: sent, pending: "",
           steps: if (place == Thinking) 1 else v.self.steps,
-          tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out,
+          tokens_in: v.self.tokens_in + i.tokens_in, tokens_out: v.self.tokens_out + i.tokens_out, tokens_cached: v.self.tokens_cached + i.tokens_cached,
         },
       },
       follow: if (place == Thinking) [RunModule({ mod: "turn_runner", input: ask_model(v.self, sent, false), paths: model_paths })] else [],
@@ -873,7 +875,7 @@ module temperpaw {
   // Each module's contract, by value.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
   type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry], epoch: int }
-  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, epoch: int }
+  type TurnOut = { message: str, stop: str, text: str, call_ids: List[str], call_names: List[str], call_args: List[str], tokens_in: int, tokens_out: int, tokens_cached: int, epoch: int }
   type ComputerIn = { op: str, sandbox: str, paused: bool, call: str, args: str, unikon: bool }
   type ComputerOut = { sandbox: str, exit_code: int, stdout: str, stderr: str, call: str }
   type UnikonIn = { call: str, args: str }
