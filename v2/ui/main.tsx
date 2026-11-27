@@ -27,24 +27,24 @@ type Entry = {
 
 const SUGGESTIONS = [
   {
-    title: "Build a habit tracker app",
-    subtitle: "Daily streaks, morning rituals & clean cards",
-    prompt: "Build a daily habit tracker app with streak counting and morning rituals, give it a calm minimal UI, and share the live link.",
+    title: "Grow a business from a goal",
+    subtitle: "Hard rules, judgment and deep work, organ by organ",
+    prompt: "My goal: run a small online print shop. Grow it as one living app. System 0: an order ledger with a hard daily spend cap and a timer that flags any order unshipped after 48 hours. System 1: a choice point that sorts each new request into fixed actions for me to agree or overrule. System 2: deep work that drafts product listings. Start small, share the live link, and tell me which organ to grow next.",
   },
   {
-    title: "Change this page's layout & colors",
-    subtitle: "Evolve TemperPaw's own UI live",
-    prompt: "Inspect this app's current UI and evolve its layout, typography, and colors to feel even cleaner and warmer.",
+    title: "Keep my bills under a hard cap",
+    subtitle: "A ledger no move can overspend, with due-date timers",
+    prompt: "My goal: never overspend on household bills. Grow an app with a ledger where each category has a hard monthly cap no move can pass, a timer that warns me 3 days before each bill is due, and a choice point that sorts each new expense into a category for me to agree or overrule. Share the live link and add my first categories.",
   },
   {
-    title: "Check my apps and fix any issues",
-    subtitle: "Inspect live records, builds & UI health",
-    prompt: "Check my UniKon apps, inspect any stuck records or UI issues, and summarize what needs fixing.",
+    title: "Run my hiring pipeline",
+    subtitle: "Stages, deadlines and an offer only I sign off",
+    prompt: "My goal: hire our first engineer. Grow an app where candidates move through fixed stages, an offer can't go out without my sign-off, a timer flags anyone waiting over 3 days for a reply, and a choice point suggests each candidate's next step from fixed options. Add deep work that drafts an interview scorecard per candidate, then share the live link.",
   },
   {
-    title: "Make an expense tracker",
-    subtitle: "Categories, monthly totals & receipt notes",
-    prompt: "Build a clean personal expense tracker app with categories, monthly totals, and quick entry, then share the live link.",
+    title: "Grow yourself a Goals organ",
+    subtitle: "Evolve your own spec, rules and screen live",
+    prompt: "Grow yourself a new organ: a Goal record in your own spec that moves planned, growing, live, with an invariant that a goal can't be live without a linked app, and show my goals on your home screen. Evolve your spec and interface live, with no restart, then show me it working.",
   },
 ];
 
@@ -1245,7 +1245,7 @@ function LandingScreen({
                 <span>TemperPaw · UniKon</span>
               </div>
               <h1>What should TemperPaw build next?</h1>
-              <p>Create apps, redesign any page, or run tasks on your sandbox — all from one conversation.</p>
+              <p>Hand it a goal. It grows a living app for it, with hard rules, judgment and deep work, and grows itself the same way.</p>
             </div>
 
             <form
@@ -1260,7 +1260,7 @@ function LandingScreen({
                 rows={2}
                 value={prompt}
                 disabled={launching}
-                placeholder="Ask anything — build an app, redesign this page, or run a task…"
+                placeholder="Give TemperPaw a goal, or ask anything…"
                 onChange={(e) => setPrompt(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
