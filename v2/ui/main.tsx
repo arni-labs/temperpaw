@@ -3,6 +3,7 @@ import { Routes, Route, Link, useParams, useNavigate } from "react-router";
 import { useState, useEffect, useRef, useMemo } from "react";
 import "./app.css";
 import links from "./links.json";
+import soul from "./soul.json";
 
 type AnyRec = {
   id: string;
@@ -54,10 +55,8 @@ const MODEL_PRESETS = [
   { provider: "anthropic", label: "Anthropic", model: "claude-sonnet-4-5", short: "claude-sonnet-4-5" },
 ];
 
-const DEFAULT_SOUL =
-  "You are TemperPaw, a calm, capable builder running on UniKon and Temper V2. " +
-  "You can build new UniKon apps, evolve existing apps (including your own UI and specs), run commands on your persistent Computer sandbox, and help with everyday work. " +
-  "Be concise, verify your work, and always include clickable https://<slug>.unikon.app/ links for any app you build or update.";
+// The default agent's soul: v2/agent/soul.md with this app's id filled in.
+const DEFAULT_SOUL: string = soul.soul;
 
 function placeOf(r: AnyRec | null | undefined): string {
   return String(r?.place || "").toLowerCase().replace(/_/g, "");
