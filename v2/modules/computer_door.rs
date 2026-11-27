@@ -48,7 +48,7 @@ pub fn call(input: Input) -> Option<Answer> {
     } else if input.paused {
         resume(&sandbox);
     }
-    match run(&sandbox, &command, input.propose) {
+    match run(&sandbox, &command, input.unikon) {
         Ran::Answered(mut answer) => {
             answer.sandbox = sandbox;
             Some(answer)
@@ -56,7 +56,7 @@ pub fn call(input: Input) -> Option<Answer> {
         // Not running (suspended since): resume and run once more.
         Ran::NotRunning => {
             resume(&sandbox);
-            match run(&sandbox, &command, input.propose) {
+            match run(&sandbox, &command, input.unikon) {
                 Ran::Answered(mut answer) => {
                     answer.sandbox = sandbox;
                     Some(answer)
@@ -67,7 +67,7 @@ pub fn call(input: Input) -> Option<Answer> {
         // Gone (ended at its lifetime, or deleted): a new computer, whose workspace starts empty.
         Ran::Gone => {
             let fresh = match make(&input.call) { Some(id) => id, None => return None };
-            match run(&fresh, &command, input.propose) {
+            match run(&fresh, &command, input.unikon) {
                 Ran::Answered(mut answer) => {
                     answer.stderr.push_str("(The computer had ended; this ran on a new one with an empty workspace.)\n");
                     answer.sandbox = fresh;
@@ -234,17 +234,17 @@ fn wait_for(sandbox: &str, word: &str) -> bool {
     false
 }
 
-// With propose, the door puts the vault's propose pass in the command's env (UNIKON_PROPOSE_PASS), out of this module's
-// sight; without it the call names no such key, so an agent without the grant never carries it.
-fn run(sandbox: &str, command: &str, propose: bool) -> Ran {
+// With unikon, the door puts the vault's UniKon connector credential in the command's env (UNIKON_MCP_TOKEN), out of
+// this module's sight; without it the call names no such key, so an agent without the grant never carries it.
+fn run(sandbox: &str, command: &str, unikon: bool) -> Ran {
     let mut body = String::from("{\"command\":\"bash\",\"args\":[\"-lc\",");
     push_json_string(&mut body, command);
     body.push_str("],\"working_dir\":\"/home/tl-user\",\"timeout\":");
     push_count(&mut body, RUN_SECONDS);
     body.push_str(",\"env\":{}}");
     let mut keys = vec!["tensorlake_process_key".to_string()];
-    if propose {
-        keys.push("propose_pass".to_string());
+    if unikon {
+        keys.push("unikon_mcp_token".to_string());
     }
     let mut headers = json_headers();
     headers.push(("x-tensorlake-sandbox-id".to_string(), sandbox.to_string()));
