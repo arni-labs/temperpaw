@@ -50,19 +50,20 @@ const SUGGESTIONS = [
 
 type CatalogEntry = { id: string; name: string; ctxK: number; price: string };
 
+// The default first, then current, cheap and strong tool-calling models from the OpenRouter catalog (27 Nov 2026).
 const FEATURED_OPENROUTER = [
   "anthropic/claude-sonnet-4.5",
-  "anthropic/claude-opus-4.5",
-  "anthropic/claude-opus-4.1",
-  "openai/gpt-5",
-  "openai/gpt-4o",
-  "openai/o3",
-  "google/gemini-2.5-pro",
-  "google/gemini-2.5-flash",
+  "google/gemini-3.8-flash",
+  "google/gemini-4-hydrogen",
+  "x-ai/grok-4.7",
+  "anthropic/claude-haiku-5.5",
+  "openai/gpt-6-luna",
+  "deepseek/deepseek-v4.1-flash",
   "google/gemini-4-neon",
-  "deepseek/deepseek-r1",
-  "deepseek/deepseek-chat",
-  "x-ai/grok-4",
+  "anthropic/claude-sonnet-5.5",
+  "openai/gpt-6.1-terra",
+  "qwen/qwen3.8-flash",
+  "z-ai/glm-5.3-flash",
 ];
 
 function formatPromptPrice(raw: string | undefined): string {
@@ -99,17 +100,15 @@ function parseCatalogModels(raw: unknown): CatalogEntry[] {
 
 const DIRECT_MODELS: Record<string, CatalogEntry[]> = {
   openai: [
-    { id: "gpt-4o", name: "OpenAI: GPT-4o", ctxK: 128, price: "" },
-    { id: "gpt-4o-mini", name: "OpenAI: GPT-4o mini", ctxK: 128, price: "" },
-    { id: "gpt-5", name: "OpenAI: GPT-5", ctxK: 400, price: "" },
-    { id: "o3", name: "OpenAI: o3", ctxK: 200, price: "" },
-    { id: "o4-mini", name: "OpenAI: o4-mini", ctxK: 200, price: "" },
+    { id: "gpt-6-luna", name: "OpenAI: GPT-6 Luna", ctxK: 1050, price: "" },
+    { id: "gpt-6.1-terra", name: "OpenAI: GPT-6.1 Terra", ctxK: 1050, price: "" },
+    { id: "gpt-6.2-sol", name: "OpenAI: GPT-6.2 Sol", ctxK: 1050, price: "" },
   ],
   anthropic: [
     { id: "claude-sonnet-4-5", name: "Anthropic: Claude Sonnet 4.5", ctxK: 200, price: "" },
     { id: "claude-opus-4-5", name: "Anthropic: Claude Opus 4.5", ctxK: 200, price: "" },
-    { id: "claude-3-7-sonnet-latest", name: "Anthropic: Claude 3.7 Sonnet", ctxK: 200, price: "" },
-    { id: "claude-3-5-haiku-latest", name: "Anthropic: Claude 3.5 Haiku", ctxK: 200, price: "" },
+    { id: "claude-haiku-5-5", name: "Anthropic: Claude Haiku 5.5", ctxK: 1000, price: "" },
+    { id: "claude-sonnet-5-5", name: "Anthropic: Claude Sonnet 5.5", ctxK: 1000, price: "" },
   ],
 };
 
@@ -455,7 +454,7 @@ function ModelModal({
     if (nextProv === "openrouter" && !mod.includes("/")) {
       setMod("anthropic/claude-sonnet-4.5");
     } else if (nextProv === "openai" && mod.includes("/")) {
-      setMod("gpt-4o");
+      setMod("gpt-6-luna");
     } else if (nextProv === "anthropic" && mod.includes("/")) {
       setMod("claude-sonnet-4-5");
     }
@@ -1245,7 +1244,7 @@ function LandingScreen({
                 <span className="tp-pill-dot" />
                 <span>TemperPaw · UniKon</span>
               </div>
-              <h1>What would you like to build or evolve?</h1>
+              <h1>What should TemperPaw build next?</h1>
               <p>Create apps, redesign any page, or run tasks on your sandbox — all from one conversation.</p>
             </div>
 
