@@ -64,8 +64,9 @@ pub fn call(input: Input) -> Option<Answer> {
     None
 }
 
+// The lines go out oldest model first, the reverse of OpenRouter's order (the page sorts them its own way).
 fn lines_of(bytes: &[u8], items: &Vec<(usize, usize)>) -> Answer {
-    let mut models = String::new();
+    let mut kept: Vec<String> = Vec::new();
     let mut used: usize = 0;
     let mut count: usize = 0;
     let n = items.len();
@@ -81,12 +82,21 @@ fn lines_of(bytes: &[u8], items: &Vec<(usize, usize)>) -> Answer {
             if size > MOST_BYTES - used {
                 full = true;
             } else {
-                models.push_str(&line);
+                kept.push(line);
                 used = used + size;
                 count = count + 1;
             }
         }
         i = i + 1;
+    }
+    let mut models = String::new();
+    let mut k: usize = kept.len();
+    while k > 0
+        invariant k <= kept.len(),
+        decreases k,
+    {
+        k = k - 1;
+        models.push_str(&kept[k]);
     }
     Answer { models, count: count as i64 }
 }
