@@ -166,13 +166,19 @@ function commandOf(args: string): string {
   return String(args || "");
 }
 
+// A chip is named by the tool the model called: unikon calls show the connector tool and its arguments, bash its command.
 function describeToolCall(name: string, args: string): { kind: string; preview: string } {
-  const cmd = commandOf(args).trim();
-  const oneLine = cmd.replace(/\s+/g, " ");
-  if (/^(unikon|katagami)\s+/i.test(oneLine) || /\b(construct_app|evolve_app|set_app_interface|inspect_app|use_app|find_app|search_ingredients|attach_app_dress)\b/.test(oneLine)) {
-    const cleaned = oneLine.replace(/^(unikon|katagami)\s+/i, "");
-    return { kind: "UniKon", preview: cleaned.slice(0, 88) };
+  if (name === "unikon") {
+    try {
+      const a = JSON.parse(args);
+      if (a && typeof a.tool === "string") {
+        const rest = a.arguments === undefined ? "" : " " + JSON.stringify(a.arguments);
+        return { kind: "UniKon", preview: (a.tool + rest).replace(/\s+/g, " ").slice(0, 88) };
+      }
+    } catch {}
+    return { kind: "UniKon", preview: String(args || "").replace(/\s+/g, " ").slice(0, 88) };
   }
+  const oneLine = commandOf(args).trim().replace(/\s+/g, " ");
   const label = name === "bash" ? "Computer" : name || "Tool";
   return { kind: label, preview: oneLine.slice(0, 88) || "run" };
 }
@@ -744,7 +750,7 @@ function Sidebar({
             sorted.map((s) => {
               const p = placeOf(s);
               const dotState =
-                p === "thinking" || p === "calling" || p === "acting" || p === "connecting" || p === "compacting"
+                p === "thinking" || p === "calling" || p === "acting" || p === "connecting" || p === "compacting" || p === "backoff"
                   ? "active"
                   : p === "failed"
                     ? "failed"
@@ -781,6 +787,9 @@ function Sidebar({
 
         <div className="tp-side-foot">
           <div className="tp-foot-row">
+            <Link to="/briefing" className="tp-ghost-btn" style={{ textDecoration: "none", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              Briefing
+            </Link>
             <button type="button" className="tp-ghost-btn" onClick={onOpenMemory}>
               Memory <span className="tp-badge-count">{memoryCount}</span>
             </button>
@@ -945,6 +954,17 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
         </div>
       )}
 
+      {place === "backoff" && (
+        <div className="tp-working">
+          <span className="tp-dots" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>{String(session.fields.why || "The model was busy, so Seed tries again in two minutes.")}</span>
+        </div>
+      )}
+
       {(place === "calling" || place === "acting" || place === "connecting") && (
         <div className="tp-working">
           <span className="tp-dots" aria-hidden="true">
@@ -975,7 +995,7 @@ function ConversationStream({ session, toolCalls }: { session: AnyRec; toolCalls
         </div>
       )}
 
-      {session.fields.why && <div className="tp-error">{session.fields.why}</div>}
+      {session.fields.why && place !== "backoff" && <div className="tp-error">{session.fields.why}</div>}
     </div>
   );
 }
@@ -1063,7 +1083,96 @@ function TemperPawApp() {
           />
         }
       />
+      <Route path="/briefing" element={<BriefingScreen />} />
     </Routes>
+  );
+}
+
+function BriefingScreen() {
+  const app = useApp();
+  const briefings = useRecords("briefing");
+  const memories = useRecords("memory");
+  
+  const placeOf = (r: AnyRec) => r.place?.toLowerCase().replace(/_/g, "") || "";
+  
+  const activeBriefings = briefings.filter(b => placeOf(b) === "briefingpublished");
+  const activeMemories = memories.filter(m => placeOf(m) !== "archived");
+  
+  const latestBriefing = activeBriefings.length > 0 
+    ? activeBriefings.sort((a, b) => (b.fields.date || "").localeCompare(a.fields.date || ""))[0]
+    : null;
+  
+  return (
+    <div className="tp-main-wrap">
+      <div className="tp-content-narrow" style={{ padding: "2rem 1.5rem", maxWidth: "680px", margin: "0 auto" }}>
+        <header style={{ marginBottom: "2rem" }}>
+          <h1 style={{ fontSize: "1.75rem", fontWeight: 600, marginBottom: "0.5rem" }}>Daily Briefing</h1>
+          <p style={{ color: "var(--tp-ink-2)", fontSize: "0.95rem", margin: 0 }}>
+            What I did and what's waiting for you
+          </p>
+        </header>
+
+        {!latestBriefing ? (
+          <div className="tp-side-empty" style={{ padding: "2rem", textAlign: "center", background: "var(--tp-bg)", borderRadius: "8px" }}>
+            No briefing yet. I write one each morning at 8, New York time.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+            <section>
+              <div style={{ fontSize: "0.85rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--tp-ink-2)", marginBottom: "0.75rem" }}>
+                {latestBriefing.fields.date}
+              </div>
+              
+              <div style={{ background: "var(--tp-bg)", border: "1px solid var(--tp-border)", borderRadius: "8px", padding: "1.25rem", marginBottom: "1rem" }}>
+                <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem", color: "var(--tp-accent)" }}>What I did</h3>
+                <p style={{ margin: 0, lineHeight: "1.6", whiteSpace: "pre-wrap" }}>
+                  {latestBriefing.fields.what_i_did || "Nothing to report yet."}
+                </p>
+              </div>
+
+              <div style={{ background: "var(--tp-bg)", border: "1px solid var(--tp-border)", borderRadius: "8px", padding: "1.25rem" }}>
+                <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "0.75rem", color: "var(--tp-accent)" }}>What's waiting on you</h3>
+                <p style={{ margin: 0, lineHeight: "1.6", whiteSpace: "pre-wrap" }}>
+                  {latestBriefing.fields.whats_waiting || "Nothing waiting."}
+                </p>
+              </div>
+            </section>
+
+            {activeMemories.length > 0 && (
+              <section>
+                <h3 style={{ fontSize: "0.85rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--tp-ink-2)", marginBottom: "0.75rem" }}>
+                  What I remember about you ({activeMemories.length})
+                </h3>
+                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  {activeMemories.map(m => (
+                    <li key={m.id} style={{ background: "var(--tp-bg)", border: "1px solid var(--tp-border)", borderRadius: "6px", padding: "0.75rem 1rem" }}>
+                      <div style={{ fontSize: "0.85rem", fontWeight: 500, marginBottom: "0.25rem", color: "var(--tp-accent)" }}>
+                        {m.fields.key || "note"}
+                      </div>
+                      <div style={{ fontSize: "0.95rem", lineHeight: "1.5" }}>
+                        {m.fields.content}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {latestBriefing.fields.owner_prefs && (
+              <div style={{ marginTop: "0.5rem", padding: "1rem", background: "var(--tp-surface)", borderRadius: "6px", fontSize: "0.9rem", lineHeight: "1.5" }}>
+                <strong>Your preferences:</strong> {latestBriefing.fields.owner_prefs}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginTop: "2rem", paddingTop: "1.5rem", borderTop: "1px solid var(--tp-border)" }}>
+          <Link to="/" style={{ color: "var(--tp-accent)", textDecoration: "none", fontSize: "0.95rem" }}>
+            ← Back to home
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1449,7 +1558,7 @@ function SessionScreen({
   }, [allToolCalls, id]);
 
   const place = placeOf(s);
-  const isBusy = place === "thinking" || place === "calling" || place === "acting" || place === "connecting" || place === "compacting";
+  const isBusy = place === "thinking" || place === "calling" || place === "acting" || place === "connecting" || place === "compacting" || place === "backoff";
   const canAsk = !!s && (can(s, "ask") || place === "idle" || place === "failed");
   // Working: a stop can end it, and what the person types steers it (read at the model's next step, or as the next turn).
   const working = isBusy || place === "waitingapproval";

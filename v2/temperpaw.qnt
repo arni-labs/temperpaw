@@ -21,6 +21,8 @@
 //   any working status --steer--> the same (what a person says waits in pending for the model's next step or turn)
 //   any working status --stop | stop_call--> Idle ; --stalled | stalled_call (20 min watchdog)--> Failed
 //   any status --delete--> Deleted
+//   Thinking|Compacting --turn_refused (the provider busy: 402, 408, 429, 5xx)--> Backoff --2 min--> retry_turn --> Thinking
+//     (at most max_retries a run, then Failed as any other refusal)
 // A stop starts a new run: an answer to the stopped run's model call (its run) or tool call (its call id) moves nothing.
 // A module's failed or unknown end carries no answer, so one arriving after a stop and a new ask can still end that
 // new turn or call as failed; the person asks again, and nothing more runs.
@@ -133,11 +135,7 @@ module briefing_record {
     StatusSays({ status: "BriefingPublished", says: "Published" }),
     Indexed("date"),
   ]
-  pure val timers: List[TimerDecl] = [
-    { name: "daily_briefing", fires: "publish", when: CronAt({ schedule: "0 8 * * *", zone: "UTC" }) },
-  ]
-
-  pure def publish_guard(i: PublishIn, c: Ctx): bool = require(by_timer(c) or is_person(c) or is_agent(c), "A briefing is published by a timer, person or agent.")
+  pure def publish_guard(i: PublishIn, c: Ctx): bool = require(is_person(c) or is_agent(c), "A briefing is published by a person or agent.")
   pure def publish_apply(i: PublishIn, c: Ctx): Move[Row, Do, Msg, Ask] = {
     next: { status: BriefingPublished, date: i.date, what_i_did: i.what_i_did, whats_waiting: i.whats_waiting, owner_prefs: i.owner_prefs },
     follow: [],
@@ -270,7 +268,7 @@ module session_record {
   import agent_record as agent_record
 
   type SessionId = Id
-  type Status = Idle | Thinking | Calling | Acting | Connecting | WaitingApproval | Compacting | Done | Failed | Deleted
+  type Status = Idle | Thinking | Calling | Acting | Connecting | WaitingApproval | Compacting | Backoff | Done | Failed | Deleted
   // What the model is sent each turn, provider-neutral: turn_runner writes it in the provider's own wire format.
   type Entry = { role: str, content: str, call_id: str, call_ids: List[str], call_names: List[str], call_args: List[str] }
   type Row = {
@@ -296,6 +294,10 @@ module session_record {
     // pending: what a person said while the session worked, not yet sent to the model. It goes at the next model step,
     // or as the next turn when this one ends.
     pending: str,
+    // retries: how many times this run's model call waited out a busy provider (Backoff).
+    retries: int,
+    // briefing_wait: milliseconds from the last arming of the morning timer to the next 8:00 in New York.
+    briefing_wait: Millis,
   }
   type Msg = NoMsgs
   type TurnIn = { provider: str, model: str, soul: str, max_tokens: int, computer: bool, unikon: bool, compact: bool, history: List[Entry], epoch: int }
@@ -319,21 +321,25 @@ module session_record {
   // the session asks the model to summarise them (so a request stays inside the provider's context window). Constants,
   // not an agent's inputs: each input multiplies the cases admission's search tries, 15,000 at most per move.
   pure val max_tokens: int = 16000
+  // A busy provider is waited out this many times a run, two minutes each. Reason: OpenRouter refuses a call with 402
+  // in_flight_budget_exhausted while other calls on the account hold its credit (27 Nov: two Seed sessions at once
+  // failed this way), and answers Retry-After: 120.
+  pure val max_retries: int = 3
   pure val max_steps: int = 100
   pure val compact_after: int = 40
 
   pure val record: RecordDecl = { name: "Session", status: "status" }
   // Sessions made before epoch and pending existed read them as these.
-  pure val initial: { tokens_cached: int, epoch: int, pending: str } = { tokens_cached: 0, epoch: 0, pending: "" }
+  pure val initial: { tokens_cached: int, epoch: int, pending: str, retries: int, briefing_wait: Millis } = { tokens_cached: 0, epoch: 0, pending: "", retries: 0, briefing_wait: milliseconds(0) }
   pure val moves: List[MoveDecl[Status]] = [
     { name: "open", from: FirstMove },
     { name: "ask", from: Statuses([Idle, Failed]) },
-    { name: "steer", from: Statuses([Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting]) },
-    { name: "stop", from: Statuses([Thinking, Calling, Compacting]) },
+    { name: "steer", from: Statuses([Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Backoff]) },
+    { name: "stop", from: Statuses([Thinking, Calling, Compacting, Backoff]) },
     { name: "stop_call", from: Statuses([Acting, Connecting, WaitingApproval]) },
     { name: "stalled", from: Statuses([Thinking, Calling, Compacting]) },
     { name: "stalled_call", from: Statuses([Acting, Connecting]) },
-    { name: "delete", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Done, Failed]) },
+    { name: "delete", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Backoff, Done, Failed]) },
     { name: "answered_tools", from: Statuses([Thinking]) },
     { name: "answered", from: Statuses([Thinking]) },
     { name: "compacted", from: Statuses([Compacting]) },
@@ -347,12 +353,60 @@ module session_record {
     { name: "tool_failed", from: Statuses([Acting, Connecting]) },
     { name: "approve", from: Statuses([WaitingApproval]) },
     { name: "deny", from: Statuses([WaitingApproval]) },
-    { name: "swap_model", from: Statuses([Idle, Failed, WaitingApproval]) },
+    { name: "swap_model", from: Statuses([Idle, Failed, WaitingApproval, Backoff]) },
     { name: "pause_computer", from: Statuses([Idle]) },
-    { name: "computer_paused", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Failed]) },
+    { name: "computer_paused", from: Statuses([Idle, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Backoff, Failed]) },
     { name: "close", from: Statuses([Idle, Failed]) },
     { name: "computer_ended", from: Statuses([Done, Deleted]) },
+    { name: "schedule_briefing", from: Statuses([Idle, Failed]) },
+    { name: "stop_briefing", from: Statuses([Idle, Failed]) },
+    { name: "morning", from: Statuses([Idle, Failed, Thinking, Calling, Acting, Connecting, WaitingApproval, Compacting, Backoff]) },
+    { name: "retry_turn", from: Statuses([Backoff]) },
+    { name: "begin", from: Statuses([Idle, Failed]) },
   ]
+  // The daily briefing: a person schedules it on one session, and each morning at 8, New York time, morning asks
+  // briefing_ask in that session and arms itself for the next morning (a timer fires once per arming). The timer
+  // lives on the session, not the Agent, so only the timer starts it: a session made by a message from another record
+  // would need a CallerApp permit, which any app, not only this one, holds. A timer fires its move as whoever armed it
+  // (28 Nov: morning was refused under a CallerApp-only permit), so morning, begin and retry_turn are in the person
+  // permits, and each is guarded on its cause (by_timer, by_intent), so nobody makes one by asking.
+  pure val timers: List[TimerDecl] = [
+    { name: "morning_briefing", fires: "morning", when: WaitFromRecord },
+  ]
+  pure def morning_briefing_wait(t: Row): Millis = t.briefing_wait
+  // Milliseconds from now to the next 8:00 in New York: 12:00 UTC in daylight time (from the second Sunday of March to
+  // the first Sunday of November), else 13:00 UTC. A wait, not CronAt, because the kernel cannot arm a cron timer yet
+  // (its cron_next answers NoCronFunction: schedule_briefing was refused on 28 Nov). utc_weekday is 1 Monday to 7 Sunday.
+  // A duration must be written as a literal and only ints add, so the wait is the minutes to go (1 to 1440), added to
+  // now one binary digit at a time, as the time between now and then. Daylight time is read at arming, so the morning
+  // after a switch comes an hour off.
+  pure def until_ny_eight(now: Time): Millis = {
+    val month = utc_month(now)
+    val last_sunday = utc_day(now) - utc_weekday(now) % 7
+    val daylight = or { month > 3 and month < 11, month == 3 and last_sunday >= 8, month == 11 and last_sunday < 1 }
+    val eight = (if (daylight) 12 else 13) * 60
+    val to_go = (eight + 1440 - (utc_hour(now) * 60 + utc_minute(now)) - 1) % 1440 + 1
+    val t1 = add_if(now, to_go / 1024 % 2 == 1, minutes(1024))
+    val t2 = add_if(t1, to_go / 512 % 2 == 1, minutes(512))
+    val t3 = add_if(t2, to_go / 256 % 2 == 1, minutes(256))
+    val t4 = add_if(t3, to_go / 128 % 2 == 1, minutes(128))
+    val t5 = add_if(t4, to_go / 64 % 2 == 1, minutes(64))
+    val t6 = add_if(t5, to_go / 32 % 2 == 1, minutes(32))
+    val t7 = add_if(t6, to_go / 16 % 2 == 1, minutes(16))
+    val t8 = add_if(t7, to_go / 8 % 2 == 1, minutes(8))
+    val t9 = add_if(t8, to_go / 4 % 2 == 1, minutes(4))
+    val t10 = add_if(t9, to_go / 2 % 2 == 1, minutes(2))
+    val t11 = add_if(t10, to_go % 2 == 1, minutes(1))
+    between(now, t11)
+  }
+  pure def add_if(t: Time, on: bool, d: Millis): Time = if (on) after(t, d) else t
+  pure val briefing_ask: str = "Morning briefing. Write Rita today's briefing and publish it, in this order:
+1. bash: date -u +%F for today's date, and date -u -d '-24 hours' +%FT%TZ for the time a day ago.
+2. unikon app_history with app a29uu3cl6038 and since that time, and inspect_app with app a29uu3cl6038 and thing session: what you did since yesterday's briefing (sessions run, apps made or changed, each with its link). Leave out this briefing session.
+3. What waits on Rita: your sessions that wait for her approval or failed, and records in her apps that name her in waiting_on.
+4. inspect_app with app a29uu3cl6038 and thing memory: what you remember about her.
+5. unikon use_app with app a29uu3cl6038, thing briefing, move publish and input date, what_i_did, whats_waiting and owner_prefs, each a few short plain sentences, then read the record back.
+Reply with the briefing in a few lines."
   // A computer idle 10 minutes is suspended. Reason: Tensorlake bills a running sandbox by the second, and a suspended one
   // keeps its disk, so the workspace persists and costs nothing while nobody uses it.
   pure val status_timers: List[StatusTimer[Status]] = [
@@ -365,6 +419,7 @@ module session_record {
     { name: "acting_watch", while_in: Acting, after: minutes(20), fires: "stalled_call" },
     { name: "connecting_watch", while_in: Connecting, after: minutes(20), fires: "stalled_call" },
     { name: "compacting_watch", while_in: Compacting, after: minutes(20), fires: "stalled" },
+    { name: "backoff_wait", while_in: Backoff, after: minutes(2), fires: "retry_turn" },
   ]
   pure val model_paths: ModulePaths = {
     applied: ["answered_tools", "answered", "turn_refused"], failed: ["turn_failed"], unknown: ["turn_failed"], refused: ["turn_failed"],
@@ -437,7 +492,7 @@ module session_record {
       status: Idle, agent: sender(c), title: i.title, soul: i.soul, provider: i.provider, model: i.model,
       tools: i.tools, approve: i.approve, history: [], turns: 0, steps: 0,
       queue_ids: [], queue_names: [], queue_args: [], asked_in: "", computer: "", computer_paused: false, tokens_in: 0, tokens_out: 0,
-      tokens_cached: 0, reply: "", why: "", epoch: 0, pending: "",
+      tokens_cached: 0, reply: "", why: "", epoch: 0, pending: "", retries: 0, briefing_wait: milliseconds(0),
     },
     follow: [],
   }
@@ -451,7 +506,7 @@ module session_record {
         status: turn_record::Written, parent: key_of(v.self.turns), role: "user", content: i.text, tool: "", model: "", tokens_in: 0, tokens_out: 0,
       }),
       self: {
-        ...v.self, status: Thinking, steps: 1, turns: v.self.turns + 1, reply: "", why: "", pending: "",
+        ...v.self, status: Thinking, steps: 1, turns: v.self.turns + 1, reply: "", why: "", pending: "", retries: 0,
         history: with_pending(v.self.history, v.self.pending).append(said_entry("user", i.text)),
       },
     },
@@ -470,6 +525,45 @@ module session_record {
       self: { ...v.self, turns: v.self.turns + 1, pending: joined(v.self.pending, i.text) },
     },
     follow: [],
+  }
+
+  // ---- the morning briefing (timers above).
+  pure def schedule_briefing_guard(v: View, i: NoInput, c: Ctx): bool = require(by_request(c), "A person schedules the briefing.")
+  pure def schedule_briefing_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: { ...v, self: { ...v.self, briefing_wait: until_ny_eight(c.now) } },
+    follow: [ArmTimer({ timer: "morning_briefing", input: DoMorning(Nothing) })],
+  }
+  pure def stop_briefing_guard(v: View, i: NoInput, c: Ctx): bool = require(by_request(c), "A person stops the briefing.")
+  pure def stop_briefing_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: { ...v, self: v.self },
+    follow: [CancelTimer("morning_briefing")],
+  }
+  // The ask is written as a steer is, so a session at work reads it at its next step; an idle one begins a run with it.
+  pure def morning_guard(v: View, i: NoInput, c: Ctx): bool = require(by_timer(c), "Only the morning timer asks for the briefing.")
+  pure def morning_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: {
+      ...v,
+      turn_record_rows: v.turn_record_rows.put(child_id(v.id, key_of(v.self.turns + 1)), {
+        status: turn_record::Written, parent: key_of(v.self.turns), role: "user", content: briefing_ask, tool: "", model: "", tokens_in: 0, tokens_out: 0,
+      }),
+      self: { ...v.self, turns: v.self.turns + 1, pending: joined(v.self.pending, briefing_ask), briefing_wait: until_ny_eight(c.now) },
+    },
+    follow: [ArmTimer({ timer: "morning_briefing", input: DoMorning(Nothing) }), Intent(DoBegin(Nothing))],
+  }
+  // An idle session begins a run with what waits in pending, as ask does with its text.
+  pure def begin_guard(v: View, i: NoInput, c: Ctx): bool = and {
+    require(by_intent(c), "The session begins its own run."),
+    require(v.self.pending != "", "Something waits to be asked."),
+  }
+  pure def begin_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: {
+      ...v,
+      self: {
+        ...v.self, status: Thinking, steps: 1, reply: "", why: "", pending: "", retries: 0,
+        history: with_pending(v.self.history, v.self.pending),
+      },
+    },
+    follow: [RunModule({ mod: "turn_runner", input: ask_model(v.self, with_pending(v.self.history, v.self.pending), false), paths: model_paths })],
   }
 
   // ---- stop: a person ends the run now. The session is Idle at once, and an answer still coming for the stopped run
@@ -631,12 +725,35 @@ module session_record {
     }
   }
   // A provider's refusal or error status: the session fails with its reason, keeps its history, and may be asked again.
+  // A busy provider (402, 408, 429, 5xx) is waited out in Backoff first, max_retries times a run.
   pure def turn_refused_guard(v: View, i: TurnOut, c: Ctx): bool = and {
     require(by_module_answer(c), "Only turn_runner's answer ends a turn."),
     require(i.epoch == v.self.epoch, "The answer is to this run, not one a stop ended."),
   }
+  pure def provider_busy(stop: str): bool =
+    stop == "http_402" or stop == "http_408" or stop == "http_429" or stop == "http_500" or stop == "http_502" or stop == "http_503"
+    or stop == "http_504" or stop == "http_529"
   pure def turn_refused_apply(v: View, i: TurnOut, c: Ctx): Move[View, Do, Msg, Ask] = {
-    next: { ...v, self: { ...v.self, status: Failed, why: format("The model's turn ended: {} {}", [i.stop, i.text]) } }, follow: [],
+    val waits = provider_busy(i.stop) and v.self.retries < max_retries
+    {
+      next: {
+        ...v,
+        self: {
+          ...v.self, status: if (waits) Backoff else Failed, retries: if (waits) v.self.retries + 1 else v.self.retries,
+          why:
+            if (waits) format("The model was busy ({}), so Seed tries again in two minutes.", [i.stop])
+            else if (i.stop == "http_402") "OpenRouter has too little credit left for this turn (402). Add credits at https://openrouter.ai/settings/credits, or switch the model, then ask again."
+            else format("The model's turn ended: {} {}", [i.stop, i.text]),
+        },
+      },
+      follow: [],
+    }
+  }
+  // After two minutes in Backoff, the same model call again, with anything a person said meanwhile.
+  pure def retry_turn_guard(v: View, i: NoInput, c: Ctx): bool = require(by_timer(c), "Only the backoff timer tries the model again.")
+  pure def retry_turn_apply(v: View, i: NoInput, c: Ctx): Move[View, Do, Msg, Ask] = {
+    next: { ...v, self: { ...v.self, status: Thinking, why: "", pending: "", history: with_pending(v.self.history, v.self.pending) } },
+    follow: [RunModule({ mod: "turn_runner", input: ask_model(v.self, with_pending(v.self.history, v.self.pending), false), paths: model_paths })],
   }
   // Failed or past its deadline: the provider may have answered, so nothing is retried (the destination is at most once).
   pure def turn_failed_guard(v: View, i: NoInput, c: Ctx): bool = require(by_module_answer(c), "Only turn_runner's end ends a turn.")
@@ -1003,6 +1120,7 @@ module temperpaw {
     {
       decide: Permit, who: HasRole("owner"),
       what: MovesOf({ record: "Session", moves: [
+        "schedule_briefing", "stop_briefing", "morning", "begin", "retry_turn",
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
         "steer", "stop", "stop_call", "stalled", "stalled_call", "delete",
@@ -1012,6 +1130,7 @@ module temperpaw {
     {
       decide: Permit, who: HasRole("member"),
       what: MovesOf({ record: "Session", moves: [
+        "schedule_briefing", "stop_briefing", "morning", "begin", "retry_turn",
         "open", "ask", "answered_tools", "answered", "compacted", "turn_refused", "turn_failed", "next_tool", "tool_done", "tool_done_again", "tool_refused",
         "tool_failed", "tool_answered", "approve", "deny", "swap_model", "pause_computer", "computer_paused", "close", "computer_ended",
         "steer", "stop", "stop_call", "stalled", "stalled_call", "delete",
@@ -1020,7 +1139,6 @@ module temperpaw {
     },
     // A status timer's fire and what it asks act as the app.
     { decide: Permit, who: CallerApp, what: MovesOf({ record: "Session", moves: ["pause_computer", "computer_paused", "stalled", "stalled_call"] }), when: Always },
-        { decide: Permit, who: CallerApp, what: MovesOf({ record: "Briefing", moves: ["publish"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Memory", moves: ["remember", "revise", "archive", "restore"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Briefing", moves: ["publish", "update", "archive_briefing"] }), when: Always },
     { decide: Permit, who: HasRole("owner"), what: MovesOf({ record: "Catalog", moves: ["fetch", "refresh", "filled", "fetch_failed"] }), when: Always },
